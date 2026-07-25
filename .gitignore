@@ -1,0 +1,22 @@
+# Native/host build output
+/build/
+/out/
+/bin/
+/obj/
+*.o
+*.obj
+*.elf
+*.exe
+*.pdb
+*.ilk
+
+# IDE and editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Local smoke artifacts
+/logs/
+/tmp/
