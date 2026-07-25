@@ -92,6 +92,8 @@ Assert-True ($manifest.displayName -eq "guideXOS Developer Studio") "manifest di
 Assert-True ($manifest.kind -eq "NativeElf") "manifest uses the existing NativeElf App Model kind"
 Assert-True (@($manifest.supportedArchitectures) -contains "amd64") "manifest advertises only the proven amd64 target"
 Assert-True ($manifest.entries[0].entryPoint -eq "gx_main") "manifest entry point uses the guideXOS C ABI"
+Assert-True (@($manifest.permissions) -contains "filesystem.read") "manifest grants the existing filesystem read capability"
+Assert-True (@($manifest.permissions) -contains "filesystem.write") "manifest grants the existing filesystem write capability"
 
 if (-not $SkipBuild) {
     & (Join-Path $RepoRoot "build.ps1") -ServerRoot $ServerRoot
@@ -133,6 +135,7 @@ Assert-True ($launchOutput.Contains("[LaunchDispatch] source=HostedDesktopServic
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS")) "application construction marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS")) "main window creation marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS")) "initial render marker is emitted"
+Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER filesystem_api=workspace_extensions")) "workspace filesystem ABI marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS")) "clean close marker is emitted"
 Assert-True ($launchOutput.Contains("appId=com.guidexos.developerstudio")) "native process diagnostics identify the canonical app"
 

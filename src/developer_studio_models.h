@@ -76,6 +76,7 @@ enum class ModelErrorCode {
     TooManyDocuments,
     ReadFailed,
     WriteFailed,
+    UnsavedChanges,
     DuplicateDocument,
     DocumentNotFound
 };
@@ -146,7 +147,7 @@ bool LooksBinary(const char* bytes, uint32_t length);
 const char* ModelErrorName(ModelErrorCode code);
 
 bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, const char* displayName);
-void WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath);
+bool WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath);
 void WorkspaceModelClearEntries(WorkspaceModel* model);
 bool WorkspaceModelAddEntry(WorkspaceModel* model, const WorkspaceEntry& entry);
 void WorkspaceModelSortEntries(WorkspaceModel* model);

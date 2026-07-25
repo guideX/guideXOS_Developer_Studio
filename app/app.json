@@ -25,8 +25,8 @@
     "log",
     "window",
     "draw",
-    "workspace.read",
-    "workspace.write"
+    "filesystem.read",
+    "filesystem.write"
   ],
   "fileAssociations": [],
   "defaultWindow": {

@@ -321,7 +321,7 @@ bool IsSupportedTextPath(const char* path) {
 }
 
 bool LooksBinary(const char* bytes, uint32_t length) {
-    if (!bytes) return true;
+    if (!bytes) return length != 0;
     for (uint32_t i = 0; i < length; ++i) {
         if (bytes[i] == '\0') return true;
     }
@@ -342,6 +342,7 @@ const char* ModelErrorName(ModelErrorCode code) {
     case ModelErrorCode::TooManyDocuments: return "too_many_documents";
     case ModelErrorCode::ReadFailed: return "read_failed";
     case ModelErrorCode::WriteFailed: return "write_failed";
+    case ModelErrorCode::UnsavedChanges: return "unsaved_changes";
     case ModelErrorCode::DuplicateDocument: return "duplicate_document";
     case ModelErrorCode::DocumentNotFound: return "document_not_found";
     default: return "unknown";
@@ -367,14 +368,17 @@ bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, co
     return true;
 }
 
-void WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath) {
-    if (!model || !model->open) return;
+bool WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath) {
+    if (!model || !model->open) return false;
     if (!relativePath || relativePath[0] == '\0' || equalText(relativePath, ".", true)) {
         model->browsePath[0] = '\0';
-        return;
+        return true;
     }
-    if (PathContainsTraversal(relativePath)) return;
-    NormalizePath(relativePath, model->browsePath, sizeof(model->browsePath));
+    if (PathContainsTraversal(relativePath)) return false;
+    uint32_t depth = 1;
+    for (uint32_t i = 0; relativePath[i] != '\0'; ++i) if (relativePath[i] == '/' || relativePath[i] == static_cast<char>(92)) ++depth;
+    if (depth > kMaxWorkspaceDepth) return false;
+    return NormalizePath(relativePath, model->browsePath, sizeof(model->browsePath));
 }
 
 void WorkspaceModelClearEntries(WorkspaceModel* model) {

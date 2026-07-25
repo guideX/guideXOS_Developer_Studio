@@ -66,6 +66,10 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
 
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path) {
     if (!controller || !controller->fileSystem.stat || !controller->fileSystem.list) return false;
+    if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
+        setControllerError(controller, ModelErrorCode::UnsavedChanges);
+        return false;
+    }
     char normalized[kMaxPathBytes];
     if (!NormalizePath(path, normalized, sizeof(normalized))) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
     FileInfo info;
@@ -83,7 +87,11 @@ bool WorkspaceControllerRefresh(WorkspaceController* controller) {
     if (!pathForBrowse(controller->model, directory, sizeof(directory))) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
     FileListEntry entries[kMaxWorkspaceEntries];
     bool truncated = false;
-    uint32_t count = controller->fileSystem.list(controller->fileSystem.userData, directory, entries, kMaxWorkspaceEntries, &truncated);
+    uint32_t count = 0;
+    if (!controller->fileSystem.list(controller->fileSystem.userData, directory, entries, kMaxWorkspaceEntries, &count, &truncated)) {
+        setControllerError(controller, ModelErrorCode::ReadFailed);
+        return false;
+    }
     WorkspaceModelClearEntries(&controller->model);
     controller->listingTruncated = truncated;
     for (uint32_t i = 0; i < count && i < kMaxWorkspaceEntries; ++i) {
@@ -121,7 +129,10 @@ bool WorkspaceControllerEnterSelected(WorkspaceController* controller) {
     if (!controller || !controller->model.open || controller->model.selectedEntry >= controller->model.entryCount) return false;
     WorkspaceEntry& entry = controller->model.entries[controller->model.selectedEntry];
     if (entry.kind == WorkspaceEntryKind::Directory) {
-        WorkspaceModelSetBrowsePath(&controller->model, entry.relativePath);
+        if (!WorkspaceModelSetBrowsePath(&controller->model, entry.relativePath)) {
+            setControllerError(controller, ModelErrorCode::InvalidPath);
+            return false;
+        }
         return WorkspaceControllerRefresh(controller);
     }
     return WorkspaceControllerOpenDocument(controller, entry.relativePath);

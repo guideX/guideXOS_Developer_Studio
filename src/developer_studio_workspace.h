@@ -25,7 +25,7 @@ struct FileListEntry {
 struct WorkspaceFileSystem {
     void* userData;
     bool (*stat)(void* userData, const char* path, FileInfo* outInfo);
-    uint32_t (*list)(void* userData, const char* path, FileListEntry* entries, uint32_t capacity, bool* outTruncated);
+    bool (*list)(void* userData, const char* path, FileListEntry* entries, uint32_t capacity, uint32_t* outCount, bool* outTruncated);
     bool (*read)(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes);
     bool (*write)(void* userData, const char* path, const char* buffer, uint32_t bytes, uint32_t* outBytes);
 };

@@ -174,23 +174,25 @@ static bool fsStat(void* userData, const char* path, FileInfo* outInfo) {
     return true;
 }
 
-static uint32_t fsList(void* userData, const char* path, FileListEntry* entries, uint32_t capacity, bool* outTruncated) {
+static bool fsList(void* userData, const char* path, FileListEntry* entries, uint32_t capacity, uint32_t* outCount, bool* outTruncated) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (outCount) *outCount = 0;
     if (outTruncated) *outTruncated = false;
-    if (!context || !context->app || !context->app->host || !context->app->host->file_list || !entries || capacity == 0) return 0;
+    if (!context || !context->app || !context->app->host || !context->app->host->file_list || !entries || capacity == 0 || !outCount) return false;
     if (capacity > kMaxWorkspaceEntries) capacity = kMaxWorkspaceEntries;
     gx_file_entry nativeEntries[kMaxWorkspaceEntries] = {};
     uint32_t count = 0;
     uint32_t truncated = 0;
-    if (context->app->host->file_list(context->app, path, nativeEntries, capacity, &count, &truncated) != GX_OK) return 0;
+    if (context->app->host->file_list(context->app, path, nativeEntries, capacity, &count, &truncated) != GX_OK) return false;
     for (uint32_t i = 0; i < count && i < capacity; ++i) {
         copyText(entries[i].name, sizeof(entries[i].name), nativeEntries[i].name);
         entries[i].kind = nativeEntries[i].type == GX_FILE_TYPE_DIRECTORY ? FileInfoKind::Directory :
             (nativeEntries[i].type == GX_FILE_TYPE_REGULAR ? FileInfoKind::RegularFile : FileInfoKind::Unknown);
         entries[i].size = nativeEntries[i].size;
     }
+    *outCount = count;
     if (outTruncated) *outTruncated = truncated != 0;
-    return count;
+    return true;
 }
 
 static bool fsRead(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
@@ -606,7 +608,11 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (!document || !g_editorFocused) {
         if (keyCode == GX_KEY_UP && g_controller.model.selectedEntry > 0) --g_controller.model.selectedEntry;
         else if (keyCode == GX_KEY_DOWN && g_controller.model.selectedEntry + 1 < g_controller.model.entryCount) ++g_controller.model.selectedEntry;
-        else if (keyCode == 13) { bool wasOpen = g_controller.model.activeDocument < kMaxOpenDocuments; bool success = WorkspaceControllerEnterSelected(&g_controller); reportDocumentOpen(ctx, success, g_controller.lastError == ModelErrorCode::DuplicateDocument); (void)wasOpen; }
+        else if (keyCode == 13 && g_controller.model.selectedEntry < g_controller.model.entryCount) {
+            WorkspaceEntryKind selectedKind = g_controller.model.entries[g_controller.model.selectedEntry].kind;
+            bool success = WorkspaceControllerEnterSelected(&g_controller);
+            if (selectedKind != WorkspaceEntryKind::Directory) reportDocumentOpen(ctx, success, g_controller.lastError == ModelErrorCode::DuplicateDocument);
+        }
         else if (keyCode == 8) WorkspaceControllerGoUp(&g_controller);
         return;
     }
@@ -760,7 +766,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     } else handleNormalKey(ctx, event.param1, event.param2, event.param3, running);
                     if (g_requestExit) running = false;
                     drawShell(ctx);
-                } else if (event.type == GX_EVENT_MOUSE) handleMouse(ctx, event);
+                } else if (event.type == GX_EVENT_MOUSE) {
+                    handleMouse(ctx, event);
+                    if (g_requestExit) running = false;
+                }
             } else if (result != GX_OK && result != GX_ERROR_TIMEOUT) {
                 markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER event_loop=FAIL", "poll_event");
                 running = false;
