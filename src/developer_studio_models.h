@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 namespace guidexos {
 namespace developer_studio {
 
@@ -48,6 +50,77 @@ struct Project {
     ProjectKind kind;
 };
 
+static const uint32_t kMaxPathBytes = 768;
+static const uint32_t kMaxNameBytes = 128;
+static const uint32_t kMaxWorkspaceEntries = 128;
+static const uint32_t kMaxOpenDocuments = 8;
+static const uint32_t kMaxEditorBytes = 256u * 1024u;
+static const uint32_t kMaxWorkspaceDepth = 8;
+
+enum class WorkspaceEntryKind {
+    Directory = 0,
+    SupportedTextFile,
+    UnsupportedFile
+};
+
+enum class ModelErrorCode {
+    None = 0,
+    WorkspaceNotOpen,
+    InvalidPath,
+    OutsideWorkspace,
+    NotDirectory,
+    NotFile,
+    UnsupportedFile,
+    BinaryFile,
+    FileTooLarge,
+    TooManyDocuments,
+    ReadFailed,
+    WriteFailed,
+    DuplicateDocument,
+    DocumentNotFound
+};
+
+struct WorkspaceEntry {
+    char name[kMaxNameBytes];
+    char relativePath[kMaxPathBytes];
+    uint64_t size;
+    uint32_t depth;
+    WorkspaceEntryKind kind;
+};
+
+struct TextBuffer {
+    char data[kMaxEditorBytes + 1];
+    uint32_t length;
+    uint32_t caret;
+    bool dirty;
+};
+
+struct Document {
+    bool used;
+    char path[kMaxPathBytes];
+    char name[kMaxNameBytes];
+    TextBuffer buffer;
+};
+
+struct WorkspaceModel {
+    bool open;
+    char displayName[kMaxNameBytes];
+    char rootPath[kMaxPathBytes];
+    char browsePath[kMaxPathBytes];
+    WorkspaceEntry entries[kMaxWorkspaceEntries];
+    uint32_t entryCount;
+    uint32_t selectedEntry;
+    Document documents[kMaxOpenDocuments];
+    uint32_t activeDocument;
+    char lastError[96];
+};
+
+enum class CloseDecision {
+    Save = 0,
+    Discard,
+    Cancel
+};
+
 struct Workspace {
     const char* id;
     const char* displayName;
@@ -61,6 +134,43 @@ const TargetProfile& InitialTargetProfile();
 bool IsValidTargetProfile(const TargetProfile& profile);
 const char* ToString(ProjectKind kind);
 const char* ToString(CapabilityMaturity maturity);
+
+void WorkspaceModelInit(WorkspaceModel* model);
+bool NormalizePath(const char* input, char* output, uint32_t outputSize);
+bool PathsEqual(const char* left, const char* right);
+bool PathContainsTraversal(const char* path);
+bool JoinWorkspacePath(const char* root, const char* relative, char* output, uint32_t outputSize);
+const char* BaseName(const char* path);
+bool IsSupportedTextPath(const char* path);
+bool LooksBinary(const char* bytes, uint32_t length);
+const char* ModelErrorName(ModelErrorCode code);
+
+bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, const char* displayName);
+void WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath);
+void WorkspaceModelClearEntries(WorkspaceModel* model);
+bool WorkspaceModelAddEntry(WorkspaceModel* model, const WorkspaceEntry& entry);
+void WorkspaceModelSortEntries(WorkspaceModel* model);
+int FindOpenDocument(const WorkspaceModel* model, const char* normalizedPath);
+bool WorkspaceModelAddDocument(WorkspaceModel* model, const char* normalizedPath, const char* bytes, uint32_t length, ModelErrorCode* error, bool* duplicate);
+bool WorkspaceModelCloseDocument(WorkspaceModel* model, uint32_t documentIndex, CloseDecision decision, bool saveSucceeded, ModelErrorCode* error);
+bool WorkspaceModelMarkSaved(WorkspaceModel* model, uint32_t documentIndex, bool writeSucceeded, ModelErrorCode* error);
+bool WorkspaceModelHasDirtyDocuments(const WorkspaceModel* model);
+
+void TextBufferInit(TextBuffer* buffer);
+bool TextBufferSet(TextBuffer* buffer, const char* bytes, uint32_t length);
+bool TextBufferInsert(TextBuffer* buffer, const char* bytes, uint32_t length);
+bool TextBufferBackspace(TextBuffer* buffer);
+bool TextBufferDelete(TextBuffer* buffer);
+void TextBufferMoveLeft(TextBuffer* buffer);
+void TextBufferMoveRight(TextBuffer* buffer);
+void TextBufferMoveUp(TextBuffer* buffer);
+void TextBufferMoveDown(TextBuffer* buffer);
+void TextBufferHome(TextBuffer* buffer);
+void TextBufferEnd(TextBuffer* buffer);
+uint32_t TextBufferLineCount(const TextBuffer* buffer);
+uint32_t TextBufferLineStart(const TextBuffer* buffer, uint32_t line);
+uint32_t TextBufferLineEnd(const TextBuffer* buffer, uint32_t line);
+void TextBufferClearDirty(TextBuffer* buffer);
 
 } // namespace developer_studio
 } // namespace guidexos

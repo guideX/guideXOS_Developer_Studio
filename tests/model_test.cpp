@@ -1,37 +1,101 @@
 #include "developer_studio_models.h"
 
-#include <iostream>
+#include <cassert>
+#include <cstdio>
+#include <cstring>
 
 using namespace guidexos::developer_studio;
 
+static WorkspaceEntry entry(const char* name, WorkspaceEntryKind kind) {
+    WorkspaceEntry value = {};
+    std::strncpy(value.name, name, sizeof(value.name) - 1);
+    std::strncpy(value.relativePath, name, sizeof(value.relativePath) - 1);
+    value.kind = kind;
+    return value;
+}
+
 int main() {
     const TargetProfile& target = InitialTargetProfile();
-    if (!IsValidTargetProfile(target)) return 1;
-    if (!target.id || !target.displayName || !target.architecture || !target.abi ||
-        !target.machine || !target.sdk || !target.toolchain || !target.runner) return 2;
-    if (target.capabilityCount < 4 || target.maturity != CapabilityMaturity::Experimental) return 3;
+    assert(IsValidTargetProfile(target));
+    assert(std::strcmp(target.architecture, "amd64") == 0);
 
-    bool sawUnavailableBuild = false;
-    bool sawSupportedGui = false;
-    for (unsigned i = 0; i < target.capabilityCount; ++i) {
-        const Capability& capability = target.capabilities[i];
-        if (!capability.id || !capability.displayName) return 4;
-        if (capability.id[0] == 'b' && !capability.available && capability.maturity == CapabilityMaturity::Unavailable) {
-            sawUnavailableBuild = true;
-        }
-        if (capability.id[0] == 'n' && capability.available && capability.maturity == CapabilityMaturity::Supported) {
-            sawSupportedGui = true;
-        }
+    char normalized[kMaxPathBytes];
+    assert(NormalizePath("D:\\work\\guidexos\\.\\studio", normalized, sizeof(normalized)));
+    assert(std::strcmp(normalized, "d:/work/guidexos/studio") == 0);
+    assert(PathsEqual("/workspace/src/./sample.cpp", "/workspace/src/sample.cpp"));
+    assert(PathContainsTraversal("sub/../sample.cpp"));
+    assert(!JoinWorkspacePath("/workspace", "../outside.txt", normalized, sizeof(normalized)));
+    assert(JoinWorkspacePath("/workspace", "src/sample.cpp", normalized, sizeof(normalized)));
+    assert(std::strcmp(normalized, "/workspace/src/sample.cpp") == 0);
+
+    assert(IsSupportedTextPath("sample.cpp"));
+    assert(IsSupportedTextPath("README.MD"));
+    assert(!IsSupportedTextPath("image.png"));
+    assert(LooksBinary("abc\0def", 7));
+    assert(!LooksBinary("abc\ndef", 7));
+
+    static WorkspaceModel model;
+    WorkspaceModelInit(&model);
+    assert(WorkspaceModelSetRoot(&model, "/workspace", "workspace"));
+    WorkspaceModelAddEntry(&model, entry("zeta.txt", WorkspaceEntryKind::SupportedTextFile));
+    WorkspaceModelAddEntry(&model, entry("src", WorkspaceEntryKind::Directory));
+    WorkspaceModelAddEntry(&model, entry("Alpha.cpp", WorkspaceEntryKind::SupportedTextFile));
+    WorkspaceModelSortEntries(&model);
+    assert(std::strcmp(model.entries[0].name, "src") == 0);
+    assert(std::strcmp(model.entries[1].name, "Alpha.cpp") == 0);
+    assert(std::strcmp(model.entries[2].name, "zeta.txt") == 0);
+
+    const char* original = "one\ntwo\n";
+    ModelErrorCode error = ModelErrorCode::None;
+    bool duplicate = false;
+    assert(WorkspaceModelAddDocument(&model, "/workspace/sample.cpp", original, 8, &error, &duplicate));
+    assert(!duplicate);
+    assert(model.activeDocument < kMaxOpenDocuments);
+    assert(WorkspaceModelAddDocument(&model, "/workspace/./sample.cpp", original, 8, &error, &duplicate));
+    assert(duplicate);
+    assert(FindOpenDocument(&model, "/workspace/sample.cpp") == static_cast<int>(model.activeDocument));
+
+    TextBuffer& buffer = model.documents[model.activeDocument].buffer;
+    TextBufferEnd(&buffer);
+    assert(TextBufferInsert(&buffer, "tail", 4));
+    assert(buffer.dirty);
+    TextBufferHome(&buffer);
+    assert(TextBufferInsert(&buffer, "X", 1));
+    TextBufferMoveRight(&buffer);
+    assert(TextBufferBackspace(&buffer));
+    assert(buffer.dirty);
+    assert(!WorkspaceModelMarkSaved(&model, model.activeDocument, false, &error));
+    assert(buffer.dirty);
+    assert(WorkspaceModelMarkSaved(&model, model.activeDocument, true, &error));
+    assert(!buffer.dirty);
+
+    for (uint32_t i = 1; i < kMaxOpenDocuments; ++i) {
+        char path[kMaxPathBytes];
+        std::snprintf(path, sizeof(path), "/workspace/file%u.txt", i);
+        assert(WorkspaceModelAddDocument(&model, path, "x", 1, &error, &duplicate));
     }
-    if (!sawUnavailableBuild || !sawSupportedGui) return 5;
-    if (ToString(ProjectKind::NativeGuiApplication)[0] == '\0') return 6;
-    if (ToString(CapabilityMaturity::Experimental)[0] == '\0') return 7;
+    assert(model.activeDocument < kMaxOpenDocuments);
+    assert(!WorkspaceModelAddDocument(&model, "/workspace/overflow.txt", "x", 1, &error, &duplicate));
+    assert(error == ModelErrorCode::TooManyDocuments);
 
-    const Project project = { "phase1-shell", "Developer Studio shell", ProjectKind::NativeGuiApplication };
-    const char* documents[] = { "welcome" };
-    const Workspace workspace = { "empty", "No workspace open", &project, 1, documents, 1 };
-    if (!workspace.projects || workspace.projectCount != 1 || workspace.openDocumentCount != 1) return 8;
+    WorkspaceModelInit(&model);
+    assert(WorkspaceModelSetRoot(&model, "/workspace", "workspace"));
+    assert(!WorkspaceModelAddDocument(&model, "/outside.txt", "x", 1, &error, &duplicate));
+    assert(error == ModelErrorCode::OutsideWorkspace);
+    assert(!WorkspaceModelAddDocument(&model, "/workspace/large.txt", "x", kMaxEditorBytes + 1, &error, &duplicate));
+    assert(error == ModelErrorCode::FileTooLarge);
+    assert(!WorkspaceModelAddDocument(&model, "/workspace/binary.txt", "a\0b", 3, &error, &duplicate));
+    assert(error == ModelErrorCode::BinaryFile);
 
-    std::cout << "Developer Studio model test PASS\n";
+    assert(WorkspaceModelAddDocument(&model, "/workspace/close.txt", "x", 1, &error, &duplicate));
+    uint32_t closeIndex = model.activeDocument;
+    assert(TextBufferInsert(&model.documents[closeIndex].buffer, "!", 1));
+    assert(!WorkspaceModelCloseDocument(&model, closeIndex, CloseDecision::Cancel, false, &error));
+    assert(model.documents[closeIndex].used);
+    assert(!WorkspaceModelCloseDocument(&model, closeIndex, CloseDecision::Save, false, &error));
+    assert(model.documents[closeIndex].used);
+    assert(WorkspaceModelCloseDocument(&model, closeIndex, CloseDecision::Discard, false, &error));
+    assert(!model.documents[closeIndex].used);
+
     return 0;
 }

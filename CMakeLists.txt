@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(developer_studio_models STATIC
     src/developer_studio_models.cpp
+    src/developer_studio_workspace.cpp
 )
 target_include_directories(developer_studio_models PUBLIC src)
 
@@ -29,6 +30,7 @@ if(GUIDEXOS_BUILD_NATIVE_ELF)
 
     add_executable(developerstudio.elf
         src/developer_studio_models.cpp
+        src/developer_studio_workspace.cpp
         src/main.cpp
     )
     target_include_directories(developerstudio.elf PRIVATE
