@@ -61,12 +61,14 @@ function Invoke-InteractiveLaunch([string]$Executable) {
         $errorTask = $process.StandardError.ReadToEndAsync()
         $process.StandardInput.WriteLine("desktop.launch guideXOS Developer Studio")
         Read-ServerLine $process $lines { param($line, $all) $line.Contains("Desktop launch successful: guideXOS Developer Studio") } | Out-Null
+        Read-ServerLine $process $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS") } | Out-Null
 
         $process.StandardInput.WriteLine("desktop.windows.owners")
         Read-ServerLine $process $lines { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
-        $ownerLine = $lines | Where-Object { $_ -match 'title=guideXOS Developer Studio' } | Select-Object -Last 1
-        Assert-True ($ownerLine -match 'window id=(\d+)') "hosted window ownership includes the Developer Studio title"
-        $windowId = $Matches[1]
+        $ownerLine = @($lines | Where-Object { $_ -match 'title=guideXOS Developer Studio' } | Select-Object -Last 1)
+        $ownerMatch = [regex]::Match([string]$ownerLine, 'window id=(\d+)')
+        Assert-True $ownerMatch.Success "hosted window ownership includes the Developer Studio title"
+        $windowId = $ownerMatch.Groups[1].Value
 
         $process.StandardInput.WriteLine("gui.close $windowId")
         Read-ServerLine $process $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS") } | Out-Null
@@ -102,6 +104,9 @@ if (-not $SkipBuild) {
 
 Assert-True (Test-Path -LiteralPath $PackageManifest -PathType Leaf) "staged manifest exists in the Server app package"
 Assert-True (Test-Path -LiteralPath $PackageBinary -PathType Leaf) "staged Native ELF exists in the Server app package"
+$packageHash = (Get-FileHash -LiteralPath $PackageBinary -Algorithm SHA256).Hash
+Assert-True ($packageHash -match '^[0-9A-F]{64}$') "staged Native ELF has a reportable SHA-256 identity"
+Write-Host "Developer Studio packaged ELF SHA256: $packageHash"
 
 if (-not $SkipServerBuild) {
     Push-Location $ServerRoot
@@ -131,7 +136,7 @@ Assert-True ($startupOutput.Contains("windowCount=0")) "registration and resolut
 
 $launchOutput = Invoke-InteractiveLaunch $experimentalServer
 Assert-True ($launchOutput.Contains("Desktop launch successful: guideXOS Developer Studio")) "normal DesktopService dispatch accepts the display name"
-Assert-True ($launchOutput.Contains("[LaunchDispatch] source=HostedDesktopService target=guideXOS Developer Studio resolvedType=NativeElf appId=com.guidexos.developerstudio")) "normal dispatch emits the canonical NativeElf decision marker"
+Assert-True ($launchOutput.Contains("[LaunchDispatch] source=HostedDesktopService target=guideXOS Developer Studio resolvedType=NativeElfApp appId=com.guidexos.developerstudio")) "normal dispatch emits the canonical NativeElf decision marker"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS")) "application construction marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS")) "main window creation marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS")) "initial render marker is emitted"

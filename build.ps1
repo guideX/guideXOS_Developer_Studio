@@ -91,6 +91,8 @@ try {
     }
 
     Write-Host "Developer Studio Native ELF build PASS: $elfPath"
+    $elfHash = (Get-FileHash -LiteralPath $elfPath -Algorithm SHA256).Hash
+    Write-Host "Developer Studio packaged ELF SHA256: $elfHash"
     Write-Host "Staged App Model manifest: $(Join-Path $PackageRoot 'app.json')"
 } finally {
     if (Test-Path -LiteralPath $ModelTest) { Remove-Item -LiteralPath $ModelTest -Force }
