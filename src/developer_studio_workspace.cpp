@@ -274,6 +274,28 @@ bool WorkspaceControllerSaveAll(WorkspaceController* controller) {
     return true;
 }
 
+bool WorkspaceControllerHasDirtyProjectDocuments(const WorkspaceController* controller) {
+    if (!controller || !controller->model.open || !controller->model.hasProject) return false;
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        if (!controller->model.documents[i].used || !controller->model.documents[i].buffer.dirty) continue;
+        if (isWithinRoot(controller->model, controller->model.documents[i].path)) return true;
+    }
+    return false;
+}
+
+bool WorkspaceControllerSaveAllProjectDocuments(WorkspaceController* controller) {
+    if (!controller || !controller->model.open || !controller->model.hasProject) {
+        if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen);
+        return false;
+    }
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        if (!controller->model.documents[i].used || !controller->model.documents[i].buffer.dirty) continue;
+        if (!isWithinRoot(controller->model, controller->model.documents[i].path)) continue;
+        if (!WorkspaceControllerSaveDocument(controller, i)) return false;
+    }
+    return true;
+}
+
 bool WorkspaceControllerCloseDocument(WorkspaceController* controller, uint32_t documentIndex, CloseDecision decision) {
     if (!controller || documentIndex >= kMaxOpenDocuments || !controller->model.documents[documentIndex].used) { if (controller) setControllerError(controller, ModelErrorCode::DocumentNotFound); return false; }
     if (decision == CloseDecision::Save && controller->model.documents[documentIndex].buffer.dirty && !WorkspaceControllerSaveDocument(controller, documentIndex)) return false;

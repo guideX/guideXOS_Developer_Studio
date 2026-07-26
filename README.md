@@ -10,9 +10,9 @@ The current bounded phase proves the first useful source workflow:
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
 - a truthful AMD64 hosted guideXOS target profile; and
-- deterministic model, filesystem-workflow, package, and hosted App Model smoke coverage.
+- deterministic model, filesystem-workflow, package, hosted App Model, and bounded Build Project coverage.
 
-Compiler integration inside Developer Studio, additional project templates, syntax highlighting, IntelliSense, debugging, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
+Run/Debug/Debugging, additional project templates, syntax highlighting, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
 ## Workspace versus project
 
@@ -65,10 +65,10 @@ The generated layout is:
 
 `main.cpp` exports `extern "C" gx_result GX_CALL gx_main(...)`, creates a centered resizable Native ELF window titled with the project display name, renders `Welcome to <Project Display Name>`, handles close/Escape, and emits deterministic `GUIDEXOS_NATIVE_TEMPLATE_MARKER` messages. It does not auto-launch. `app/app.json` uses `NativeElf`, the validated application ID, `bin/amd64/<outputName>.elf`, `gx_main`, `guidexos-c-abi-v1`, and manual-launch permissions.
 
-The generated `build.ps1` is an external build command, not Developer Studio build integration. It requires an explicit `-ServerRoot` and accepts `-SdkInclude`, `-PackageRoot`, and `-SkipReadElf`; it contains no Developer Studio or Server checkout absolute path. The generated CMake file likewise requires a configurable `GUIDEXOS_SERVER_ROOT`. A typical external build is:
+The generated `build.ps1` is the fixed Build Project recipe. It requires explicit `-SdkInclude` and `-ToolchainRoot` values and contains no Developer Studio or Server checkout absolute path. The generated CMake file remains an optional external build description. A typical external build is:
 
 ```powershell
-.\\build.ps1 -ServerRoot D:\\path\\to\\guideXOSServer
+.\build.ps1 -SdkInclude D:\path\to\guideXOSServer\sdk\include -ToolchainRoot "C:\Program Files\LLVM\bin"
 ```
 
 Generation is byte-for-byte deterministic for identical inputs: no timestamps, usernames, machine paths, random IDs, or session state are embedded. It creates only a new destination or an empty pre-existing destination, tracks every file and directory it creates, verifies the required layout, parses the generated metadata and manifest, and removes only tracked files and empty directories after a partial failure. Non-empty destinations are rejected before changes.
@@ -85,13 +85,15 @@ The editor supports caret movement, insertion, Enter, Backspace, Delete, arrows,
 
 ## Build
 
-From this repository, with the guideXOS Server checkout at its documented sibling path:
+Build Developer Studio itself with an explicit Server checkout:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -ServerRoot D:\path\to\guideXOSServer
 ```
 
-The script uses the Server checkout's existing Native SDK headers and stages the application package under `Server\Apps\DeveloperStudio`. It writes no generated binaries into this repository.
+For a valid Native GUI Application project, use `Build -> Build Project` or `Ctrl+Shift+B`. Developer Studio derives the fixed build system, `build.ps1`, `Debug` configuration, and `build/bin/amd64/<outputName>.elf` artifact from the version 1 project metadata. Dirty project documents prompt for Save All or Cancel; an active build keeps the shell responsive and blocks close. The hosted Server validates the project, resolves the SDK/toolchain, runs the recipe asynchronously, captures bounded merged output, and validates the resulting ELF64 AMD64 `ET_EXEC` image and `gx_main` entry point.
+
+The service is hosted-development only. It does not accept arbitrary commands or metadata-defined executables, supports one build at a time, caps output at 64 KiB and 32 retained lines of 255 bytes, and stops a build after five minutes. SDK/toolchain resolution uses the hosted Server `sdk/include` and fixed LLVM locations, with `GUIDEXOS_SDK_ROOT` and `GUIDEXOS_TOOLCHAIN_ROOT` overrides.
 
 ## Smoke test
 
@@ -110,3 +112,4 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke-workspace.ps1
 It creates and removes only its own temporary fixture and verifies enumeration, editing, saving, duplicate-tab prevention, safe binary/size rejection, and Save/Discard/Cancel close behavior.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the integration audit, boundaries, and intentionally deferred work.
+See [docs/BUILD_PROJECT.md](docs/BUILD_PROJECT.md) for the Build Project contract and diagnostics.

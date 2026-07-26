@@ -25,6 +25,8 @@ bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char
 bool WorkspaceControllerSaveDocument(WorkspaceController* controller, uint32_t documentIndex);
 bool WorkspaceControllerSaveActive(WorkspaceController* controller);
 bool WorkspaceControllerSaveAll(WorkspaceController* controller);
+bool WorkspaceControllerHasDirtyProjectDocuments(const WorkspaceController* controller);
+bool WorkspaceControllerSaveAllProjectDocuments(WorkspaceController* controller);
 bool WorkspaceControllerCloseDocument(WorkspaceController* controller, uint32_t documentIndex, CloseDecision decision);
 bool WorkspaceControllerCloseWorkspace(WorkspaceController* controller, CloseDecision decision);
 Document* WorkspaceControllerActiveDocument(WorkspaceController* controller);

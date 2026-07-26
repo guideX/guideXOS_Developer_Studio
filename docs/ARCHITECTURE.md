@@ -1,6 +1,6 @@
-# guideXOS Developer Studio Bounded Editing Phase Architecture
+# guideXOS Developer Studio Bounded Build Project Phase Architecture
 
-Status: minimal workspace, source editor, and version 1 project creation/loading
+Status: minimal workspace, source editor, version 1 project creation/loading, and hosted Build Project
 
 ## Integration
 
@@ -39,11 +39,13 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator and workspace/document/text-buffer models
+Project parser/generator, build controller, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
 guideXOS Native ABI
+  |
+Hosted Server build worker and artifact validator
 ```
 
 `main.cpp` owns painting and input routing only. `developer_studio_workspace.*` owns workspace/document commands and the filesystem adapter. `developer_studio_models.*` owns normalized paths, bounds, document state, text-buffer mutation, ordering, and error codes. File I/O is supplied through a small callback interface backed by the Native ABI.
@@ -143,11 +145,31 @@ project_template=native-gui-application
 project_rollback=PASS
 ```
 
-The hosted filesystem ABI appends `file_create_directory` and `file_remove` after the existing workspace extensions. They are exact-path, non-recursive operations protected by `filesystem.write`; the guest service still controls the set of paths it requests and performs the rollback accounting.
+The hosted filesystem ABI appends `file_create_directory` and `file_remove` after the existing workspace extensions. They are exact-path, non-recursive operations protected by `filesystem.write`; the guest service still controls the set of paths it requests and performs the rollback accounting. The build calls are appended after those extensions and are hosted-development only.
+
+## Build Project vertical slice
+
+The first build slice is deliberately derived rather than metadata-defined:
+
+```text
+Build Project / Ctrl+Shift+B
+  -> dirty Save All / Cancel gate
+  -> fixed Native Host Call Table request
+  -> Server validation and SDK/toolchain resolution
+  -> worker-thread PowerShell recipe
+  -> bounded merged output and diagnostics
+  -> ELF64 AMD64 ET_EXEC + gx_main validation
+```
+
+The controller derives `guidexos-native-build-script-v1`, `build.ps1`, `Debug`, and `build/bin/amd64/<outputName>.elf` from the active project. The Server accepts only the fixed project kind, target, script, configuration, and artifact shape; it does not execute arbitrary command metadata. It rejects symlink components, requires the bounded recipe marker, removes only the exact expected artifact before starting, and validates the new artifact before reporting success.
+
+The appended ABI slots are `build_project_start`, `build_project_poll`, and `build_project_release`. They use fixed-size versioned request, output-line, and snapshot structures. The Server owns the process handle, worker, timeout, output cap, job cleanup, and runtime ownership check. The compositor remains responsive while the worker runs. Project/workspace/application close is blocked during an active build because this slice has no user-facing cancellation command.
+
+The complete state, resolution, limits, diagnostics, and outcome matrix are documented in [BUILD_PROJECT.md](BUILD_PROJECT.md).
 
 ## Generated project external build
 
-The generated application follows the proven direct LLVM/LLD sibling-application convention: `x86_64-unknown-elf`, freestanding C++11, static `ld.lld`, entry point `gx_main`, and package entry `bin/amd64/<outputName>.elf`. `-ServerRoot` or equivalent CMake configuration supplies the SDK and package destination. No generated file depends on a Developer Studio checkout path, a Server checkout path, a username, or a machine-specific compiler location. This phase proves external buildability only; there is no in-IDE Build, Run, Debug, compiler discovery, or target switching.
+The generated application follows the proven direct LLVM/LLD sibling-application convention: `x86_64-unknown-elf`, freestanding C++11, static `ld.lld`, entry point `gx_main`, and package entry `bin/amd64/<outputName>.elf`. The generated `build.ps1` accepts explicit `-SdkInclude` and `-ToolchainRoot` values and emits the same fixed artifact path used by Build Project. No generated file depends on a Developer Studio checkout path, a Server checkout path, a username, or a machine-specific compiler location. CMake remains an optional external description. Run, Debug, compiler discovery, and target switching are still deferred.
 
 The project parser/generator test covers identity rules, exact serialization, duplicate and oversized metadata, root and metadata-path loading, manifest identity, required layout, deterministic repeated generation, no machine paths, non-empty destination rejection, workspace-only controller behavior, and simulated mid-generation rollback. The external generated-project validation produced an ELF64 AMD64 `ET_EXEC` image and confirmed a global `gx_main` symbol with `readelf`.
 
@@ -155,7 +177,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-There is no in-IDE compiler integration or build command, Run/Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, or undo/redo. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
+Run/Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

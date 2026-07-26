@@ -174,7 +174,12 @@ int main(int argc, char** argv) {
     assert(generatedMain.find("request_window_ex") != std::string::npos);
     assert(generatedMain.find("Welcome to ") != std::string::npos);
     assert(generatedMain.find("D:\\dev\\") == std::string::npos);
-    assert(readAll(generatedRoot / "build.ps1").find("D:\\dev\\guideXOSServer") == std::string::npos);
+    const std::string generatedBuild = readAll(generatedRoot / "build.ps1");
+    assert(generatedBuild.find("GUIDEXOS_NATIVE_BUILD_RECIPE_V1") != std::string::npos);
+    assert(generatedBuild.find("ServerRoot") == std::string::npos);
+    assert(generatedBuild.find("PackageRoot") == std::string::npos);
+    assert(generatedBuild.find("Join-Path $BuildRoot \"bin\\amd64\"") != std::string::npos);
+    assert(generatedBuild.find("D:\\dev\\guideXOSServer") == std::string::npos);
 
     static WorkspaceController controller;
     WorkspaceControllerInit(&controller, fileSystem);

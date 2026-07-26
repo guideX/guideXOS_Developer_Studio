@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(developer_studio_models STATIC
+    src/developer_studio_build.cpp
     src/developer_studio_models.cpp
     src/developer_studio_projects.cpp
     src/developer_studio_workspace.cpp
@@ -33,6 +34,13 @@ target_link_libraries(developer_studio_project_test PRIVATE developer_studio_mod
 set_target_properties(developer_studio_project_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_model_test COMMAND developer_studio_model_test)
 add_test(NAME developer_studio_project_test COMMAND developer_studio_project_test)
+
+add_executable(developer_studio_build_test
+    tests/build_test.cpp
+)
+target_link_libraries(developer_studio_build_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_build_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_build_test COMMAND developer_studio_build_test)
 
 # The production Native ELF link is intentionally driven by build.ps1. That
 # script follows the Server SDK's direct clang/ld.lld convention and writes the
