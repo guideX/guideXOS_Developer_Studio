@@ -1,6 +1,6 @@
-# guideXOS Developer Studio Bounded Build Project Phase Architecture
+# guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, and hosted Build Project
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, and temporary hosted Run Project
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -145,7 +145,7 @@ project_template=native-gui-application
 project_rollback=PASS
 ```
 
-The hosted filesystem ABI appends `file_create_directory` and `file_remove` after the existing workspace extensions. They are exact-path, non-recursive operations protected by `filesystem.write`; the guest service still controls the set of paths it requests and performs the rollback accounting. The build calls are appended after those extensions and are hosted-development only.
+The hosted filesystem ABI appends `file_create_directory` and `file_remove` after the existing workspace extensions. They are exact-path, non-recursive operations protected by `filesystem.write`; the guest service still controls the set of paths it requests and performs the rollback accounting. The build calls are appended after those extensions and are hosted-development only. The five Run Project calls are appended after the build calls and are limited to the owner-bound temporary deployment path.
 
 ## Build Project vertical slice
 
@@ -167,9 +167,45 @@ The appended ABI slots are `build_project_start`, `build_project_poll`, and `bui
 
 The complete state, resolution, limits, diagnostics, and outcome matrix are documented in [BUILD_PROJECT.md](BUILD_PROJECT.md).
 
+## Run Project vertical slice
+
+Run Project is an explicit build-before-run sequence:
+
+```text
+F5 / Run Project
+  -> active Native GUI project and dirty Save All gate
+  -> Build Project
+  -> build SHA-256 and artifact revalidation
+  -> owner-bound temporary App Model registration
+  -> DesktopService -> NativeElf launch pipeline
+  -> process/window polling
+  -> close request or application exit
+  -> owned-window cleanup, temporary unregister, handle release
+```
+
+The Studio run controller is runtime-neutral and owns only state, fixed-size
+requests, snapshots, and host callbacks. The Server owns deployment slots,
+generation handles, project/manifest/artifact validation, AppRegistry
+registration, process/window observation, and cleanup. It launches through the
+existing App Model and Native ELF runtime instead of adding a second executor.
+
+The Server rejects workspace-only requests, unsupported project kinds/targets,
+malformed or mismatched metadata/manifests, missing/changed/oversized/symlinked
+artifacts, wrong architecture/ABI/ELF type, missing `gx_main`, installed-ID
+collisions, owner mismatches, and stale generations. Temporary records are
+in-memory only and never enter recent/pinned/desktop persistence. The generated
+permission set is the only accepted set for the temporary app.
+
+The append-only ABI slots are `development_run_prepare`,
+`development_run_start`, `development_run_poll`,
+`development_run_request_close`, and `development_run_release` at offsets
+192, 200, 208, 216, and 224, with a 232-byte host table. See
+[RUN_PROJECT.md](RUN_PROJECT.md) for the state/error contract and validation
+procedure.
+
 ## Generated project external build
 
-The generated application follows the proven direct LLVM/LLD sibling-application convention: `x86_64-unknown-elf`, freestanding C++11, static `ld.lld`, entry point `gx_main`, and package entry `bin/amd64/<outputName>.elf`. The generated `build.ps1` accepts explicit `-SdkInclude` and `-ToolchainRoot` values and emits the same fixed artifact path used by Build Project. No generated file depends on a Developer Studio checkout path, a Server checkout path, a username, or a machine-specific compiler location. CMake remains an optional external description. Run, Debug, compiler discovery, and target switching are still deferred.
+The generated application follows the proven direct LLVM/LLD sibling-application convention: `x86_64-unknown-elf`, freestanding C++11, static `ld.lld`, entry point `gx_main`, and package entry `bin/amd64/<outputName>.elf`. The generated `build.ps1` accepts explicit `-SdkInclude` and `-ToolchainRoot` values and emits the same fixed artifact path used by Build Project. No generated file depends on a Developer Studio checkout path, a Server checkout path, a username, or a machine-specific compiler location. CMake remains an optional external description. Debug, compiler discovery, and target switching remain deferred.
 
 The project parser/generator test covers identity rules, exact serialization, duplicate and oversized metadata, root and metadata-path loading, manifest identity, required layout, deterministic repeated generation, no machine paths, non-empty destination rejection, workspace-only controller behavior, and simulated mid-generation rollback. The external generated-project validation produced an ELF64 AMD64 `ET_EXEC` image and confirmed a global `gx_main` symbol with `readelf`.
 
@@ -177,7 +213,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Run/Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
+Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

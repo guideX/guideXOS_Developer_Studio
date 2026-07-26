@@ -2,6 +2,7 @@
 
 #include "developer_studio_models.h"
 #include "developer_studio_build.h"
+#include "developer_studio_run.h"
 #include "developer_studio_workspace.h"
 
 namespace {
@@ -19,6 +20,20 @@ using guidexos::developer_studio::BuildResult;
 using guidexos::developer_studio::BuildState;
 using guidexos::developer_studio::BuildStateName;
 using guidexos::developer_studio::HostedBuildService;
+using guidexos::developer_studio::HostedDevelopmentRunService;
+using guidexos::developer_studio::RunController;
+using guidexos::developer_studio::RunControllerInit;
+using guidexos::developer_studio::RunControllerIsActive;
+using guidexos::developer_studio::RunControllerPoll;
+using guidexos::developer_studio::RunControllerPrepare;
+using guidexos::developer_studio::RunControllerRequestClose;
+using guidexos::developer_studio::RunControllerStart;
+using guidexos::developer_studio::RunErrorCode;
+using guidexos::developer_studio::RunErrorName;
+using guidexos::developer_studio::RunRequest;
+using guidexos::developer_studio::RunResult;
+using guidexos::developer_studio::RunState;
+using guidexos::developer_studio::RunStateName;
 using guidexos::developer_studio::Document;
 using guidexos::developer_studio::FileInfo;
 using guidexos::developer_studio::FileInfoKind;
@@ -95,7 +110,9 @@ enum class InputMode {
     ConfirmDocument,
     ConfirmWorkspace,
     ConfirmApplication,
-    ConfirmBuild
+    ConfirmBuild,
+    ConfirmRun,
+    ConfirmRunClose
 };
 
 struct NativeFileSystemContext {
@@ -134,6 +151,10 @@ static char g_lineScratch[144] = {};
 static BuildController g_buildController = {};
 static uint32_t g_lastBuildOutputCount = 0;
 static bool g_buildTerminalReported = false;
+static RunController g_runController = {};
+static bool g_runWaitingForBuild = false;
+static RunState g_lastRunState = RunState::Idle;
+static bool g_runTerminalReported = false;
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
@@ -373,6 +394,132 @@ static HostedBuildService buildService() {
     return service;
 }
 
+static RunState mapRunState(uint32_t state) {
+    return state <= GX_DEVELOPMENT_RUN_FAILED ? static_cast<RunState>(state) : RunState::Failed;
+}
+
+static RunErrorCode mapRunError(uint32_t error) {
+    switch (error) {
+    case GX_DEVELOPMENT_RUN_ERROR_NONE: return RunErrorCode::None;
+    case GX_DEVELOPMENT_RUN_ERROR_BUILD_REQUIRED: return RunErrorCode::BuildRequired;
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_INVALID:
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_MISSING:
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_CHANGED:
+    case GX_DEVELOPMENT_RUN_ERROR_ENTRY_POINT_MISSING:
+    case GX_DEVELOPMENT_RUN_ERROR_MANIFEST_MISMATCH: return RunErrorCode::ArtifactInvalid;
+    case GX_DEVELOPMENT_RUN_ERROR_DEPLOYMENT_ALREADY_ACTIVE:
+    case GX_DEVELOPMENT_RUN_ERROR_APPLICATION_ID_IN_USE: return RunErrorCode::AlreadyActive;
+    case GX_DEVELOPMENT_RUN_ERROR_OWNER_MISMATCH: return RunErrorCode::OwnerMismatch;
+    case GX_DEVELOPMENT_RUN_ERROR_STALE_DEPLOYMENT: return RunErrorCode::StaleDeployment;
+    case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_FAILED:
+    case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_UNAVAILABLE: return RunErrorCode::LaunchFailed;
+    case GX_DEVELOPMENT_RUN_ERROR_INVALID_REQUEST: return RunErrorCode::InvalidRequest;
+    default: return RunErrorCode::ServiceUnavailable;
+    }
+}
+
+static void copyRunSnapshot(const gx_development_run_snapshot& snapshot, RunResult* result) {
+    if (!result) return;
+    *result = RunResult();
+    result->state = mapRunState(snapshot.state);
+    result->error = mapRunError(snapshot.errorCode);
+    result->handle = snapshot.handle;
+    result->processId = snapshot.processId;
+    result->nativeRuntimeId = snapshot.nativeRuntimeId;
+    result->windowCount = snapshot.windowCount;
+    result->createdWindowCount = snapshot.createdWindowCount;
+    result->exitCode = snapshot.exitCode;
+    result->cleanupComplete = snapshot.cleanupComplete != 0;
+    copyText(result->applicationId, sizeof(result->applicationId), snapshot.applicationId);
+    copyText(result->displayName, sizeof(result->displayName), snapshot.displayName);
+    copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
+    copyText(result->errorMessage, sizeof(result->errorMessage), snapshot.errorMessage);
+}
+
+static bool hostRunPrepare(void* userData, const guidexos::developer_studio::RunRequest& request, uint64_t* outHandle, RunResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (outHandle) *outHandle = 0;
+    if (outResult) *outResult = RunResult();
+    if (!context || !context->app || !context->app->host || !context->app->host->development_run_prepare || !outHandle || !outResult) {
+        if (outResult) outResult->error = RunErrorCode::ServiceUnavailable;
+        return false;
+    }
+    gx_development_run_request nativeRequest = {};
+    nativeRequest.size = sizeof(nativeRequest);
+    nativeRequest.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    nativeRequest.projectRoot = request.projectRoot;
+    nativeRequest.projectId = request.projectId;
+    nativeRequest.projectKind = request.projectKind;
+    nativeRequest.targetProfile = request.targetProfile;
+    nativeRequest.manifestPath = request.manifestPath;
+    nativeRequest.artifactPath = request.artifactPath;
+    nativeRequest.artifactSha256 = request.artifactSha256;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    const gx_result result = context->app->host->development_run_prepare(context->app, &nativeRequest, outHandle, &snapshot);
+    copyRunSnapshot(snapshot, outResult);
+    if (result != GX_OK) {
+        outResult->error = mapRunError(snapshot.errorCode);
+        if (outResult->error == RunErrorCode::None) outResult->error = RunErrorCode::ServiceUnavailable;
+        return false;
+    }
+    return true;
+}
+
+static bool hostRunStart(void* userData, uint64_t handle, RunResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (!context || !context->app || !context->app->host || !context->app->host->development_run_start || !outResult || handle == 0) return false;
+    const gx_result result = context->app->host->development_run_start(context->app, handle);
+    if (result != GX_OK) {
+        outResult->error = result == GX_ERROR_BUSY ? RunErrorCode::AlreadyActive : RunErrorCode::LaunchFailed;
+        outResult->state = RunState::Failed;
+        return false;
+    }
+    outResult->state = RunState::Launching;
+    outResult->handle = handle;
+    return true;
+}
+
+static bool hostRunPoll(void* userData, uint64_t handle, RunResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (!context || !context->app || !context->app->host || !context->app->host->development_run_poll || !outResult || handle == 0) return false;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    const gx_result result = context->app->host->development_run_poll(context->app, handle, &snapshot);
+    if (result != GX_OK) {
+        outResult->error = RunErrorCode::ServiceUnavailable;
+        outResult->state = RunState::Failed;
+        return false;
+    }
+    copyRunSnapshot(snapshot, outResult);
+    return true;
+}
+
+static bool hostRunRequestClose(void* userData, uint64_t handle) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    return context && context->app && context->app->host && context->app->host->development_run_request_close && handle != 0 &&
+        context->app->host->development_run_request_close(context->app, handle) == GX_OK;
+}
+
+static bool hostRunRelease(void* userData, uint64_t handle) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    return context && context->app && context->app->host && context->app->host->development_run_release && handle != 0 &&
+        context->app->host->development_run_release(context->app, handle) == GX_OK;
+}
+
+static HostedDevelopmentRunService developmentRunService() {
+    HostedDevelopmentRunService service = {};
+    service.userData = &g_fileSystemContext;
+    service.prepare = hostRunPrepare;
+    service.start = hostRunStart;
+    service.poll = hostRunPoll;
+    service.requestClose = hostRunRequestClose;
+    service.release = hostRunRelease;
+    return service;
+}
+
 static const char* currentError() {
     return ModelErrorName(g_controller.lastError);
 }
@@ -521,6 +668,56 @@ static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
     return true;
 }
 
+static void reportRunTerminal(gx_app_context* ctx) {
+    if (g_runTerminalReported) return;
+    const RunResult& result = g_runController.result;
+    if (result.state == RunState::Completed && result.exitCode == 0) {
+        writeOutput("Run completed");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=SUCCEEDED");
+    } else {
+        writeOutput("Run failed");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(result.error));
+    }
+    if (result.exitCode != 0) {
+        char marker[96] = {};
+        copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_process_exit=");
+        appendSigned(marker, sizeof(marker), result.exitCode);
+        logMarker(ctx, marker);
+    }
+    if (result.cleanupComplete) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_cleanup=PASS");
+    g_runTerminalReported = true;
+}
+
+static bool beginRunDeployment(gx_app_context* ctx) {
+    RunRequest request = {};
+    RunErrorCode error = RunErrorCode::None;
+    if (!RunRequestFromBuild(g_controller.model.project, g_buildController.result, &request, &error)) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_artifact_validation=FAIL", RunErrorName(error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(error));
+        writeOutput("Run blocked: artifact validation failed");
+        return false;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_artifact_validation=PASS");
+    if (!RunControllerPrepare(&g_runController, developmentRunService(), request, &error)) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_deployment_prepare=FAIL", RunErrorName(error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(error));
+        writeOutput("Run preparation failed");
+        return false;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_deployment_prepare=PASS");
+    writeOutput("Run deployment prepared");
+    if (!RunControllerStart(&g_runController, developmentRunService(), &error)) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_launch=FAIL", RunErrorName(error));
+        reportRunTerminal(ctx);
+        return false;
+    }
+    g_lastRunState = g_runController.state;
+    g_runTerminalReported = false;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_launch=PASS");
+    writeOutput("Run launched");
+    return true;
+}
+
 static void pollBuild(gx_app_context* ctx) {
     if (!BuildControllerIsActive(&g_buildController)) return;
     BuildControllerPoll(&g_buildController, buildService());
@@ -534,10 +731,22 @@ static void pollBuild(gx_app_context* ctx) {
         }
         g_lastBuildOutputCount = result.outputCount;
     }
-    if (!BuildControllerIsActive(&g_buildController) && !g_buildTerminalReported) reportBuildResult(ctx);
+    if (!BuildControllerIsActive(&g_buildController) && !g_buildTerminalReported) {
+        reportBuildResult(ctx);
+        if (g_runWaitingForBuild) {
+            g_runWaitingForBuild = false;
+            if (g_buildController.result.state == BuildState::Succeeded) beginRunDeployment(ctx);
+            else markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", BuildErrorName(g_buildController.result.error));
+        }
+    }
 }
 
 static void requestBuild(gx_app_context* ctx) {
+    if (RunControllerIsActive(&g_runController)) {
+        writeOutput("Run in progress; build blocked");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(BuildErrorCode::AlreadyRunning));
+        return;
+    }
     if (!g_controller.model.open || !g_controller.model.hasProject) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(g_controller.model.open ? BuildErrorCode::WorkspaceOnly : BuildErrorCode::NoProject));
         writeOutput("Build requires an open project");
@@ -553,8 +762,78 @@ static void requestBuild(gx_app_context* ctx) {
     beginBuild(ctx, BuildDirtyDecision::SaveAll);
 }
 
+static void requestRun(gx_app_context* ctx) {
+    if (RunControllerIsActive(&g_runController) || g_runWaitingForBuild) {
+        writeOutput("Run already active");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", RunErrorName(RunErrorCode::AlreadyActive));
+        return;
+    }
+    if (BuildControllerIsActive(&g_buildController)) {
+        writeOutput("Build in progress; run queued after build is not supported");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", RunErrorName(RunErrorCode::ServiceUnavailable));
+        return;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_request=PASS");
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", g_controller.model.open ? "workspace_only" : "no_project");
+        writeOutput("Run requires an open project");
+        return;
+    }
+    if (g_controller.model.project.kind != ProjectKind::NativeGuiApplication) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", "unsupported_project_kind");
+        writeOutput("Run supports Native GUI Application projects only");
+        return;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_build_required=TRUE");
+    if (guidexos::developer_studio::WorkspaceControllerHasDirtyProjectDocuments(&g_controller)) {
+        g_inputMode = InputMode::ConfirmRun;
+        g_fileMenuOpen = false;
+        g_buildMenuOpen = false;
+        writeOutput("Save All or Cancel run");
+        return;
+    }
+    g_runWaitingForBuild = true;
+    if (!beginBuild(ctx, BuildDirtyDecision::SaveAll)) g_runWaitingForBuild = false;
+}
+
+static void pollRun(gx_app_context* ctx) {
+    if (!RunControllerIsActive(&g_runController)) return;
+    const RunState previous = g_runController.state;
+    RunControllerPoll(&g_runController, developmentRunService());
+    const RunResult& result = g_runController.result;
+    if (result.state != previous) {
+        g_lastRunState = result.state;
+        if (result.state == RunState::Running) {
+            writeOutput("Application running");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_application_state=RUNNING");
+        } else if (result.state == RunState::Exited) {
+            writeOutput("Application exited; cleaning deployment");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_application_state=EXITED");
+        } else if (result.state == RunState::CleaningUp) {
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_cleanup=START");
+        }
+    }
+    if (!RunControllerIsActive(&g_runController) && (result.state == RunState::Completed || result.state == RunState::Failed)) reportRunTerminal(ctx);
+}
+
+static void requestRunClose(gx_app_context* ctx) {
+    if (!RunControllerIsActive(&g_runController)) {
+        writeOutput("No running project application");
+        return;
+    }
+    if (!RunControllerRequestClose(&g_runController, developmentRunService())) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_close=FAIL", RunErrorName(RunErrorCode::ServiceUnavailable));
+        writeOutput("Close request failed");
+        return;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_close=REQUESTED");
+    writeOutput("Close requested for project application");
+}
+
 static void showWorkspacePrompt() {
     if (BuildControllerIsActive(&g_buildController)) { writeOutput("Build in progress"); return; }
+    if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress"); return; }
     g_inputMode = InputMode::WorkspacePath;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
@@ -565,6 +844,7 @@ static void showWorkspacePrompt() {
 
 static void showOpenProjectPrompt() {
     if (BuildControllerIsActive(&g_buildController)) { writeOutput("Build in progress"); return; }
+    if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress"); return; }
     g_inputMode = InputMode::ProjectPath;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
@@ -574,6 +854,7 @@ static void showOpenProjectPrompt() {
 
 static void showNewProjectPrompt(gx_app_context* ctx) {
     if (BuildControllerIsActive(&g_buildController)) { writeOutput("Build in progress"); return; }
+    if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress"); return; }
     if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
         writeOutput("Save or close the current workspace first");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=FAIL", "unsaved_changes");
@@ -706,6 +987,11 @@ static void finishApplicationClose(gx_app_context* ctx, bool success) {
     if (!success) {
         writeOutput("Save failed; application remains open");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=FAIL", currentError());
+        return;
+    }
+    if (RunControllerIsActive(&g_runController)) {
+        g_inputMode = InputMode::ConfirmRunClose;
+        writeOutput("Project application is running: Close it first or keep Studio open");
         return;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
@@ -867,6 +1153,8 @@ static void drawOutputAndStatus(gx_app_context* ctx) {
     drawText(ctx, 16, 600, g_textScratch);
     compose(g_textScratch, sizeof(g_textScratch), "Build: ", BuildStateName(g_buildController.state), BuildControllerIsActive(&g_buildController) ? " (active)" : "");
     drawText(ctx, 650, 600, g_textScratch);
+    compose(g_textScratch, sizeof(g_textScratch), "Run: ", RunStateName(g_runController.state), RunControllerIsActive(&g_runController) ? " (active)" : "");
+    drawText(ctx, 650, 618, g_textScratch);
     compose(g_textScratch, sizeof(g_textScratch), g_controller.model.hasProject ? "Project: " : "Workspace: ", g_controller.model.open ? g_controller.model.displayName : "-", "");
     drawText(ctx, 16, 618, g_textScratch);
     if (g_controller.model.hasProject) {
@@ -920,6 +1208,19 @@ static void drawModal(gx_app_context* ctx) {
         drawText(ctx, 230, 316, "[S] Save All     [C] Cancel");
         return;
     }
+    if (g_inputMode == InputMode::ConfirmRun) {
+        drawText(ctx, 210, 220, "Run Project");
+        drawText(ctx, 210, 246, "Run builds the project before every launch.");
+        drawText(ctx, 210, 270, "Project documents have unsaved changes.");
+        drawText(ctx, 230, 316, "[S] Save All and Run     [C] Cancel");
+        return;
+    }
+    if (g_inputMode == InputMode::ConfirmRunClose) {
+        drawText(ctx, 210, 220, "Project Application is running");
+        drawText(ctx, 210, 246, "Request a close for the temporary development app?");
+        drawText(ctx, 230, 292, "[C] Close Project Application     [K] Keep Studio Open");
+        return;
+    }
     drawText(ctx, 210, 220, "Unsaved changes");
     if (g_inputMode == InputMode::ConfirmDocument) drawText(ctx, 210, 246, "Save changes before closing this document?");
     else if (g_inputMode == InputMode::ConfirmWorkspace) drawText(ctx, 210, 246, "Save changes before opening another workspace?");
@@ -954,8 +1255,10 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 20, 174, "Exit");
     }
     if (g_buildMenuOpen) {
-        drawPanel(ctx, { 300, 42, 220, 44 }, 0x34496Au);
+        drawPanel(ctx, { 300, 42, 260, 92 }, 0x34496Au);
         drawText(ctx, 312, 68, "Build Project");
+        drawText(ctx, 312, 92, "Run Project (F5)");
+        drawText(ctx, 312, 116, "Request Project Close");
     }
     drawModal(ctx);
 }
@@ -1037,6 +1340,31 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         }
         return;
     }
+    if (g_inputMode == InputMode::ConfirmRun) {
+        if (keyCode == 27 || keyCode == 67 || keyCode == 99) {
+            g_inputMode = InputMode::Normal;
+            markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", RunErrorName(RunErrorCode::UserCancelled));
+            writeOutput("Run canceled");
+            return;
+        }
+        if (keyCode == 83 || keyCode == 115) {
+            g_inputMode = InputMode::Normal;
+            g_runWaitingForBuild = true;
+            if (!beginBuild(ctx, BuildDirtyDecision::SaveAll)) g_runWaitingForBuild = false;
+        }
+        return;
+    }
+    if (g_inputMode == InputMode::ConfirmRunClose) {
+        if (keyCode == 67 || keyCode == 99) {
+            g_inputMode = InputMode::Normal;
+            requestRunClose(ctx);
+        } else if (keyCode == 75 || keyCode == 107 || keyCode == 27) {
+            g_inputMode = InputMode::Normal;
+            writeOutput("Studio remains open");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_close=CANCEL");
+        }
+        return;
+    }
     if (keyCode == 27 || keyCode == 67 || keyCode == 99) {
         if (g_inputMode == InputMode::ConfirmDocument) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=CANCEL");
         else if (g_inputMode == InputMode::ConfirmWorkspace) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=CANCEL");
@@ -1080,6 +1408,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 87 || keyCode == 119)) {
+        if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress; close the project application first"); return; }
         if (g_controller.model.activeDocument < kMaxOpenDocuments) {
             g_pendingDocument = g_controller.model.activeDocument;
             if (g_controller.model.documents[g_pendingDocument].buffer.dirty) g_inputMode = InputMode::ConfirmDocument;
@@ -1087,7 +1416,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         }
         return;
     }
-    if (keyCode == 116) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); return; }
+    if (keyCode == 116) { requestRun(ctx); return; }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!document || !g_editorFocused) {
         if (keyCode == GX_KEY_UP && g_controller.model.selectedEntry > 0) --g_controller.model.selectedEntry;
@@ -1141,8 +1470,10 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 130 && x < 220) { saveAll(ctx); drawShell(ctx); return; }
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; drawShell(ctx); return; }
-    if (g_buildMenuOpen && x >= 300 && x < 520 && y >= 42 && y < 90) {
-        requestBuild(ctx);
+    if (g_buildMenuOpen && x >= 300 && x < 560 && y >= 42 && y < 134) {
+        if (y < 66) requestBuild(ctx);
+        else if (y < 90) requestRun(ctx);
+        else requestRunClose(ctx);
         g_buildMenuOpen = false;
         drawShell(ctx);
         return;
@@ -1158,10 +1489,12 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         } else if (y < 164) {
             g_workspaceSwitchPending = false;
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress");
+            else if (RunControllerIsActive(&g_runController)) writeOutput("Run in progress");
             else if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmWorkspace;
             else WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
         } else if (y < 188) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
+            else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
             else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
             else { logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS"); logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS"); g_requestExit = true; }
         }
@@ -1218,6 +1551,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     BuildControllerInit(&g_buildController);
     g_lastBuildOutputCount = 0;
     g_buildTerminalReported = false;
+    RunControllerInit(&g_runController);
+    g_runWaitingForBuild = false;
+    g_lastRunState = RunState::Idle;
+    g_runTerminalReported = false;
     writeOutput("Ready");
 
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS");
@@ -1242,6 +1579,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (ctx->host->poll_event) {
         while (running) {
             pollBuild(ctx);
+            pollRun(ctx);
             gx_event event;
             clear_event(&event);
             gx_result result = ctx->host->poll_event(ctx, &event, 500);
@@ -1251,6 +1589,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (BuildControllerIsActive(&g_buildController)) {
                         writeOutput("Build in progress; close blocked");
                         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_close=BLOCKED");
+                    } else if (RunControllerIsActive(&g_runController)) {
+                        g_inputMode = InputMode::ConfirmRunClose;
+                        writeOutput("Project application is running: Close it first or keep Studio open");
                     } else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
                         g_inputMode = InputMode::ConfirmApplication;
                         writeOutput("Unsaved changes: Save, Discard, or Cancel");
@@ -1264,6 +1605,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
                     else if (gx_event_is_escape_down(&event)) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
+                        else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
                         else { logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS"); logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS"); running = false; }
                     } else handleNormalKey(ctx, event.param1, event.param2, event.param3, running);
@@ -1274,6 +1616,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (g_requestExit) running = false;
                 }
                 pollBuild(ctx);
+                pollRun(ctx);
                 drawShell(ctx);
             } else if (result != GX_OK && result != GX_ERROR_TIMEOUT) {
                 markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER event_loop=FAIL", "poll_event");

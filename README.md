@@ -10,9 +10,9 @@ The current bounded phase proves the first useful source workflow:
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
 - a truthful AMD64 hosted guideXOS target profile; and
-- deterministic model, filesystem-workflow, package, hosted App Model, and bounded Build Project coverage.
+- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, and temporary hosted Run Project coverage.
 
-Run/Debug/Debugging, additional project templates, syntax highlighting, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
+Debug/Debugging, additional project templates, syntax highlighting, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
 ## Workspace versus project
 
@@ -94,6 +94,16 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -ServerRoot D:\path\to\guid
 For a valid Native GUI Application project, use `Build -> Build Project` or `Ctrl+Shift+B`. Developer Studio derives the fixed build system, `build.ps1`, `Debug` configuration, and `build/bin/amd64/<outputName>.elf` artifact from the version 1 project metadata. Dirty project documents prompt for Save All or Cancel; an active build keeps the shell responsive and blocks close. The hosted Server validates the project, resolves the SDK/toolchain, runs the recipe asynchronously, captures bounded merged output, and validates the resulting ELF64 AMD64 `ET_EXEC` image and `gx_main` entry point.
 
 The service is hosted-development only. It does not accept arbitrary commands or metadata-defined executables, supports one build at a time, caps output at 64 KiB and 32 retained lines of 255 bytes, and stops a build after five minutes. SDK/toolchain resolution uses the hosted Server `sdk/include` and fixed LLVM locations, with `GUIDEXOS_SDK_ROOT` and `GUIDEXOS_TOOLCHAIN_ROOT` overrides.
+
+## Run Project
+
+For the supported Native GUI Application, use the Build menu's `Run Project (F5)` item or press `F5`. Every run rebuilds the active project first; dirty documents go through the existing Save All/Cancel gate so a stale artifact is not launched.
+
+After a successful build, Developer Studio passes the project root, identity, fixed target, manifest path, artifact path, and build SHA-256 through the append-only hosted Run ABI. The Server revalidates the project metadata, exact generated manifest shape, artifact containment/non-symlink status, hash, ELF64 AMD64 `ET_EXEC` image, ABI, and `gx_main` entry point. It then registers the result as an in-memory temporary App Model application and launches it through the existing AppRegistry, DesktopService, Native ELF loader, and hosted runtime.
+
+The temporary application is owner- and generation-bound to the Developer Studio runtime. Its ID cannot collide with an installed application, it is not persisted or added to recent/pinned state, and only the generated Native GUI permission set is accepted. `Request Project Close` sends a close event only to windows owned by that deployment; on exit the temporary registration is removed and the handle is released. Closing Developer Studio while a run is active first presents a close-request modal.
+
+Run state is visible in the bottom status bar. Deterministic markers include `run_request`, `run_build_required`, `run_artifact_validation`, `run_deployment_prepare`, `run_launch`, `run_application_state`, `run_close`, `run_cleanup`, and `run_complete`. See [docs/RUN_PROJECT.md](docs/RUN_PROJECT.md) for the state machine and validation boundaries.
 
 ## Smoke test
 
