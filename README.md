@@ -10,9 +10,9 @@ The current bounded phase proves the first useful source workflow:
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
 - a truthful AMD64 hosted guideXOS target profile; and
-- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, and temporary hosted Run Project coverage.
+- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, and bounded C/C++ lexical highlighting coverage.
 
-Debug/Debugging, additional project templates, syntax highlighting, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
+Debug/Debugging, additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
 ## Workspace versus project
 
@@ -77,11 +77,11 @@ Generation is byte-for-byte deterministic for identical inputs: no timestamps, u
 
 Use `File -> Open Workspace` or `Ctrl+O`, then enter an absolute hosted path in the temporary path-entry dialog. The Explorer shows a bounded directory listing; activate a supported text file to open it in a document tab. `Ctrl+S` saves the active document and `Ctrl+Shift+S` saves all named documents. `Ctrl+W` closes the active tab.
 
-Supported text extensions are `.c`, `.cc`, `.cpp`, `.h`, `.hh`, `.hpp`, `.txt`, `.md`, `.json`, `.xml`, `.css`, `.html`, `.htm`, `.js`, `.ts`, `.ps1`, `.cmd`, `.bat`, `.cmake`, `.ini`, `.cfg`, `.log`, `.mk`, `.yml`, and `.yaml`. Unknown, binary-looking, and oversized files are visible when practical but are not opened as editable text.
+Supported text extensions are `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, `.hxx`, `.txt`, `.md`, `.json`, `.xml`, `.css`, `.html`, `.htm`, `.js`, `.ts`, `.ps1`, `.cmd`, `.bat`, `.cmake`, `.ini`, `.cfg`, `.log`, `.mk`, `.yml`, and `.yaml`. Unknown, binary-looking, and oversized files are visible when practical but are not opened as editable text.
 
 Limits are intentionally explicit: 128 visible entries per directory, 8 open documents, 256 KiB per editable file, 8 navigated workspace path segments, 768-byte model paths (the hosted ABI additionally bounds an entered host path to 240 bytes), and bounded output history. Directory enumeration is immediate-directory only and never follows symlinks or recursively scans without a user navigation action.
 
-The editor supports caret movement, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, visible line separation, dirty tracking, tabs, and save failure preservation. It has no syntax highlighting, selection, clipboard, undo/redo, code completion, folding, or semantic services.
+The editor supports caret movement, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, bounded automatic horizontal scrolling, visible line separation, dirty tracking, tabs, save failure preservation, and lexical C/C++ syntax highlighting. It has no selection, clipboard, undo/redo, code completion, folding, or semantic services. See [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md) for the bounded scanner and cache contract.
 
 ## Build
 
@@ -124,3 +124,4 @@ It creates and removes only its own temporary fixture and verifies enumeration, 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the integration audit, boundaries, and intentionally deferred work.
 See [docs/BUILD_PROJECT.md](docs/BUILD_PROJECT.md) for the Build Project contract and diagnostics.
 See [docs/OUTPUT_AND_DIAGNOSTICS.md](docs/OUTPUT_AND_DIAGNOSTICS.md) for the unified Output and Problems architecture, bounded limits, supported diagnostic formats, and navigation behavior.
+See [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md) for lexical tokenization, multiline state, incremental cache behavior, limits, palette, and known limitations.

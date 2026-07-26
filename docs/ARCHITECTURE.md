@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, and temporary hosted Run Project
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, and bounded C/C++ lexical syntax highlighting
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, run controller, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, syntax tokenizer/cache, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -61,7 +61,7 @@ The Server checkout now appends four hosted workspace calls to the ABI table:
 - `file_list`; and
 - `file_write_all`.
 
-They use existing `filesystem.read` and `filesystem.write` manifest permissions and accept an explicit user-entered hosted path. Developer Studio still normalizes the selected root, rejects traversal, and enforces root containment for every document operation. Package-relative `file_read_all` remains unchanged.
+They use existing `filesystem.read` and `filesystem.write` manifest permissions and accept an explicit user-entered hosted path. Developer Studio still normalizes the selected root, rejects traversal, and enforces root containment for every document operation. Package-relative `file_read_all` remains unchanged. The ABI has no colored-text call; the syntax renderer uses bounded token background rectangles plus the existing text call, so no Server ABI change is required.
 
 Because there is no reusable Native ABI picker or multiline editor, Developer Studio owns the temporary path-entry dialog, fixed-size text buffer, caret/key/mouse editing, vertical scroll state, tabs, and Save/Discard/Cancel modal. This is intentionally a phase-local editing surface, not a general widget framework.
 
@@ -79,7 +79,7 @@ Because there is no reusable Native ABI picker or multiline editor, Developer St
 - output history is bounded to four concise lines; and
 - navigation is one directory at a time, with no unbounded recursive scan.
 
-Supported text extensions are `.c`, `.cc`, `.cpp`, `.h`, `.hh`, `.hpp`, `.txt`, `.md`, `.json`, `.xml`, `.css`, `.html`, `.htm`, `.js`, `.ts`, `.ps1`, `.cmd`, `.bat`, `.cmake`, `.ini`, `.cfg`, `.log`, `.mk`, `.yml`, and `.yaml`.
+Supported text extensions are `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, `.hxx`, `.txt`, `.md`, `.json`, `.xml`, `.css`, `.html`, `.htm`, `.js`, `.ts`, `.ps1`, `.cmd`, `.bat`, `.cmake`, `.ini`, `.cfg`, `.log`, `.mk`, `.yml`, and `.yaml`.
 
 The path-entry dialog is temporary. Save uses direct truncate/write/flush because the ABI has no atomic replacement operation. The write result and byte count are verified; dirty state is retained on failure. Atomicity is not claimed.
 
@@ -176,6 +176,17 @@ the parser stores only project-relative diagnostic paths after containment
 validation. See [OUTPUT_AND_DIAGNOSTICS.md](OUTPUT_AND_DIAGNOSTICS.md) for the
 record schema, limits, lifecycle, supported formats, and navigation policy.
 
+## Syntax highlighting
+
+The editor has a language-neutral lexical tokenizer and per-document bounded
+syntax cache. It consumes UTF-8-compatible document bytes, stores UTF-8 byte
+offset spans, carries block-comment and bounded C++ raw-string state between
+lines, and propagates edits only until lexical-state/token-span convergence.
+The cache and renderer are described in [SYNTAX_HIGHLIGHTING.md](SYNTAX_HIGHLIGHTING.md).
+The pre-existing ABI only provides uncolored text and rectangle drawing, so the
+renderer uses centralized token background colors and does not require a Server
+ABI change.
+
 ## Run Project vertical slice
 
 Run Project is an explicit build-before-run sequence:
@@ -222,7 +233,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
+Debug, language server, semantic highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

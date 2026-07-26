@@ -97,7 +97,9 @@ Problems activation verifies the active project and project ID, accepts only a
 validated project-relative path, opens or selects the existing document, and
 sets the caret. Line and column are interpreted as 1-based byte positions from
 the compiler output; tabs count as one stored byte and Unicode display width is
-not inferred. Missing files and rejected paths report bounded error codes
+not inferred. Syntax highlighting uses the same byte-offset convention, while
+the visible caret and mouse hit-testing expand tabs to four visual columns.
+Missing files and rejected paths report bounded error codes
 without crashing. Out-of-range lines and columns clamp to the document end
 while the original Problem remains unchanged. Dirty documents retain their
 dirty state. Reusable editor operations are

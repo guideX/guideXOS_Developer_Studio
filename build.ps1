@@ -60,7 +60,7 @@ try {
     if (-not $SkipModelTest) {
         Invoke-Checked "g++" @(
             "-std=c++11", "-Wall", "-Wextra", "-pedantic",
-            "-Isrc", "src\developer_studio_models.cpp", "tests\model_test.cpp",
+            "-Isrc", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "tests\model_test.cpp",
             "-o", $ModelTest
         )
         & $ModelTest
@@ -69,7 +69,7 @@ try {
     if (-not $SkipProjectTest) {
         Invoke-Checked "g++" @(
             "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-            "-Isrc", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_workspace.cpp", "tests\project_test.cpp",
+            "-Isrc", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_workspace.cpp", "tests\project_test.cpp",
             "-o", $ProjectTest
         )
         & $ProjectTest
@@ -90,6 +90,7 @@ try {
         "-I$SdkInclude", "-Isrc"
     )
     $modelObject = Join-Path $ObjectRoot "developer_studio_models.o"
+    $syntaxObject = Join-Path $ObjectRoot "developer_studio_syntax.o"
     $projectObject = Join-Path $ObjectRoot "developer_studio_projects.o"
     $workspaceObject = Join-Path $ObjectRoot "developer_studio_workspace.o"
     $buildObject = Join-Path $ObjectRoot "developer_studio_build.o"
@@ -98,6 +99,7 @@ try {
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_syntax.cpp"), "-o", $syntaxObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_projects.cpp"), "-o", $projectObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_workspace.cpp"), "-o", $workspaceObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_build.cpp"), "-o", $buildObject))
@@ -107,7 +109,7 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }

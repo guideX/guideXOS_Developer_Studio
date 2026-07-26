@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "developer_studio_syntax.h"
+
 namespace guidexos {
 namespace developer_studio {
 
@@ -160,6 +162,14 @@ struct TextBuffer {
     uint32_t length;
     uint32_t caret;
     bool dirty;
+    uint32_t generation;
+    uint32_t lastMutationStart;
+    uint32_t lastMutationFirstLine;
+    uint32_t lastMutationInsertedBytes;
+    uint32_t lastMutationDeletedBytes;
+    int32_t lastMutationLineDelta;
+    bool lastMutationFullReplacement;
+    bool lastMutationValid;
 };
 
 struct Document {
@@ -167,6 +177,7 @@ struct Document {
     char path[kMaxPathBytes];
     char name[kMaxNameBytes];
     TextBuffer buffer;
+    SyntaxCache syntax;
 };
 
 struct WorkspaceModel {
@@ -240,6 +251,10 @@ uint32_t TextBufferLineCount(const TextBuffer* buffer);
 uint32_t TextBufferLineStart(const TextBuffer* buffer, uint32_t line);
 uint32_t TextBufferLineEnd(const TextBuffer* buffer, uint32_t line);
 void TextBufferClearDirty(TextBuffer* buffer);
+void DocumentUpdateSyntax(Document* document);
+uint32_t TextBufferVisualColumn(const TextBuffer* buffer, uint32_t lineStart, uint32_t offset, uint32_t tabWidth);
+uint32_t TextBufferOffsetForVisualColumn(const TextBuffer* buffer, uint32_t lineStart, uint32_t lineEnd,
+                                         uint32_t visualColumn, uint32_t tabWidth);
 
 } // namespace developer_studio
 } // namespace guidexos

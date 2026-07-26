@@ -115,6 +115,7 @@ static void clearDocument(Document& document) {
     document.path[0] = '\0';
     document.name[0] = '\0';
     TextBufferInit(&document.buffer);
+    SyntaxCacheClear(&document.syntax);
 }
 
 static uint32_t lineForCaret(const TextBuffer* buffer) {
@@ -124,6 +125,35 @@ static uint32_t lineForCaret(const TextBuffer* buffer) {
         if (buffer->data[i] == '\n') ++line;
     }
     return line;
+}
+
+static uint32_t lineForOffset(const TextBuffer* buffer, uint32_t offset) {
+    if (!buffer) return 0;
+    uint32_t line = 0;
+    const uint32_t limit = offset < buffer->length ? offset : buffer->length;
+    for (uint32_t i = 0; i < limit; ++i) if (buffer->data[i] == '\n') ++line;
+    return line;
+}
+
+static uint32_t newlineCount(const char* bytes, uint32_t length) {
+    if (!bytes) return 0;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < length; ++i) if (bytes[i] == '\n') ++count;
+    return count;
+}
+
+static void recordMutation(TextBuffer* buffer, uint32_t start, uint32_t firstLine,
+                           uint32_t insertedBytes, uint32_t deletedBytes,
+                           int32_t lineDelta, bool fullReplacement) {
+    if (!buffer) return;
+    buffer->generation = buffer->generation == 0 ? 1 : buffer->generation + 1;
+    buffer->lastMutationStart = start;
+    buffer->lastMutationFirstLine = firstLine;
+    buffer->lastMutationInsertedBytes = insertedBytes;
+    buffer->lastMutationDeletedBytes = deletedBytes;
+    buffer->lastMutationLineDelta = lineDelta;
+    buffer->lastMutationFullReplacement = fullReplacement;
+    buffer->lastMutationValid = true;
 }
 
 static uint32_t lineColumnForCaret(const TextBuffer* buffer, uint32_t lineStart) {
@@ -314,7 +344,7 @@ bool IsSupportedTextPath(const char* path) {
     if (dot == length || dot + 1 >= length) return false;
     const char* extension = name + dot;
     static const char* const extensions[] = {
-        ".c", ".cc", ".cpp", ".h", ".hh", ".hpp", ".txt", ".md", ".json", ".xml", ".css", ".html", ".htm",
+        ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".txt", ".md", ".json", ".xml", ".css", ".html", ".htm",
         ".js", ".ts", ".ps1", ".cmd", ".bat", ".cmake", ".ini", ".cfg", ".log", ".mk", ".yml", ".yaml"
     };
     for (uint32_t i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i) {
@@ -449,6 +479,7 @@ bool WorkspaceModelAddDocument(WorkspaceModel* model, const char* normalizedPath
         if (error) *error = ModelErrorCode::FileTooLarge;
         return false;
     }
+    DocumentUpdateSyntax(&document);
     model->activeDocument = slot;
     return true;
 }
@@ -505,47 +536,70 @@ void TextBufferInit(TextBuffer* buffer) {
     buffer->length = 0;
     buffer->caret = 0;
     buffer->dirty = false;
+    buffer->generation = 1;
+    buffer->lastMutationStart = 0;
+    buffer->lastMutationFirstLine = 0;
+    buffer->lastMutationInsertedBytes = 0;
+    buffer->lastMutationDeletedBytes = 0;
+    buffer->lastMutationLineDelta = 0;
+    buffer->lastMutationFullReplacement = false;
+    buffer->lastMutationValid = false;
     buffer->data[0] = '\0';
 }
 
 bool TextBufferSet(TextBuffer* buffer, const char* bytes, uint32_t length) {
     if (!buffer || (!bytes && length != 0) || length > kMaxEditorBytes || LooksBinary(bytes, length)) return false;
+    const uint32_t oldLength = buffer->length;
+    const int32_t lineDelta = static_cast<int32_t>(newlineCount(bytes, length)) -
+        static_cast<int32_t>(newlineCount(buffer->data, oldLength));
     for (uint32_t i = 0; i < length; ++i) buffer->data[i] = bytes[i];
     buffer->length = length;
     buffer->caret = 0;
     buffer->data[length] = '\0';
     buffer->dirty = false;
+    recordMutation(buffer, 0, 0, length, oldLength, lineDelta, true);
     return true;
 }
 
 bool TextBufferInsert(TextBuffer* buffer, const char* bytes, uint32_t length) {
     if (!buffer || !bytes || length == 0 || buffer->length + length > kMaxEditorBytes || LooksBinary(bytes, length)) return false;
+    const uint32_t insertAt = buffer->caret;
+    const uint32_t firstLine = lineForOffset(buffer, insertAt);
+    const int32_t lineDelta = static_cast<int32_t>(newlineCount(bytes, length));
     for (uint32_t i = buffer->length; i > buffer->caret; --i) buffer->data[i + length - 1] = buffer->data[i - 1];
     for (uint32_t i = 0; i < length; ++i) buffer->data[buffer->caret + i] = bytes[i];
     buffer->length += length;
     buffer->caret += length;
     buffer->data[buffer->length] = '\0';
     buffer->dirty = true;
+    recordMutation(buffer, insertAt, firstLine, length, 0, lineDelta, false);
     return true;
 }
 
 bool TextBufferBackspace(TextBuffer* buffer) {
     if (!buffer || buffer->caret == 0) return false;
     uint32_t removeAt = buffer->caret - 1;
+    const uint32_t firstLine = lineForOffset(buffer, removeAt);
+    const int32_t lineDelta = buffer->data[removeAt] == '\n' ? -1 : 0;
     for (uint32_t i = removeAt; i + 1 < buffer->length; ++i) buffer->data[i] = buffer->data[i + 1];
     --buffer->length;
     --buffer->caret;
     buffer->data[buffer->length] = '\0';
     buffer->dirty = true;
+    recordMutation(buffer, removeAt, firstLine, 0, 1, lineDelta, false);
     return true;
 }
 
 bool TextBufferDelete(TextBuffer* buffer) {
     if (!buffer || buffer->caret >= buffer->length) return false;
+    const uint32_t removeAt = buffer->caret;
+    const uint32_t firstLine = lineForOffset(buffer, removeAt);
+    const int32_t lineDelta = buffer->data[removeAt] == '\n' ? -1 : 0;
     for (uint32_t i = buffer->caret; i + 1 < buffer->length; ++i) buffer->data[i] = buffer->data[i + 1];
     --buffer->length;
     buffer->data[buffer->length] = '\0';
     buffer->dirty = true;
+    recordMutation(buffer, removeAt, firstLine, 0, 1, lineDelta, false);
     return true;
 }
 
@@ -618,6 +672,58 @@ uint32_t TextBufferLineEnd(const TextBuffer* buffer, uint32_t line) {
 
 void TextBufferClearDirty(TextBuffer* buffer) {
     if (buffer) buffer->dirty = false;
+}
+
+void DocumentUpdateSyntax(Document* document) {
+    if (!document) return;
+    const SyntaxLanguage language = DetectSyntaxLanguage(document->path);
+    if (!document->buffer.lastMutationValid && document->syntax.valid && document->syntax.generation == document->buffer.generation) return;
+    SyntaxEditInfo edit;
+    edit.fullReplacement = document->buffer.lastMutationFullReplacement || !document->syntax.valid;
+    edit.firstAffectedLine = document->buffer.lastMutationValid ? document->buffer.lastMutationFirstLine : 0;
+    edit.lineDelta = document->buffer.lastMutationValid ? document->buffer.lastMutationLineDelta : 0;
+    if (!SyntaxCacheUpdate(&document->syntax, language, document->buffer.data, document->buffer.length,
+                           document->buffer.generation, edit)) {
+        SyntaxCacheClear(&document->syntax);
+        document->syntax.language = language;
+        document->syntax.valid = true;
+        document->syntax.fallback = true;
+        document->syntax.fallbackCode = SyntaxErrorCode::CacheInvalid;
+        document->syntax.generation = document->buffer.generation;
+    }
+    document->buffer.lastMutationValid = false;
+}
+
+uint32_t TextBufferVisualColumn(const TextBuffer* buffer, uint32_t lineStart, uint32_t offset, uint32_t tabWidth) {
+    if (!buffer) return 0;
+    if (tabWidth == 0) tabWidth = kSyntaxTabWidth;
+    if (lineStart > buffer->length) lineStart = buffer->length;
+    if (offset < lineStart) offset = lineStart;
+    if (offset > buffer->length) offset = buffer->length;
+    uint32_t column = 0;
+    for (uint32_t i = lineStart; i < offset; ++i) {
+        if (buffer->data[i] == '\t') column += tabWidth - (column % tabWidth);
+        else ++column;
+    }
+    return column;
+}
+
+uint32_t TextBufferOffsetForVisualColumn(const TextBuffer* buffer, uint32_t lineStart, uint32_t lineEnd,
+                                         uint32_t visualColumn, uint32_t tabWidth) {
+    if (!buffer) return 0;
+    if (tabWidth == 0) tabWidth = kSyntaxTabWidth;
+    if (lineStart > buffer->length) lineStart = buffer->length;
+    if (lineEnd > buffer->length) lineEnd = buffer->length;
+    if (lineEnd < lineStart) lineEnd = lineStart;
+    uint32_t column = 0;
+    uint32_t offset = lineStart;
+    while (offset < lineEnd) {
+        const uint32_t width = buffer->data[offset] == '\t' ? tabWidth - (column % tabWidth) : 1;
+        if (visualColumn < column + width) break;
+        column += width;
+        ++offset;
+    }
+    return offset;
 }
 
 } // namespace developer_studio

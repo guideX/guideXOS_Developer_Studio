@@ -61,6 +61,9 @@ using guidexos::developer_studio::OutputSourceName;
 using guidexos::developer_studio::OutputChannelName;
 using guidexos::developer_studio::OutputErrorName;
 using guidexos::developer_studio::Document;
+using guidexos::developer_studio::DefaultSyntaxPalette;
+using guidexos::developer_studio::DetectSyntaxLanguage;
+using guidexos::developer_studio::DocumentUpdateSyntax;
 using guidexos::developer_studio::FileInfo;
 using guidexos::developer_studio::FileInfoKind;
 using guidexos::developer_studio::FileListEntry;
@@ -88,6 +91,19 @@ using guidexos::developer_studio::TextBufferMoveDown;
 using guidexos::developer_studio::TextBufferMoveLeft;
 using guidexos::developer_studio::TextBufferMoveRight;
 using guidexos::developer_studio::TextBufferMoveUp;
+using guidexos::developer_studio::TextBufferOffsetForVisualColumn;
+using guidexos::developer_studio::TextBufferVisualColumn;
+using guidexos::developer_studio::SyntaxBuildRenderRuns;
+using guidexos::developer_studio::SyntaxCacheLineSpans;
+using guidexos::developer_studio::SyntaxCacheValidate;
+using guidexos::developer_studio::SyntaxErrorName;
+using guidexos::developer_studio::SyntaxLanguageName;
+using guidexos::developer_studio::SyntaxPalette;
+using guidexos::developer_studio::SyntaxPaletteColor;
+using guidexos::developer_studio::SyntaxRenderRun;
+using guidexos::developer_studio::SyntaxSelection;
+using guidexos::developer_studio::SyntaxTokenKind;
+using guidexos::developer_studio::SyntaxTokenSpan;
 using guidexos::developer_studio::WorkspaceController;
 using guidexos::developer_studio::WorkspaceControllerActiveDocument;
 using guidexos::developer_studio::WorkspaceControllerCloseDocument;
@@ -127,6 +143,8 @@ static const int kEditorLineHeight = 16;
 static const int kEditorLineNumberX = 282;
 static const int kEditorTextX = 320;
 static const int kVisibleEditorLines = 26;
+static const uint32_t kEditorTabWidth = 4;
+static const uint32_t kVisibleEditorColumns = 78;
 static const int kMaxPromptBytes = 240;
 
 enum class InputMode {
@@ -165,6 +183,7 @@ static bool g_requestExit = false;
 static bool g_workspaceSwitchPending = false;
 static uint32_t g_pendingDocument = kMaxOpenDocuments;
 static uint32_t g_editorScrollLine = 0;
+static uint32_t g_editorScrollColumn = 0;
 static uint32_t g_lastExplorerClick = 0;
 static uint64_t g_lastExplorerClickTick = 0;
 static char g_prompt[kMaxPathBytes] = {};
@@ -179,13 +198,18 @@ static uint32_t g_outputScroll = 0;
 static bool g_outputFollowTail = true;
 static uint32_t g_problemSelected = 0;
 static char g_textScratch[256] = {};
-static char g_lineScratch[144] = {};
+static char g_lineScratch[256] = {};
+static SyntaxRenderRun g_renderRuns[9000] = {};
 static BuildController g_buildController = {};
 static bool g_buildTerminalReported = false;
 static RunController g_runController = {};
 static bool g_runWaitingForBuild = false;
 static RunState g_lastRunState = RunState::Idle;
 static bool g_runTerminalReported = false;
+static bool g_syntaxIncrementalMarkerReported = false;
+static bool g_syntaxConvergenceMarkerReported = false;
+static bool g_syntaxFallbackMarkerReported = false;
+static bool g_syntaxRenderMarkerReported = false;
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
@@ -603,6 +627,22 @@ static void reportWorkspaceOpen(gx_app_context* ctx, bool success) {
 static void reportDocumentOpen(gx_app_context* ctx, bool success, bool duplicate) {
     if (success) {
         writeOutput(duplicate ? "Document already open" : "Document opened");
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        if (document && !duplicate) {
+            const char* languageMarker = document->syntax.language == guidexos::developer_studio::SyntaxLanguage::Cpp ? "CPP" :
+                (document->syntax.language == guidexos::developer_studio::SyntaxLanguage::C ? "C" : "NONE");
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_language=");
+            appendText(g_textScratch, sizeof(g_textScratch), languageMarker);
+            logMarker(ctx, g_textScratch);
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_cache_initialize=PASS");
+            if (!document->syntax.fallback) {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_full_tokenize=PASS lines=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), document->syntax.lineCount);
+                logMarker(ctx, g_textScratch);
+                if (SyntaxCacheValidate(&document->syntax, document->buffer.data, document->buffer.length))
+                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_span_validation=PASS");
+            }
+        }
         if (duplicate) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=PASS duplicate=TRUE");
         else logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=PASS");
     } else {
@@ -1155,6 +1195,42 @@ static uint32_t activeColumn(const TextBuffer& buffer, uint32_t line) {
     return buffer.caret - TextBufferLineStart(&buffer, line);
 }
 
+static void keepCaretVisible(const Document* document) {
+    if (!document) return;
+    const uint32_t line = activeLine(document->buffer);
+    const uint32_t lineStart = TextBufferLineStart(&document->buffer, line);
+    const uint32_t column = TextBufferVisualColumn(&document->buffer, lineStart, document->buffer.caret, kEditorTabWidth);
+    if (line < g_editorScrollLine) g_editorScrollLine = line;
+    if (line >= g_editorScrollLine + kVisibleEditorLines) g_editorScrollLine = line - kVisibleEditorLines + 1;
+    if (column < g_editorScrollColumn) g_editorScrollColumn = column;
+    if (column >= g_editorScrollColumn + kVisibleEditorColumns) g_editorScrollColumn = column - kVisibleEditorColumns + 1;
+}
+
+static void updateSyntaxAfterEdit(gx_app_context* ctx, Document* document) {
+    if (!document || !document->buffer.lastMutationValid) return;
+    const uint32_t startLine = document->buffer.lastMutationFirstLine;
+    DocumentUpdateSyntax(document);
+    if (document->syntax.lastUpdateWasIncremental && !g_syntaxIncrementalMarkerReported) {
+        g_syntaxIncrementalMarkerReported = true;
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_incremental_tokenize=PASS start=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), startLine);
+        appendText(g_textScratch, sizeof(g_textScratch), " count=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), document->syntax.lastRetokenizedLineCount);
+        logMarker(ctx, g_textScratch);
+        if (document->syntax.lastUpdateConverged && !g_syntaxConvergenceMarkerReported) {
+            g_syntaxConvergenceMarkerReported = true;
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_state_converged=PASS line=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), document->syntax.lastConvergenceLine);
+            logMarker(ctx, g_textScratch);
+        }
+    } else if (document->syntax.fallback && !g_syntaxFallbackMarkerReported) {
+        g_syntaxFallbackMarkerReported = true;
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_fallback=TRUE reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), SyntaxErrorName(document->syntax.fallbackCode));
+        logMarker(ctx, g_textScratch);
+    }
+}
+
 static void drawTabs(gx_app_context* ctx) {
     int x = 278;
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
@@ -1165,6 +1241,43 @@ static void drawTabs(gx_app_context* ctx) {
         drawText(ctx, x + 6, 69, g_textScratch);
         x += width + 4;
     }
+}
+
+static void drawEditorTextRun(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
+                              uint32_t lineEnd, const SyntaxRenderRun& run, uint32_t rowY) {
+    if (run.length == 0 || run.start > lineEnd - lineStart || run.length > lineEnd - lineStart - run.start) return;
+    const uint32_t runStart = lineStart + run.start;
+    const uint32_t runEnd = runStart + run.length;
+    const uint32_t visualStart = TextBufferVisualColumn(&buffer, lineStart, runStart, kEditorTabWidth);
+    const uint32_t visualEnd = TextBufferVisualColumn(&buffer, lineStart, runEnd, kEditorTabWidth);
+    const uint32_t visibleStart = g_editorScrollColumn;
+    const uint32_t visibleEnd = visibleStart + kVisibleEditorColumns;
+    if (visualEnd <= visibleStart || visualStart >= visibleEnd) return;
+    const uint32_t drawStart = visualStart > visibleStart ? visualStart : visibleStart;
+    const uint32_t drawStop = visualEnd < visibleEnd ? visualEnd : visibleEnd;
+    uint32_t output = 0;
+    uint32_t visual = visualStart;
+    for (uint32_t offset = runStart; offset < runEnd && output + 1 < sizeof(g_lineScratch); ++offset) {
+        const char value = buffer.data[offset];
+        const uint32_t width = value == '\t' ? kEditorTabWidth - (visual % kEditorTabWidth) : 1;
+        const uint32_t characterStart = visual;
+        const uint32_t characterEnd = visual + width;
+        if (characterEnd > drawStart && characterStart < drawStop) {
+            const uint32_t from = characterStart < drawStart ? drawStart : characterStart;
+            const uint32_t to = characterEnd > drawStop ? drawStop : characterEnd;
+            for (uint32_t column = from; column < to && output + 1 < sizeof(g_lineScratch); ++column)
+                g_lineScratch[output++] = value == '\t' ? ' ' : value;
+        }
+        visual = characterEnd;
+    }
+    if (output == 0) return;
+    g_lineScratch[output] = '\0';
+    const int x = kEditorTextX + static_cast<int>((drawStart - visibleStart) * 8u);
+    const SyntaxPalette& palette = DefaultSyntaxPalette();
+    const uint32_t color = SyntaxPaletteColor(palette, run.kind, run.selected);
+    if (run.kind != SyntaxTokenKind::PlainText || run.selected)
+        drawPanel(ctx, { x, static_cast<int>(rowY) - 12, static_cast<int>(output * 8u), 14 }, color);
+    drawText(ctx, x, rowY, g_lineScratch);
 }
 
 static void drawEditor(gx_app_context* ctx) {
@@ -1179,33 +1292,64 @@ static void drawEditor(gx_app_context* ctx) {
             drawText(ctx, 300, 180, g_textScratch);
         } else {
             drawText(ctx, 300, 150, "Open a workspace, or create/open a project.");
-            drawText(ctx, 300, 180, "The editor is bounded and intentionally syntax-free.");
+            drawText(ctx, 300, 180, "Highlighting is lexical, deterministic, and bounded.");
         }
         return;
     }
+    DocumentUpdateSyntax(document);
     compose(g_textScratch, sizeof(g_textScratch), "Document: ", document->name, document->buffer.dirty ? "  Modified" : "");
+    appendText(g_textScratch, sizeof(g_textScratch), "  Syntax: ");
+    appendText(g_textScratch, sizeof(g_textScratch), SyntaxLanguageName(document->syntax.language));
+    if (document->syntax.fallback) {
+        appendText(g_textScratch, sizeof(g_textScratch), " (disabled: ");
+        appendText(g_textScratch, sizeof(g_textScratch), SyntaxErrorName(document->syntax.fallbackCode));
+        appendText(g_textScratch, sizeof(g_textScratch), ")");
+    }
     drawText(ctx, 300, 96, g_textScratch);
-    uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
     if (g_editorScrollLine >= lineCount) g_editorScrollLine = lineCount == 0 ? 0 : lineCount - 1;
+    uint32_t visibleLinesDrawn = 0;
     for (uint32_t row = 0; row < kVisibleEditorLines; ++row) {
-        uint32_t line = g_editorScrollLine + row;
+        const uint32_t line = g_editorScrollLine + row;
         if (line >= lineCount) break;
-        uint32_t start = TextBufferLineStart(&document->buffer, line);
-        uint32_t end = TextBufferLineEnd(&document->buffer, line);
-        uint32_t count = end > start ? end - start : 0;
-        if (count >= sizeof(g_lineScratch)) count = sizeof(g_lineScratch) - 1;
-        for (uint32_t i = 0; i < count; ++i) g_lineScratch[i] = document->buffer.data[start + i];
-        g_lineScratch[count] = '\0';
+        ++visibleLinesDrawn;
+        const uint32_t start = TextBufferLineStart(&document->buffer, line);
+        const uint32_t end = TextBufferLineEnd(&document->buffer, line);
+        const uint32_t length = end > start ? end - start : 0;
         compose(g_textScratch, sizeof(g_textScratch), "", "", "");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), line + 1);
         appendText(g_textScratch, sizeof(g_textScratch), " ");
         drawText(ctx, kEditorLineNumberX, kEditorTop + static_cast<int>(row) * kEditorLineHeight, g_textScratch);
-        drawText(ctx, kEditorTextX, kEditorTop + static_cast<int>(row) * kEditorLineHeight, g_lineScratch);
+        uint32_t spanCount = 0;
+        const SyntaxTokenSpan* spans = SyntaxCacheLineSpans(&document->syntax, line, &spanCount);
+        SyntaxSelection selection = { false, 0, 0 };
+        uint32_t runCount = SyntaxBuildRenderRuns(spans, spanCount, length, selection, g_renderRuns,
+                                                  sizeof(g_renderRuns) / sizeof(g_renderRuns[0]));
+        if (runCount == 0 && length != 0) {
+            g_renderRuns[0].start = 0;
+            g_renderRuns[0].length = length;
+            g_renderRuns[0].kind = SyntaxTokenKind::PlainText;
+            g_renderRuns[0].selected = false;
+            runCount = 1;
+        }
+        for (uint32_t run = 0; run < runCount; ++run)
+            drawEditorTextRun(ctx, document->buffer, start, end, g_renderRuns[run],
+                              kEditorTop + static_cast<int>(row) * kEditorLineHeight);
     }
-    uint32_t line = activeLine(document->buffer);
-    uint32_t column = activeColumn(document->buffer, line);
+    if (!g_syntaxRenderMarkerReported) {
+        g_syntaxRenderMarkerReported = true;
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_render_visible=PASS lines=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), visibleLinesDrawn);
+        logMarker(ctx, g_textScratch);
+    }
+    const uint32_t line = activeLine(document->buffer);
+    const uint32_t column = TextBufferVisualColumn(&document->buffer, TextBufferLineStart(&document->buffer, line),
+                                                   document->buffer.caret, kEditorTabWidth);
     if (line >= g_editorScrollLine && line < g_editorScrollLine + kVisibleEditorLines) {
-        drawPanel(ctx, { kEditorTextX + static_cast<int>(column) * 8, kEditorTop - 12 + static_cast<int>(line - g_editorScrollLine) * kEditorLineHeight, 2, 14 }, 0xD6E4FFu);
+        const uint32_t caretColumn = column > g_editorScrollColumn ? column - g_editorScrollColumn : 0;
+        if (caretColumn <= kVisibleEditorColumns)
+            drawPanel(ctx, { kEditorTextX + static_cast<int>(caretColumn * 8u),
+                             kEditorTop - 12 + static_cast<int>(line - g_editorScrollLine) * kEditorLineHeight, 2, 14 }, 0xD6E4FFu);
     }
 }
 
@@ -1391,6 +1535,7 @@ static void selectDocumentTab(int x) {
         if (x >= tabX && x < tabX + 126) {
             g_controller.model.activeDocument = i;
             g_editorFocused = true;
+            keepCaretVisible(&g_controller.model.documents[i]);
             return;
         }
         tabX += 130;
@@ -1408,8 +1553,10 @@ static void placeCaretFromMouse(Document* document, int x, int y) {
     if (column < 0) column = 0;
     uint32_t start = TextBufferLineStart(&document->buffer, line);
     uint32_t end = TextBufferLineEnd(&document->buffer, line);
-    uint32_t requested = start + static_cast<uint32_t>(column);
+    const uint32_t requested = TextBufferOffsetForVisualColumn(&document->buffer, start, end,
+                                                               g_editorScrollColumn + static_cast<uint32_t>(column), kEditorTabWidth);
     document->buffer.caret = requested > end ? end : requested;
+    keepCaretVisible(document);
 }
 
 static bool navigateSelectedProblem(gx_app_context* ctx) {
@@ -1633,10 +1780,9 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         char value = mapKeyToChar(keyCode, modifiers);
         if (value != '\0') TextBufferInsert(&document->buffer, &value, 1);
     }
+    updateSyntaxAfterEdit(ctx, document);
     markDirtyIfNeeded(ctx, wasDirty);
-    uint32_t line = activeLine(document->buffer);
-    if (line < g_editorScrollLine) g_editorScrollLine = line;
-    if (line >= g_editorScrollLine + kVisibleEditorLines) g_editorScrollLine = line - kVisibleEditorLines + 1;
+    keepCaretVisible(document);
     (void)running;
 }
 
@@ -1778,6 +1924,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_workspaceSwitchPending = false;
     g_pendingDocument = kMaxOpenDocuments;
     g_editorScrollLine = 0;
+    g_editorScrollColumn = 0;
+    g_syntaxIncrementalMarkerReported = false;
+    g_syntaxConvergenceMarkerReported = false;
+    g_syntaxFallbackMarkerReported = false;
+    g_syntaxRenderMarkerReported = false;
     OutputServiceInit(&g_outputService);
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
     g_runOperationId = 0;
