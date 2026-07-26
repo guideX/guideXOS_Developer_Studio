@@ -80,6 +80,10 @@ int main() {
     HostedDevelopmentRunService service = { &fake, prepareRun, startRun, pollRun, closeRun, releaseRun };
     RunController controller = {};
     assert(RunControllerInit(&controller));
+    static OutputService output;
+    OutputServiceInit(&output);
+    const uint64_t operationId = OutputServiceBeginOperation(&output, OutputOperationType::Run, project.projectId);
+    RunControllerAttachOutput(&controller, &output, operationId);
     assert(RunControllerPrepare(&controller, service, request, &error));
     assert(controller.state == RunState::Prepared && RunControllerIsActive(&controller));
     assert(RunControllerStart(&controller, service, &error));
@@ -90,6 +94,10 @@ int main() {
     assert(RunControllerPoll(&controller, service));
     assert(controller.state == RunState::Completed && !RunControllerIsActive(&controller));
     assert(fake.released);
+    assert(OutputServiceProblemCount(&output, project.projectId) == 0);
+    uint32_t terminalCount = 0;
+    for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
+    assert(terminalCount == 1);
 
     FakeRun startFailure;
     startFailure.startFails = true;

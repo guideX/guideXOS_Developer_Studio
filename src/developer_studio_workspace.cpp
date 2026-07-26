@@ -59,6 +59,16 @@ static bool isWithinRoot(const WorkspaceModel& model, const char* path) {
     return pathLength == rootLength || probe[rootLength] == '/';
 }
 
+static bool equalIdentifier(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t index = 0;
+    while (left[index] != '\0' && right[index] != '\0') {
+        if (left[index] != right[index]) return false;
+        ++index;
+    }
+    return left[index] == right[index];
+}
+
 } // namespace
 
 void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFileSystem& fileSystem) {
@@ -247,6 +257,68 @@ bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char
     bool duplicate = false;
     if (!WorkspaceModelAddDocument(&controller->model, normalized, bytes, count, &error, &duplicate)) { setControllerError(controller, error); return false; }
     controller->lastError = duplicate ? ModelErrorCode::DuplicateDocument : ModelErrorCode::None;
+    return true;
+}
+
+bool WorkspaceControllerSetCaretPosition(WorkspaceController* controller, uint32_t documentIndex, uint32_t line, uint32_t column,
+                                          bool* outLocationClamped, OutputErrorCode* error) {
+    if (outLocationClamped) *outLocationClamped = false;
+    if (error) *error = OutputErrorCode::None;
+    if (!controller || documentIndex >= kMaxOpenDocuments || !controller->model.documents[documentIndex].used) {
+        if (error) *error = OutputErrorCode::NavigationOpenFailed;
+        return false;
+    }
+    TextBuffer& buffer = controller->model.documents[documentIndex].buffer;
+    const uint32_t count = TextBufferLineCount(&buffer);
+    uint32_t zeroLine = line > 0 ? line - 1 : 0;
+    if (zeroLine >= count) {
+        zeroLine = count == 0 ? 0 : count - 1;
+        if (outLocationClamped) *outLocationClamped = true;
+    }
+    const uint32_t start = TextBufferLineStart(&buffer, zeroLine);
+    const uint32_t end = TextBufferLineEnd(&buffer, zeroLine);
+    const uint32_t lineBytes = end >= start ? end - start : 0;
+    uint32_t zeroColumn = column > 0 ? column - 1 : 0;
+    if (zeroColumn > lineBytes) {
+        zeroColumn = lineBytes;
+        if (outLocationClamped) *outLocationClamped = true;
+    }
+    buffer.caret = start + zeroColumn;
+    if (outLocationClamped && *outLocationClamped && error) *error = OutputErrorCode::NavigationLocationClamped;
+    return true;
+}
+
+bool WorkspaceControllerOpenDocumentAtLocation(WorkspaceController* controller, const char* projectId, const char* relativePath,
+                                               uint32_t line, uint32_t column, uint32_t* outDocumentIndex, OutputErrorCode* error) {
+    if (outDocumentIndex) *outDocumentIndex = kMaxOpenDocuments;
+    if (error) *error = OutputErrorCode::None;
+    if (!controller || !controller->model.open || !controller->model.hasProject) {
+        if (error) *error = OutputErrorCode::NavigationNoProject;
+        return false;
+    }
+    if (!projectId || !equalIdentifier(projectId, controller->model.project.projectId)) {
+        if (error) *error = OutputErrorCode::DiagnosticProjectMismatch;
+        return false;
+    }
+    if (!relativePath || relativePath[0] == '\0' || PathContainsTraversal(relativePath) || relativePath[0] == '/' || relativePath[0] == '\\' || relativePath[1] == ':') {
+        if (error) *error = OutputErrorCode::DiagnosticPathOutsideProject;
+        return false;
+    }
+    char absolute[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(controller->model.rootPath, relativePath, absolute, sizeof(absolute))) {
+        if (error) *error = OutputErrorCode::DiagnosticPathOutsideProject;
+        return false;
+    }
+    if (!WorkspaceControllerOpenDocument(controller, relativePath)) {
+        if (error) *error = OutputErrorCode::DiagnosticFileNotFound;
+        return false;
+    }
+    const int index = FindOpenDocument(&controller->model, absolute);
+    if (index < 0) { if (error) *error = OutputErrorCode::NavigationOpenFailed; return false; }
+    controller->model.activeDocument = static_cast<uint32_t>(index);
+    bool clamped = false;
+    if (!WorkspaceControllerSetCaretPosition(controller, static_cast<uint32_t>(index), line, column, &clamped, error)) return false;
+    if (outDocumentIndex) *outDocumentIndex = static_cast<uint32_t>(index);
     return true;
 }
 

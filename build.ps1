@@ -77,7 +77,7 @@ try {
     }
     Invoke-Checked "g++" @(
         "-std=c++11", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_run.cpp", "tests\run_test.cpp",
+        "-Isrc", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "tests\run_test.cpp",
         "-o", $RunTest
     )
     & $RunTest
@@ -93,6 +93,7 @@ try {
     $projectObject = Join-Path $ObjectRoot "developer_studio_projects.o"
     $workspaceObject = Join-Path $ObjectRoot "developer_studio_workspace.o"
     $buildObject = Join-Path $ObjectRoot "developer_studio_build.o"
+    $outputObject = Join-Path $ObjectRoot "developer_studio_output.o"
     $runObject = Join-Path $ObjectRoot "developer_studio_run.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
@@ -100,12 +101,13 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_projects.cpp"), "-o", $projectObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_workspace.cpp"), "-o", $workspaceObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_build.cpp"), "-o", $buildObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_output.cpp"), "-o", $outputObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_run.cpp"), "-o", $runObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $modelObject, $projectObject, $workspaceObject, $buildObject, $runObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }

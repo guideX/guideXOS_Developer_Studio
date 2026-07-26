@@ -24,6 +24,50 @@ static bool copyText(char* output, uint32_t outputSize, const char* input) {
     return true;
 }
 
+static void appendText(char* output, uint32_t outputSize, const char* input) {
+    if (!output || outputSize == 0 || !input) return;
+    uint32_t offset = textLength(output, outputSize);
+    for (uint32_t i = 0; offset + 1 < outputSize && input[i] != '\0'; ++i) output[offset++] = input[i];
+    output[offset] = '\0';
+}
+
+static void appendUnsigned(char* output, uint32_t outputSize, uint64_t value) {
+    char digits[24] = {};
+    uint32_t count = 0;
+    if (value == 0) digits[count++] = '0';
+    while (value != 0 && count < sizeof(digits)) { digits[count++] = static_cast<char>('0' + (value % 10)); value /= 10; }
+    while (count > 0 && textLength(output, outputSize) + 1 < outputSize) {
+        const uint32_t offset = textLength(output, outputSize);
+        output[offset] = digits[--count];
+        output[offset + 1] = '\0';
+    }
+}
+
+static void publishTerminal(BuildController* controller) {
+    if (!controller || controller->terminalPublished || !controller->output || controller->operationId == 0) return;
+    const BuildResult& result = controller->result;
+    char text[512] = {};
+    appendText(text, sizeof(text), result.state == BuildState::Succeeded ? "Build Succeeded" : "Build Failed");
+    appendText(text, sizeof(text), " | elapsed_ms=");
+    appendUnsigned(text, sizeof(text), result.elapsedMilliseconds);
+    appendText(text, sizeof(text), " | warnings=");
+    appendUnsigned(text, sizeof(text), result.warningCount);
+    appendText(text, sizeof(text), " | errors=");
+    appendUnsigned(text, sizeof(text), result.errorCount);
+    appendText(text, sizeof(text), " | artifact=");
+    appendText(text, sizeof(text), result.artifactPath[0] ? result.artifactPath : "none");
+    if (result.artifactSha256[0]) {
+        appendText(text, sizeof(text), " | sha256=");
+        appendText(text, sizeof(text), result.artifactSha256);
+    }
+    if (result.state != BuildState::Succeeded) {
+        appendText(text, sizeof(text), " | failure=");
+        appendText(text, sizeof(text), BuildErrorName(result.error));
+    }
+    OutputServiceCompleteOperation(controller->output, controller->operationId, result.state == BuildState::Succeeded, text, nullptr);
+    controller->terminalPublished = true;
+}
+
 static void clearResult(BuildResult* result) {
     if (!result) return;
     *result = BuildResult();
@@ -36,7 +80,8 @@ static void setResultFailure(BuildController* controller, BuildState state, Buil
     controller->result.state = state;
     controller->result.error = error;
     controller->active = false;
-    controller->terminalPublished = true;
+    controller->terminalPublished = false;
+    publishTerminal(controller);
 }
 
 static bool appendArtifactPath(const Project& project, char* output, uint32_t outputSize) {
@@ -147,11 +192,12 @@ bool BuildControllerInit(BuildController* controller) {
     return true;
 }
 
-bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error) {
+bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output) {
     if (error) *error = BuildErrorCode::None;
     if (!controller || !workspace) { if (error) *error = BuildErrorCode::InvalidRequest; return false; }
     if (controller->active) { if (error) *error = BuildErrorCode::AlreadyRunning; return false; }
     *controller = BuildController();
+    controller->output = output;
     controller->state = BuildState::Validating;
     controller->result.state = BuildState::Validating;
     BuildErrorCode local = BuildErrorCode::None;
@@ -173,6 +219,24 @@ bool BuildControllerStart(BuildController* controller, WorkspaceController* work
         setResultFailure(controller, BuildState::Failed, local);
         if (error) *error = local;
         return false;
+    }
+    if (output) {
+        OutputServiceClearProblemsForProject(output, controller->request.projectId);
+        controller->operationId = OutputServiceBeginOperation(output, OutputOperationType::Build, controller->request.projectId);
+        if (controller->operationId != 0) {
+            OutputServiceAppendText(output, controller->operationId, OutputSource::Build, OutputSeverity::Information,
+                                    OutputCategory::BuildLifecycle, OutputStream::Unknown, "Build Started", controller->request.projectId, nullptr);
+            char projectText[192] = {};
+            copyText(projectText, sizeof(projectText), "Project: ");
+            appendText(projectText, sizeof(projectText), controller->request.projectId);
+            OutputServiceAppendText(output, controller->operationId, OutputSource::Build, OutputSeverity::Information,
+                                    OutputCategory::BuildLifecycle, OutputStream::Unknown, projectText, controller->request.projectId, nullptr);
+            char targetText[192] = {};
+            copyText(targetText, sizeof(targetText), "Target: ");
+            appendText(targetText, sizeof(targetText), controller->request.targetProfile);
+            OutputServiceAppendText(output, controller->operationId, OutputSource::Build, OutputSeverity::Information,
+                                    OutputCategory::BuildLifecycle, OutputStream::Unknown, targetText, controller->request.projectId, nullptr);
+        }
     }
     controller->state = BuildState::Preparing;
     controller->result.state = BuildState::Preparing;
@@ -201,12 +265,34 @@ bool BuildControllerPoll(BuildController* controller, const HostedBuildService& 
     } else {
         controller->result = snapshot;
         controller->state = snapshot.state;
+        if (controller->output && controller->operationId != 0) {
+            const uint32_t count = snapshot.outputCount;
+            const uint32_t start = controller->publishedOutputCount <= count ? controller->publishedOutputCount : 0;
+            for (uint32_t i = start; i < count; ++i) {
+                OutputServiceAppendBuildLine(controller->output, controller->operationId, controller->request.projectRoot,
+                                              controller->request.projectId,
+                                              snapshot.output[i].standardError ? OutputStream::StandardError : OutputStream::StandardOutput,
+                                              snapshot.output[i].text, nullptr);
+            }
+            controller->publishedOutputCount = count;
+            if (snapshot.outputTruncated && !controller->outputTruncationPublished) {
+                OutputRecord record = {};
+                record.source = OutputSource::Build;
+                record.severity = OutputSeverity::Warning;
+                record.category = OutputCategory::BuildLifecycle;
+                record.stream = OutputStream::Unknown;
+                record.isTruncated = true;
+                copyText(record.text, sizeof(record.text), "Build output was truncated by the host.");
+                OutputServiceAppendRecord(controller->output, controller->operationId, record, nullptr);
+                controller->outputTruncationPublished = true;
+            }
+        }
     }
     if (!completed) return true;
     controller->active = false;
-    controller->terminalPublished = true;
     if (service.release) service.release(service.userData, controller->handle);
     controller->handle = 0;
+    publishTerminal(controller);
     return true;
 }
 

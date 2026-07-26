@@ -74,8 +74,12 @@ int main() {
     assert(BuildControllerInit(&controller));
     FakeBuild fake;
     HostedBuildService service = { &fake, startBuild, pollBuild, releaseBuild };
-    assert(BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::SaveAll, &error));
+    static OutputService output;
+    OutputServiceInit(&output);
+    assert(BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::SaveAll, &error, &output));
     assert(controller.state == BuildState::Running);
+    assert(controller.operationId != 0);
+    assert(OutputServiceFilteredCount(&output, OutputChannel::Build) >= 3);
     assert(!BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::SaveAll, &error) && error == BuildErrorCode::AlreadyRunning);
     assert(BuildControllerPoll(&controller, service));
     assert(BuildControllerIsActive(&controller));
@@ -83,6 +87,9 @@ int main() {
     assert(!BuildControllerIsActive(&controller));
     assert(controller.state == BuildState::Succeeded);
     assert(fake.released);
+    uint32_t terminalCount = 0;
+    for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
+    assert(terminalCount == 1);
 
     workspace.model.documents[0].used = true;
     std::strcpy(workspace.model.documents[0].path, "D:/work/hello/src/main.cpp");

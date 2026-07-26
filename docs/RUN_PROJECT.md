@@ -53,6 +53,13 @@ temporary App Model entry, and the Studio releases the generation-bound handle.
 
 ## Diagnostics and tests
 
+Run lifecycle messages use the same Output Service as Build, but retain a
+separate Run operation and channel. Build-before-Run remains a separate Build
+operation; Build compiler Problems are not copied into Run and ordinary Run
+lifecycle messages are not Problems. Run publishes one terminal structured
+record and keeps bounded prior history. Native application output capture is
+deferred because the current ABI has no safe development logging function.
+
 Stable markers are:
 
 ```text

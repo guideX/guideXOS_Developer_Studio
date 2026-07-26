@@ -1,6 +1,7 @@
 #pragma once
 
 #include "developer_studio_workspace.h"
+#include "developer_studio_output.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -103,6 +104,10 @@ struct BuildController {
     bool active;
     bool terminalPublished;
     uint64_t handle;
+    uint64_t operationId;
+    uint32_t publishedOutputCount;
+    bool outputTruncationPublished;
+    OutputService* output;
     BuildRequest request;
     BuildResult result;
 };
@@ -111,7 +116,7 @@ const char* BuildStateName(BuildState state);
 const char* BuildErrorName(BuildErrorCode error);
 bool BuildRequestFromProject(const Project& project, BuildRequest* request, BuildErrorCode* error);
 bool BuildControllerInit(BuildController* controller);
-bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error);
+bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output = nullptr);
 bool BuildControllerPoll(BuildController* controller, const HostedBuildService& service);
 bool BuildControllerIsActive(const BuildController* controller);
 bool WorkspaceControllerHasDirtyProjectDocuments(const WorkspaceController* controller);

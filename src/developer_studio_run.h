@@ -78,6 +78,8 @@ struct RunController {
     bool closeRequested;
     bool terminalPublished;
     uint64_t handle;
+    uint64_t operationId;
+    OutputService* output;
     RunRequest request;
     RunResult result;
 };
@@ -86,6 +88,7 @@ const char* RunStateName(RunState state);
 const char* RunErrorName(RunErrorCode error);
 bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRequest* request, RunErrorCode* error);
 bool RunControllerInit(RunController* controller);
+void RunControllerAttachOutput(RunController* controller, OutputService* output, uint64_t operationId);
 bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunService& service, const RunRequest& request, RunErrorCode* error);
 bool RunControllerStart(RunController* controller, const HostedDevelopmentRunService& service, RunErrorCode* error);
 bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunService& service);

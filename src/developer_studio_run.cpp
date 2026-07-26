@@ -20,12 +20,48 @@ static bool copyText(char* output, uint32_t outputSize, const char* input) {
     return true;
 }
 
+static void appendUnsigned(char* output, uint32_t outputSize, int32_t value) {
+    if (value < 0) { copyText(output, outputSize, "-"); value = -(value + 1) + 1; }
+    char digits[16] = {};
+    uint32_t count = 0;
+    uint32_t magnitude = static_cast<uint32_t>(value);
+    if (magnitude == 0) digits[count++] = '0';
+    while (magnitude != 0 && count < sizeof(digits)) { digits[count++] = static_cast<char>('0' + (magnitude % 10)); magnitude /= 10; }
+    while (count > 0 && textLength(output, outputSize) + 1 < outputSize) {
+        uint32_t offset = textLength(output, outputSize);
+        output[offset] = digits[--count];
+        output[offset + 1] = '\0';
+    }
+}
+
+static void appendRunText(RunController* controller, OutputSeverity severity, const char* text) {
+    if (!controller || !controller->output || controller->operationId == 0) return;
+    OutputServiceAppendText(controller->output, controller->operationId, OutputSource::Run, severity,
+                            OutputCategory::RunLifecycle, OutputStream::Unknown, text, controller->request.projectId, nullptr);
+}
+
+static void publishTerminal(RunController* controller) {
+    if (!controller || controller->terminalPublished || !controller->output || controller->operationId == 0) return;
+    char text[256] = {};
+    copyText(text, sizeof(text), controller->result.state == RunState::Completed && controller->result.exitCode == 0 ? "Run Succeeded" : "Run Failed");
+    const uint32_t offset = textLength(text, sizeof(text));
+    if (offset + 1 < sizeof(text)) { text[offset] = ' '; text[offset + 1] = '\0'; }
+    const uint32_t next = textLength(text, sizeof(text));
+    if (next + 10 < sizeof(text)) copyText(text + next, sizeof(text) - next, "exit_code=");
+    appendUnsigned(text, sizeof(text), controller->result.exitCode);
+    OutputServiceCompleteOperation(controller->output, controller->operationId,
+                                   controller->result.state == RunState::Completed && controller->result.exitCode == 0,
+                                   text, nullptr);
+    controller->terminalPublished = true;
+}
+
 static void setFailure(RunController* controller, RunState state, RunErrorCode error) {
     controller->state = state;
     controller->result.state = state;
     controller->result.error = error;
     controller->active = false;
-    controller->terminalPublished = true;
+    controller->terminalPublished = false;
+    publishTerminal(controller);
 }
 
 static bool isTerminal(RunState state) {
@@ -101,13 +137,23 @@ bool RunControllerInit(RunController* controller) {
     return true;
 }
 
+void RunControllerAttachOutput(RunController* controller, OutputService* output, uint64_t operationId) {
+    if (!controller) return;
+    controller->output = output;
+    controller->operationId = operationId;
+}
+
 bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunService& service, const RunRequest& request, RunErrorCode* error) {
     if (error) *error = RunErrorCode::None;
     if (!controller || controller->active || !service.prepare) {
         if (error) *error = controller && controller->active ? RunErrorCode::AlreadyActive : RunErrorCode::ServiceUnavailable;
         return false;
     }
+    OutputService* output = controller->output;
+    const uint64_t operationId = controller->operationId;
     *controller = RunController();
+    controller->output = output;
+    controller->operationId = operationId;
     controller->state = RunState::Validating;
     controller->result.state = RunState::Validating;
     controller->request = request;
@@ -126,6 +172,7 @@ bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunS
     controller->state = result.state == RunState::Registered ? RunState::Prepared : result.state;
     controller->result.state = controller->state;
     controller->active = true;
+    appendRunText(controller, OutputSeverity::Information, "Temporary deployment prepared");
     return true;
 }
 
@@ -148,6 +195,7 @@ bool RunControllerStart(RunController* controller, const HostedDevelopmentRunSer
     controller->result = result;
     controller->state = result.state == RunState::Idle ? RunState::Launching : result.state;
     controller->result.state = controller->state;
+    appendRunText(controller, OutputSeverity::Information, "Application launching");
     return true;
 }
 
@@ -156,19 +204,25 @@ bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunServ
     RunResult result = controller->result;
     if (!service.poll(service.userData, controller->handle, &result)) {
         result.error = result.error == RunErrorCode::None ? RunErrorCode::ServiceUnavailable : result.error;
-        setFailure(controller, RunState::Failed, result.error);
         controller->result = result;
+        setFailure(controller, RunState::Failed, result.error);
         if (service.release) service.release(service.userData, controller->handle);
         controller->handle = 0;
         return false;
     }
+    const RunState previous = controller->state;
     controller->result = result;
     controller->state = result.state;
+    if (previous != result.state) {
+        if (result.state == RunState::Running) appendRunText(controller, OutputSeverity::Information, "Application running");
+        else if (result.state == RunState::Exited) appendRunText(controller, OutputSeverity::Information, "Application exited");
+        else if (result.state == RunState::CleaningUp) appendRunText(controller, OutputSeverity::Information, "Deployment cleanup started");
+    }
     if (isTerminal(result.state) && result.cleanupComplete) {
-        controller->terminalPublished = true;
         controller->active = false;
         if (service.release) service.release(service.userData, controller->handle);
         controller->handle = 0;
+        publishTerminal(controller);
     }
     return true;
 }
@@ -177,6 +231,7 @@ bool RunControllerRequestClose(RunController* controller, const HostedDevelopmen
     if (!controller || !controller->active || controller->handle == 0 || !service.requestClose) return false;
     if (!service.requestClose(service.userData, controller->handle)) return false;
     controller->closeRequested = true;
+    appendRunText(controller, OutputSeverity::Information, "Application close requested");
     return true;
 }
 

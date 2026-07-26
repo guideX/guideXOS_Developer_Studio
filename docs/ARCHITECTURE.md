@@ -167,6 +167,15 @@ The appended ABI slots are `build_project_start`, `build_project_poll`, and `bui
 
 The complete state, resolution, limits, diagnostics, and outcome matrix are documented in [BUILD_PROJECT.md](BUILD_PROJECT.md).
 
+## Output and Diagnostics
+
+BuildController and RunController publish to the shared bounded
+`OutputService`, which retains structured records and exposes channel filters
+and a Problems projection to the UI. The service is independent of widgets;
+the parser stores only project-relative diagnostic paths after containment
+validation. See [OUTPUT_AND_DIAGNOSTICS.md](OUTPUT_AND_DIAGNOSTICS.md) for the
+record schema, limits, lifecycle, supported formats, and navigation policy.
+
 ## Run Project vertical slice
 
 Run Project is an explicit build-before-run sequence:

@@ -3,6 +3,7 @@
 #include "developer_studio_models.h"
 #include "developer_studio_build.h"
 #include "developer_studio_run.h"
+#include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 
 namespace {
@@ -34,6 +35,31 @@ using guidexos::developer_studio::RunRequest;
 using guidexos::developer_studio::RunResult;
 using guidexos::developer_studio::RunState;
 using guidexos::developer_studio::RunStateName;
+using guidexos::developer_studio::OutputCategory;
+using guidexos::developer_studio::OutputChannel;
+using guidexos::developer_studio::OutputErrorCode;
+using guidexos::developer_studio::OutputOperationType;
+using guidexos::developer_studio::OutputRecord;
+using guidexos::developer_studio::OutputService;
+using guidexos::developer_studio::OutputServiceActiveChannel;
+using guidexos::developer_studio::OutputServiceAppendText;
+using guidexos::developer_studio::OutputServiceBeginOperation;
+using guidexos::developer_studio::OutputServiceClearChannel;
+using guidexos::developer_studio::OutputServiceCompleteOperation;
+using guidexos::developer_studio::OutputServiceFilteredAt;
+using guidexos::developer_studio::OutputServiceFilteredCount;
+using guidexos::developer_studio::OutputServiceInit;
+using guidexos::developer_studio::OutputServiceProblemAt;
+using guidexos::developer_studio::OutputServiceProblemCount;
+using guidexos::developer_studio::OutputServiceProblemCounts;
+using guidexos::developer_studio::OutputServiceSelectActiveChannel;
+using guidexos::developer_studio::OutputSeverity;
+using guidexos::developer_studio::OutputSource;
+using guidexos::developer_studio::OutputStream;
+using guidexos::developer_studio::OutputSeverityName;
+using guidexos::developer_studio::OutputSourceName;
+using guidexos::developer_studio::OutputChannelName;
+using guidexos::developer_studio::OutputErrorName;
 using guidexos::developer_studio::Document;
 using guidexos::developer_studio::FileInfo;
 using guidexos::developer_studio::FileInfoKind;
@@ -85,13 +111,15 @@ using guidexos::developer_studio::kMaxProjectDisplayNameBytes;
 using guidexos::developer_studio::kMaxProjectIdBytes;
 using guidexos::developer_studio::kMaxProjectFileBytes;
 using guidexos::developer_studio::kMaxWorkspaceEntries;
+using guidexos::developer_studio::WorkspaceControllerOpenDocumentAtLocation;
+using guidexos::developer_studio::WorkspaceControllerSetCaretPosition;
 
-static const gx_rect kWindowRect = { 0, 0, 960, 640 };
+static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
 static const gx_rect kExplorerRect = { 0, 48, 270, 472 };
 static const gx_rect kEditorRect = { 270, 48, 690, 472 };
-static const gx_rect kOutputRect = { 0, 520, 960, 60 };
-static const gx_rect kStatusRect = { 0, 580, 960, 60 };
+static const gx_rect kOutputRect = { 0, 520, 960, 120 };
+static const gx_rect kStatusRect = { 0, 640, 960, 60 };
 static const int kEntryTop = 104;
 static const int kEntryHeight = 18;
 static const int kEditorTop = 86;
@@ -99,7 +127,6 @@ static const int kEditorLineHeight = 16;
 static const int kEditorLineNumberX = 282;
 static const int kEditorTextX = 320;
 static const int kVisibleEditorLines = 26;
-static const int kMaxOutputLines = 4;
 static const int kMaxPromptBytes = 240;
 
 enum class InputMode {
@@ -143,13 +170,17 @@ static uint64_t g_lastExplorerClickTick = 0;
 static char g_prompt[kMaxPathBytes] = {};
 static char g_pendingWorkspacePath[kMaxPathBytes] = {};
 static ProjectDialog g_projectDialog = {};
-static char g_output[kMaxOutputLines][96] = {};
-static uint32_t g_outputCount = 0;
-static uint32_t g_outputNext = 0;
+static OutputService g_outputService = {};
+static uint64_t g_studioOperationId = 0;
+static uint64_t g_runOperationId = 0;
+static bool g_outputProblemsTab = false;
+static bool g_outputFocused = false;
+static uint32_t g_outputScroll = 0;
+static bool g_outputFollowTail = true;
+static uint32_t g_problemSelected = 0;
 static char g_textScratch[256] = {};
 static char g_lineScratch[144] = {};
 static BuildController g_buildController = {};
-static uint32_t g_lastBuildOutputCount = 0;
 static bool g_buildTerminalReported = false;
 static RunController g_runController = {};
 static bool g_runWaitingForBuild = false;
@@ -215,11 +246,31 @@ static void appendSigned(char* output, uint32_t outputSize, int32_t value) {
     }
 }
 
+static uint64_t activeOutputOperation() {
+    if (g_runOperationId != 0 && (RunControllerIsActive(&g_runController) || g_runWaitingForBuild)) return g_runOperationId;
+    if (g_buildController.operationId != 0 && BuildControllerIsActive(&g_buildController)) return g_buildController.operationId;
+    return g_studioOperationId;
+}
+
 static void writeOutput(const char* message) {
     if (!message) return;
-    copyText(g_output[g_outputNext], sizeof(g_output[g_outputNext]), message);
-    g_outputNext = (g_outputNext + 1) % kMaxOutputLines;
-    if (g_outputCount < kMaxOutputLines) ++g_outputCount;
+    const uint64_t operationId = activeOutputOperation();
+    OutputSource source = OutputSource::DeveloperStudio;
+    OutputCategory category = OutputCategory::General;
+    if (operationId == g_buildController.operationId && operationId != 0) { source = OutputSource::Build; category = OutputCategory::BuildLifecycle; }
+    else if (operationId == g_runOperationId && operationId != 0) { source = OutputSource::Run; category = OutputCategory::RunLifecycle; }
+    OutputServiceAppendText(&g_outputService, operationId, source, OutputSeverity::Information, category,
+                            OutputStream::Unknown, message,
+                            g_controller.model.hasProject ? g_controller.model.project.projectId : nullptr, nullptr);
+    g_outputFollowTail = true;
+}
+
+static void writeStudioOutput(const char* message) {
+    if (!message || g_studioOperationId == 0) return;
+    OutputServiceAppendText(&g_outputService, g_studioOperationId, OutputSource::DeveloperStudio,
+                            OutputSeverity::Information, OutputCategory::General, OutputStream::Unknown, message,
+                            g_controller.model.hasProject ? g_controller.model.project.projectId : nullptr, nullptr);
+    g_outputFollowTail = true;
 }
 
 static void logMarker(gx_app_context* ctx, const char* marker) {
@@ -616,12 +667,7 @@ static bool isArtifactValidationError(BuildErrorCode error) {
 static void reportBuildResult(gx_app_context* ctx) {
     const BuildResult& result = g_buildController.result;
     const bool success = result.state == BuildState::Succeeded;
-    writeOutput(success ? "Build Succeeded" : "Build Failed");
-    compose(g_textScratch, sizeof(g_textScratch), "Build: ", BuildStateName(result.state), "");
-    writeOutput(g_textScratch);
     if (success) {
-        compose(g_textScratch, sizeof(g_textScratch), "Artifact: ", result.artifactPath, "");
-        writeOutput(g_textScratch);
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_artifact_validation=PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=SUCCEEDED");
     } else {
@@ -655,27 +701,47 @@ static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
     }
     BuildErrorCode error = BuildErrorCode::None;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_request=PASS");
-    if (!BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error)) {
+    g_buildTerminalReported = false;
+    if (!BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error, &g_outputService)) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(error));
         if (g_buildController.result.state == BuildState::Failed || g_buildController.result.state == BuildState::Cancelled) reportBuildResult(ctx);
         return false;
     }
-    g_lastBuildOutputCount = 0;
-    g_buildTerminalReported = false;
-    writeOutput("Build started");
+    OutputServiceSelectActiveChannel(&g_outputService, OutputChannel::Build);
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_begin=PASS type=BUILD");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_start=PASS");
     return true;
+}
+
+static void beginRunOperation(gx_app_context* ctx) {
+    if (g_runOperationId != 0 || !g_controller.model.hasProject) return;
+    g_runOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Run, g_controller.model.project.projectId);
+    RunControllerAttachOutput(&g_runController, &g_outputService, g_runOperationId);
+    OutputServiceSelectActiveChannel(&g_outputService, OutputChannel::Run);
+    if (g_runOperationId != 0) {
+        OutputServiceAppendText(&g_outputService, g_runOperationId, OutputSource::Run, OutputSeverity::Information,
+                                OutputCategory::RunLifecycle, OutputStream::Unknown, "Run requested", g_controller.model.project.projectId, nullptr);
+        OutputServiceAppendText(&g_outputService, g_runOperationId, OutputSource::Run, OutputSeverity::Information,
+                                OutputCategory::RunLifecycle, OutputStream::Unknown, "Build required", g_controller.model.project.projectId, nullptr);
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_begin=PASS type=RUN");
+    }
+}
+
+static void completeRunWithoutDeployment(const char* message) {
+    if (g_runOperationId == 0) return;
+    OutputServiceAppendText(&g_outputService, g_runOperationId, OutputSource::Run, OutputSeverity::Error,
+                            OutputCategory::RunLifecycle, OutputStream::Unknown, message, g_controller.model.project.projectId, nullptr);
+    OutputServiceCompleteOperation(&g_outputService, g_runOperationId, false, "Run Failed | deployment skipped", nullptr);
+    g_runOperationId = 0;
 }
 
 static void reportRunTerminal(gx_app_context* ctx) {
     if (g_runTerminalReported) return;
     const RunResult& result = g_runController.result;
     if (result.state == RunState::Completed && result.exitCode == 0) {
-        writeOutput("Run completed");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=SUCCEEDED");
     } else {
-        writeOutput("Run failed");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(result.error));
     }
     if (result.exitCode != 0) {
@@ -685,7 +751,9 @@ static void reportRunTerminal(gx_app_context* ctx) {
         logMarker(ctx, marker);
     }
     if (result.cleanupComplete) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_cleanup=PASS");
+    logMarker(ctx, result.state == RunState::Completed ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_complete=SUCCEEDED" : "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_complete=FAILED");
     g_runTerminalReported = true;
+    g_runOperationId = 0;
 }
 
 static bool beginRunDeployment(gx_app_context* ctx) {
@@ -694,18 +762,18 @@ static bool beginRunDeployment(gx_app_context* ctx) {
     if (!RunRequestFromBuild(g_controller.model.project, g_buildController.result, &request, &error)) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_artifact_validation=FAIL", RunErrorName(error));
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(error));
-        writeOutput("Run blocked: artifact validation failed");
+        completeRunWithoutDeployment("Run blocked: artifact validation failed");
         return false;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_artifact_validation=PASS");
+    RunControllerAttachOutput(&g_runController, &g_outputService, g_runOperationId);
     if (!RunControllerPrepare(&g_runController, developmentRunService(), request, &error)) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_deployment_prepare=FAIL", RunErrorName(error));
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(error));
-        writeOutput("Run preparation failed");
+        g_runOperationId = 0;
         return false;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_deployment_prepare=PASS");
-    writeOutput("Run deployment prepared");
     if (!RunControllerStart(&g_runController, developmentRunService(), &error)) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_launch=FAIL", RunErrorName(error));
         reportRunTerminal(ctx);
@@ -714,29 +782,26 @@ static bool beginRunDeployment(gx_app_context* ctx) {
     g_lastRunState = g_runController.state;
     g_runTerminalReported = false;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_launch=PASS");
-    writeOutput("Run launched");
     return true;
 }
 
 static void pollBuild(gx_app_context* ctx) {
     if (!BuildControllerIsActive(&g_buildController)) return;
     BuildControllerPoll(&g_buildController, buildService());
-    const BuildResult& result = g_buildController.result;
-    if (result.outputCount != g_lastBuildOutputCount) {
-        const uint32_t start = g_lastBuildOutputCount < result.outputCount ? g_lastBuildOutputCount : 0;
-        for (uint32_t i = start; i < result.outputCount; ++i) {
-            copyText(g_textScratch, sizeof(g_textScratch), result.output[i].standardError ? "[stderr] " : "[Build] ");
-            appendText(g_textScratch, sizeof(g_textScratch), result.output[i].text);
-            writeOutput(g_textScratch);
-        }
-        g_lastBuildOutputCount = result.outputCount;
-    }
     if (!BuildControllerIsActive(&g_buildController) && !g_buildTerminalReported) {
         reportBuildResult(ctx);
         if (g_runWaitingForBuild) {
             g_runWaitingForBuild = false;
-            if (g_buildController.result.state == BuildState::Succeeded) beginRunDeployment(ctx);
-            else markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", BuildErrorName(g_buildController.result.error));
+            if (g_buildController.result.state == BuildState::Succeeded) {
+                if (g_runOperationId != 0) OutputServiceAppendText(&g_outputService, g_runOperationId, OutputSource::Run,
+                    OutputSeverity::Information, OutputCategory::RunLifecycle, OutputStream::Unknown,
+                    "Build completed", g_controller.model.project.projectId, nullptr);
+                beginRunDeployment(ctx);
+            }
+            else {
+                markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", BuildErrorName(g_buildController.result.error));
+                completeRunWithoutDeployment("Build failed; deployment skipped");
+            }
         }
     }
 }
@@ -793,8 +858,12 @@ static void requestRun(gx_app_context* ctx) {
         writeOutput("Save All or Cancel run");
         return;
     }
+    beginRunOperation(ctx);
     g_runWaitingForBuild = true;
-    if (!beginBuild(ctx, BuildDirtyDecision::SaveAll)) g_runWaitingForBuild = false;
+    if (!beginBuild(ctx, BuildDirtyDecision::SaveAll)) {
+        g_runWaitingForBuild = false;
+        completeRunWithoutDeployment("Build could not start; deployment skipped");
+    }
 }
 
 static void pollRun(gx_app_context* ctx) {
@@ -804,13 +873,9 @@ static void pollRun(gx_app_context* ctx) {
     const RunResult& result = g_runController.result;
     if (result.state != previous) {
         g_lastRunState = result.state;
-        if (result.state == RunState::Running) {
-            writeOutput("Application running");
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_application_state=RUNNING");
-        } else if (result.state == RunState::Exited) {
-            writeOutput("Application exited; cleaning deployment");
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_application_state=EXITED");
-        } else if (result.state == RunState::CleaningUp) {
+        if (result.state == RunState::Running) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_application_state=RUNNING");
+        else if (result.state == RunState::Exited) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_application_state=EXITED");
+        else if (result.state == RunState::CleaningUp) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_cleanup=START");
         }
     }
@@ -828,7 +893,6 @@ static void requestRunClose(gx_app_context* ctx) {
         return;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_close=REQUESTED");
-    writeOutput("Close requested for project application");
 }
 
 static void showWorkspacePrompt() {
@@ -1146,20 +1210,77 @@ static void drawEditor(gx_app_context* ctx) {
 }
 
 static void drawOutputAndStatus(gx_app_context* ctx) {
-    drawText(ctx, 16, 540, "OUTPUT");
-    uint32_t start = g_outputCount < kMaxOutputLines ? 0 : g_outputNext;
-    for (uint32_t i = 0; i < g_outputCount; ++i) drawText(ctx, 112, 540 + static_cast<int>(i) * 12, g_output[(start + i) % kMaxOutputLines]);
+    drawText(ctx, 16, 536, g_outputProblemsTab ? "PROBLEMS" : "OUTPUT");
+    drawText(ctx, 112, 536, "Output");
+    drawText(ctx, 172, 536, "Problems");
+    if (!g_outputProblemsTab) {
+        compose(g_textScratch, sizeof(g_textScratch), "Channel: ", OutputChannelName(OutputServiceActiveChannel(&g_outputService)), "");
+        drawText(ctx, 260, 536, g_textScratch);
+    } else {
+        uint32_t warnings = 0;
+        uint32_t errors = 0;
+        const char* projectId = g_controller.model.hasProject ? g_controller.model.project.projectId : nullptr;
+        OutputServiceProblemCounts(&g_outputService, projectId, &warnings, &errors);
+        compose(g_textScratch, sizeof(g_textScratch), "Errors: ", "", "");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), errors);
+        appendText(g_textScratch, sizeof(g_textScratch), "  Warnings: ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), warnings);
+        drawText(ctx, 260, 536, g_textScratch);
+    }
+    drawText(ctx, 850, 536, "Clear");
+    const uint32_t visibleRows = 5;
+    const char* projectId = g_controller.model.hasProject ? g_controller.model.project.projectId : nullptr;
+    const uint32_t count = g_outputProblemsTab ? OutputServiceProblemCount(&g_outputService, projectId) :
+        OutputServiceFilteredCount(&g_outputService, OutputServiceActiveChannel(&g_outputService));
+    const uint32_t maximumScroll = count > visibleRows ? count - visibleRows : 0;
+    if (g_outputFollowTail) g_outputScroll = maximumScroll;
+    if (g_outputScroll > maximumScroll) g_outputScroll = maximumScroll;
+    for (uint32_t row = 0; row < visibleRows; ++row) {
+        const uint32_t index = g_outputScroll + row;
+        const OutputRecord* record = g_outputProblemsTab ? OutputServiceProblemAt(&g_outputService, projectId, index) :
+            OutputServiceFilteredAt(&g_outputService, OutputServiceActiveChannel(&g_outputService), index);
+        if (!record) continue;
+        if (g_outputProblemsTab) {
+            copyText(g_textScratch, sizeof(g_textScratch), OutputSeverityName(record->severity));
+            appendText(g_textScratch, sizeof(g_textScratch), " ");
+            appendText(g_textScratch, sizeof(g_textScratch), record->diagnosticCode[0] ? record->diagnosticCode : "-");
+            appendText(g_textScratch, sizeof(g_textScratch), " ");
+            appendText(g_textScratch, sizeof(g_textScratch), record->text);
+            if (record->hasLocation) {
+                appendText(g_textScratch, sizeof(g_textScratch), " | ");
+                appendText(g_textScratch, sizeof(g_textScratch), record->relativeFilePath);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), record->line);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), record->column);
+            }
+            appendText(g_textScratch, sizeof(g_textScratch), " [");
+            appendText(g_textScratch, sizeof(g_textScratch), OutputSourceName(record->source));
+            appendText(g_textScratch, sizeof(g_textScratch), "]");
+        } else {
+            copyText(g_textScratch, sizeof(g_textScratch), "[");
+            appendText(g_textScratch, sizeof(g_textScratch), OutputSourceName(record->source));
+            appendText(g_textScratch, sizeof(g_textScratch), "] ");
+            appendText(g_textScratch, sizeof(g_textScratch), OutputSeverityName(record->severity));
+            appendText(g_textScratch, sizeof(g_textScratch), ": ");
+            appendText(g_textScratch, sizeof(g_textScratch), record->text);
+            if (record->stream == OutputStream::StandardError) appendText(g_textScratch, sizeof(g_textScratch), " [stderr]");
+        }
+        if (g_outputProblemsTab && index == g_problemSelected) drawPanel(ctx, { 8, 544 + static_cast<int>(row) * 15, 940, 15 }, 0x34496Au);
+        drawText(ctx, 16, 556 + static_cast<int>(row) * 15, g_textScratch);
+    }
+    if (g_outputProblemsTab && count == 0) drawText(ctx, 16, 556, "No problems found.");
     compose(g_textScratch, sizeof(g_textScratch), "Target: ", InitialTargetProfile().displayName, " | Experimental");
-    drawText(ctx, 16, 600, g_textScratch);
+    drawText(ctx, 16, 660, g_textScratch);
     compose(g_textScratch, sizeof(g_textScratch), "Build: ", BuildStateName(g_buildController.state), BuildControllerIsActive(&g_buildController) ? " (active)" : "");
-    drawText(ctx, 650, 600, g_textScratch);
+    drawText(ctx, 650, 660, g_textScratch);
     compose(g_textScratch, sizeof(g_textScratch), "Run: ", RunStateName(g_runController.state), RunControllerIsActive(&g_runController) ? " (active)" : "");
-    drawText(ctx, 650, 618, g_textScratch);
+    drawText(ctx, 650, 678, g_textScratch);
     compose(g_textScratch, sizeof(g_textScratch), g_controller.model.hasProject ? "Project: " : "Workspace: ", g_controller.model.open ? g_controller.model.displayName : "-", "");
-    drawText(ctx, 16, 618, g_textScratch);
+    drawText(ctx, 16, 678, g_textScratch);
     if (g_controller.model.hasProject) {
         compose(g_textScratch, sizeof(g_textScratch), "ID: ", g_controller.model.project.projectId, "");
-        drawText(ctx, 300, 600, g_textScratch);
+        drawText(ctx, 300, 660, g_textScratch);
     }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (document) {
@@ -1170,7 +1291,7 @@ static void drawOutputAndStatus(gx_app_context* ctx) {
         appendUnsigned(g_textScratch, sizeof(g_textScratch), line + 1);
         appendText(g_textScratch, sizeof(g_textScratch), ", Column ");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), column + 1);
-        drawText(ctx, 300, 618, g_textScratch);
+        drawText(ctx, 300, 678, g_textScratch);
     }
 }
 
@@ -1291,6 +1412,67 @@ static void placeCaretFromMouse(Document* document, int x, int y) {
     document->buffer.caret = requested > end ? end : requested;
 }
 
+static bool navigateSelectedProblem(gx_app_context* ctx) {
+    const char* projectId = g_controller.model.hasProject ? g_controller.model.project.projectId : nullptr;
+    const OutputRecord* record = OutputServiceProblemAt(&g_outputService, projectId, g_problemSelected);
+    if (!record) return false;
+    if (!g_controller.model.hasProject) {
+        writeStudioOutput("Unable to open diagnostic location: no active project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER problem_navigation=FAIL", OutputErrorName(OutputErrorCode::NavigationNoProject));
+        return false;
+    }
+    if (!record->hasLocation) {
+        writeStudioOutput("Unable to open diagnostic location: no navigable file.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER problem_navigation=FAIL", OutputErrorName(OutputErrorCode::NavigationOpenFailed));
+        return false;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, record->projectId, record->relativeFilePath,
+                                                   record->line, record->column, &documentIndex, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Unable to open diagnostic location: ");
+        appendText(g_textScratch, sizeof(g_textScratch), OutputErrorName(error));
+        writeStudioOutput(g_textScratch);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER problem_navigation=FAIL", OutputErrorName(error));
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER problem_navigation=FAIL", OutputErrorName(OutputErrorCode::NavigationOpenFailed));
+        return false;
+    }
+    g_editorFocused = true;
+    g_outputFocused = false;
+    uint32_t line = record->line > 0 ? record->line - 1 : 0;
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    if (line >= lineCount) line = lineCount > 0 ? lineCount - 1 : 0;
+    if (line < g_editorScrollLine) g_editorScrollLine = line;
+    if (line >= g_editorScrollLine + kVisibleEditorLines) g_editorScrollLine = line - kVisibleEditorLines + 1;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER problem_navigation=PASS");
+    return true;
+}
+
+static uint32_t outputVisibleCount() {
+    const char* projectId = g_controller.model.hasProject ? g_controller.model.project.projectId : nullptr;
+    return g_outputProblemsTab ? OutputServiceProblemCount(&g_outputService, projectId) :
+        OutputServiceFilteredCount(&g_outputService, OutputServiceActiveChannel(&g_outputService));
+}
+
+static void handleOutputKey(gx_app_context* ctx, int keyCode) {
+    const uint32_t count = outputVisibleCount();
+    if (keyCode == GX_KEY_UP) {
+        if (g_outputProblemsTab && g_problemSelected > 0) --g_problemSelected;
+        if (g_outputScroll > 0) { --g_outputScroll; g_outputFollowTail = false; }
+    } else if (keyCode == GX_KEY_DOWN) {
+        if (g_outputProblemsTab && g_problemSelected + 1 < count) ++g_problemSelected;
+        if (g_outputScroll + 5 < count) { ++g_outputScroll; g_outputFollowTail = false; }
+    } else if (keyCode == 13 && g_outputProblemsTab) {
+        navigateSelectedProblem(ctx);
+    } else if (keyCode == 27) {
+        g_outputFocused = false;
+    }
+}
+
 static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
     if (action != GX_KEY_ACTION_DOWN) return;
     if (g_inputMode == InputMode::ProjectCreate) {
@@ -1349,8 +1531,12 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         }
         if (keyCode == 83 || keyCode == 115) {
             g_inputMode = InputMode::Normal;
+            beginRunOperation(ctx);
             g_runWaitingForBuild = true;
-            if (!beginBuild(ctx, BuildDirtyDecision::SaveAll)) g_runWaitingForBuild = false;
+            if (!beginBuild(ctx, BuildDirtyDecision::SaveAll)) {
+                g_runWaitingForBuild = false;
+                completeRunWithoutDeployment("Build could not start; deployment skipped");
+            }
         }
         return;
     }
@@ -1397,6 +1583,10 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_outputFocused) {
+        handleOutputKey(ctx, keyCode);
+        return;
+    }
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 66 || keyCode == 98)) { requestBuild(ctx); return; }
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 78 || keyCode == 110)) { showNewProjectPrompt(ctx); return; }
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 79 || keyCode == 111)) { showOpenProjectPrompt(); return; }
@@ -1456,7 +1646,15 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
     if (action == GX_MOUSE_ACTION_WHEEL) {
-        if (x >= kEditorRect.x && y >= kEditorRect.y && y < kEditorRect.y + kEditorRect.height) {
+        if (y >= kOutputRect.y && y < kOutputRect.y + kOutputRect.height) {
+            const uint32_t count = outputVisibleCount();
+            const uint32_t maximum = count > 5 ? count - 5 : 0;
+            if (event.param4 > 0) g_outputScroll = g_outputScroll > 2 ? g_outputScroll - 2 : 0;
+            else g_outputScroll = g_outputScroll + 2 < maximum ? g_outputScroll + 2 : maximum;
+            g_outputFollowTail = g_outputScroll >= maximum;
+            g_outputFocused = true;
+            drawShell(ctx);
+        } else if (x >= kEditorRect.x && y >= kEditorRect.y && y < kEditorRect.y + kEditorRect.height) {
             int delta = event.param4 > 0 ? -3 : 3;
             if (delta < 0) g_editorScrollLine = g_editorScrollLine > static_cast<uint32_t>(-delta) ? g_editorScrollLine - static_cast<uint32_t>(-delta) : 0;
             else g_editorScrollLine += static_cast<uint32_t>(delta);
@@ -1465,6 +1663,40 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         return;
     }
     if (button != GX_MOUSE_BUTTON_LEFT || (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+    if (y >= kOutputRect.y && y < kOutputRect.y + kOutputRect.height) {
+        g_outputFocused = true;
+        if (y < 546) {
+            if (x >= 104 && x < 168) { g_outputProblemsTab = false; g_problemSelected = 0; }
+            else if (x >= 168 && x < 250) { g_outputProblemsTab = true; g_problemSelected = 0; }
+            else if (!g_outputProblemsTab && x >= 250 && x < 470) {
+                OutputChannel channel = OutputServiceActiveChannel(&g_outputService);
+                channel = channel == OutputChannel::All ? OutputChannel::Build :
+                    channel == OutputChannel::Build ? OutputChannel::Run :
+                    channel == OutputChannel::Run ? OutputChannel::Application :
+                    channel == OutputChannel::Application ? OutputChannel::DeveloperStudio : OutputChannel::All;
+                OutputServiceSelectActiveChannel(&g_outputService, channel);
+                g_outputScroll = 0;
+                g_outputFollowTail = true;
+            } else if (x >= 820) {
+                const OutputChannel channel = OutputServiceActiveChannel(&g_outputService);
+                OutputServiceClearChannel(&g_outputService, channel);
+                if (channel == OutputChannel::All) g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
+                g_outputScroll = 0;
+                g_problemSelected = 0;
+                g_outputFollowTail = true;
+            }
+            drawShell(ctx);
+            return;
+        }
+        const uint32_t row = static_cast<uint32_t>((y - 546) / 15);
+        const uint32_t index = g_outputScroll + row;
+        if (g_outputProblemsTab && index < outputVisibleCount()) {
+            g_problemSelected = index;
+            if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSelectedProblem(ctx);
+        }
+        drawShell(ctx);
+        return;
+    }
     if (y < 48 && x >= 8 && x < 70) { g_fileMenuOpen = !g_fileMenuOpen; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 70 && x < 130) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
     if (y < 48 && x >= 130 && x < 220) { saveAll(ctx); drawShell(ctx); return; }
@@ -1546,10 +1778,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_workspaceSwitchPending = false;
     g_pendingDocument = kMaxOpenDocuments;
     g_editorScrollLine = 0;
-    g_outputCount = 0;
-    g_outputNext = 0;
+    OutputServiceInit(&g_outputService);
+    g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
+    g_runOperationId = 0;
+    g_outputProblemsTab = false;
+    g_outputFocused = false;
+    g_outputScroll = 0;
+    g_outputFollowTail = true;
+    g_problemSelected = 0;
     BuildControllerInit(&g_buildController);
-    g_lastBuildOutputCount = 0;
     g_buildTerminalReported = false;
     RunControllerInit(&g_runController);
     g_runWaitingForBuild = false;

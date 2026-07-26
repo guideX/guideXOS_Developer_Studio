@@ -91,7 +91,7 @@ Build Developer Studio itself with an explicit Server checkout:
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -ServerRoot D:\path\to\guideXOSServer
 ```
 
-For a valid Native GUI Application project, use `Build -> Build Project` or `Ctrl+Shift+B`. Developer Studio derives the fixed build system, `build.ps1`, `Debug` configuration, and `build/bin/amd64/<outputName>.elf` artifact from the version 1 project metadata. Dirty project documents prompt for Save All or Cancel; an active build keeps the shell responsive and blocks close. The hosted Server validates the project, resolves the SDK/toolchain, runs the recipe asynchronously, captures bounded merged output, and validates the resulting ELF64 AMD64 `ET_EXEC` image and `gx_main` entry point.
+For a valid Native GUI Application project, use `Build -> Build Project` or `Ctrl+Shift+B`. Developer Studio derives the fixed build system, `build.ps1`, `Debug` configuration, and `build/bin/amd64/<outputName>.elf` artifact from the version 1 project metadata. Dirty project documents prompt for Save All or Cancel; an active build keeps the shell responsive and blocks close. The hosted Server validates the project, resolves the SDK/toolchain, runs the recipe asynchronously, captures separately bounded stdout/stderr output, and validates the resulting ELF64 AMD64 `ET_EXEC` image and `gx_main` entry point.
 
 The service is hosted-development only. It does not accept arbitrary commands or metadata-defined executables, supports one build at a time, caps output at 64 KiB and 32 retained lines of 255 bytes, and stops a build after five minutes. SDK/toolchain resolution uses the hosted Server `sdk/include` and fixed LLVM locations, with `GUIDEXOS_SDK_ROOT` and `GUIDEXOS_TOOLCHAIN_ROOT` overrides.
 
@@ -123,3 +123,4 @@ It creates and removes only its own temporary fixture and verifies enumeration, 
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the integration audit, boundaries, and intentionally deferred work.
 See [docs/BUILD_PROJECT.md](docs/BUILD_PROJECT.md) for the Build Project contract and diagnostics.
+See [docs/OUTPUT_AND_DIAGNOSTICS.md](docs/OUTPUT_AND_DIAGNOSTICS.md) for the unified Output and Problems architecture, bounded limits, supported diagnostic formats, and navigation behavior.

@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(developer_studio_models STATIC
+    src/developer_studio_output.cpp
     src/developer_studio_build.cpp
     src/developer_studio_models.cpp
     src/developer_studio_projects.cpp
@@ -50,6 +51,20 @@ target_link_libraries(developer_studio_run_test PRIVATE developer_studio_models)
 set_target_properties(developer_studio_run_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_run_test COMMAND developer_studio_run_test)
 
+add_executable(developer_studio_output_test
+    tests/output_test.cpp
+)
+target_link_libraries(developer_studio_output_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_output_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_output_test COMMAND developer_studio_output_test)
+
+add_executable(developer_studio_navigation_test
+    tests/navigation_test.cpp
+)
+target_link_libraries(developer_studio_navigation_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_navigation_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_navigation_test COMMAND developer_studio_navigation_test)
+
 # The production Native ELF link is intentionally driven by build.ps1. That
 # script follows the Server SDK's direct clang/ld.lld convention and writes the
 # package into the Server checkout rather than creating a second SDK copy here.
@@ -62,6 +77,7 @@ if(GUIDEXOS_BUILD_NATIVE_ELF)
     endif()
 
     add_executable(developerstudio.elf
+        src/developer_studio_output.cpp
         src/developer_studio_build.cpp
         src/developer_studio_models.cpp
         src/developer_studio_projects.cpp
