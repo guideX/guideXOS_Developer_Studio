@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Editing Phase Architecture
 
-Status: minimal workspace and source editor
+Status: minimal workspace, source editor, and version 1 project creation/loading
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Workspace/document/text-buffer models
+Project parser/generator and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -99,11 +99,63 @@ Document contents and full paths are not emitted by Developer Studio markers. Th
 
 The hosted validation split is deliberate: model and filesystem-contract tests are automated; the real App Model launch is marker-asserted through the Server shell; keyboard and mouse editing in the compositor are additionally manual validation until a bounded input-driving harness exists. The current hosted proof covers package discovery, AMD64 ELF validation, ABI negotiation, `gx_main`, construction, target profile, window creation, initial render, and clean teardown.
 
+## Project creation and loading slice
+
+`developer_studio_projects.*` is UI-independent. It owns the bounded JSON cursor, version 1 metadata model, identity/path rules, deterministic serializer, Native GUI Application template text, manifest consistency checks, project creation, and project loading. The workspace controller adapts the service to `WorkspaceFileSystem`; `main.cpp` only collects bounded dialog fields, reports markers, and opens the resulting project.
+
+The project contract is the `guidexos.project` file with these required fields in this serialized order:
+
+```text
+formatVersion:          integer 1
+projectId:              lowercase reverse-domain application ID
+displayName:            bounded printable human-readable name
+projectKind:            native-gui-application
+sourceRoot:             relative src path
+applicationManifest:    relative app/app.json path
+defaultTargetProfile:   guidexos.amd64.hosted.native
+entryPoint:             gx_main
+abi:                    guidexos-c-abi-v1
+architecture:           amd64
+outputName:             bounded lowercase package output stem
+```
+
+The parser accepts at most 16 KiB, rejects malformed JSON, duplicate or unknown fields, missing fields, unsupported versions, absolute or traversal paths, overlong strings, invalid IDs, invalid entry points, ABI/architecture mismatches, and unknown targets. It accepts only JSON string escapes used by the deterministic serializer; Unicode escape sequences are intentionally not part of this version 1 policy. The `com.guidexos` application namespace is reserved for guideXOS-owned applications. The target registry is currently the single proven experimental hosted AMD64 profile.
+
+Creation validates all user input and the parent directory before writing. A destination that is a non-empty directory or any existing non-directory is rejected. The service creates `guidexos.project`, `CMakeLists.txt`, `build.ps1`, `README.md`, `app/app.json`, `src/main.cpp`, and `src/freestanding_memory.cpp`, then checks every expected file, reparses the metadata, and validates the manifest identity. New files and directories are recorded in creation order; on failure, rollback removes only those files and then those empty directories. A pre-existing empty project root is never removed.
+
+Opening accepts a project root or the metadata path. It resolves all relative paths against the root and verifies root containment, required files, the source directory, the manifest, and the manifest entry identity. It does not write or upgrade project files. Saving `guidexos.project` writes the document first, then explicitly reloads and validates it. If validation fails, the current valid in-memory project remains active while the UI reports `project_metadata_parse=FAIL`.
+
+The project model records format version, project ID, display name, kind, root path, source root, manifest path, target profile, entry point, ABI, architecture, output name, load state, validation state, and a bounded project error code. `WorkspaceModel` retains `hasProject=false` for workspace-only operation.
+
+Stable project markers include:
+
+```text
+project_create_request=PASS
+project_create_validation=PASS
+project_create=PASS
+project_create=FAIL reason=<code>
+project_metadata_parse=PASS
+project_metadata_parse=FAIL reason=<code>
+project_open=PASS
+project_open=FAIL reason=<code>
+project_target=guidexos.amd64.hosted.native
+project_template=native-gui-application
+project_rollback=PASS
+```
+
+The hosted filesystem ABI appends `file_create_directory` and `file_remove` after the existing workspace extensions. They are exact-path, non-recursive operations protected by `filesystem.write`; the guest service still controls the set of paths it requests and performs the rollback accounting.
+
+## Generated project external build
+
+The generated application follows the proven direct LLVM/LLD sibling-application convention: `x86_64-unknown-elf`, freestanding C++11, static `ld.lld`, entry point `gx_main`, and package entry `bin/amd64/<outputName>.elf`. `-ServerRoot` or equivalent CMake configuration supplies the SDK and package destination. No generated file depends on a Developer Studio checkout path, a Server checkout path, a username, or a machine-specific compiler location. This phase proves external buildability only; there is no in-IDE Build, Run, Debug, compiler discovery, or target switching.
+
+The project parser/generator test covers identity rules, exact serialization, duplicate and oversized metadata, root and metadata-path loading, manifest identity, required layout, deterministic repeated generation, no machine paths, non-empty destination rejection, workspace-only controller behavior, and simulated mid-generation rollback. The external generated-project validation produced an ELF64 AMD64 `ET_EXEC` image and confirmed a global `gx_main` symbol with `readelf`.
+
 The environment created three automatic Developer Studio checkpoint commits during this phase: `d4787670522e4c242f9f012664dcf126944c46dc` (initial repository), `f1708ac0926f0be1541d776e3e85eb1e8f35ffea`, and `6b26336bfb964d5d38b88e47b7a259e9a57166f0`. They were inspected without rewriting history. The Developer Studio `.gitignore` is at the repository root and ignores build output and ELF binaries; none are tracked in this repository.
 
 ## Deferred work
 
-There is no compiler integration, project wizard, project-file parsing, build command, Run/Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, or undo/redo.
+There is no in-IDE compiler integration or build command, Run/Debug, language server, syntax highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, or undo/redo. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

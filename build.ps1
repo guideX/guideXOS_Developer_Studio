@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$ServerRoot = "D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO",
-    [switch]$SkipModelTest
+    [switch]$SkipModelTest,
+    [switch]$SkipProjectTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +13,7 @@ $PackageRoot = Join-Path $ServerRoot "Apps\DeveloperStudio"
 $PackageBin = Join-Path $PackageRoot "bin\amd64"
 $Manifest = Join-Path $RepoRoot "app\app.json"
 $ModelTest = Join-Path $ServerRoot "tmp\developer-studio-model-test.exe"
+$ProjectTest = Join-Path $ServerRoot "tmp\developer-studio-project-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -61,6 +63,15 @@ try {
         & $ModelTest
         if ($LASTEXITCODE -ne 0) { throw "Developer Studio model test failed with exit code $LASTEXITCODE" }
     }
+    if (-not $SkipProjectTest) {
+        Invoke-Checked "g++" @(
+            "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+            "-Isrc", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_workspace.cpp", "tests\project_test.cpp",
+            "-o", $ProjectTest
+        )
+        & $ProjectTest
+        if ($LASTEXITCODE -ne 0) { throw "Developer Studio project test failed with exit code $LASTEXITCODE" }
+    }
 
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
@@ -69,16 +80,18 @@ try {
         "-I$SdkInclude", "-Isrc"
     )
     $modelObject = Join-Path $ObjectRoot "developer_studio_models.o"
+    $projectObject = Join-Path $ObjectRoot "developer_studio_projects.o"
     $workspaceObject = Join-Path $ObjectRoot "developer_studio_workspace.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_projects.cpp"), "-o", $projectObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_workspace.cpp"), "-o", $workspaceObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $modelObject, $workspaceObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $modelObject, $projectObject, $workspaceObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -96,5 +109,6 @@ try {
     Write-Host "Staged App Model manifest: $(Join-Path $PackageRoot 'app.json')"
 } finally {
     if (Test-Path -LiteralPath $ModelTest) { Remove-Item -LiteralPath $ModelTest -Force }
+    if (Test-Path -LiteralPath $ProjectTest) { Remove-Item -LiteralPath $ProjectTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

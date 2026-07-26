@@ -15,6 +15,53 @@ enum class ProjectKind {
     ExperimentalOther
 };
 
+enum class ProjectLoadState {
+    NotLoaded = 0,
+    Loaded,
+    Invalid
+};
+
+enum class ProjectValidationState {
+    Unknown = 0,
+    Valid,
+    Invalid
+};
+
+enum class ProjectErrorCode {
+    None = 0,
+    NullInput,
+    ProjectFileTooLarge,
+    MalformedJson,
+    DuplicateField,
+    UnknownField,
+    MissingField,
+    UnsupportedFormatVersion,
+    InvalidProjectId,
+    InvalidDisplayName,
+    InvalidProjectKind,
+    InvalidRelativePath,
+    InvalidEntryPoint,
+    InvalidAbi,
+    InvalidArchitecture,
+    UnknownTargetProfile,
+    InvalidTargetProfile,
+    InvalidOutputName,
+    InvalidFolderName,
+    InvalidParentPath,
+    UnsavedChanges,
+    DestinationExists,
+    ParentNotFound,
+    ParentNotDirectory,
+    DirectoryCreateFailed,
+    FileWriteFailed,
+    FileReadFailed,
+    RequiredFileMissing,
+    ManifestMalformed,
+    ManifestIdentityMismatch,
+    ProjectIdCollision,
+    RollbackFailed
+};
+
 enum class CapabilityMaturity {
     Unavailable = 0,
     Experimental,
@@ -22,6 +69,18 @@ enum class CapabilityMaturity {
     Supported,
     Deprecated
 };
+
+static const uint32_t kMaxPathBytes = 768;
+static const uint32_t kMaxNameBytes = 128;
+static const uint32_t kMaxWorkspaceEntries = 128;
+static const uint32_t kMaxOpenDocuments = 8;
+static const uint32_t kMaxEditorBytes = 256u * 1024u;
+static const uint32_t kMaxWorkspaceDepth = 8;
+static const uint32_t kMaxProjectFileBytes = 16u * 1024u;
+static const uint32_t kMaxProjectIdBytes = 96;
+static const uint32_t kMaxProjectDisplayNameBytes = 96;
+static const uint32_t kMaxProjectPathBytes = 160;
+static const uint32_t kMaxProjectOutputNameBytes = 96;
 
 struct Capability {
     const char* id;
@@ -45,17 +104,24 @@ struct TargetProfile {
 };
 
 struct Project {
-    const char* id;
-    const char* displayName;
+    bool loaded;
+    bool valid;
+    uint32_t formatVersion;
     ProjectKind kind;
+    char projectId[kMaxNameBytes];
+    char displayName[kMaxNameBytes];
+    char rootPath[kMaxPathBytes];
+    char sourceRoot[kMaxPathBytes];
+    char manifestPath[kMaxPathBytes];
+    char targetProfileId[kMaxNameBytes];
+    char entryPoint[kMaxNameBytes];
+    char abi[kMaxNameBytes];
+    char architecture[32];
+    char outputName[kMaxNameBytes];
+    ProjectLoadState loadState;
+    ProjectValidationState validationState;
+    ProjectErrorCode error;
 };
-
-static const uint32_t kMaxPathBytes = 768;
-static const uint32_t kMaxNameBytes = 128;
-static const uint32_t kMaxWorkspaceEntries = 128;
-static const uint32_t kMaxOpenDocuments = 8;
-static const uint32_t kMaxEditorBytes = 256u * 1024u;
-static const uint32_t kMaxWorkspaceDepth = 8;
 
 enum class WorkspaceEntryKind {
     Directory = 0,
@@ -105,9 +171,11 @@ struct Document {
 
 struct WorkspaceModel {
     bool open;
+    bool hasProject;
     char displayName[kMaxNameBytes];
     char rootPath[kMaxPathBytes];
     char browsePath[kMaxPathBytes];
+    Project project;
     WorkspaceEntry entries[kMaxWorkspaceEntries];
     uint32_t entryCount;
     uint32_t selectedEntry;

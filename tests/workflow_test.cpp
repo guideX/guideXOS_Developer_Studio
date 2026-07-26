@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
     std::cout << "workflow-start\n";
     assert(argc == 2);
     const fs::path root = fs::absolute(argv[1]);
-    WorkspaceFileSystem fileSystem = { nullptr, statFile, listFiles, readFile, writeFile };
+    WorkspaceFileSystem fileSystem = { nullptr, statFile, listFiles, readFile, writeFile, nullptr, nullptr };
     static WorkspaceController controller;
     WorkspaceControllerInit(&controller, fileSystem);
     std::cout << "controller-ready\n";

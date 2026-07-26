@@ -14,6 +14,11 @@ static void setControllerError(WorkspaceController* controller, ModelErrorCode c
     controller->model.lastError[sizeof(controller->model.lastError) - 1] = '\0';
 }
 
+static void setProjectError(WorkspaceController* controller, ProjectErrorCode code) {
+    if (!controller) return;
+    controller->lastProjectError = code;
+}
+
 static bool pathForBrowse(const WorkspaceModel& model, char* output, uint32_t outputSize) {
     if (model.browsePath[0] == '\0') return NormalizePath(model.rootPath, output, outputSize);
     return JoinWorkspacePath(model.rootPath, model.browsePath, output, outputSize);
@@ -62,6 +67,7 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
     controller->fileSystem = fileSystem;
     controller->listingTruncated = false;
     controller->lastError = ModelErrorCode::None;
+    controller->lastProjectError = ProjectErrorCode::None;
 }
 
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path) {
@@ -78,6 +84,81 @@ bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const cha
     const char* name = BaseName(normalized);
     if (!WorkspaceModelSetRoot(&controller->model, normalized, name[0] ? name : normalized)) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
     if (!WorkspaceControllerRefresh(controller)) return false;
+    return true;
+}
+
+bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char* path) {
+    if (!controller || !controller->fileSystem.stat || !controller->fileSystem.read || !controller->fileSystem.list) {
+        if (controller) setProjectError(controller, ProjectErrorCode::NullInput);
+        return false;
+    }
+    if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
+        setControllerError(controller, ModelErrorCode::UnsavedChanges);
+        setProjectError(controller, ProjectErrorCode::UnsavedChanges);
+        return false;
+    }
+    ProjectOperationResult result;
+    if (!LoadProject(controller->fileSystem, path, &result)) {
+        setProjectError(controller, result.error);
+        return false;
+    }
+    if (!WorkspaceModelSetRoot(&controller->model, result.project.rootPath, result.project.displayName)) {
+        setProjectError(controller, ProjectErrorCode::InvalidParentPath);
+        return false;
+    }
+    controller->model.hasProject = true;
+    controller->model.project = result.project;
+    controller->lastProjectError = ProjectErrorCode::None;
+    if (!WorkspaceControllerRefresh(controller)) {
+        setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
+        return false;
+    }
+    return true;
+}
+
+bool WorkspaceControllerCreateProject(WorkspaceController* controller, const ProjectCreateRequest& request, ProjectOperationResult* result) {
+    if (!controller || !result) return false;
+    if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
+        result->success = false;
+        result->error = ProjectErrorCode::UnsavedChanges;
+        result->rollbackAttempted = false;
+        result->rollbackSucceeded = true;
+        setProjectError(controller, result->error);
+        return false;
+    }
+    if (controller->model.hasProject) {
+        uint32_t i = 0;
+        while (request.projectId[i] != '\0' && controller->model.project.projectId[i] != '\0' && request.projectId[i] == controller->model.project.projectId[i]) ++i;
+        if (request.projectId[i] == '\0' && controller->model.project.projectId[i] == '\0') {
+            result->success = false;
+            result->error = ProjectErrorCode::ProjectIdCollision;
+            result->rollbackAttempted = false;
+            result->rollbackSucceeded = true;
+            setProjectError(controller, result->error);
+            return false;
+        }
+    }
+    if (!CreateNativeGuiProject(controller->fileSystem, request, result)) {
+        setProjectError(controller, result->error);
+        return false;
+    }
+    setProjectError(controller, ProjectErrorCode::None);
+    return true;
+}
+
+bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
+    if (!controller || !controller->model.open || !controller->model.hasProject) {
+        if (controller) setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
+        return false;
+    }
+    ProjectOperationResult result;
+    if (!LoadProject(controller->fileSystem, controller->model.rootPath, &result)) {
+        setProjectError(controller, result.error);
+        return false;
+    }
+    controller->model.project = result.project;
+    controller->model.hasProject = true;
+    controller->lastProjectError = ProjectErrorCode::None;
     return true;
 }
 
@@ -226,6 +307,10 @@ const Document* WorkspaceControllerActiveDocumentConst(const WorkspaceController
 
 const char* WorkspaceControllerError(const WorkspaceController* controller) {
     return controller ? ModelErrorName(controller->lastError) : ModelErrorName(ModelErrorCode::InvalidPath);
+}
+
+const char* WorkspaceControllerProjectError(const WorkspaceController* controller) {
+    return controller ? ProjectErrorName(controller->lastProjectError) : ProjectErrorName(ProjectErrorCode::NullInput);
 }
 
 } // namespace developer_studio

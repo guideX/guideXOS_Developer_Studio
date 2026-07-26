@@ -181,6 +181,8 @@ const char* ToString(CapabilityMaturity maturity) {
 void WorkspaceModelInit(WorkspaceModel* model) {
     if (!model) return;
     model->open = false;
+    model->hasProject = false;
+    model->project = Project();
     model->displayName[0] = '\0';
     model->rootPath[0] = '\0';
     model->browsePath[0] = '\0';
@@ -305,6 +307,7 @@ const char* BaseName(const char* path) {
 
 bool IsSupportedTextPath(const char* path) {
     const char* name = BaseName(path);
+    if (equalText(name, "guidexos.project", true)) return true;
     uint32_t length = textLength(name, kMaxNameBytes);
     uint32_t dot = length;
     for (uint32_t i = 0; i < length; ++i) if (name[i] == '.') dot = i;
@@ -359,6 +362,8 @@ bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, co
         return false;
     }
     model->open = true;
+    model->hasProject = false;
+    model->project = Project();
     model->browsePath[0] = '\0';
     model->entryCount = 0;
     model->selectedEntry = 0;

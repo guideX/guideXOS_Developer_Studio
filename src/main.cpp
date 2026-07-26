@@ -16,6 +16,11 @@ using guidexos::developer_studio::IsValidTargetProfile;
 using guidexos::developer_studio::JoinWorkspacePath;
 using guidexos::developer_studio::ModelErrorCode;
 using guidexos::developer_studio::ModelErrorName;
+using guidexos::developer_studio::ProjectCreateRequest;
+using guidexos::developer_studio::ProjectErrorCode;
+using guidexos::developer_studio::ProjectErrorName;
+using guidexos::developer_studio::ProjectKind;
+using guidexos::developer_studio::ProjectOperationResult;
 using guidexos::developer_studio::TextBuffer;
 using guidexos::developer_studio::TextBufferBackspace;
 using guidexos::developer_studio::TextBufferDelete;
@@ -48,6 +53,9 @@ using guidexos::developer_studio::kMaxEditorBytes;
 using guidexos::developer_studio::kMaxNameBytes;
 using guidexos::developer_studio::kMaxOpenDocuments;
 using guidexos::developer_studio::kMaxPathBytes;
+using guidexos::developer_studio::kMaxProjectDisplayNameBytes;
+using guidexos::developer_studio::kMaxProjectIdBytes;
+using guidexos::developer_studio::kMaxProjectFileBytes;
 using guidexos::developer_studio::kMaxWorkspaceEntries;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 640 };
@@ -69,6 +77,8 @@ static const int kMaxPromptBytes = 240;
 enum class InputMode {
     Normal = 0,
     WorkspacePath,
+    ProjectPath,
+    ProjectCreate,
     ConfirmDocument,
     ConfirmWorkspace,
     ConfirmApplication
@@ -76,6 +86,14 @@ enum class InputMode {
 
 struct NativeFileSystemContext {
     gx_app_context* app;
+};
+
+struct ProjectDialog {
+    char displayName[kMaxProjectDisplayNameBytes];
+    char parentPath[kMaxPathBytes];
+    char folderName[kMaxNameBytes];
+    char projectId[kMaxProjectIdBytes];
+    uint32_t field;
 };
 
 static WorkspaceController g_controller;
@@ -92,11 +110,14 @@ static uint32_t g_lastExplorerClick = 0;
 static uint64_t g_lastExplorerClickTick = 0;
 static char g_prompt[kMaxPathBytes] = {};
 static char g_pendingWorkspacePath[kMaxPathBytes] = {};
+static ProjectDialog g_projectDialog = {};
 static char g_output[kMaxOutputLines][96] = {};
 static uint32_t g_outputCount = 0;
 static uint32_t g_outputNext = 0;
 static char g_textScratch[256] = {};
 static char g_lineScratch[144] = {};
+
+static char mapKeyToChar(int keyCode, int modifiers);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -207,6 +228,18 @@ static bool fsWrite(void* userData, const char* path, const char* buffer, uint32
     return context->app->host->file_write_all(context->app, path, buffer, bytes, outBytes) == GX_OK;
 }
 
+static bool fsCreateDirectory(void* userData, const char* path) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (!context || !context->app || !context->app->host || !context->app->host->file_create_directory) return false;
+    return context->app->host->file_create_directory(context->app, path) == GX_OK;
+}
+
+static bool fsRemovePath(void* userData, const char* path) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (!context || !context->app || !context->app->host || !context->app->host->file_remove) return false;
+    return context->app->host->file_remove(context->app, path) == GX_OK;
+}
+
 static const char* currentError() {
     return ModelErrorName(g_controller.lastError);
 }
@@ -247,6 +280,22 @@ static void reportDocumentOpen(gx_app_context* ctx, bool success, bool duplicate
     }
 }
 
+static bool isProjectMetadataDocument(const Document* document) {
+    if (!document) return false;
+    const char* name = guidexos::developer_studio::BaseName(document->path);
+    const char expected[] = "guidexos.project";
+    uint32_t i = 0;
+    while (name[i] != '\0' && expected[i] != '\0') {
+        char a = name[i];
+        char b = expected[i];
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b + ('a' - 'A'));
+        if (a != b) return false;
+        ++i;
+    }
+    return expected[i] == '\0' && name[i] == '\0';
+}
+
 static bool saveDocument(gx_app_context* ctx, uint32_t index) {
     if (!WorkspaceControllerSaveDocument(&g_controller, index)) {
         writeOutput("Save failed");
@@ -255,6 +304,15 @@ static bool saveDocument(gx_app_context* ctx, uint32_t index) {
     }
     writeOutput("Document saved");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save=PASS");
+    if (g_controller.model.hasProject && isProjectMetadataDocument(&g_controller.model.documents[index])) {
+        if (WorkspaceControllerReloadProject(&g_controller)) {
+            writeOutput("Project metadata valid");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
+        } else {
+            writeOutput("Project metadata invalid");
+            markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=FAIL", WorkspaceControllerProjectError(&g_controller));
+        }
+    }
     return true;
 }
 
@@ -274,6 +332,112 @@ static void showWorkspacePrompt() {
     g_fileMenuOpen = false;
     g_workspaceSwitchPending = true;
     copyText(g_prompt, sizeof(g_prompt), "");
+}
+
+static void showOpenProjectPrompt() {
+    g_inputMode = InputMode::ProjectPath;
+    g_fileMenuOpen = false;
+    g_workspaceSwitchPending = false;
+    copyText(g_prompt, sizeof(g_prompt), "");
+}
+
+static void showNewProjectPrompt(gx_app_context* ctx) {
+    if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
+        writeOutput("Save or close the current workspace first");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=FAIL", "unsaved_changes");
+        return;
+    }
+    copyText(g_projectDialog.displayName, sizeof(g_projectDialog.displayName), "Hello guideXOS");
+    copyText(g_projectDialog.parentPath, sizeof(g_projectDialog.parentPath), "");
+    copyText(g_projectDialog.folderName, sizeof(g_projectDialog.folderName), "");
+    copyText(g_projectDialog.projectId, sizeof(g_projectDialog.projectId), "com.example.helloguidexos");
+    g_projectDialog.field = 0;
+    g_inputMode = InputMode::ProjectCreate;
+    g_fileMenuOpen = false;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_request=PASS");
+}
+
+static char* projectDialogField(uint32_t field, uint32_t* capacity) {
+    if (capacity) *capacity = 0;
+    if (field == 0) { if (capacity) *capacity = sizeof(g_projectDialog.displayName); return g_projectDialog.displayName; }
+    if (field == 1) { if (capacity) *capacity = sizeof(g_projectDialog.parentPath); return g_projectDialog.parentPath; }
+    if (field == 2) { if (capacity) *capacity = sizeof(g_projectDialog.folderName); return g_projectDialog.folderName; }
+    if (field == 3) { if (capacity) *capacity = sizeof(g_projectDialog.projectId); return g_projectDialog.projectId; }
+    return nullptr;
+}
+
+static void projectDialogBackspace() {
+    uint32_t capacity = 0;
+    char* field = projectDialogField(g_projectDialog.field, &capacity);
+    uint32_t length = lengthOf(field, capacity);
+    if (length > 0) field[length - 1] = '\0';
+}
+
+static void projectDialogAppend(int keyCode, int modifiers) {
+    uint32_t capacity = 0;
+    char* field = projectDialogField(g_projectDialog.field, &capacity);
+    if (!field) return;
+    char value = mapKeyToChar(keyCode, modifiers);
+    uint32_t length = lengthOf(field, capacity);
+    if (value != '\0' && length + 1 < capacity) { field[length] = value; field[length + 1] = '\0'; }
+}
+
+static void reportProjectFailure(gx_app_context* ctx, const char* marker, ProjectErrorCode error) {
+    const char* reason = ProjectErrorName(error);
+    writeOutput(reason);
+    markerFailure(ctx, marker, reason);
+}
+
+static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_validation=PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=PASS");
+    if (created.rollbackAttempted && created.rollbackSucceeded) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_rollback=PASS");
+    if (!WorkspaceControllerOpenProject(&g_controller, created.project.rootPath)) {
+        writeOutput("Project created; project open failed");
+        reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL", g_controller.lastProjectError);
+        return false;
+    }
+    writeOutput("Project created");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.amd64.hosted.native");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_template=native-gui-application");
+    if (!WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) {
+        reportDocumentOpen(ctx, false, false);
+        return false;
+    }
+    return true;
+}
+
+static void commitNewProject(gx_app_context* ctx) {
+    ProjectCreateRequest request = {};
+    copyText(request.parentPath, sizeof(request.parentPath), g_projectDialog.parentPath);
+    copyText(request.folderName, sizeof(request.folderName), g_projectDialog.folderName);
+    copyText(request.projectId, sizeof(request.projectId), g_projectDialog.projectId);
+    copyText(request.displayName, sizeof(request.displayName), g_projectDialog.displayName);
+    request.kind = ProjectKind::NativeGuiApplication;
+    ProjectOperationResult result;
+    if (!WorkspaceControllerCreateProject(&g_controller, request, &result)) {
+        if (result.rollbackAttempted && result.rollbackSucceeded) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_rollback=PASS");
+        reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=FAIL", result.error);
+        g_inputMode = InputMode::ProjectCreate;
+        return;
+    }
+    g_inputMode = InputMode::Normal;
+    openCreatedProject(ctx, result);
+}
+
+static void commitProjectOpen(gx_app_context* ctx) {
+    if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
+        writeOutput("Project opened");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.amd64.hosted.native");
+        if (!WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) reportDocumentOpen(ctx, false, false);
+    } else {
+        reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL", g_controller.lastProjectError);
+    }
+    g_inputMode = InputMode::Normal;
 }
 
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
@@ -374,13 +538,18 @@ static void drawExplorer(gx_app_context* ctx) {
     drawText(ctx, 16, 66, "EXPLORER");
     if (!g_controller.model.open) {
         drawText(ctx, 16, 98, "No workspace open");
-        drawText(ctx, 16, 126, "File -> Open Workspace");
+        drawText(ctx, 16, 126, "File -> New/Open Project");
+        drawText(ctx, 16, 144, "or Open Workspace");
         return;
     }
-    compose(g_textScratch, sizeof(g_textScratch), "Workspace: ", g_controller.model.displayName, "");
+    compose(g_textScratch, sizeof(g_textScratch), g_controller.model.hasProject ? "Project: " : "Workspace: ", g_controller.model.displayName, "");
     drawText(ctx, 16, 86, g_textScratch);
+    if (g_controller.model.hasProject) {
+        compose(g_textScratch, sizeof(g_textScratch), "Kind: ", guidexos::developer_studio::ToString(g_controller.model.project.kind), "");
+        drawText(ctx, 16, 102, g_textScratch);
+    }
     compose(g_textScratch, sizeof(g_textScratch), "Path: ", g_controller.model.browsePath[0] ? g_controller.model.browsePath : "/", "");
-    drawText(ctx, 16, 102, g_textScratch);
+    drawText(ctx, 16, g_controller.model.hasProject ? 118 : 102, g_textScratch);
     for (uint32_t i = 0; i < g_controller.model.entryCount && i < 20; ++i) {
         int y = kEntryTop + static_cast<int>(i) * kEntryHeight;
         if (i == g_controller.model.selectedEntry) drawPanel(ctx, { 8, y - 13, 252, 18 }, 0x34496Au);
@@ -419,9 +588,16 @@ static void drawEditor(gx_app_context* ctx) {
     drawTabs(ctx);
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!document) {
-        drawText(ctx, 300, 120, "Welcome to guideXOS Developer Studio");
-        drawText(ctx, 300, 150, "Open a workspace, then activate a supported text file.");
-        drawText(ctx, 300, 180, "The editor is bounded and intentionally syntax-free.");
+        drawText(ctx, 300, 120, g_controller.model.hasProject ? "Project loaded" : "Welcome to guideXOS Developer Studio");
+        if (g_controller.model.hasProject) {
+            compose(g_textScratch, sizeof(g_textScratch), "Application ID: ", g_controller.model.project.projectId, "");
+            drawText(ctx, 300, 150, g_textScratch);
+            compose(g_textScratch, sizeof(g_textScratch), "Target: ", g_controller.model.project.targetProfileId, "");
+            drawText(ctx, 300, 180, g_textScratch);
+        } else {
+            drawText(ctx, 300, 150, "Open a workspace, or create/open a project.");
+            drawText(ctx, 300, 180, "The editor is bounded and intentionally syntax-free.");
+        }
         return;
     }
     compose(g_textScratch, sizeof(g_textScratch), "Document: ", document->name, document->buffer.dirty ? "  Modified" : "");
@@ -456,8 +632,12 @@ static void drawOutputAndStatus(gx_app_context* ctx) {
     for (uint32_t i = 0; i < g_outputCount; ++i) drawText(ctx, 112, 540 + static_cast<int>(i) * 12, g_output[(start + i) % kMaxOutputLines]);
     compose(g_textScratch, sizeof(g_textScratch), "Target: ", InitialTargetProfile().displayName, " | Experimental");
     drawText(ctx, 16, 600, g_textScratch);
-    compose(g_textScratch, sizeof(g_textScratch), "Workspace: ", g_controller.model.open ? g_controller.model.displayName : "-", "");
+    compose(g_textScratch, sizeof(g_textScratch), g_controller.model.hasProject ? "Project: " : "Workspace: ", g_controller.model.open ? g_controller.model.displayName : "-", "");
     drawText(ctx, 16, 618, g_textScratch);
+    if (g_controller.model.hasProject) {
+        compose(g_textScratch, sizeof(g_textScratch), "ID: ", g_controller.model.project.projectId, "");
+        drawText(ctx, 300, 600, g_textScratch);
+    }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (document) {
         uint32_t line = activeLine(document->buffer);
@@ -474,12 +654,28 @@ static void drawOutputAndStatus(gx_app_context* ctx) {
 static void drawModal(gx_app_context* ctx) {
     if (g_inputMode == InputMode::Normal) return;
     drawPanel(ctx, { 180, 180, 600, 180 }, 0x2A3852u);
-    if (g_inputMode == InputMode::WorkspacePath) {
-        drawText(ctx, 210, 220, "Open Workspace (temporary path-entry facility)");
-        drawText(ctx, 210, 250, "Enter an absolute hosted path:");
+    if (g_inputMode == InputMode::WorkspacePath || g_inputMode == InputMode::ProjectPath) {
+        drawText(ctx, 210, 220, g_inputMode == InputMode::ProjectPath ? "Open Project" : "Open Workspace (path entry)");
+        drawText(ctx, 210, 250, "Enter an absolute hosted root or metadata path:");
         drawPanel(ctx, { 210, 265, 540, 30 }, 0x111722u);
         drawText(ctx, 220, 285, g_prompt);
         drawText(ctx, 210, 325, "Enter: open   Escape: cancel");
+        return;
+    }
+    if (g_inputMode == InputMode::ProjectCreate) {
+        drawPanel(ctx, { 150, 110, 660, 410 }, 0x2A3852u);
+        drawText(ctx, 180, 142, "New Project");
+        drawText(ctx, 180, 166, "Native GUI Application (only supported template)");
+        const char* labels[] = { "Display name", "Parent location", "Folder name (optional)", "Application ID" };
+        const char* values[] = { g_projectDialog.displayName, g_projectDialog.parentPath, g_projectDialog.folderName, g_projectDialog.projectId };
+        for (uint32_t i = 0; i < 4; ++i) {
+            int y = 196 + static_cast<int>(i) * 56;
+            drawText(ctx, 180, y, labels[i]);
+            drawPanel(ctx, { 180, y + 8, 600, 28 }, i == g_projectDialog.field ? 0x111722u : 0x202A36u);
+            drawText(ctx, 190, y + 28, values[i]);
+        }
+        drawText(ctx, 180, 450, "Tab/Enter: next field   Enter on Application ID: create");
+        drawText(ctx, 180, 474, "Folder is derived from the display name when blank; Escape cancels");
         return;
     }
     drawText(ctx, 210, 220, "Unsaved changes");
@@ -501,16 +697,18 @@ static void drawShell(gx_app_context* ctx) {
     drawText(ctx, 340, 30, "Save");
     drawText(ctx, 400, 30, "Save All");
     drawText(ctx, 490, 30, "Refresh");
-    drawText(ctx, 575, 30, "Ctrl+O Workspace");
+    drawText(ctx, 575, 30, "Ctrl+N New Project");
     drawExplorer(ctx);
     drawEditor(ctx);
     drawOutputAndStatus(ctx);
     if (g_fileMenuOpen) {
-        drawPanel(ctx, { 8, 42, 190, 110 }, 0x34496Au);
-        drawText(ctx, 20, 68, "Open Workspace");
-        drawText(ctx, 20, 92, "Close Document");
-        drawText(ctx, 20, 116, "Close Workspace");
-        drawText(ctx, 20, 140, "Exit");
+        drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
+        drawText(ctx, 20, 64, "New Project");
+        drawText(ctx, 20, 86, "Open Project");
+        drawText(ctx, 20, 108, "Open Workspace");
+        drawText(ctx, 20, 130, "Close Document");
+        drawText(ctx, 20, 152, "Close Workspace");
+        drawText(ctx, 20, 174, "Exit");
     }
     drawModal(ctx);
 }
@@ -545,6 +743,29 @@ static void placeCaretFromMouse(Document* document, int x, int y) {
 
 static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_inputMode == InputMode::ProjectCreate) {
+        if (keyCode == 27) { g_inputMode = InputMode::Normal; writeOutput("Project creation canceled"); return; }
+        if (keyCode == 9) {
+            if (modifiers & GX_KEY_MOD_SHIFT) g_projectDialog.field = g_projectDialog.field == 0 ? 3 : g_projectDialog.field - 1;
+            else g_projectDialog.field = (g_projectDialog.field + 1) % 4;
+            return;
+        }
+        if (keyCode == 13) {
+            if (g_projectDialog.field < 3) { ++g_projectDialog.field; return; }
+            commitNewProject(ctx);
+            return;
+        }
+        if (keyCode == 8) { projectDialogBackspace(); return; }
+        projectDialogAppend(keyCode, modifiers);
+        return;
+    }
+    if (g_inputMode == InputMode::ProjectPath) {
+        if (keyCode == 27) { g_inputMode = InputMode::Normal; return; }
+        if (keyCode == 13) { commitProjectOpen(ctx); return; }
+        if (keyCode == 8) { promptBackspace(); return; }
+        promptAppend(keyCode, modifiers);
+        return;
+    }
     if (g_inputMode == InputMode::WorkspacePath) {
         if (keyCode == 27) { g_inputMode = InputMode::Normal; return; }
         if (keyCode == 13) {
@@ -588,6 +809,8 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 78 || keyCode == 110)) { showNewProjectPrompt(ctx); return; }
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 79 || keyCode == 111)) { showOpenProjectPrompt(); return; }
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 79 || keyCode == 111)) { showWorkspacePrompt(); return; }
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 83 || keyCode == 115)) {
         if (modifiers & GX_KEY_MOD_SHIFT) saveAll(ctx);
@@ -656,13 +879,15 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 70 && x < 130) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
     if (y < 48 && x >= 130 && x < 220) { saveAll(ctx); drawShell(ctx); return; }
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
-    if (g_fileMenuOpen && x >= 8 && x < 198 && y >= 42 && y < 152) {
-        if (y < 76) showWorkspacePrompt();
-        else if (y < 102 && g_controller.model.activeDocument < kMaxOpenDocuments) {
+    if (g_fileMenuOpen && x >= 8 && x < 258 && y >= 42 && y < 200) {
+        if (y < 68) showNewProjectPrompt(ctx);
+        else if (y < 92) showOpenProjectPrompt();
+        else if (y < 116) showWorkspacePrompt();
+        else if (y < 138 && g_controller.model.activeDocument < kMaxOpenDocuments) {
             g_pendingDocument = g_controller.model.activeDocument;
             if (g_controller.model.documents[g_pendingDocument].buffer.dirty) g_inputMode = InputMode::ConfirmDocument;
             else closeActiveDocument(ctx, CloseDecision::Discard);
-        } else if (y < 128) {
+        } else if (y < 160) {
             g_workspaceSwitchPending = false;
             if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmWorkspace;
             else WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
@@ -709,7 +934,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!IsValidTargetProfile(target)) return GX_ERROR_FAILED;
 
     g_fileSystemContext.app = ctx;
-    WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite };
+    WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite, fsCreateDirectory, fsRemovePath };
     WorkspaceControllerInit(&g_controller, fileSystem);
     g_inputMode = InputMode::Normal;
     g_editorFocused = false;

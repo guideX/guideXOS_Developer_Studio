@@ -24,7 +24,7 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $Fixture "binary.dat"), [byte[]](0x41, 0x00, 0x42, 0xFF))
     [IO.File]::WriteAllText((Join-Path $Fixture "oversized.txt"), ("x" * (256 * 1024 + 1)))
 
-    & g++ -std=c++17 -Wall -Wextra -pedantic -Isrc src\developer_studio_models.cpp src\developer_studio_workspace.cpp tests\workflow_test.cpp -o $TestBinary
+    & g++ -std=c++17 -Wall -Wextra -pedantic -Isrc src\developer_studio_models.cpp src\developer_studio_projects.cpp src\developer_studio_workspace.cpp tests\workflow_test.cpp -o $TestBinary
     Assert-True ($LASTEXITCODE -eq 0) "workflow test compiles"
     $workflowOutput = (& $TestBinary $Fixture 2>&1 | Out-String)
     Write-Host $workflowOutput
