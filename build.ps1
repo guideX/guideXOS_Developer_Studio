@@ -17,6 +17,7 @@ $Manifest = Join-Path $RepoRoot "app\app.json"
 $ModelTest = Join-Path $ServerRoot "tmp\developer-studio-model-test.exe"
 $ProjectTest = Join-Path $ServerRoot "tmp\developer-studio-project-test.exe"
 $RunTest = Join-Path $ServerRoot "tmp\developer-studio-run-test.exe"
+$FindTest = Join-Path $ServerRoot "tmp\developer-studio-find-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -60,7 +61,7 @@ try {
     if (-not $SkipModelTest) {
         Invoke-Checked "g++" @(
             "-std=c++11", "-Wall", "-Wextra", "-pedantic",
-            "-Isrc", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "tests\model_test.cpp",
+            "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "tests\model_test.cpp",
             "-o", $ModelTest
         )
         & $ModelTest
@@ -69,7 +70,7 @@ try {
     if (-not $SkipProjectTest) {
         Invoke-Checked "g++" @(
             "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-            "-Isrc", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_workspace.cpp", "tests\project_test.cpp",
+            "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_workspace.cpp", "tests\project_test.cpp",
             "-o", $ProjectTest
         )
         & $ProjectTest
@@ -83,6 +84,14 @@ try {
     & $RunTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio run controller test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "tests\find_test.cpp",
+        "-o", $FindTest
+    )
+    & $FindTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio find test failed with exit code $LASTEXITCODE" }
+
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
@@ -90,6 +99,7 @@ try {
         "-I$SdkInclude", "-Isrc"
     )
     $modelObject = Join-Path $ObjectRoot "developer_studio_models.o"
+    $findObject = Join-Path $ObjectRoot "developer_studio_find.o"
     $syntaxObject = Join-Path $ObjectRoot "developer_studio_syntax.o"
     $projectObject = Join-Path $ObjectRoot "developer_studio_projects.o"
     $workspaceObject = Join-Path $ObjectRoot "developer_studio_workspace.o"
@@ -99,6 +109,7 @@ try {
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_find.cpp"), "-o", $findObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_syntax.cpp"), "-o", $syntaxObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_projects.cpp"), "-o", $projectObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_workspace.cpp"), "-o", $workspaceObject))
@@ -109,7 +120,7 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -129,5 +140,6 @@ try {
     if (Test-Path -LiteralPath $ModelTest) { Remove-Item -LiteralPath $ModelTest -Force }
     if (Test-Path -LiteralPath $ProjectTest) { Remove-Item -LiteralPath $ProjectTest -Force }
     if (Test-Path -LiteralPath $RunTest) { Remove-Item -LiteralPath $RunTest -Force }
+    if (Test-Path -LiteralPath $FindTest) { Remove-Item -LiteralPath $FindTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

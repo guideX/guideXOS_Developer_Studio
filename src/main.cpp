@@ -61,6 +61,34 @@ using guidexos::developer_studio::OutputSourceName;
 using guidexos::developer_studio::OutputChannelName;
 using guidexos::developer_studio::OutputErrorName;
 using guidexos::developer_studio::Document;
+using guidexos::developer_studio::FindCopyStateFromSession;
+using guidexos::developer_studio::FindCopyStateToSession;
+using guidexos::developer_studio::FindCurrentMatch;
+using guidexos::developer_studio::FindCanReplaceAll;
+using guidexos::developer_studio::FindDirection;
+using guidexos::developer_studio::FindErrorCode;
+using guidexos::developer_studio::FindErrorName;
+using guidexos::developer_studio::FindMatch;
+using guidexos::developer_studio::FindNavigate;
+using guidexos::developer_studio::FindSearch;
+using guidexos::developer_studio::FindSelectInitial;
+using guidexos::developer_studio::FindSession;
+using guidexos::developer_studio::FindSessionInit;
+using guidexos::developer_studio::FindSessionIsStale;
+using guidexos::developer_studio::FindSetCurrentMatch;
+using guidexos::developer_studio::FindSetOptions;
+using guidexos::developer_studio::FindSetQuery;
+using guidexos::developer_studio::FindSetReplacement;
+using guidexos::developer_studio::FindVisibleMatchIndices;
+using guidexos::developer_studio::FindOptions;
+using guidexos::developer_studio::kFindMaxQueryBytes;
+using guidexos::developer_studio::GetCaretOffset;
+using guidexos::developer_studio::GetSelectedText;
+using guidexos::developer_studio::ReplaceTextRange;
+using guidexos::developer_studio::ReplaceTextRanges;
+using guidexos::developer_studio::SelectTextRange;
+using guidexos::developer_studio::SetCaretOffset;
+using guidexos::developer_studio::ValidateTextRange;
 using guidexos::developer_studio::DefaultSyntaxPalette;
 using guidexos::developer_studio::DetectSyntaxLanguage;
 using guidexos::developer_studio::DocumentUpdateSyntax;
@@ -146,6 +174,19 @@ static const int kVisibleEditorLines = 26;
 static const uint32_t kEditorTabWidth = 4;
 static const uint32_t kVisibleEditorColumns = 78;
 static const int kMaxPromptBytes = 240;
+static const int kFindFieldX = 326;
+static const int kFindFieldWidth = 250;
+static const int kFindQueryY = 17;
+static const int kFindReplaceY = 39;
+static const int kFindPreviousX = 590;
+static const int kFindNextX = 650;
+static const int kFindCaseX = 696;
+static const int kFindWordX = 752;
+static const int kFindWrapX = 808;
+static const int kFindCloseX = 864;
+static const int kFindReplaceButtonX = 590;
+static const int kFindReplaceAllX = 660;
+static const uint32_t kFindVisibleOverlayCapacity = 256;
 
 enum class InputMode {
     Normal = 0,
@@ -210,6 +251,19 @@ static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
 static bool g_syntaxRenderMarkerReported = false;
+
+enum class FindField {
+    Query = 0,
+    Replacement
+};
+
+static FindSession g_findSession = {};
+static bool g_findBarOpen = false;
+static bool g_findReplaceMode = false;
+static FindField g_findField = FindField::Query;
+static uint32_t g_findFieldCaret = 0;
+static char g_findTransientStatus[96] = {};
+static uint32_t g_findVisibleIndices[kFindVisibleOverlayCapacity] = {};
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
@@ -1157,6 +1211,115 @@ static void compose(char* output, uint32_t size, const char* prefix, const char*
     appendText(output, size, suffix);
 }
 
+static void findFieldDisplay(char* output, uint32_t outputSize, const char* field) {
+    if (!output || outputSize == 0) return;
+    copyText(output, outputSize, field ? field : "");
+    const uint32_t limit = outputSize > 3 ? outputSize - 3 : 0;
+    if (limit != 0 && lengthOf(output, outputSize) > limit) {
+        output[limit] = '.';
+        output[limit + 1] = '.';
+        output[limit + 2] = '\0';
+    }
+}
+
+static void findStatusText(char* output, uint32_t outputSize) {
+    if (!output || outputSize == 0) return;
+    output[0] = '\0';
+    if (g_findTransientStatus[0] != '\0') {
+        copyText(output, outputSize, g_findTransientStatus);
+        return;
+    }
+    if (g_findSession.error == FindErrorCode::MatchLimitReached) {
+        copyText(output, outputSize, "Search results truncated.");
+    } else if (g_findSession.error == FindErrorCode::QueryTooLarge) {
+        copyText(output, outputSize, "Query too large");
+    } else if (g_findSession.error == FindErrorCode::DocumentTooLarge) {
+        copyText(output, outputSize, "Document too large");
+    } else if (g_findSession.matchCount == 0) {
+        copyText(output, outputSize, "No matches");
+    } else {
+        appendUnsigned(output, outputSize, g_findSession.currentMatchIndex >= 0 ?
+                       static_cast<uint32_t>(g_findSession.currentMatchIndex + 1) : 0);
+        appendText(output, outputSize, " / ");
+        appendUnsigned(output, outputSize, g_findSession.matchCount);
+    }
+}
+
+static void drawFindBar(gx_app_context* ctx) {
+    if (!g_findBarOpen) return;
+    drawPanel(ctx, { 270, 0, 690, 48 }, 0x304365u);
+    drawText(ctx, 278, kFindQueryY, "Find:");
+    drawPanel(ctx, { kFindFieldX, 4, kFindFieldWidth, 18 }, g_findField == FindField::Query ? 0x405775u : 0x202A36u);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_findSession.query);
+    drawText(ctx, kFindFieldX + 5, kFindQueryY, g_textScratch);
+    if (g_findReplaceMode) {
+        drawText(ctx, 278, kFindReplaceY, "Replace:");
+        drawPanel(ctx, { kFindFieldX, 26, kFindFieldWidth, 18 }, g_findField == FindField::Replacement ? 0x405775u : 0x202A36u);
+        findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_findSession.replacement);
+        drawText(ctx, kFindFieldX + 5, kFindReplaceY, g_textScratch);
+        drawText(ctx, kFindReplaceButtonX, kFindReplaceY, "Replace");
+        drawText(ctx, kFindReplaceAllX, kFindReplaceY,
+                 FindCanReplaceAll(&g_findSession) ? "Replace All" : "Replace All(disabled)");
+    }
+    drawText(ctx, kFindPreviousX, kFindQueryY, "Previous");
+    drawText(ctx, kFindNextX, kFindQueryY, "Next");
+    drawText(ctx, kFindCaseX, kFindQueryY, g_findSession.options.caseSensitive ? "[x]Case" : "[ ]Case");
+    drawText(ctx, kFindWordX, kFindQueryY, g_findSession.options.wholeWord ? "[x]Word" : "[ ]Word");
+    drawText(ctx, kFindWrapX, kFindQueryY, g_findSession.options.wrapAround ? "[x]Wrap" : "[ ]Wrap");
+    drawText(ctx, kFindCloseX, kFindQueryY, "Close");
+    findStatusText(g_textScratch, sizeof(g_textScratch));
+    drawText(ctx, 890, kFindReplaceY, g_textScratch);
+}
+
+static void drawEditorRangeOverlay(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
+                                   uint32_t lineEnd, uint64_t rangeStart, uint64_t rangeEnd,
+                                   uint32_t color, uint32_t rowY) {
+    const uint32_t clippedStart = rangeStart > lineStart ? static_cast<uint32_t>(rangeStart) : lineStart;
+    const uint32_t clippedEnd = rangeEnd < lineEnd ? static_cast<uint32_t>(rangeEnd) : lineEnd;
+    if (clippedEnd <= clippedStart) return;
+    const uint32_t visibleStart = g_editorScrollColumn;
+    const uint32_t visibleEnd = visibleStart + kVisibleEditorColumns;
+    const uint32_t visualStart = TextBufferVisualColumn(&buffer, lineStart, clippedStart, kEditorTabWidth);
+    const uint32_t visualEnd = TextBufferVisualColumn(&buffer, lineStart, clippedEnd, kEditorTabWidth);
+    if (visualEnd <= visibleStart || visualStart >= visibleEnd) return;
+    const uint32_t drawStart = visualStart > visibleStart ? visualStart : visibleStart;
+    const uint32_t drawStop = visualEnd < visibleEnd ? visualEnd : visibleEnd;
+    uint32_t output = 0;
+    uint32_t visual = visualStart;
+    for (uint32_t offset = clippedStart; offset < clippedEnd && output + 1 < sizeof(g_lineScratch); ++offset) {
+        const char value = buffer.data[offset];
+        const uint32_t width = value == '\t' ? kEditorTabWidth - (visual % kEditorTabWidth) : 1;
+        const uint32_t characterStart = visual;
+        const uint32_t characterEnd = visual + width;
+        if (characterEnd > drawStart && characterStart < drawStop) {
+            const uint32_t from = characterStart < drawStart ? drawStart : characterStart;
+            const uint32_t to = characterEnd > drawStop ? drawStop : characterEnd;
+            for (uint32_t column = from; column < to && output + 1 < sizeof(g_lineScratch); ++column)
+                g_lineScratch[output++] = value == '\t' ? ' ' : value;
+        }
+        visual = characterEnd;
+    }
+    if (output == 0) return;
+    g_lineScratch[output] = '\0';
+    drawPanel(ctx, { kEditorTextX + static_cast<int>((drawStart - visibleStart) * 8u),
+                     static_cast<int>(rowY) - 12, static_cast<int>(output * 8u), 14 }, color);
+    drawText(ctx, kEditorTextX + static_cast<int>((drawStart - visibleStart) * 8u), rowY, g_lineScratch);
+}
+
+static void drawFindOverlays(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
+                             uint32_t lineEnd, uint32_t rowY) {
+    if (!g_findBarOpen || g_findSession.matchCount == 0 || lineEnd <= lineStart) return;
+    const uint32_t count = FindVisibleMatchIndices(&g_findSession, lineStart, lineEnd,
+                                                   g_findVisibleIndices, kFindVisibleOverlayCapacity);
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t matchIndex = g_findVisibleIndices[i];
+        const FindMatch& match = g_findSession.matches[matchIndex];
+        const bool current = static_cast<int32_t>(matchIndex) == g_findSession.currentMatchIndex;
+        drawEditorRangeOverlay(ctx, buffer, lineStart, lineEnd, match.start,
+                                match.start + match.length, current ? 0xA96F2Au : 0x405775u, rowY);
+    }
+}
+
 static void drawExplorer(gx_app_context* ctx) {
     drawText(ctx, 16, 66, "EXPLORER");
     if (!g_controller.model.open) {
@@ -1204,6 +1367,255 @@ static void keepCaretVisible(const Document* document) {
     if (line >= g_editorScrollLine + kVisibleEditorLines) g_editorScrollLine = line - kVisibleEditorLines + 1;
     if (column < g_editorScrollColumn) g_editorScrollColumn = column;
     if (column >= g_editorScrollColumn + kVisibleEditorColumns) g_editorScrollColumn = column - kVisibleEditorColumns + 1;
+}
+
+static Document* findDocumentById(uint64_t documentId) {
+    if (documentId == 0) return nullptr;
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        if (g_controller.model.documents[i].used && g_controller.model.documents[i].documentId == documentId)
+            return &g_controller.model.documents[i];
+    }
+    return nullptr;
+}
+
+static void findSetStatus(const char* text) {
+    copyText(g_findTransientStatus, sizeof(g_findTransientStatus), text ? text : "");
+}
+
+static void saveFindSessionToDocument() {
+    Document* document = findDocumentById(g_findSession.documentId);
+    if (document) FindCopyStateFromSession(&document->find, g_findSession);
+}
+
+static void findRecompute(Document* document, bool preserveCurrent) {
+    if (!document) return;
+    uint64_t previousStart = 0;
+    bool hadPrevious = false;
+    const FindMatch* previous = FindCurrentMatch(&g_findSession);
+    if (preserveCurrent && previous) { previousStart = previous->start; hadPrevious = true; }
+    FindSearch(&g_findSession, document->documentId, document->buffer.generation,
+               document->buffer.data, document->buffer.length);
+    if (hadPrevious) {
+        for (uint32_t i = 0; i < g_findSession.matchCount; ++i) {
+            if (g_findSession.matches[i].start == previousStart) {
+                FindSetCurrentMatch(&g_findSession, static_cast<int32_t>(i));
+                break;
+            }
+        }
+    }
+}
+
+static void ensureFindDocument(Document* document) {
+    if (!document) {
+        if (g_findSession.documentId != 0) FindSessionInit(&g_findSession);
+        return;
+    }
+    if (g_findSession.documentId != document->documentId) {
+        saveFindSessionToDocument();
+        FindSessionInit(&g_findSession);
+        FindCopyStateToSession(&g_findSession, document->find);
+        findRecompute(document, false);
+    } else if (FindSessionIsStale(&g_findSession, document->documentId, document->buffer.generation)) {
+        // A byte edit can shift an old range onto an unrelated occurrence.
+        // Recompute the retained list but clear the current selection; the
+        // next explicit navigation must establish a fresh current match.
+        findRecompute(document, false);
+    }
+}
+
+static void findSelectMatch(Document* document, int32_t index) {
+    if (!document || index < 0 || index >= static_cast<int32_t>(g_findSession.matchCount)) return;
+    const FindMatch& match = g_findSession.matches[index];
+    if (!ValidateTextRange(&document->buffer, match.start, match.length)) return;
+    if (!FindSetCurrentMatch(&g_findSession, index)) return;
+    SelectTextRange(&document->buffer, match.start, match.length);
+    g_editorFocused = true;
+    keepCaretVisible(document);
+}
+
+static void findRefreshFromCaret(Document* document, bool selectInitial) {
+    if (!document) return;
+    const uint32_t caret = GetCaretOffset(&document->buffer);
+    FindSearch(&g_findSession, document->documentId, document->buffer.generation,
+               document->buffer.data, document->buffer.length);
+    if (selectInitial && g_findSession.matchCount != 0) {
+        bool wrapped = false;
+        const int32_t index = FindNavigate(&g_findSession, caret, FindDirection::Forward, &wrapped);
+        if (index >= 0) {
+            findSelectMatch(document, index);
+            if (wrapped) findSetStatus("Wrapped to beginning");
+        }
+    }
+    saveFindSessionToDocument();
+}
+
+static void findNavigate(Document* document, FindDirection direction) {
+    if (!document) { findSetStatus("No active document"); return; }
+    ensureFindDocument(document);
+    bool wrapped = false;
+    const int32_t index = FindNavigate(&g_findSession, GetCaretOffset(&document->buffer), direction, &wrapped);
+    if (index < 0) {
+        findSetStatus(g_findSession.error == FindErrorCode::MatchLimitReached ?
+                      "Search results truncated." : "No matches");
+        return;
+    }
+    findSelectMatch(document, index);
+    if (wrapped) findSetStatus(direction == FindDirection::Forward ? "Wrapped to beginning" : "Wrapped to end");
+    else findSetStatus("");
+    saveFindSessionToDocument();
+}
+
+static char* findFieldBuffer() {
+    return g_findField == FindField::Query ? g_findSession.query : g_findSession.replacement;
+}
+
+static uint32_t findFieldCapacity() {
+    return g_findField == FindField::Query ? sizeof(g_findSession.query) : sizeof(g_findSession.replacement);
+}
+
+static void findFieldChanged(Document* document) {
+    if (g_findField == FindField::Query) {
+        FindSetQuery(&g_findSession, g_findSession.query);
+        if (document) findRefreshFromCaret(document, true);
+    } else {
+        FindSetReplacement(&g_findSession, g_findSession.replacement);
+        saveFindSessionToDocument();
+    }
+}
+
+static void findInsertCharacter(Document* document, char value) {
+    if (value == '\0') return;
+    char* field = findFieldBuffer();
+    const uint32_t capacity = findFieldCapacity();
+    const uint32_t length = lengthOf(field, capacity);
+    if (g_findFieldCaret > length || length + 1 >= capacity) return;
+    for (uint32_t i = length; i > g_findFieldCaret; --i) field[i] = field[i - 1];
+    field[g_findFieldCaret++] = value;
+    field[length + 1] = '\0';
+    findFieldChanged(document);
+}
+
+static void findBackspace(Document* document) {
+    char* field = findFieldBuffer();
+    const uint32_t length = lengthOf(field, findFieldCapacity());
+    if (g_findFieldCaret == 0 || g_findFieldCaret > length) return;
+    for (uint32_t i = g_findFieldCaret - 1; i < length; ++i) field[i] = field[i + 1];
+    --g_findFieldCaret;
+    findFieldChanged(document);
+}
+
+static void findDelete(Document* document) {
+    char* field = findFieldBuffer();
+    const uint32_t length = lengthOf(field, findFieldCapacity());
+    if (g_findFieldCaret >= length) return;
+    for (uint32_t i = g_findFieldCaret; i < length; ++i) field[i] = field[i + 1];
+    findFieldChanged(document);
+}
+
+static void openFindBar(bool replaceMode, bool initializeQuery) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    ensureFindDocument(document);
+    findSetStatus("");
+    g_findBarOpen = true;
+    g_findReplaceMode = replaceMode;
+    g_findField = FindField::Query;
+    if (initializeQuery && document) {
+        bool useSelection = document->buffer.selectionActive;
+        uint32_t selectionStart = document->buffer.selectionAnchor < document->buffer.caret ?
+            document->buffer.selectionAnchor : document->buffer.caret;
+        uint32_t selectionEnd = document->buffer.selectionAnchor < document->buffer.caret ?
+            document->buffer.caret : document->buffer.selectionAnchor;
+        if (!useSelection || selectionEnd <= selectionStart || selectionEnd - selectionStart > kFindMaxQueryBytes) useSelection = false;
+        if (useSelection) {
+            for (uint32_t i = selectionStart; i < selectionEnd; ++i) {
+                if (document->buffer.data[i] == '\n' || document->buffer.data[i] == '\r') { useSelection = false; break; }
+            }
+        }
+        if (useSelection) {
+            uint32_t length = selectionEnd - selectionStart;
+            for (uint32_t i = 0; i < length; ++i) g_findSession.query[i] = document->buffer.data[selectionStart + i];
+            g_findSession.query[length] = '\0';
+            FindSetQuery(&g_findSession, g_findSession.query);
+            findRefreshFromCaret(document, true);
+        } else {
+            findRefreshFromCaret(document, true);
+        }
+    }
+    g_findFieldCaret = lengthOf(g_findSession.query, sizeof(g_findSession.query));
+    g_editorFocused = false;
+}
+
+static void closeFindBar() {
+    saveFindSessionToDocument();
+    g_findBarOpen = false;
+    g_findReplaceMode = false;
+    g_editorFocused = true;
+    findSetStatus("");
+}
+
+static bool replaceCurrentMatch(Document* document) {
+    if (!document) { findSetStatus("No active document"); return false; }
+    ensureFindDocument(document);
+    const FindMatch* current = FindCurrentMatch(&g_findSession);
+    if (!current || !ValidateTextRange(&document->buffer, current->start, current->length)) {
+        findSetStatus("No current match");
+        return false;
+    }
+    const uint64_t start = current->start;
+    const uint32_t oldLength = static_cast<uint32_t>(current->length);
+    if (!guidexos::developer_studio::FindMatchTextStillValid(&g_findSession, document->buffer.data,
+                                                              document->buffer.length, *current)) {
+        findRecompute(document, false);
+        findSetStatus("Search changed; match refreshed");
+        return false;
+    }
+    const uint32_t replacementLength = lengthOf(g_findSession.replacement, sizeof(g_findSession.replacement));
+    if (!ReplaceTextRange(&document->buffer, start, oldLength, g_findSession.replacement, replacementLength)) {
+        findSetStatus("Replacement rejected");
+        return false;
+    }
+    DocumentUpdateSyntax(document);
+    ensureFindDocument(document);
+    FindSearch(&g_findSession, document->documentId, document->buffer.generation,
+               document->buffer.data, document->buffer.length);
+    g_findSession.currentMatchIndex = -1;
+    bool wrapped = false;
+    const int32_t next = FindNavigate(&g_findSession, start + replacementLength, FindDirection::Forward, &wrapped);
+    if (next >= 0) findSelectMatch(document, next);
+    if (wrapped) findSetStatus("Wrapped to beginning");
+    else findSetStatus("");
+    saveFindSessionToDocument();
+    return true;
+}
+
+static uint32_t replaceAllMatches(Document* document) {
+    if (!document) { findSetStatus("No active document"); return 0; }
+    ensureFindDocument(document);
+    if (g_findSession.truncated) {
+        findSetStatus("Search results truncated.");
+        return 0;
+    }
+    if (g_findSession.matchCount == 0) { findSetStatus("No matches"); return 0; }
+    const uint32_t count = g_findSession.matchCount;
+    const uint32_t replacementLength = lengthOf(g_findSession.replacement, sizeof(g_findSession.replacement));
+    if (!ReplaceTextRanges(&document->buffer, g_findSession.matches, count,
+                           g_findSession.replacement, replacementLength)) {
+        findSetStatus("Replace All rejected");
+        return 0;
+    }
+    DocumentUpdateSyntax(document);
+    const uint32_t caret = GetCaretOffset(&document->buffer);
+    FindSearch(&g_findSession, document->documentId, document->buffer.generation,
+               document->buffer.data, document->buffer.length);
+    g_findSession.currentMatchIndex = -1;
+    bool wrapped = false;
+    const int32_t next = FindNavigate(&g_findSession, caret, FindDirection::Forward, &wrapped);
+    if (next >= 0) findSelectMatch(document, next);
+    copyText(g_findTransientStatus, sizeof(g_findTransientStatus), "Replaced ");
+    appendUnsigned(g_findTransientStatus, sizeof(g_findTransientStatus), count);
+    appendText(g_findTransientStatus, sizeof(g_findTransientStatus), count == 1 ? " match" : " matches");
+    saveFindSessionToDocument();
+    return count;
 }
 
 static void updateSyntaxAfterEdit(gx_app_context* ctx, Document* document) {
@@ -1322,7 +1734,15 @@ static void drawEditor(gx_app_context* ctx) {
         drawText(ctx, kEditorLineNumberX, kEditorTop + static_cast<int>(row) * kEditorLineHeight, g_textScratch);
         uint32_t spanCount = 0;
         const SyntaxTokenSpan* spans = SyntaxCacheLineSpans(&document->syntax, line, &spanCount);
-        SyntaxSelection selection = { false, 0, 0 };
+        uint32_t selectionStart = document->buffer.selectionAnchor < document->buffer.caret ?
+            document->buffer.selectionAnchor : document->buffer.caret;
+        uint32_t selectionEnd = document->buffer.selectionAnchor < document->buffer.caret ?
+            document->buffer.caret : document->buffer.selectionAnchor;
+        SyntaxSelection selection = { document->buffer.selectionActive && selectionEnd > selectionStart,
+                                      selectionStart > start ? selectionStart - start : 0,
+                                      selectionEnd > start ? selectionEnd - start : 0 };
+        if (selection.end > length) selection.end = length;
+        if (selection.start > selection.end) selection.start = selection.end;
         uint32_t runCount = SyntaxBuildRenderRuns(spans, spanCount, length, selection, g_renderRuns,
                                                   sizeof(g_renderRuns) / sizeof(g_renderRuns[0]));
         if (runCount == 0 && length != 0) {
@@ -1335,6 +1755,8 @@ static void drawEditor(gx_app_context* ctx) {
         for (uint32_t run = 0; run < runCount; ++run)
             drawEditorTextRun(ctx, document->buffer, start, end, g_renderRuns[run],
                               kEditorTop + static_cast<int>(row) * kEditorLineHeight);
+        drawFindOverlays(ctx, document->buffer, start, end,
+                         kEditorTop + static_cast<int>(row) * kEditorLineHeight);
     }
     if (!g_syntaxRenderMarkerReported) {
         g_syntaxRenderMarkerReported = true;
@@ -1510,6 +1932,7 @@ static void drawShell(gx_app_context* ctx) {
     drawExplorer(ctx);
     drawEditor(ctx);
     drawOutputAndStatus(ctx);
+    drawFindBar(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -1555,7 +1978,7 @@ static void placeCaretFromMouse(Document* document, int x, int y) {
     uint32_t end = TextBufferLineEnd(&document->buffer, line);
     const uint32_t requested = TextBufferOffsetForVisualColumn(&document->buffer, start, end,
                                                                g_editorScrollColumn + static_cast<uint32_t>(column), kEditorTabWidth);
-    document->buffer.caret = requested > end ? end : requested;
+    SetCaretOffset(&document->buffer, requested > end ? end : requested);
     keepCaretVisible(document);
 }
 
@@ -1728,8 +2151,54 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
     }
 }
 
+static bool handleFindKey(int keyCode, int action, int modifiers) {
+    if (!g_findBarOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { closeFindBar(); return true; }
+    if (modifiers & GX_KEY_MOD_CTRL) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (keyCode == 114) {
+        findNavigate(document, (modifiers & GX_KEY_MOD_SHIFT) ? FindDirection::Backward : FindDirection::Forward);
+        return true;
+    }
+    if (keyCode == 13) {
+        if (g_findField == FindField::Replacement && g_findReplaceMode) replaceCurrentMatch(document);
+        else findNavigate(document, (modifiers & GX_KEY_MOD_SHIFT) ? FindDirection::Backward : FindDirection::Forward);
+        return true;
+    }
+    if (keyCode == 9 && g_findReplaceMode) {
+        g_findField = g_findField == FindField::Query ? FindField::Replacement : FindField::Query;
+        g_findFieldCaret = lengthOf(findFieldBuffer(), findFieldCapacity());
+        return true;
+    }
+    if (keyCode == 8) { findBackspace(document); return true; }
+    if (keyCode == 46) { findDelete(document); return true; }
+    if (keyCode == GX_KEY_LEFT) {
+        if (g_findFieldCaret > 0) --g_findFieldCaret;
+        return true;
+    }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(findFieldBuffer(), findFieldCapacity());
+        if (g_findFieldCaret < length) ++g_findFieldCaret;
+        return true;
+    }
+    if (keyCode == 36) { g_findFieldCaret = 0; return true; }
+    if (keyCode == 35) { g_findFieldCaret = lengthOf(findFieldBuffer(), findFieldCapacity()); return true; }
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value != '\0') { findInsertCharacter(document, value); return true; }
+    return false;
+}
+
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 70 || keyCode == 102)) {
+        openFindBar(false, true);
+        return;
+    }
+    if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 72 || keyCode == 104)) {
+        openFindBar(true, true);
+        return;
+    }
+    if (g_findBarOpen && handleFindKey(keyCode, action, modifiers)) return;
     if (g_outputFocused) {
         handleOutputKey(ctx, keyCode);
         return;
@@ -1754,6 +2223,12 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     if (keyCode == 116) { requestRun(ctx); return; }
+    if (keyCode == 114) {
+        openFindBar(false, false);
+        findNavigate(WorkspaceControllerActiveDocument(&g_controller),
+                     (modifiers & GX_KEY_MOD_SHIFT) ? FindDirection::Backward : FindDirection::Forward);
+        return;
+    }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!document || !g_editorFocused) {
         if (keyCode == GX_KEY_UP && g_controller.model.selectedEntry > 0) --g_controller.model.selectedEntry;
@@ -1806,6 +2281,46 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             else g_editorScrollLine += static_cast<uint32_t>(delta);
             drawShell(ctx);
         }
+        return;
+    }
+    if (g_findBarOpen && y < 48 && x >= 270 &&
+        (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        if (x >= kFindFieldX && x < kFindFieldX + kFindFieldWidth && y < 24) {
+            g_findField = FindField::Query;
+            g_findFieldCaret = lengthOf(g_findSession.query, sizeof(g_findSession.query));
+        } else if (g_findReplaceMode && x >= kFindFieldX && x < kFindFieldX + kFindFieldWidth && y >= 24) {
+            g_findField = FindField::Replacement;
+            g_findFieldCaret = lengthOf(g_findSession.replacement, sizeof(g_findSession.replacement));
+        } else if (y < 24 && x >= kFindPreviousX && x < kFindNextX) {
+            findNavigate(document, FindDirection::Backward);
+        } else if (y < 24 && x >= kFindNextX && x < kFindCaseX) {
+            findNavigate(document, FindDirection::Forward);
+        } else if (y < 24 && x >= kFindCaseX && x < kFindWordX) {
+            FindOptions options = g_findSession.options;
+            options.caseSensitive = !options.caseSensitive;
+            FindSetOptions(&g_findSession, options);
+            findRefreshFromCaret(document, true);
+            saveFindSessionToDocument();
+        } else if (y < 24 && x >= kFindWordX && x < kFindWrapX) {
+            FindOptions options = g_findSession.options;
+            options.wholeWord = !options.wholeWord;
+            FindSetOptions(&g_findSession, options);
+            findRefreshFromCaret(document, true);
+            saveFindSessionToDocument();
+        } else if (y < 24 && x >= kFindWrapX && x < kFindCloseX) {
+            FindOptions options = g_findSession.options;
+            options.wrapAround = !options.wrapAround;
+            FindSetOptions(&g_findSession, options);
+            saveFindSessionToDocument();
+        } else if (y < 24 && x >= kFindCloseX) {
+            closeFindBar();
+        } else if (g_findReplaceMode && y >= 24 && x >= kFindReplaceButtonX && x < kFindReplaceAllX) {
+            replaceCurrentMatch(document);
+        } else if (g_findReplaceMode && y >= 24 && x >= kFindReplaceAllX && x < 770) {
+            replaceAllMatches(document);
+        }
+        drawShell(ctx);
         return;
     }
     if (button != GX_MOUSE_BUTTON_LEFT || (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
@@ -1929,6 +2444,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_syntaxConvergenceMarkerReported = false;
     g_syntaxFallbackMarkerReported = false;
     g_syntaxRenderMarkerReported = false;
+    FindSessionInit(&g_findSession);
+    g_findBarOpen = false;
+    g_findReplaceMode = false;
+    g_findField = FindField::Query;
+    g_findFieldCaret = 0;
+    findSetStatus("");
     OutputServiceInit(&g_outputService);
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
     g_runOperationId = 0;
@@ -1991,7 +2512,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     }
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
-                    else if (gx_event_is_escape_down(&event)) {
+                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;

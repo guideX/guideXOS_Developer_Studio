@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, and bounded C/C++ lexical syntax highlighting
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, and active-document Find/Replace
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, run controller, syntax tokenizer/cache, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, UI-independent Find/Replace, syntax tokenizer/cache, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -187,6 +187,26 @@ The pre-existing ABI only provides uncolored text and rectangle drawing, so the
 renderer uses centralized token background colors and does not require a Server
 ABI change.
 
+## Find and Replace
+
+The active-document Find/Replace service is UI-independent and owns fixed-size
+query/replacement buffers, sorted non-overlapping literal match ranges, current
+navigation state, wrap status, and explicit truncation/error state. A session
+binds only to a stable document ID and text generation; it never stores a raw
+document pointer. Each document retains its previous query, replacement, and
+options for safe document switching. Stale generations recompute matches and
+clear the current range before replacement.
+
+The editor's reusable range operations update selection, caret, dirty state,
+line indexing, and mutation metadata. Replace Current feeds the existing syntax
+cache invalidation path from the earliest affected line. Replace All applies a
+stable snapshot backwards and requests the syntax cache's safe full rebuild
+path because multiple disjoint edits cannot be expressed as one incremental
+edit. Match highlights are an independent visible-line overlay; syntax spans
+are never modified. See [FIND_AND_REPLACE.md](FIND_AND_REPLACE.md) for the
+limits, literal/ASCII matching rules, UI, lifecycle, replacement policy, and
+future Find in Files boundary.
+
 ## Run Project vertical slice
 
 Run Project is an explicit build-before-run sequence:
@@ -233,7 +253,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Debug, language server, semantic highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, selection, clipboard, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
+Debug, language server, semantic highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Find in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

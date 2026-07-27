@@ -200,11 +200,12 @@ behind the existing readable text call. The centralized palette contains
 plain, keyword, type keyword, identifier, number, string, character, comment,
 preprocessor, operator, punctuation, invalid, and selection colors.
 
-The render-run model defines selection precedence even though this editor slice
-has no selection range in its pre-existing `TextBuffer`: selection background
-overrides syntax background and selected text remains readable. A future
-selection implementation can pass its range to `SyntaxBuildRenderRuns` without
-changing tokenizer code.
+The render-run model defines selection precedence. The editor now stores a
+bounded anchor/caret selection for Find initialization and current-match
+selection; selection background overrides syntax background and selected text
+remains readable. Find overlays are drawn independently after syntax runs and
+never alter the cached token spans. See [FIND_AND_REPLACE.md](FIND_AND_REPLACE.md)
+for the search and replacement contract.
 
 ## Tests and known limitations
 

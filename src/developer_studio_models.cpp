@@ -112,10 +112,12 @@ static void setError(WorkspaceModel* model, ModelErrorCode code) {
 
 static void clearDocument(Document& document) {
     document.used = false;
+    document.documentId = 0;
     document.path[0] = '\0';
     document.name[0] = '\0';
     TextBufferInit(&document.buffer);
     SyntaxCacheClear(&document.syntax);
+    FindDocumentStateInit(&document.find);
 }
 
 static uint32_t lineForCaret(const TextBuffer* buffer) {
@@ -154,6 +156,56 @@ static void recordMutation(TextBuffer* buffer, uint32_t start, uint32_t firstLin
     buffer->lastMutationLineDelta = lineDelta;
     buffer->lastMutationFullReplacement = fullReplacement;
     buffer->lastMutationValid = true;
+}
+
+static void clearSelection(TextBuffer* buffer) {
+    if (!buffer) return;
+    buffer->selectionActive = false;
+    buffer->selectionAnchor = buffer->caret;
+}
+
+static bool selectedRange(const TextBuffer* buffer, uint32_t* start, uint32_t* end) {
+    if (!buffer || !buffer->selectionActive || !start || !end) return false;
+    *start = buffer->selectionAnchor < buffer->caret ? buffer->selectionAnchor : buffer->caret;
+    *end = buffer->selectionAnchor < buffer->caret ? buffer->caret : buffer->selectionAnchor;
+    return *end > *start;
+}
+
+static bool replaceRangeRaw(TextBuffer* buffer, uint32_t start, uint32_t deletedBytes,
+                            const char* replacement, uint32_t replacementLength,
+                            bool fullReplacement) {
+    if (!buffer || start > buffer->length || deletedBytes > buffer->length - start ||
+        (!replacement && replacementLength != 0) || replacementLength > kMaxEditorBytes -
+        (buffer->length - deletedBytes) || LooksBinary(replacement, replacementLength)) return false;
+    const uint32_t deletedNewlines = newlineCount(buffer->data + start, deletedBytes);
+    bool changed = deletedBytes != replacementLength;
+    if (!changed && deletedBytes != 0) {
+        for (uint32_t i = 0; i < deletedBytes; ++i) {
+            if (buffer->data[start + i] != replacement[i]) { changed = true; break; }
+        }
+    }
+    const uint32_t oldLength = buffer->length;
+    const uint32_t tailStart = start + deletedBytes;
+    const uint32_t tailBytes = oldLength - tailStart;
+    if (replacementLength > deletedBytes) {
+        const uint32_t shift = replacementLength - deletedBytes;
+        for (uint32_t i = tailBytes; i > 0; --i) buffer->data[tailStart + shift + i - 1] = buffer->data[tailStart + i - 1];
+    } else if (replacementLength < deletedBytes) {
+        for (uint32_t i = 0; i < tailBytes; ++i) buffer->data[start + replacementLength + i] = buffer->data[tailStart + i];
+    }
+    for (uint32_t i = 0; i < replacementLength; ++i) buffer->data[start + i] = replacement[i];
+    buffer->length = oldLength - deletedBytes + replacementLength;
+    buffer->data[buffer->length] = '\0';
+    buffer->caret = start + replacementLength;
+    clearSelection(buffer);
+    if (changed) {
+        const int32_t lineDelta = static_cast<int32_t>(newlineCount(replacement, replacementLength)) -
+            static_cast<int32_t>(deletedNewlines);
+        buffer->dirty = true;
+        recordMutation(buffer, start, lineForOffset(buffer, start), replacementLength, deletedBytes,
+                       lineDelta, fullReplacement);
+    }
+    return true;
 }
 
 static uint32_t lineColumnForCaret(const TextBuffer* buffer, uint32_t lineStart) {
@@ -219,6 +271,7 @@ void WorkspaceModelInit(WorkspaceModel* model) {
     model->entryCount = 0;
     model->selectedEntry = 0;
     model->activeDocument = kMaxOpenDocuments;
+    model->nextDocumentId = 1;
     model->lastError[0] = '\0';
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) clearDocument(model->documents[i]);
 }
@@ -471,9 +524,13 @@ bool WorkspaceModelAddDocument(WorkspaceModel* model, const char* normalizedPath
     if (slot == kMaxOpenDocuments) { if (error) *error = ModelErrorCode::TooManyDocuments; return false; }
     Document& document = model->documents[slot];
     document.used = true;
+    document.documentId = model->nextDocumentId == 0 ? 1 : model->nextDocumentId;
+    model->nextDocumentId = document.documentId + 1;
+    if (model->nextDocumentId == 0) model->nextDocumentId = 1;
     copyText(document.path, sizeof(document.path), path);
     copyText(document.name, sizeof(document.name), BaseName(path));
     TextBufferInit(&document.buffer);
+    FindDocumentStateInit(&document.find);
     if (!TextBufferSet(&document.buffer, bytes, length)) {
         clearDocument(document);
         if (error) *error = ModelErrorCode::FileTooLarge;
@@ -544,6 +601,8 @@ void TextBufferInit(TextBuffer* buffer) {
     buffer->lastMutationLineDelta = 0;
     buffer->lastMutationFullReplacement = false;
     buffer->lastMutationValid = false;
+    buffer->selectionAnchor = 0;
+    buffer->selectionActive = false;
     buffer->data[0] = '\0';
 }
 
@@ -557,12 +616,19 @@ bool TextBufferSet(TextBuffer* buffer, const char* bytes, uint32_t length) {
     buffer->caret = 0;
     buffer->data[length] = '\0';
     buffer->dirty = false;
+    buffer->selectionAnchor = 0;
+    buffer->selectionActive = false;
     recordMutation(buffer, 0, 0, length, oldLength, lineDelta, true);
     return true;
 }
 
 bool TextBufferInsert(TextBuffer* buffer, const char* bytes, uint32_t length) {
-    if (!buffer || !bytes || length == 0 || buffer->length + length > kMaxEditorBytes || LooksBinary(bytes, length)) return false;
+    if (!buffer || !bytes || length == 0 || LooksBinary(bytes, length)) return false;
+    uint32_t selectedStart = 0;
+    uint32_t selectedEnd = 0;
+    if (selectedRange(buffer, &selectedStart, &selectedEnd))
+        return replaceRangeRaw(buffer, selectedStart, selectedEnd - selectedStart, bytes, length, false);
+    if (buffer->length > kMaxEditorBytes - length) return false;
     const uint32_t insertAt = buffer->caret;
     const uint32_t firstLine = lineForOffset(buffer, insertAt);
     const int32_t lineDelta = static_cast<int32_t>(newlineCount(bytes, length));
@@ -577,6 +643,10 @@ bool TextBufferInsert(TextBuffer* buffer, const char* bytes, uint32_t length) {
 }
 
 bool TextBufferBackspace(TextBuffer* buffer) {
+    uint32_t selectedStart = 0;
+    uint32_t selectedEnd = 0;
+    if (selectedRange(buffer, &selectedStart, &selectedEnd))
+        return replaceRangeRaw(buffer, selectedStart, selectedEnd - selectedStart, nullptr, 0, false);
     if (!buffer || buffer->caret == 0) return false;
     uint32_t removeAt = buffer->caret - 1;
     const uint32_t firstLine = lineForOffset(buffer, removeAt);
@@ -591,6 +661,10 @@ bool TextBufferBackspace(TextBuffer* buffer) {
 }
 
 bool TextBufferDelete(TextBuffer* buffer) {
+    uint32_t selectedStart = 0;
+    uint32_t selectedEnd = 0;
+    if (selectedRange(buffer, &selectedStart, &selectedEnd))
+        return replaceRangeRaw(buffer, selectedStart, selectedEnd - selectedStart, nullptr, 0, false);
     if (!buffer || buffer->caret >= buffer->length) return false;
     const uint32_t removeAt = buffer->caret;
     const uint32_t firstLine = lineForOffset(buffer, removeAt);
@@ -604,15 +678,24 @@ bool TextBufferDelete(TextBuffer* buffer) {
 }
 
 void TextBufferMoveLeft(TextBuffer* buffer) {
-    if (buffer && buffer->caret > 0) --buffer->caret;
+    if (!buffer) return;
+    uint32_t start = 0;
+    uint32_t end = 0;
+    if (selectedRange(buffer, &start, &end)) { buffer->caret = start; clearSelection(buffer); return; }
+    if (buffer->caret > 0) --buffer->caret;
 }
 
 void TextBufferMoveRight(TextBuffer* buffer) {
-    if (buffer && buffer->caret < buffer->length) ++buffer->caret;
+    if (!buffer) return;
+    uint32_t start = 0;
+    uint32_t end = 0;
+    if (selectedRange(buffer, &start, &end)) { buffer->caret = end; clearSelection(buffer); return; }
+    if (buffer->caret < buffer->length) ++buffer->caret;
 }
 
 void TextBufferMoveUp(TextBuffer* buffer) {
     if (!buffer) return;
+    clearSelection(buffer);
     uint32_t line = lineForCaret(buffer);
     if (line == 0) return;
     uint32_t column = lineColumnForCaret(buffer, TextBufferLineStart(buffer, line));
@@ -623,6 +706,7 @@ void TextBufferMoveUp(TextBuffer* buffer) {
 
 void TextBufferMoveDown(TextBuffer* buffer) {
     if (!buffer) return;
+    clearSelection(buffer);
     uint32_t line = lineForCaret(buffer);
     uint32_t count = TextBufferLineCount(buffer);
     if (line + 1 >= count) return;
@@ -634,14 +718,128 @@ void TextBufferMoveDown(TextBuffer* buffer) {
 
 void TextBufferHome(TextBuffer* buffer) {
     if (!buffer) return;
+    clearSelection(buffer);
     uint32_t line = lineForCaret(buffer);
     buffer->caret = TextBufferLineStart(buffer, line);
 }
 
 void TextBufferEnd(TextBuffer* buffer) {
     if (!buffer) return;
+    clearSelection(buffer);
     uint32_t line = lineForCaret(buffer);
     buffer->caret = TextBufferLineEnd(buffer, line);
+}
+
+uint32_t GetCaretOffset(const TextBuffer* buffer) {
+    return buffer ? buffer->caret : 0;
+}
+
+bool SetCaretOffset(TextBuffer* buffer, uint64_t offset) {
+    if (!buffer || offset > buffer->length) return false;
+    buffer->caret = static_cast<uint32_t>(offset);
+    clearSelection(buffer);
+    return true;
+}
+
+bool SelectTextRange(TextBuffer* buffer, uint64_t start, uint64_t length) {
+    if (!buffer || !ValidateTextRange(buffer, start, length)) return false;
+    const uint32_t rangeStart = static_cast<uint32_t>(start);
+    const uint32_t rangeEnd = rangeStart + static_cast<uint32_t>(length);
+    buffer->selectionAnchor = rangeStart;
+    buffer->caret = rangeEnd;
+    buffer->selectionActive = rangeEnd > rangeStart;
+    return true;
+}
+
+bool ValidateTextRange(const TextBuffer* buffer, uint64_t start, uint64_t length) {
+    return buffer && start <= buffer->length && length <= buffer->length - start;
+}
+
+uint32_t GetSelectedText(const TextBuffer* buffer, char* output, uint32_t outputSize) {
+    if (!output || outputSize == 0) return 0;
+    output[0] = '\0';
+    uint32_t start = 0;
+    uint32_t end = 0;
+    if (!selectedRange(buffer, &start, &end)) return 0;
+    uint32_t copied = 0;
+    while (start + copied < end && copied + 1 < outputSize) {
+        output[copied] = buffer->data[start + copied];
+        ++copied;
+    }
+    output[copied] = '\0';
+    return copied;
+}
+
+bool ReplaceTextRange(TextBuffer* buffer, uint64_t start, uint64_t length,
+                      const char* replacement, uint32_t replacementLength) {
+    if (!buffer || start > 0xFFFFFFFFull || length > 0xFFFFFFFFull) return false;
+    return replaceRangeRaw(buffer, static_cast<uint32_t>(start), static_cast<uint32_t>(length),
+                           replacement, replacementLength, false);
+}
+
+bool ReplaceTextRanges(TextBuffer* buffer, const FindMatch* matches, uint32_t matchCount,
+                       const char* replacement, uint32_t replacementLength) {
+    if (!buffer || (!matches && matchCount != 0) || matchCount > kFindMaxRetainedMatches ||
+        (!replacement && replacementLength != 0) || replacementLength > kMaxEditorBytes ||
+        LooksBinary(replacement, replacementLength)) return false;
+    uint32_t earliestStart = buffer->length;
+    uint32_t earliestLine = TextBufferLineCount(buffer);
+    uint32_t totalDeleted = 0;
+    int32_t totalLineDelta = 0;
+    for (uint32_t i = 0; i < matchCount; ++i) {
+        if (matches[i].start > 0xFFFFFFFFull || matches[i].length > 0xFFFFFFFFull ||
+            !ValidateTextRange(buffer, matches[i].start, matches[i].length) ||
+            (i > 0 && matches[i - 1].start + matches[i - 1].length > matches[i].start)) return false;
+        const uint32_t start = static_cast<uint32_t>(matches[i].start);
+        const uint32_t deleted = static_cast<uint32_t>(matches[i].length);
+        const uint32_t deletedNewlines = newlineCount(buffer->data + start, deleted);
+        if (start < earliestStart) {
+            earliestStart = start;
+            earliestLine = lineForOffset(buffer, start);
+        }
+        totalDeleted += deleted;
+        totalLineDelta += static_cast<int32_t>(newlineCount(replacement, replacementLength)) -
+            static_cast<int32_t>(deletedNewlines);
+    }
+    if (matchCount == 0) return true;
+    const uint32_t oldGeneration = buffer->generation;
+    bool changed = false;
+    // The retained snapshot is immutable; applying from the end makes every
+    // earlier byte offset valid and prevents recursive replacement.
+    for (uint32_t i = matchCount; i > 0; --i) {
+        const FindMatch& match = matches[i - 1];
+        if (!replaceRangeRaw(buffer, static_cast<uint32_t>(match.start), static_cast<uint32_t>(match.length),
+                             replacement, replacementLength, false)) return false;
+        if (buffer->generation != oldGeneration) changed = true;
+    }
+    if (changed) {
+        buffer->lastMutationStart = earliestStart;
+        buffer->lastMutationFirstLine = earliestLine;
+        buffer->lastMutationInsertedBytes = replacementLength * matchCount;
+        buffer->lastMutationDeletedBytes = totalDeleted;
+        buffer->lastMutationLineDelta = totalLineDelta;
+        // Multiple disjoint edits cannot be represented by one incremental
+        // edit descriptor.  Force the syntax cache's safe full rebuild path.
+        buffer->lastMutationFullReplacement = true;
+        buffer->lastMutationValid = true;
+    }
+    return true;
+}
+
+bool OffsetToLineColumn(const TextBuffer* buffer, uint64_t offset, uint32_t* outLine, uint32_t* outColumn) {
+    if (!buffer || offset > buffer->length || !outLine || !outColumn) return false;
+    const uint32_t bounded = static_cast<uint32_t>(offset);
+    *outLine = lineForOffset(buffer, bounded);
+    *outColumn = bounded - TextBufferLineStart(buffer, *outLine);
+    return true;
+}
+
+bool LineColumnToOffset(const TextBuffer* buffer, uint32_t line, uint32_t column, uint32_t* outOffset) {
+    if (!buffer || !outOffset || line >= TextBufferLineCount(buffer)) return false;
+    const uint32_t start = TextBufferLineStart(buffer, line);
+    const uint32_t end = TextBufferLineEnd(buffer, line);
+    *outOffset = start + (column < end - start ? column : end - start);
+    return true;
 }
 
 uint32_t TextBufferLineCount(const TextBuffer* buffer) {

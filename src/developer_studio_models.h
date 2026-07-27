@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "developer_studio_find.h"
 #include "developer_studio_syntax.h"
 
 namespace guidexos {
@@ -170,14 +171,18 @@ struct TextBuffer {
     int32_t lastMutationLineDelta;
     bool lastMutationFullReplacement;
     bool lastMutationValid;
+    uint32_t selectionAnchor;
+    bool selectionActive;
 };
 
 struct Document {
     bool used;
+    uint64_t documentId;
     char path[kMaxPathBytes];
     char name[kMaxNameBytes];
     TextBuffer buffer;
     SyntaxCache syntax;
+    FindDocumentState find;
 };
 
 struct WorkspaceModel {
@@ -192,6 +197,7 @@ struct WorkspaceModel {
     uint32_t selectedEntry;
     Document documents[kMaxOpenDocuments];
     uint32_t activeDocument;
+    uint64_t nextDocumentId;
     char lastError[96];
 };
 
@@ -247,6 +253,17 @@ void TextBufferMoveUp(TextBuffer* buffer);
 void TextBufferMoveDown(TextBuffer* buffer);
 void TextBufferHome(TextBuffer* buffer);
 void TextBufferEnd(TextBuffer* buffer);
+uint32_t GetCaretOffset(const TextBuffer* buffer);
+bool SetCaretOffset(TextBuffer* buffer, uint64_t offset);
+bool SelectTextRange(TextBuffer* buffer, uint64_t start, uint64_t length);
+bool ValidateTextRange(const TextBuffer* buffer, uint64_t start, uint64_t length);
+uint32_t GetSelectedText(const TextBuffer* buffer, char* output, uint32_t outputSize);
+bool ReplaceTextRange(TextBuffer* buffer, uint64_t start, uint64_t length,
+                      const char* replacement, uint32_t replacementLength);
+bool ReplaceTextRanges(TextBuffer* buffer, const FindMatch* matches, uint32_t matchCount,
+                       const char* replacement, uint32_t replacementLength);
+bool OffsetToLineColumn(const TextBuffer* buffer, uint64_t offset, uint32_t* outLine, uint32_t* outColumn);
+bool LineColumnToOffset(const TextBuffer* buffer, uint32_t line, uint32_t column, uint32_t* outOffset);
 uint32_t TextBufferLineCount(const TextBuffer* buffer);
 uint32_t TextBufferLineStart(const TextBuffer* buffer, uint32_t line);
 uint32_t TextBufferLineEnd(const TextBuffer* buffer, uint32_t line);
