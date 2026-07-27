@@ -198,6 +198,7 @@ struct WorkspaceModel {
     Document documents[kMaxOpenDocuments];
     uint32_t activeDocument;
     uint64_t nextDocumentId;
+    uint64_t projectGeneration;
     char lastError[96];
 };
 
@@ -232,6 +233,7 @@ bool LooksBinary(const char* bytes, uint32_t length);
 const char* ModelErrorName(ModelErrorCode code);
 
 bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, const char* displayName);
+void WorkspaceModelAdvanceProjectGeneration(WorkspaceModel* model);
 bool WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath);
 void WorkspaceModelClearEntries(WorkspaceModel* model);
 bool WorkspaceModelAddEntry(WorkspaceModel* model, const WorkspaceEntry& entry);

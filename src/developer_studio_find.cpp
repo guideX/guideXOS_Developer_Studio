@@ -36,9 +36,9 @@ static uint32_t queryLength(const FindSession* session) {
     return session ? textLength(session->query, kFindMaxQueryBytes + 1u) : 0;
 }
 
-static bool isWholeWordMatch(const FindSession* session, const char* text, uint32_t length,
-                             uint64_t start, uint32_t queryLengthValue) {
-    if (!session || !text || !session->options.wholeWord) return true;
+static bool isWholeWordMatch(const char* text, uint32_t length, uint64_t start,
+                             uint32_t queryLengthValue, bool wholeWord) {
+    if (!text || !wholeWord) return true;
     const uint64_t end = start + queryLengthValue;
     if (start > 0 && FindIsAsciiWordByte(text[start - 1])) return false;
     if (end < length && FindIsAsciiWordByte(text[end])) return false;
@@ -171,11 +171,19 @@ void FindCopyStateFromSession(FindDocumentState* state, const FindSession& sessi
 bool FindTextMatchesAt(const FindSession* session, const char* text, uint32_t length, uint64_t start) {
     if (!session || !text || start > length) return false;
     const uint32_t needleLength = queryLength(session);
-    if (needleLength == 0 || start + needleLength > length) return false;
-    for (uint32_t i = 0; i < needleLength; ++i) {
-        if (!byteEqual(text[start + i], session->query[i], session->options.caseSensitive)) return false;
+    return FindLiteralMatchesAt(text, length, start, session->query, needleLength,
+                                session->options.caseSensitive, session->options.wholeWord);
+}
+
+bool FindLiteralMatchesAt(const char* text, uint32_t length, uint64_t start,
+                          const char* query, uint32_t queryLengthValue,
+                          bool caseSensitive, bool wholeWord) {
+    if (!text || !query || start > length || queryLengthValue == 0 ||
+        start + queryLengthValue > length) return false;
+    for (uint32_t i = 0; i < queryLengthValue; ++i) {
+        if (!byteEqual(text[start + i], query[i], caseSensitive)) return false;
     }
-    return isWholeWordMatch(session, text, length, start, needleLength);
+    return isWholeWordMatch(text, length, start, queryLengthValue, wholeWord);
 }
 
 bool FindSearch(FindSession* session, uint64_t documentId, uint64_t documentGeneration,

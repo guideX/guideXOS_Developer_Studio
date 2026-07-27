@@ -91,6 +91,12 @@ compiler Problems remain Build Problems. Native application stdout capture is
 deferred because the current Native App ABI has no safe development logging
 surface.
 
+Find in Files uses the DeveloperStudio/Internal lifecycle stream only for
+bounded started, completed, cancelled, or failed messages. Match groups and
+previews remain in the dedicated ProjectSearchService model; Output is never
+populated with one record per match. See [FIND_IN_FILES.md](FIND_IN_FILES.md)
+for the search operation and result limits.
+
 ## Problems navigation
 
 Problems activation verifies the active project and project ID, accepts only a

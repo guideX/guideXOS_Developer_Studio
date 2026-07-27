@@ -168,6 +168,7 @@ bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
     }
     controller->model.project = result.project;
     controller->model.hasProject = true;
+    WorkspaceModelAdvanceProjectGeneration(&controller->model);
     controller->lastProjectError = ProjectErrorCode::None;
     return true;
 }

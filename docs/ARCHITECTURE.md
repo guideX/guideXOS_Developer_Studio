@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, and active-document Find/Replace
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, and bounded project-scoped Find in Files
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, run controller, UI-independent Find/Replace, syntax tokenizer/cache, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, syntax tokenizer/cache, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -204,8 +204,18 @@ stable snapshot backwards and requests the syntax cache's safe full rebuild
 path because multiple disjoint edits cannot be expressed as one incremental
 edit. Match highlights are an independent visible-line overlay; syntax spans
 are never modified. See [FIND_AND_REPLACE.md](FIND_AND_REPLACE.md) for the
-limits, literal/ASCII matching rules, UI, lifecycle, replacement policy, and
-future Find in Files boundary.
+limits, literal/ASCII matching rules, UI, lifecycle, and replacement policy.
+
+## Find in Files
+
+Find in Files is a read-only, project-scoped operation implemented in
+`developer_studio_project_search.*`. The service copies the normalized project
+root, project identity/generation, literal options, and bounded dirty-document
+snapshots. It recursively enumerates only through the existing `stat`, `list`,
+and full-file `read` callbacks. Directory and file work is incrementally polled
+from the Native ELF event loop; no Server search ABI or generic filesystem
+traversal API was added. See [FIND_IN_FILES.md](FIND_IN_FILES.md) for exact
+limits, pattern grammar, symlink policy, lifecycle, staleness, and UI policy.
 
 ## Run Project vertical slice
 
@@ -253,7 +263,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Debug, language server, semantic highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Find in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, cancellation UI, and all project kinds other than Native GUI Application remain unsupported.
+Debug, language server, semantic highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

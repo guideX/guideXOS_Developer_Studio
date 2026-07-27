@@ -99,5 +99,11 @@ bool FindIsAsciiWordByte(char value);
 bool FindTextMatchesAt(const FindSession* session, const char* text, uint32_t length,
                        uint64_t start);
 
+// Shared byte-oriented literal matching primitive.  Project search uses this
+// directly so it does not need to construct a per-document FindSession.
+bool FindLiteralMatchesAt(const char* text, uint32_t length, uint64_t start,
+                          const char* query, uint32_t queryLength,
+                          bool caseSensitive, bool wholeWord);
+
 } // namespace developer_studio
 } // namespace guidexos

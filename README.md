@@ -10,7 +10,7 @@ The current bounded phase proves the first useful source workflow:
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
 - a truthful AMD64 hosted guideXOS target profile; and
-- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, and active-document Find/Replace coverage.
+- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, and project-scoped Find in Files coverage.
 
 Debug/Debugging, additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
@@ -81,7 +81,7 @@ Supported text extensions are `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, 
 
 Limits are intentionally explicit: 128 visible entries per directory, 8 open documents, 256 KiB per editable file, 8 navigated workspace path segments, 768-byte model paths (the hosted ABI additionally bounds an entered host path to 240 bytes), and bounded output history. Directory enumeration is immediate-directory only and never follows symlinks or recursively scans without a user navigation action.
 
-The editor supports caret movement, bounded selection, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, bounded automatic horizontal scrolling, visible line separation, dirty tracking, tabs, save failure preservation, lexical C/C++ syntax highlighting, and active-document literal Find/Replace. It has no clipboard, undo/redo, code completion, folding, regex, Find in Files, or semantic services. See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md) and [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md).
+The editor supports caret movement, bounded selection, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, bounded automatic horizontal scrolling, visible line separation, dirty tracking, tabs, save failure preservation, lexical C/C++ syntax highlighting, active-document literal Find/Replace, and project-scoped Find in Files. It has no clipboard, undo/redo, code completion, folding, regex, Replace in Files, or semantic services. See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md), [docs/FIND_IN_FILES.md](docs/FIND_IN_FILES.md), and [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md).
 
 ## Build
 
@@ -126,3 +126,4 @@ See [docs/BUILD_PROJECT.md](docs/BUILD_PROJECT.md) for the Build Project contrac
 See [docs/OUTPUT_AND_DIAGNOSTICS.md](docs/OUTPUT_AND_DIAGNOSTICS.md) for the unified Output and Problems architecture, bounded limits, supported diagnostic formats, and navigation behavior.
 See [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md) for lexical tokenization, multiline state, incremental cache behavior, limits, palette, and known limitations.
 See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md) for active-document literal search, navigation, replacement safety, limits, overlays, lifecycle, and keyboard shortcuts.
+See [docs/FIND_IN_FILES.md](docs/FIND_IN_FILES.md) for project scope, bounded asynchronous search, patterns, dirty-document policy, lifecycle, results, and navigation.

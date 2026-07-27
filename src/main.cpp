@@ -5,6 +5,7 @@
 #include "developer_studio_run.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
+#include "developer_studio_project_search.h"
 
 namespace {
 
@@ -71,6 +72,7 @@ using guidexos::developer_studio::FindErrorName;
 using guidexos::developer_studio::FindMatch;
 using guidexos::developer_studio::FindNavigate;
 using guidexos::developer_studio::FindSearch;
+using guidexos::developer_studio::FindLiteralMatchesAt;
 using guidexos::developer_studio::FindSelectInitial;
 using guidexos::developer_studio::FindSession;
 using guidexos::developer_studio::FindSessionInit;
@@ -157,6 +159,31 @@ using guidexos::developer_studio::kMaxProjectFileBytes;
 using guidexos::developer_studio::kMaxWorkspaceEntries;
 using guidexos::developer_studio::WorkspaceControllerOpenDocumentAtLocation;
 using guidexos::developer_studio::WorkspaceControllerSetCaretPosition;
+using guidexos::developer_studio::WorkspaceModel;
+using guidexos::developer_studio::ProjectSearchCancel;
+using guidexos::developer_studio::ProjectSearchErrorCode;
+using guidexos::developer_studio::ProjectSearchErrorName;
+using guidexos::developer_studio::ProjectSearchFileGroup;
+using guidexos::developer_studio::ProjectSearchIsActive;
+using guidexos::developer_studio::ProjectSearchMatch;
+using guidexos::developer_studio::ProjectSearchOperation;
+using guidexos::developer_studio::ProjectSearchOperationInfo;
+using guidexos::developer_studio::ProjectSearchOptions;
+using guidexos::developer_studio::ProjectSearchOptionsInit;
+using guidexos::developer_studio::ProjectSearchPoll;
+using guidexos::developer_studio::ProjectSearchQuery;
+using guidexos::developer_studio::ProjectSearchQueryResultGroups;
+using guidexos::developer_studio::ProjectSearchRelease;
+using guidexos::developer_studio::ProjectSearchRequest;
+using guidexos::developer_studio::ProjectSearchResultGroupAt;
+using guidexos::developer_studio::ProjectSearchResultMatchAt;
+using guidexos::developer_studio::ProjectSearchService;
+using guidexos::developer_studio::ProjectSearchServiceInit;
+using guidexos::developer_studio::ProjectSearchStart;
+using guidexos::developer_studio::ProjectSearchState;
+using guidexos::developer_studio::ProjectSearchStateName;
+using guidexos::developer_studio::ProjectSearchDocumentSnapshot;
+using guidexos::developer_studio::kProjectSearchMaxFileBytes;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -187,6 +214,14 @@ static const int kFindCloseX = 864;
 static const int kFindReplaceButtonX = 590;
 static const int kFindReplaceAllX = 660;
 static const uint32_t kFindVisibleOverlayCapacity = 256;
+static const int kSearchPanelTop = 48;
+static const int kSearchPanelResultsTop = 190;
+static const int kSearchPanelRowHeight = 17;
+static const int kSearchPanelMaxRows = 25;
+static const int kSearchFieldX = 86;
+static const int kSearchFieldWidth = 350;
+static const int kSearchIncludeY = 126;
+static const int kSearchExcludeY = 150;
 
 enum class InputMode {
     Normal = 0,
@@ -257,6 +292,12 @@ enum class FindField {
     Replacement
 };
 
+enum class ProjectSearchField {
+    Query = 0,
+    Include,
+    Exclude
+};
+
 static FindSession g_findSession = {};
 static bool g_findBarOpen = false;
 static bool g_findReplaceMode = false;
@@ -264,6 +305,22 @@ static FindField g_findField = FindField::Query;
 static uint32_t g_findFieldCaret = 0;
 static char g_findTransientStatus[96] = {};
 static uint32_t g_findVisibleIndices[kFindVisibleOverlayCapacity] = {};
+static ProjectSearchService g_projectSearch = {};
+static ProjectSearchOptions g_projectSearchDraft = {};
+static ProjectSearchDocumentSnapshot g_projectSearchSnapshots[kMaxOpenDocuments] = {};
+static bool g_projectSearchPanelOpen = false;
+static bool g_projectSearchResultsFocused = false;
+static ProjectSearchField g_projectSearchField = ProjectSearchField::Query;
+static uint32_t g_projectSearchFieldCaret = 0;
+static uint32_t g_projectSearchScroll = 0;
+static uint32_t g_projectSearchSelectedGroup = 0;
+static uint32_t g_projectSearchSelectedMatch = 0;
+static uint64_t g_projectSearchOperationId = 0;
+static uint64_t g_projectSearchProjectGeneration = 0;
+static char g_projectSearchProjectId[kMaxProjectIdBytes] = {};
+static char g_projectSearchStatus[128] = {};
+static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
+static bool g_projectSearchTerminalReported = false;
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
@@ -361,6 +418,193 @@ static void markerFailure(gx_app_context* ctx, const char* prefix, const char* r
     appendText(message, sizeof(message), " reason=");
     appendText(message, sizeof(message), reason ? reason : "unknown");
     logMarker(ctx, message);
+}
+
+static char lowerSearchAscii(char value) {
+    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
+}
+
+static bool searchTextEqual(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t i = 0;
+    while (left[i] != '\0' && right[i] != '\0') {
+        if (left[i] != right[i]) return false;
+        ++i;
+    }
+    return left[i] == right[i];
+}
+
+static bool copyProjectRelativePath(const WorkspaceModel& model, const char* absolutePath,
+                                    char* output, uint32_t outputSize) {
+    if (!absolutePath || !output || !model.rootPath[0]) return false;
+    char root[kMaxPathBytes] = {};
+    char path[kMaxPathBytes] = {};
+    if (!guidexos::developer_studio::NormalizePath(model.rootPath, root, sizeof(root)) ||
+        !guidexos::developer_studio::NormalizePath(absolutePath, path, sizeof(path))) return false;
+    const uint32_t rootLength = lengthOf(root, sizeof(root));
+    const uint32_t pathLength = lengthOf(path, sizeof(path));
+    if (rootLength >= pathLength) return false;
+    for (uint32_t i = 0; i < rootLength; ++i)
+        if (lowerSearchAscii(root[i]) != lowerSearchAscii(path[i])) return false;
+    if (path[rootLength] != '/') return false;
+    if (lengthOf(path + rootLength + 1, outputSize) >= outputSize) return false;
+    copyText(output, outputSize, path + rootLength + 1);
+    return true;
+}
+
+static void projectSearchSetStatus(const char* text) {
+    copyText(g_projectSearchStatus, sizeof(g_projectSearchStatus), text ? text : "");
+}
+
+static char* projectSearchFieldBuffer() {
+    if (g_projectSearchField == ProjectSearchField::Include) return g_projectSearchDraft.includePattern;
+    if (g_projectSearchField == ProjectSearchField::Exclude) return g_projectSearchDraft.excludePattern;
+    return g_projectSearchDraft.query;
+}
+
+static uint32_t projectSearchFieldCapacity() {
+    if (g_projectSearchField == ProjectSearchField::Include) return sizeof(g_projectSearchDraft.includePattern);
+    if (g_projectSearchField == ProjectSearchField::Exclude) return sizeof(g_projectSearchDraft.excludePattern);
+    return sizeof(g_projectSearchDraft.query);
+}
+
+static void projectSearchInitializeDraft(const Document* document) {
+    ProjectSearchOptionsInit(&g_projectSearchDraft);
+    copyText(g_projectSearchDraft.includePattern, sizeof(g_projectSearchDraft.includePattern),
+             "*.c;*.h;*.cc;*.cpp;*.cxx;*.hh;*.hpp;*.hxx");
+    copyText(g_projectSearchDraft.excludePattern, sizeof(g_projectSearchDraft.excludePattern),
+             ".git/*;.vs/*;.idea/*;out/*;build/*;bin/*;obj/*;dist/*;node_modules/*");
+    bool usedSelection = false;
+    if (document && document->buffer.selectionActive) {
+        const uint32_t start = document->buffer.selectionAnchor < document->buffer.caret ?
+            document->buffer.selectionAnchor : document->buffer.caret;
+        const uint32_t end = document->buffer.selectionAnchor < document->buffer.caret ?
+            document->buffer.caret : document->buffer.selectionAnchor;
+        if (end > start && end - start <= kFindMaxQueryBytes) {
+            usedSelection = true;
+            for (uint32_t i = start; i < end; ++i) {
+                if (document->buffer.data[i] == '\r' || document->buffer.data[i] == '\n') { usedSelection = false; break; }
+            }
+            if (usedSelection) {
+                for (uint32_t i = start; i < end; ++i) g_projectSearchDraft.query[i - start] = document->buffer.data[i];
+                g_projectSearchDraft.query[end - start] = '\0';
+            }
+        }
+    }
+    if (!usedSelection && g_lastProjectSearchQuery[0] != '\0')
+        copyText(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query), g_lastProjectSearchQuery);
+    if (!usedSelection && g_lastProjectSearchQuery[0] == '\0' && g_findSession.query[0] != '\0')
+        copyText(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query), g_findSession.query);
+    g_projectSearchField = ProjectSearchField::Query;
+    g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
+}
+
+static uint32_t captureDirtyProjectSearchDocuments() {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < kMaxOpenDocuments && count < kMaxOpenDocuments; ++i) {
+        const Document& document = g_controller.model.documents[i];
+        if (!document.used || !document.buffer.dirty) continue;
+        ProjectSearchDocumentSnapshot& snapshot = g_projectSearchSnapshots[count];
+        if (!copyProjectRelativePath(g_controller.model, document.path, snapshot.relativePath,
+                                     sizeof(snapshot.relativePath))) continue;
+        if (document.buffer.length > kProjectSearchMaxFileBytes) continue;
+        snapshot.length = document.buffer.length;
+        snapshot.documentId = document.documentId;
+        snapshot.documentGeneration = document.buffer.generation;
+        for (uint32_t j = 0; j < snapshot.length; ++j) snapshot.data[j] = document.buffer.data[j];
+        snapshot.data[snapshot.length] = '\0';
+        ++count;
+    }
+    return count;
+}
+
+static void pollProjectSearch(gx_app_context* ctx) {
+    if (g_projectSearchOperationId == 0) return;
+    if (ProjectSearchIsActive(&g_projectSearch) &&
+        (!g_controller.model.open || !g_controller.model.hasProject ||
+         g_controller.model.projectGeneration != g_projectSearchProjectGeneration ||
+         !searchTextEqual(g_controller.model.project.projectId, g_projectSearchProjectId))) {
+        ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+        projectSearchSetStatus("Project changed; cancelling search");
+    }
+    ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 16, gx_get_ticks_ms(ctx));
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    if (!operation || ProjectSearchIsActive(&g_projectSearch) || g_projectSearchTerminalReported) return;
+    g_projectSearchTerminalReported = true;
+    if (operation->state == ProjectSearchState::Completed) {
+        copyText(g_projectSearchStatus, sizeof(g_projectSearchStatus), "Search complete: ");
+        appendUnsigned(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->resultFileCount);
+        appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), " files, ");
+        appendUnsigned(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->resultMatchCount);
+        appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->truncated ? " matches (truncated)" : " matches");
+        if (operation->truncated) {
+            markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_complete=TRUNCATED", ProjectSearchErrorName(operation->error));
+        } else {
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_enumeration=PASS");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_file_scan=PASS");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_complete=PASS");
+        }
+        writeStudioOutput(operation->truncated ? "Find in Files completed with truncated results" : "Find in Files completed");
+    } else if (operation->state == ProjectSearchState::Cancelled) {
+        projectSearchSetStatus("Search cancelled; partial results retained");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_complete=CANCELLED");
+        writeStudioOutput("Find in Files cancelled");
+    } else {
+        copyText(g_projectSearchStatus, sizeof(g_projectSearchStatus), "Search failed: ");
+        appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), ProjectSearchErrorName(operation->error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_complete=FAIL", ProjectSearchErrorName(operation->error));
+        writeStudioOutput("Find in Files failed");
+    }
+}
+
+static void stopProjectSearch(gx_app_context* ctx) {
+    if (g_projectSearchOperationId == 0) return;
+    if (ProjectSearchIsActive(&g_projectSearch)) {
+        ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+        ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1, gx_get_ticks_ms(ctx));
+    }
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    if (operation && operation->state != ProjectSearchState::Idle)
+        ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId);
+    g_projectSearchOperationId = 0;
+    g_projectSearchTerminalReported = false;
+}
+
+static bool startProjectSearch(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        projectSearchSetStatus("Open a project before searching");
+        return false;
+    }
+    ProjectSearchRequest request = {};
+    copyText(request.projectId, sizeof(request.projectId), g_controller.model.project.projectId);
+    request.projectGeneration = g_controller.model.projectGeneration;
+    copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.rootPath);
+    request.options = g_projectSearchDraft;
+    request.fileSystem = g_controller.fileSystem;
+    request.dirtyDocuments = g_projectSearchSnapshots;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
+    uint64_t operationId = 0;
+    if (!ProjectSearchStart(&g_projectSearch, &request, gx_get_ticks_ms(ctx), &operationId, &error)) {
+        g_projectSearchOperationId = operationId;
+        g_projectSearchTerminalReported = false;
+        projectSearchSetStatus("Search failed: ");
+        appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), ProjectSearchErrorName(error));
+        return false;
+    }
+    g_projectSearchOperationId = operationId;
+    g_projectSearchProjectGeneration = request.projectGeneration;
+    copyText(g_projectSearchProjectId, sizeof(g_projectSearchProjectId), request.projectId);
+    copyText(g_lastProjectSearchQuery, sizeof(g_lastProjectSearchQuery), request.options.query);
+    g_projectSearchSelectedGroup = 0;
+    g_projectSearchSelectedMatch = 0;
+    g_projectSearchScroll = 0;
+    g_projectSearchResultsFocused = false;
+    g_projectSearchTerminalReported = false;
+    projectSearchSetStatus("Searching...");
+    writeStudioOutput("Find in Files started");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_begin=PASS");
+    return true;
 }
 
 static bool fsStat(void* userData, const char* path, FileInfo* outInfo) {
@@ -1061,6 +1305,7 @@ static void reportProjectFailure(gx_app_context* ctx, const char* marker, Projec
 }
 
 static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
+    stopProjectSearch(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_validation=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=PASS");
     if (created.rollbackAttempted && created.rollbackSucceeded) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_rollback=PASS");
@@ -1082,6 +1327,7 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
 }
 
 static void commitNewProject(gx_app_context* ctx) {
+    stopProjectSearch(ctx);
     ProjectCreateRequest request = {};
     copyText(request.parentPath, sizeof(request.parentPath), g_projectDialog.parentPath);
     copyText(request.folderName, sizeof(request.folderName), g_projectDialog.folderName);
@@ -1100,6 +1346,7 @@ static void commitNewProject(gx_app_context* ctx) {
 }
 
 static void commitProjectOpen(gx_app_context* ctx) {
+    stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
         writeOutput("Project opened");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
@@ -1113,6 +1360,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
 }
 
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
+    stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     reportWorkspaceOpen(ctx, success);
     g_inputMode = InputMode::Normal;
@@ -1154,6 +1402,7 @@ static void finishApplicationClose(gx_app_context* ctx, bool success) {
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS");
+    stopProjectSearch(ctx);
     g_inputMode = InputMode::Normal;
     g_requestExit = true;
 }
@@ -1269,6 +1518,159 @@ static void drawFindBar(gx_app_context* ctx) {
     drawText(ctx, kFindCloseX, kFindQueryY, "Close");
     findStatusText(g_textScratch, sizeof(g_textScratch));
     drawText(ctx, 890, kFindReplaceY, g_textScratch);
+}
+
+static uint32_t projectSearchTotalRows() {
+    uint32_t rows = 0;
+    const uint32_t groups = ProjectSearchQueryResultGroups(&g_projectSearch);
+    for (uint32_t i = 0; i < groups; ++i) {
+        const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, i);
+        if (group) rows += 1 + group->matchCount;
+    }
+    return rows;
+}
+
+static bool projectSearchMatchForRow(uint32_t row, uint32_t* outGroup, uint32_t* outMatch) {
+    uint32_t current = 0;
+    const uint32_t groups = ProjectSearchQueryResultGroups(&g_projectSearch);
+    for (uint32_t groupIndex = 0; groupIndex < groups; ++groupIndex) {
+        const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, groupIndex);
+        if (!group) continue;
+        if (row == current) return false; // file header
+        ++current;
+        if (row < current + group->matchCount) {
+            if (outGroup) *outGroup = groupIndex;
+            if (outMatch) *outMatch = row - current;
+            return true;
+        }
+        current += group->matchCount;
+    }
+    return false;
+}
+
+static uint32_t projectSearchSelectedRow() {
+    uint32_t row = 0;
+    const uint32_t groups = ProjectSearchQueryResultGroups(&g_projectSearch);
+    for (uint32_t i = 0; i < groups; ++i) {
+        const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, i);
+        if (!group) continue;
+        if (i == g_projectSearchSelectedGroup) return row + 1 + g_projectSearchSelectedMatch;
+        row += 1 + group->matchCount;
+    }
+    return 0;
+}
+
+static void projectSearchEnsureSelectionVisible() {
+    const uint32_t row = projectSearchSelectedRow();
+    if (row < g_projectSearchScroll) g_projectSearchScroll = row;
+    if (row >= g_projectSearchScroll + kSearchPanelMaxRows)
+        g_projectSearchScroll = row - kSearchPanelMaxRows + 1;
+}
+
+static void projectSearchMoveSelection(int32_t delta) {
+    const uint32_t groups = ProjectSearchQueryResultGroups(&g_projectSearch);
+    if (groups == 0) return;
+    uint32_t groupIndex = g_projectSearchSelectedGroup;
+    uint32_t matchIndex = g_projectSearchSelectedMatch;
+    if (groupIndex >= groups) { groupIndex = 0; matchIndex = 0; }
+    if (delta > 0) {
+        const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, groupIndex);
+        if (group && matchIndex + 1 < group->matchCount) ++matchIndex;
+        else if (groupIndex + 1 < groups) { ++groupIndex; matchIndex = 0; }
+    } else {
+        if (matchIndex > 0) --matchIndex;
+        else if (groupIndex > 0) {
+            --groupIndex;
+            const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, groupIndex);
+            matchIndex = group && group->matchCount > 0 ? group->matchCount - 1 : 0;
+        }
+    }
+    g_projectSearchSelectedGroup = groupIndex;
+    g_projectSearchSelectedMatch = matchIndex;
+    projectSearchEnsureSelectionVisible();
+}
+
+static void drawProjectSearchPanel(gx_app_context* ctx) {
+    if (!g_projectSearchPanelOpen) return;
+    drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 78, "Find in Files");
+    drawText(ctx, 24, 103, "Find:");
+    drawText(ctx, 24, kSearchIncludeY, "Include:");
+    drawText(ctx, 24, kSearchExcludeY, "Exclude:");
+    drawPanel(ctx, { kSearchFieldX, 87, kSearchFieldWidth, 20 },
+              g_projectSearchField == ProjectSearchField::Query && !g_projectSearchResultsFocused ? 0x405775u : 0x202A36u);
+    drawPanel(ctx, { kSearchFieldX, kSearchIncludeY - 17, kSearchFieldWidth, 20 },
+              g_projectSearchField == ProjectSearchField::Include && !g_projectSearchResultsFocused ? 0x405775u : 0x202A36u);
+    drawPanel(ctx, { kSearchFieldX, kSearchExcludeY - 17, kSearchFieldWidth, 20 },
+              g_projectSearchField == ProjectSearchField::Exclude && !g_projectSearchResultsFocused ? 0x405775u : 0x202A36u);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_projectSearchDraft.query);
+    drawText(ctx, kSearchFieldX + 5, 102, g_textScratch);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_projectSearchDraft.includePattern);
+    drawText(ctx, kSearchFieldX + 5, kSearchIncludeY - 2, g_textScratch);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_projectSearchDraft.excludePattern);
+    drawText(ctx, kSearchFieldX + 5, kSearchExcludeY - 2, g_textScratch);
+    drawText(ctx, 470, 103, g_projectSearchDraft.caseSensitive ? "[x]Case" : "[ ]Case");
+    drawText(ctx, 560, 103, g_projectSearchDraft.wholeWord ? "[x]Whole word" : "[ ]Whole word");
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    const bool active = ProjectSearchIsActive(&g_projectSearch);
+    drawPanel(ctx, { 760, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 770, 102, active ? "Running" : "Search");
+    drawPanel(ctx, { 840, 87, 72, 20 }, active ? 0xA96F2Au : 0x34496Au);
+    drawText(ctx, 851, 102, "Cancel");
+    if (active && operation) {
+        copyText(g_textScratch, sizeof(g_textScratch), ProjectSearchStateName(operation->state));
+        appendText(g_textScratch, sizeof(g_textScratch), "  ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesSearched));
+        appendText(g_textScratch, sizeof(g_textScratch), " / ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesEnumerated));
+        appendText(g_textScratch, sizeof(g_textScratch), " files, ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), operation->resultMatchCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " matches");
+        drawText(ctx, 24, 177, g_textScratch);
+    } else if (g_projectSearchStatus[0] != '\0') {
+        drawText(ctx, 24, 177, g_projectSearchStatus);
+    } else if (!g_controller.model.hasProject) {
+        drawText(ctx, 24, 177, "Open a project to search its files.");
+    }
+    drawPanel(ctx, { 16, kSearchPanelResultsTop - 12, 928, 1 }, 0x405775u);
+    uint32_t row = 0;
+    const uint32_t firstRow = g_projectSearchScroll;
+    const uint32_t lastRow = firstRow + kSearchPanelMaxRows;
+    const uint32_t groups = ProjectSearchQueryResultGroups(&g_projectSearch);
+    for (uint32_t groupIndex = 0; groupIndex < groups; ++groupIndex) {
+        const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, groupIndex);
+        if (!group) continue;
+        if (row >= firstRow && row < lastRow) {
+            copyText(g_textScratch, sizeof(g_textScratch), group->relativePath);
+            appendText(g_textScratch, sizeof(g_textScratch), " (");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), group->matchCount);
+            appendText(g_textScratch, sizeof(g_textScratch), ")");
+            drawText(ctx, 24, kSearchPanelResultsTop + static_cast<int>((row - firstRow) * kSearchPanelRowHeight), g_textScratch);
+        }
+        ++row;
+        for (uint32_t matchIndex = 0; matchIndex < group->matchCount; ++matchIndex, ++row) {
+            if (row < firstRow || row >= lastRow) continue;
+            const ProjectSearchMatch* match = ProjectSearchResultMatchAt(&g_projectSearch, group, matchIndex);
+            if (!match) continue;
+            const bool selected = g_projectSearchResultsFocused && groupIndex == g_projectSearchSelectedGroup &&
+                matchIndex == g_projectSearchSelectedMatch;
+            const int y = kSearchPanelResultsTop + static_cast<int>((row - firstRow) * kSearchPanelRowHeight);
+            if (selected) drawPanel(ctx, { 20, y - 12, 920, kSearchPanelRowHeight }, 0x34496Au);
+            copyText(g_textScratch, sizeof(g_textScratch), "  ");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), match->line);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), match->column);
+            appendText(g_textScratch, sizeof(g_textScratch), "  ");
+            if (match->previewLeftTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+            appendText(g_textScratch, sizeof(g_textScratch), match->preview);
+            if (match->previewRightTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+            drawText(ctx, 32, y, g_textScratch);
+        }
+    }
+    if (groups == 0 && operation && !active) drawText(ctx, 24, kSearchPanelResultsTop, "No matches.");
+    if (groups == 0 && active) drawText(ctx, 24, kSearchPanelResultsTop, "Scanning project files...");
+    if (groups != 0 && projectSearchTotalRows() > kSearchPanelMaxRows)
+        drawText(ctx, 760, 177, "Scroll: mouse wheel / Up / Down");
 }
 
 static void drawEditorRangeOverlay(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
@@ -1551,6 +1953,97 @@ static void closeFindBar() {
     g_findReplaceMode = false;
     g_editorFocused = true;
     findSetStatus("");
+}
+
+static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex, uint32_t matchIndex) {
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    const ProjectSearchFileGroup* group = ProjectSearchResultGroupAt(&g_projectSearch, groupIndex);
+    const ProjectSearchMatch* match = ProjectSearchResultMatchAt(&g_projectSearch, group, matchIndex);
+    if (!operation || !group || !match || !g_controller.model.open || !g_controller.model.hasProject) {
+        projectSearchSetStatus("Search result cannot be activated: no active project");
+        return false;
+    }
+    if (operation->projectGeneration != g_controller.model.projectGeneration ||
+        !searchTextEqual(g_projectSearchProjectId, g_controller.model.project.projectId)) {
+        projectSearchSetStatus("Search result belongs to a stale project");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE", ProjectSearchErrorName(ProjectSearchErrorCode::ProjectStale));
+        return false;
+    }
+    if (group->relativePath[0] == '\0' || guidexos::developer_studio::PathContainsTraversal(group->relativePath) ||
+        group->relativePath[0] == '/' || group->relativePath[0] == '\\' || group->relativePath[1] == ':') {
+        projectSearchSetStatus("Search result path rejected");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=FAIL", ProjectSearchErrorName(ProjectSearchErrorCode::PathOutsideProject));
+        return false;
+    }
+    char absolutePath[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(g_controller.model.rootPath, group->relativePath, absolutePath, sizeof(absolutePath))) {
+        projectSearchSetStatus("Search result path is outside the project");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=FAIL", ProjectSearchErrorName(ProjectSearchErrorCode::PathOutsideProject));
+        return false;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode navigationError = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   group->relativePath, match->line, match->column,
+                                                   &documentIndex, &navigationError)) {
+        projectSearchSetStatus("Unable to open search result");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=FAIL", OutputErrorName(navigationError));
+        return false;
+    }
+    (void)absolutePath;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) {
+        projectSearchSetStatus("Search result opened without a document");
+        return false;
+    }
+    const uint32_t queryLength = lengthOf(ProjectSearchQuery(&g_projectSearch), kFindMaxQueryBytes + 1u);
+    bool selectedExact = match->byteOffset <= document->buffer.length &&
+        match->matchLength == queryLength &&
+        match->matchLength <= document->buffer.length - static_cast<uint32_t>(match->byteOffset) &&
+        FindLiteralMatchesAt(document->buffer.data, document->buffer.length, match->byteOffset,
+                             ProjectSearchQuery(&g_projectSearch), queryLength,
+                             operation->options.caseSensitive, operation->options.wholeWord);
+    if (selectedExact && SelectTextRange(&document->buffer, match->byteOffset, match->matchLength)) {
+        g_editorFocused = true;
+        keepCaretVisible(document);
+        g_projectSearchPanelOpen = false;
+        g_projectSearchResultsFocused = false;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=PASS");
+        return true;
+    }
+    const uint32_t line = match->line > 0 ? match->line - 1 : 0;
+    const uint32_t lineStart = TextBufferLineStart(&document->buffer, line);
+    uint32_t nearbyEnd = TextBufferLineEnd(&document->buffer, line);
+    if (nearbyEnd < document->buffer.length) nearbyEnd += 1;
+    if (nearbyEnd > lineStart + 8192u) nearbyEnd = lineStart + 8192u;
+    bool selectedNearby = false;
+    uint32_t nearbyOffset = lineStart;
+    for (; nearbyOffset < nearbyEnd; ++nearbyOffset) {
+        if (FindLiteralMatchesAt(document->buffer.data, document->buffer.length, nearbyOffset,
+                                 ProjectSearchQuery(&g_projectSearch), queryLength,
+                                 operation->options.caseSensitive, operation->options.wholeWord)) {
+            selectedNearby = SelectTextRange(&document->buffer, nearbyOffset, queryLength);
+            if (selectedNearby) break;
+        }
+    }
+    g_editorFocused = true;
+    if (selectedNearby) {
+        keepCaretVisible(document);
+        g_projectSearchPanelOpen = false;
+        g_projectSearchResultsFocused = false;
+        projectSearchSetStatus("Search result was stale; nearby match selected");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE");
+        return true;
+    }
+    bool clamped = false;
+    WorkspaceControllerSetCaretPosition(&g_controller, documentIndex, match->line, match->column,
+                                        &clamped, &navigationError);
+    keepCaretVisible(document);
+    g_projectSearchPanelOpen = false;
+    g_projectSearchResultsFocused = false;
+    projectSearchSetStatus("Search result may be stale");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE");
+    return true;
 }
 
 static bool replaceCurrentMatch(Document* document) {
@@ -1933,6 +2426,7 @@ static void drawShell(gx_app_context* ctx) {
     drawEditor(ctx);
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
+    drawProjectSearchPanel(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -2138,6 +2632,7 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
     } else if (g_inputMode == InputMode::ConfirmWorkspace) {
         logMarker(ctx, save ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=SAVE" : "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=DISCARD");
         if (save && !saveAll(ctx)) return;
+        stopProjectSearch(ctx);
         WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
         if (g_workspaceSwitchPending) commitWorkspaceOpen(ctx);
         else {
@@ -2188,8 +2683,117 @@ static bool handleFindKey(int keyCode, int action, int modifiers) {
     return false;
 }
 
+static void projectSearchInsertCharacter(char value) {
+    if (value == '\0') return;
+    char* field = projectSearchFieldBuffer();
+    const uint32_t capacity = projectSearchFieldCapacity();
+    const uint32_t length = lengthOf(field, capacity);
+    if (g_projectSearchFieldCaret > length || length + 1 >= capacity) return;
+    for (uint32_t i = length; i > g_projectSearchFieldCaret; --i) field[i] = field[i - 1];
+    field[g_projectSearchFieldCaret++] = value;
+    field[length + 1] = '\0';
+}
+
+static void projectSearchBackspace() {
+    char* field = projectSearchFieldBuffer();
+    const uint32_t length = lengthOf(field, projectSearchFieldCapacity());
+    if (g_projectSearchFieldCaret == 0 || g_projectSearchFieldCaret > length) return;
+    for (uint32_t i = g_projectSearchFieldCaret - 1; i < length; ++i) field[i] = field[i + 1];
+    --g_projectSearchFieldCaret;
+}
+
+static void projectSearchDelete() {
+    char* field = projectSearchFieldBuffer();
+    const uint32_t length = lengthOf(field, projectSearchFieldCapacity());
+    if (g_projectSearchFieldCaret >= length) return;
+    for (uint32_t i = g_projectSearchFieldCaret; i < length; ++i) field[i] = field[i + 1];
+}
+
+static bool handleProjectSearchKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_projectSearchPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    const bool active = ProjectSearchIsActive(&g_projectSearch);
+    if (keyCode == 27) {
+        if (active) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            projectSearchSetStatus("Cancelling search...");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_cancel=REQUESTED");
+        } else {
+            g_projectSearchPanelOpen = false;
+            g_projectSearchResultsFocused = false;
+        }
+        return true;
+    }
+    if (g_projectSearchResultsFocused) {
+        if (keyCode == GX_KEY_UP) { projectSearchMoveSelection(-1); return true; }
+        if (keyCode == GX_KEY_DOWN) { projectSearchMoveSelection(1); return true; }
+        if (keyCode == 13) {
+            activateProjectSearchResult(ctx, g_projectSearchSelectedGroup, g_projectSearchSelectedMatch);
+            return true;
+        }
+        if (keyCode == 9) {
+            g_projectSearchResultsFocused = false;
+            g_projectSearchField = ProjectSearchField::Query;
+            g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
+            return true;
+        }
+        return false;
+    }
+    if (keyCode == 13) {
+        startProjectSearch(ctx);
+        return true;
+    }
+    if (keyCode == 9) {
+        if (modifiers & GX_KEY_MOD_SHIFT) {
+            if (g_projectSearchField == ProjectSearchField::Query) {
+                g_projectSearchResultsFocused = true;
+                projectSearchEnsureSelectionVisible();
+            } else {
+                g_projectSearchField = static_cast<ProjectSearchField>(static_cast<int>(g_projectSearchField) - 1);
+                g_projectSearchFieldCaret = lengthOf(projectSearchFieldBuffer(), projectSearchFieldCapacity());
+            }
+        } else if (g_projectSearchField == ProjectSearchField::Exclude) {
+            g_projectSearchResultsFocused = true;
+            projectSearchEnsureSelectionVisible();
+        } else {
+            g_projectSearchField = static_cast<ProjectSearchField>(static_cast<int>(g_projectSearchField) + 1);
+            g_projectSearchFieldCaret = lengthOf(projectSearchFieldBuffer(), projectSearchFieldCapacity());
+        }
+        return true;
+    }
+    if (keyCode == 8) { projectSearchBackspace(); return true; }
+    if (keyCode == 46) { projectSearchDelete(); return true; }
+    if (keyCode == GX_KEY_LEFT) {
+        if (g_projectSearchFieldCaret > 0) --g_projectSearchFieldCaret;
+        return true;
+    }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(projectSearchFieldBuffer(), projectSearchFieldCapacity());
+        if (g_projectSearchFieldCaret < length) ++g_projectSearchFieldCaret;
+        return true;
+    }
+    if (keyCode == 36) { g_projectSearchFieldCaret = 0; return true; }
+    if (keyCode == 35) {
+        g_projectSearchFieldCaret = lengthOf(projectSearchFieldBuffer(), projectSearchFieldCapacity());
+        return true;
+    }
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value != '\0') { projectSearchInsertCharacter(value); return true; }
+    return false;
+}
+
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 70 || keyCode == 102)) {
+        if (g_findBarOpen) closeFindBar();
+        if (!g_projectSearchPanelOpen) projectSearchInitializeDraft(WorkspaceControllerActiveDocument(&g_controller));
+        g_projectSearchPanelOpen = true;
+        g_projectSearchResultsFocused = false;
+        g_projectSearchField = ProjectSearchField::Query;
+        g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
+        g_editorFocused = false;
+        return;
+    }
+    if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 70 || keyCode == 102)) {
         openFindBar(false, true);
         return;
@@ -2266,6 +2870,59 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_projectSearchPanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t total = projectSearchTotalRows();
+            const uint32_t maximum = total > static_cast<uint32_t>(kSearchPanelMaxRows) ?
+                total - static_cast<uint32_t>(kSearchPanelMaxRows) : 0;
+            if (event.param4 > 0) g_projectSearchScroll = g_projectSearchScroll > 3 ? g_projectSearchScroll - 3 : 0;
+            else g_projectSearchScroll = g_projectSearchScroll + 3 < maximum ? g_projectSearchScroll + 3 : maximum;
+            drawShell(ctx);
+            return;
+        }
+        if (button != GX_MOUSE_BUTTON_LEFT ||
+            (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+        if (y >= 87 && y < 107 && x >= kSearchFieldX && x < kSearchFieldX + kSearchFieldWidth) {
+            g_projectSearchResultsFocused = false;
+            g_projectSearchField = ProjectSearchField::Query;
+            g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
+        } else if (y >= 109 && y < 129 && x >= kSearchFieldX && x < kSearchFieldX + kSearchFieldWidth) {
+            g_projectSearchResultsFocused = false;
+            g_projectSearchField = ProjectSearchField::Include;
+            g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.includePattern, sizeof(g_projectSearchDraft.includePattern));
+        } else if (y >= 133 && y < 153 && x >= kSearchFieldX && x < kSearchFieldX + kSearchFieldWidth) {
+            g_projectSearchResultsFocused = false;
+            g_projectSearchField = ProjectSearchField::Exclude;
+            g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.excludePattern, sizeof(g_projectSearchDraft.excludePattern));
+        } else if (y >= 87 && y < 108 && x >= 470 && x < 550) {
+            g_projectSearchDraft.caseSensitive = !g_projectSearchDraft.caseSensitive;
+        } else if (y >= 87 && y < 108 && x >= 550 && x < 730) {
+            g_projectSearchDraft.wholeWord = !g_projectSearchDraft.wholeWord;
+        } else if (y >= 87 && y < 108 && x >= 760 && x < 832) {
+            startProjectSearch(ctx);
+        } else if (y >= 87 && y < 108 && x >= 840 && x < 912) {
+            if (ProjectSearchIsActive(&g_projectSearch)) {
+                ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+                projectSearchSetStatus("Cancelling search...");
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_cancel=REQUESTED");
+            } else {
+                g_projectSearchPanelOpen = false;
+                g_projectSearchResultsFocused = false;
+            }
+        } else if (y >= kSearchPanelResultsTop - 4 && y < kSearchPanelTop + 580) {
+            const uint32_t row = g_projectSearchScroll + static_cast<uint32_t>((y - kSearchPanelResultsTop) / kSearchPanelRowHeight);
+            uint32_t groupIndex = 0;
+            uint32_t matchIndex = 0;
+            if (projectSearchMatchForRow(row, &groupIndex, &matchIndex)) {
+                g_projectSearchResultsFocused = true;
+                g_projectSearchSelectedGroup = groupIndex;
+                g_projectSearchSelectedMatch = matchIndex;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) activateProjectSearchResult(ctx, groupIndex, matchIndex);
+            }
+        }
+        drawShell(ctx);
+        return;
+    }
     if (action == GX_MOUSE_ACTION_WHEEL) {
         if (y >= kOutputRect.y && y < kOutputRect.y + kOutputRect.height) {
             const uint32_t count = outputVisibleCount();
@@ -2384,7 +3041,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress");
             else if (RunControllerIsActive(&g_runController)) writeOutput("Run in progress");
             else if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmWorkspace;
-            else WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
+            else { stopProjectSearch(ctx); WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard); }
         } else if (y < 188) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
             else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
@@ -2450,6 +3107,16 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_findField = FindField::Query;
     g_findFieldCaret = 0;
     findSetStatus("");
+    ProjectSearchServiceInit(&g_projectSearch);
+    projectSearchInitializeDraft(nullptr);
+    g_projectSearchPanelOpen = false;
+    g_projectSearchResultsFocused = false;
+    g_projectSearchOperationId = 0;
+    g_projectSearchProjectGeneration = 0;
+    g_projectSearchProjectId[0] = '\0';
+    g_projectSearchStatus[0] = '\0';
+    g_lastProjectSearchQuery[0] = '\0';
+    g_projectSearchTerminalReported = false;
     OutputServiceInit(&g_outputService);
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
     g_runOperationId = 0;
@@ -2487,11 +3154,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     bool running = true;
     if (ctx->host->poll_event) {
         while (running) {
+            pollProjectSearch(ctx);
             pollBuild(ctx);
             pollRun(ctx);
             gx_event event;
             clear_event(&event);
-            gx_result result = ctx->host->poll_event(ctx, &event, 500);
+            gx_result result = ctx->host->poll_event(ctx, &event, ProjectSearchIsActive(&g_projectSearch) ? 50 : 500);
             if (result == GX_OK && event.window == g_window) {
                 if (gx_event_is_paint(&event)) drawShell(ctx);
                 else if (gx_event_is_close(&event)) {
@@ -2512,7 +3180,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     }
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
-                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen) {
+                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
@@ -2526,6 +3194,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 }
                 pollBuild(ctx);
                 pollRun(ctx);
+                pollProjectSearch(ctx);
                 drawShell(ctx);
             } else if (result != GX_OK && result != GX_ERROR_TIMEOUT) {
                 markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER event_loop=FAIL", "poll_event");

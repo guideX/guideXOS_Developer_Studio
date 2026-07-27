@@ -151,7 +151,7 @@ continue to use the existing dirty flag and workspace controller.
 
 The current search service is safe for arbitrary non-NUL bytes but does not
 perform Unicode case folding, grapheme segmentation, locale-aware word
-classification, normalization, or regex matching. A future Find in Files
-feature should build a separate workspace-scoped service with explicit file
-enumeration, cancellation, result limits, and per-file generation checks; it
-should not expand this active-document session's scope.
+classification, normalization, or regex matching. Find in Files is a separate
+read-only workspace-scoped service with its own operation, result groups, and
+UI; see [FIND_IN_FILES.md](FIND_IN_FILES.md). Its results do not grant Replace
+in Files permission and do not expand this active-document session's scope.

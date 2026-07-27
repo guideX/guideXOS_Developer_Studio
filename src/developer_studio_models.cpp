@@ -27,6 +27,8 @@ static const TargetProfile kInitialTargetProfile = {
     CapabilityMaturity::Experimental
 };
 
+static uint64_t g_nextProjectGeneration = 1;
+
 static uint32_t textLength(const char* text, uint32_t limit) {
     if (!text) return 0;
     uint32_t length = 0;
@@ -272,6 +274,7 @@ void WorkspaceModelInit(WorkspaceModel* model) {
     model->selectedEntry = 0;
     model->activeDocument = kMaxOpenDocuments;
     model->nextDocumentId = 1;
+    model->projectGeneration = 0;
     model->lastError[0] = '\0';
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) clearDocument(model->documents[i]);
 }
@@ -445,6 +448,8 @@ bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, co
         return false;
     }
     model->open = true;
+    model->projectGeneration = g_nextProjectGeneration == 0 ? 1 : g_nextProjectGeneration++;
+    if (g_nextProjectGeneration == 0) g_nextProjectGeneration = 1;
     model->hasProject = false;
     model->project = Project();
     model->browsePath[0] = '\0';
@@ -454,6 +459,12 @@ bool WorkspaceModelSetRoot(WorkspaceModel* model, const char* normalizedRoot, co
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) clearDocument(model->documents[i]);
     model->lastError[0] = '\0';
     return true;
+}
+
+void WorkspaceModelAdvanceProjectGeneration(WorkspaceModel* model) {
+    if (!model) return;
+    model->projectGeneration = g_nextProjectGeneration == 0 ? 1 : g_nextProjectGeneration++;
+    if (g_nextProjectGeneration == 0) g_nextProjectGeneration = 1;
 }
 
 bool WorkspaceModelSetBrowsePath(WorkspaceModel* model, const char* relativePath) {
