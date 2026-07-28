@@ -78,6 +78,19 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
     controller->listingTruncated = false;
     controller->lastError = ModelErrorCode::None;
     controller->lastProjectError = ProjectErrorCode::None;
+    controller->symbolDatabase = nullptr;
+}
+
+void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, SymbolDatabase* database) {
+    if (!controller) return;
+    controller->symbolDatabase = database;
+    if (database) {
+        SymbolDatabaseClear(database);
+        if (controller->model.open && controller->model.hasProject)
+            SymbolDatabaseIndexProject(database, controller->fileSystem, controller->model.rootPath,
+                                        controller->model.documents, kMaxOpenDocuments,
+                                        controller->model.projectGeneration);
+    }
 }
 
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path) {
@@ -93,6 +106,7 @@ bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const cha
     if (info.kind != FileInfoKind::Directory) { setControllerError(controller, ModelErrorCode::NotDirectory); return false; }
     const char* name = BaseName(normalized);
     if (!WorkspaceModelSetRoot(&controller->model, normalized, name[0] ? name : normalized)) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
+    if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
     if (!WorkspaceControllerRefresh(controller)) return false;
     return true;
 }
@@ -119,10 +133,14 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
     controller->model.hasProject = true;
     controller->model.project = result.project;
     controller->lastProjectError = ProjectErrorCode::None;
+    if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
     if (!WorkspaceControllerRefresh(controller)) {
         setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
         return false;
     }
+    if (controller->symbolDatabase)
+        SymbolDatabaseIndexProject(controller->symbolDatabase, controller->fileSystem, controller->model.rootPath,
+                                    controller->model.documents, kMaxOpenDocuments, controller->model.projectGeneration);
     return true;
 }
 
@@ -170,6 +188,9 @@ bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
     controller->model.hasProject = true;
     WorkspaceModelAdvanceProjectGeneration(&controller->model);
     controller->lastProjectError = ProjectErrorCode::None;
+    if (controller->symbolDatabase)
+        SymbolDatabaseIndexProject(controller->symbolDatabase, controller->fileSystem, controller->model.rootPath,
+                                    controller->model.documents, kMaxOpenDocuments, controller->model.projectGeneration);
     return true;
 }
 
@@ -258,7 +279,18 @@ bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char
     bool duplicate = false;
     if (!WorkspaceModelAddDocument(&controller->model, normalized, bytes, count, &error, &duplicate)) { setControllerError(controller, error); return false; }
     controller->lastError = duplicate ? ModelErrorCode::DuplicateDocument : ModelErrorCode::None;
+    if (controller->symbolDatabase) WorkspaceControllerUpdateDocumentSymbols(
+        controller, static_cast<uint32_t>(FindOpenDocument(&controller->model, normalized)));
     return true;
+}
+
+bool WorkspaceControllerUpdateDocumentSymbols(WorkspaceController* controller, uint32_t documentIndex) {
+    if (!controller || !controller->symbolDatabase || documentIndex >= kMaxOpenDocuments ||
+        !controller->model.documents[documentIndex].used) return false;
+    const Document& document = controller->model.documents[documentIndex];
+    return SymbolDatabaseIndexDocument(controller->symbolDatabase, document.path, document.documentId,
+                                       document.buffer.generation, document.buffer.dirty,
+                                       document.buffer.data, document.buffer.length);
 }
 
 bool WorkspaceControllerSetCaretPosition(WorkspaceController* controller, uint32_t documentIndex, uint32_t line, uint32_t column,
@@ -330,6 +362,7 @@ bool WorkspaceControllerSaveDocument(WorkspaceController* controller, uint32_t d
     bool ok = controller->fileSystem.write(controller->fileSystem.userData, document.path, document.buffer.data, document.buffer.length, &written) && written == document.buffer.length;
     ModelErrorCode error = ModelErrorCode::None;
     if (!WorkspaceModelMarkSaved(&controller->model, documentIndex, ok, &error)) { setControllerError(controller, error); return false; }
+    if (ok) WorkspaceControllerUpdateDocumentSymbols(controller, documentIndex);
     setControllerError(controller, ModelErrorCode::None);
     return true;
 }
@@ -371,10 +404,20 @@ bool WorkspaceControllerSaveAllProjectDocuments(WorkspaceController* controller)
 
 bool WorkspaceControllerCloseDocument(WorkspaceController* controller, uint32_t documentIndex, CloseDecision decision) {
     if (!controller || documentIndex >= kMaxOpenDocuments || !controller->model.documents[documentIndex].used) { if (controller) setControllerError(controller, ModelErrorCode::DocumentNotFound); return false; }
+    char closedPath[kMaxPathBytes] = {};
+    for (uint32_t i = 0; i + 1 < sizeof(closedPath); ++i) {
+        closedPath[i] = controller->model.documents[documentIndex].path[i];
+        if (closedPath[i] == '\0') break;
+    }
     if (decision == CloseDecision::Save && controller->model.documents[documentIndex].buffer.dirty && !WorkspaceControllerSaveDocument(controller, documentIndex)) return false;
     ModelErrorCode error = ModelErrorCode::None;
     bool ok = WorkspaceModelCloseDocument(&controller->model, documentIndex, decision, decision != CloseDecision::Save || !controller->model.documents[documentIndex].buffer.dirty, &error);
     if (!ok) setControllerError(controller, error);
+    else if (controller->symbolDatabase && controller->model.hasProject)
+        SymbolDatabaseIndexDiskDocument(controller->symbolDatabase, controller->fileSystem, closedPath,
+                                        controller->model.projectGeneration);
+    else if (ok && controller->symbolDatabase)
+        SymbolDatabaseRemoveDocument(controller->symbolDatabase, closedPath);
     return ok;
 }
 
@@ -385,6 +428,7 @@ bool WorkspaceControllerCloseWorkspace(WorkspaceController* controller, CloseDec
         if (decision == CloseDecision::Save && !WorkspaceControllerSaveAll(controller)) return false;
     }
     WorkspaceModelInit(&controller->model);
+    if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
     controller->lastError = ModelErrorCode::None;
     controller->listingTruncated = false;
     return true;

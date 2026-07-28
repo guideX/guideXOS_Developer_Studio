@@ -2,8 +2,9 @@
 
 Find in Files is a read-only, project-scoped search service. It is separate
 from active-document Find/Replace and does not implement Replace in Files,
-regular expressions, semantic search, symbol indexing, or arbitrary-folder
-search.
+regular expressions, semantic search, or arbitrary-folder search. The separate
+lexical Document Outline/Project Symbol Index consumes source structure but is
+not used to answer text-search queries; see [SYMBOL_INDEX.md](SYMBOL_INDEX.md).
 
 ## Architecture and trust boundary
 

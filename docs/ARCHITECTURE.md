@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, and bounded project-scoped Find in Files
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, and bounded lexical Document Outline/Project Symbol Index
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, syntax tokenizer/cache, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, UI-independent lexical SymbolDatabase, syntax tokenizer/cache, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -217,6 +217,24 @@ from the Native ELF event loop; no Server search ABI or generic filesystem
 traversal API was added. See [FIND_IN_FILES.md](FIND_IN_FILES.md) for exact
 limits, pattern grammar, symlink policy, lifecycle, staleness, and UI policy.
 
+## Document Outline and Project Symbol Index
+
+`developer_studio_symbols.*` is a UI-independent lexical scanner and bounded
+project database. It tokenizes C/C++ source while skipping comments, strings,
+preprocessor lines, and `#if 0` blocks. It recognizes namespace/type
+declarations, functions and methods, constructors/destructors, namespace-scope
+variables, typedefs, and using aliases. It never expands macros or attempts
+semantic parsing. The full scanner/database contract, limits, dirty-document
+policy, Outline panel, and Ctrl+T picker are documented in
+[`SYMBOL_INDEX.md`](SYMBOL_INDEX.md).
+
+Project open performs one deterministic recursive source index. A later edit
+calls `SymbolDatabaseIndexDocument` for only the changed document; the old
+path block is replaced without rescanning other files. Open dirty buffers are
+indexed from memory, and source navigation reuses the existing validated
+`WorkspaceControllerOpenDocumentAtLocation` path before selecting the lexical
+identifier.
+
 ## Run Project vertical slice
 
 Run Project is an explicit build-before-run sequence:
@@ -263,7 +281,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Debug, language server, semantic highlighting, completion, navigation, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
+Go To Definition, Find All References, Rename, language server, semantic highlighting, completion, navigation beyond lexical locations, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

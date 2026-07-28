@@ -6,6 +6,7 @@
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
+#include "developer_studio_symbols.h"
 
 namespace {
 
@@ -184,6 +185,27 @@ using guidexos::developer_studio::ProjectSearchState;
 using guidexos::developer_studio::ProjectSearchStateName;
 using guidexos::developer_studio::ProjectSearchDocumentSnapshot;
 using guidexos::developer_studio::kProjectSearchMaxFileBytes;
+using guidexos::developer_studio::DocumentSymbol;
+using guidexos::developer_studio::ProjectSymbol;
+using guidexos::developer_studio::SymbolDatabase;
+using guidexos::developer_studio::SymbolDocument;
+using guidexos::developer_studio::SymbolDatabaseDocumentPath;
+using guidexos::developer_studio::SymbolDatabaseDocumentSymbolAt;
+using guidexos::developer_studio::SymbolDatabaseFindDocumentById;
+using guidexos::developer_studio::SymbolDatabaseFindSymbols;
+using guidexos::developer_studio::SymbolDatabaseInit;
+using guidexos::developer_studio::SymbolDatabaseProjectSymbolAt;
+using guidexos::developer_studio::SymbolDatabaseProjectSymbolCount;
+using guidexos::developer_studio::SymbolDatabaseDocumentAt;
+using guidexos::developer_studio::SymbolKindPrefix;
+using guidexos::developer_studio::SymbolKindName;
+using guidexos::developer_studio::SymbolLocation;
+using guidexos::developer_studio::kSymbolMaxDocumentSymbols;
+using guidexos::developer_studio::kSymbolMaxDocuments;
+using guidexos::developer_studio::kSymbolMaxNameBytes;
+using guidexos::developer_studio::kSymbolMaxProjectSymbols;
+using guidexos::developer_studio::kSymbolMaxQueryBytes;
+using guidexos::developer_studio::kSymbolMaxVisibleResults;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -200,6 +222,12 @@ static const int kEditorTextX = 320;
 static const int kVisibleEditorLines = 26;
 static const uint32_t kEditorTabWidth = 4;
 static const uint32_t kVisibleEditorColumns = 78;
+static const int kOutlineTop = 304;
+static const int kOutlineRowHeight = 17;
+static const int kOutlineMaxRows = 11;
+static const int kSymbolSearchTop = 76;
+static const int kSymbolSearchRowHeight = 18;
+static const int kSymbolSearchMaxRows = 22;
 static const int kMaxPromptBytes = 240;
 static const int kFindFieldX = 326;
 static const int kFindFieldWidth = 250;
@@ -249,6 +277,10 @@ struct ProjectDialog {
 };
 
 static WorkspaceController g_controller;
+static SymbolDatabase g_symbolDatabase = {};
+static ProjectSymbol g_symbolProjectStorage[kSymbolMaxProjectSymbols] = {};
+static SymbolDocument g_symbolDocumentStorage[kSymbolMaxDocuments] = {};
+static DocumentSymbol g_symbolScratchStorage[kSymbolMaxDocumentSymbols] = {};
 static NativeFileSystemContext g_fileSystemContext = {};
 static gx_handle g_window = 0;
 static InputMode g_inputMode = InputMode::Normal;
@@ -321,9 +353,21 @@ static char g_projectSearchProjectId[kMaxProjectIdBytes] = {};
 static char g_projectSearchStatus[128] = {};
 static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
+static bool g_symbolSearchOpen = false;
+static bool g_symbolSearchCaseSensitive = false;
+static uint32_t g_symbolSearchCaret = 0;
+static uint32_t g_symbolSearchSelected = 0;
+static uint32_t g_symbolSearchScroll = 0;
+static uint32_t g_symbolSearchResultCount = 0;
+static uint32_t g_symbolSearchResults[kSymbolMaxVisibleResults] = {};
+static char g_symbolSearchQuery[kSymbolMaxQueryBytes + 1] = {};
+static uint32_t g_outlineSelected = 0;
+static uint32_t g_outlineScroll = 0;
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
+static void stopProjectSearch(gx_app_context* ctx);
+static void keepCaretVisible(const Document* document);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -449,6 +493,115 @@ static bool copyProjectRelativePath(const WorkspaceModel& model, const char* abs
     if (path[rootLength] != '/') return false;
     if (lengthOf(path + rootLength + 1, outputSize) >= outputSize) return false;
     copyText(output, outputSize, path + rootLength + 1);
+    return true;
+}
+
+static uint32_t activeOutlineDocumentIndex() {
+    const Document* document = WorkspaceControllerActiveDocumentConst(&g_controller);
+    if (!document) return kSymbolMaxDocuments;
+    const int32_t index = SymbolDatabaseFindDocumentById(&g_symbolDatabase, document->documentId);
+    return index < 0 ? kSymbolMaxDocuments : static_cast<uint32_t>(index);
+}
+
+static uint32_t outlineSymbolCount() {
+    const uint32_t documentIndex = activeOutlineDocumentIndex();
+    const SymbolDocument* document = SymbolDatabaseDocumentAt(&g_symbolDatabase, documentIndex);
+    return document ? document->symbolCount : 0;
+}
+
+static void ensureOutlineSelectionVisible() {
+    const uint32_t count = outlineSymbolCount();
+    if (count == 0) { g_outlineSelected = 0; g_outlineScroll = 0; return; }
+    if (g_outlineSelected >= count) g_outlineSelected = count - 1;
+    if (g_outlineSelected < g_outlineScroll) g_outlineScroll = g_outlineSelected;
+    if (g_outlineSelected >= g_outlineScroll + static_cast<uint32_t>(kOutlineMaxRows))
+        g_outlineScroll = g_outlineSelected - static_cast<uint32_t>(kOutlineMaxRows) + 1;
+}
+
+static void symbolSearchRefresh() {
+    g_symbolSearchResultCount = SymbolDatabaseFindSymbols(&g_symbolDatabase, g_symbolSearchQuery,
+                                                          g_symbolSearchCaseSensitive,
+                                                          g_symbolSearchResults, kSymbolMaxVisibleResults);
+    if (g_symbolSearchResultCount > kSymbolMaxVisibleResults) g_symbolSearchResultCount = kSymbolMaxVisibleResults;
+    if (g_symbolSearchSelected >= g_symbolSearchResultCount) g_symbolSearchSelected = g_symbolSearchResultCount == 0 ? 0 : g_symbolSearchResultCount - 1;
+    if (g_symbolSearchSelected < g_symbolSearchScroll) g_symbolSearchScroll = g_symbolSearchSelected;
+    if (g_symbolSearchSelected >= g_symbolSearchScroll + static_cast<uint32_t>(kSymbolSearchMaxRows))
+        g_symbolSearchScroll = g_symbolSearchSelected - static_cast<uint32_t>(kSymbolSearchMaxRows) + 1;
+}
+
+static void openSymbolSearch(gx_app_context* ctx) {
+    g_symbolSearchOpen = true;
+    g_symbolSearchCaseSensitive = false;
+    g_symbolSearchCaret = 0;
+    g_symbolSearchSelected = 0;
+    g_symbolSearchScroll = 0;
+    g_symbolSearchQuery[0] = '\0';
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_findBarOpen = false;
+    if (g_projectSearchPanelOpen) stopProjectSearch(ctx);
+    g_projectSearchPanelOpen = false;
+    symbolSearchRefresh();
+}
+
+static void closeSymbolSearch() {
+    g_symbolSearchOpen = false;
+    g_symbolSearchQuery[0] = '\0';
+    g_symbolSearchCaret = 0;
+    g_symbolSearchResultCount = 0;
+}
+
+static bool textAtOffset(const TextBuffer& buffer, uint32_t offset, const char* value) {
+    if (!value) return false;
+    const uint32_t length = lengthOf(value, kSymbolMaxNameBytes);
+    if (offset > buffer.length || length > buffer.length - offset) return false;
+    for (uint32_t i = 0; i < length; ++i) if (buffer.data[offset + i] != value[i]) return false;
+    return true;
+}
+
+static bool selectSymbolIdentifier(Document* document, const ProjectSymbol& symbol) {
+    if (!document) return false;
+    const SymbolLocation& location = symbol.symbol.location;
+    const uint32_t symbolLength = lengthOf(symbol.symbol.name, kSymbolMaxNameBytes);
+    if (location.documentId == document->documentId && location.generation == document->buffer.generation &&
+        location.identifierOffset <= document->buffer.length && symbolLength <= document->buffer.length - location.identifierOffset &&
+        textAtOffset(document->buffer, location.identifierOffset, symbol.symbol.name))
+        return SelectTextRange(&document->buffer, location.identifierOffset, symbolLength);
+    const uint32_t zeroLine = location.line > 0 ? location.line - 1 : 0;
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    if (zeroLine >= lineCount) return false;
+    const uint32_t start = TextBufferLineStart(&document->buffer, zeroLine);
+    const uint32_t end = TextBufferLineEnd(&document->buffer, zeroLine);
+    for (uint32_t offset = start; offset + symbolLength <= end; ++offset)
+        if (textAtOffset(document->buffer, offset, symbol.symbol.name))
+            return SelectTextRange(&document->buffer, offset, symbolLength);
+    return false;
+}
+
+static bool navigateSymbol(gx_app_context* ctx, uint32_t projectSymbolIndex) {
+    const ProjectSymbol* stored = SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, projectSymbolIndex);
+    if (!stored || !g_controller.model.open || !g_controller.model.hasProject) return false;
+    const ProjectSymbol symbol = *stored;
+    const char* absolutePath = SymbolDatabaseDocumentPath(&g_symbolDatabase, symbol.documentIndex);
+    char relativePath[kMaxPathBytes] = {};
+    if (!copyProjectRelativePath(g_controller.model, absolutePath, relativePath, sizeof(relativePath))) return false;
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   relativePath, symbol.symbol.location.line,
+                                                   symbol.symbol.location.column, &documentIndex, &error)) {
+        writeOutput("Unable to open symbol location");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER symbol_navigation=FAIL", OutputErrorName(error));
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    selectSymbolIdentifier(document, symbol);
+    g_editorFocused = true;
+    g_outputFocused = false;
+    keepCaretVisible(document);
+    closeSymbolSearch();
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER symbol_navigation=PASS");
     return true;
 }
 
@@ -1738,7 +1891,8 @@ static void drawExplorer(gx_app_context* ctx) {
     }
     compose(g_textScratch, sizeof(g_textScratch), "Path: ", g_controller.model.browsePath[0] ? g_controller.model.browsePath : "/", "");
     drawText(ctx, 16, g_controller.model.hasProject ? 118 : 102, g_textScratch);
-    for (uint32_t i = 0; i < g_controller.model.entryCount && i < 20; ++i) {
+    const uint32_t visibleExplorerEntries = g_controller.model.hasProject ? 9u : 10u;
+    for (uint32_t i = 0; i < g_controller.model.entryCount && i < visibleExplorerEntries; ++i) {
         int y = kEntryTop + static_cast<int>(i) * kEntryHeight;
         if (i == g_controller.model.selectedEntry) drawPanel(ctx, { 8, y - 13, 252, 18 }, 0x34496Au);
         const char* prefix = g_controller.model.entries[i].kind == WorkspaceEntryKind::Directory ? "[DIR] " :
@@ -1748,6 +1902,61 @@ static void drawExplorer(gx_app_context* ctx) {
     }
     if (g_controller.listingTruncated) drawText(ctx, 16, 484, "Entry limit reached");
     drawText(ctx, 16, 502, "Enter: open   Backspace: up   F5: refresh");
+}
+
+static void drawOutline(gx_app_context* ctx) {
+    drawPanel(ctx, { 8, kOutlineTop - 24, 252, 202 }, 0x202A36u);
+    drawText(ctx, 16, kOutlineTop - 7, "OUTLINE");
+    const uint32_t documentIndex = activeOutlineDocumentIndex();
+    const SymbolDocument* document = SymbolDatabaseDocumentAt(&g_symbolDatabase, documentIndex);
+    if (!document || document->symbolCount == 0) {
+        drawText(ctx, 16, kOutlineTop + 15, "No symbols");
+        return;
+    }
+    ensureOutlineSelectionVisible();
+    const uint32_t end = g_outlineScroll + static_cast<uint32_t>(kOutlineMaxRows) < document->symbolCount ?
+        g_outlineScroll + static_cast<uint32_t>(kOutlineMaxRows) : document->symbolCount;
+    for (uint32_t row = g_outlineScroll; row < end; ++row) {
+        const DocumentSymbol* symbol = SymbolDatabaseDocumentSymbolAt(&g_symbolDatabase, documentIndex, row);
+        if (!symbol) continue;
+        const int y = kOutlineTop + 15 + static_cast<int>(row - g_outlineScroll) * kOutlineRowHeight;
+        if (row == g_outlineSelected) drawPanel(ctx, { 10, y - 13, 246, kOutlineRowHeight }, 0x34496Au);
+        copyText(g_textScratch, sizeof(g_textScratch), SymbolKindPrefix(symbol->kind));
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        appendText(g_textScratch, sizeof(g_textScratch), symbol->name);
+        drawText(ctx, 16 + static_cast<int>(symbol->depth > 4 ? 4 : symbol->depth) * 6, y, g_textScratch);
+    }
+}
+
+static void drawSymbolSearch(gx_app_context* ctx) {
+    if (!g_symbolSearchOpen) return;
+    drawPanel(ctx, { 176, 62, 608, 536 }, 0x2A3852u);
+    drawText(ctx, 198, 90, "Search Symbols");
+    drawText(ctx, 600, 90, g_symbolSearchCaseSensitive ? "[x]Case" : "[ ]Case");
+    drawPanel(ctx, { 198, 102, 560, 24 }, 0x111722u);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_symbolSearchQuery);
+    drawText(ctx, 206, 120, g_textScratch);
+    if (g_symbolSearchResultCount == 0) {
+        drawText(ctx, 206, 154, "No symbols found.");
+        return;
+    }
+    const uint32_t end = g_symbolSearchScroll + static_cast<uint32_t>(kSymbolSearchMaxRows) < g_symbolSearchResultCount ?
+        g_symbolSearchScroll + static_cast<uint32_t>(kSymbolSearchMaxRows) : g_symbolSearchResultCount;
+    for (uint32_t row = g_symbolSearchScroll; row < end; ++row) {
+        const ProjectSymbol* symbol = SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, g_symbolSearchResults[row]);
+        if (!symbol) continue;
+        const int y = 150 + static_cast<int>(row - g_symbolSearchScroll) * kSymbolSearchRowHeight;
+        if (row == g_symbolSearchSelected) drawPanel(ctx, { 198, y - 13, 560, kSymbolSearchRowHeight }, 0x405775u);
+        copyText(g_textScratch, sizeof(g_textScratch), SymbolKindPrefix(symbol->symbol.kind));
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        if (symbol->symbol.container[0] != '\0') {
+            appendText(g_textScratch, sizeof(g_textScratch), symbol->symbol.container);
+            appendText(g_textScratch, sizeof(g_textScratch), "::");
+        }
+        appendText(g_textScratch, sizeof(g_textScratch), symbol->symbol.name);
+        drawText(ctx, 206, y, g_textScratch);
+    }
+    drawText(ctx, 206, 576, "Up/Down Select   Enter Open   Esc Close   Ctrl+I Case");
 }
 
 static uint32_t activeLine(const TextBuffer& buffer) {
@@ -2068,6 +2277,9 @@ static bool replaceCurrentMatch(Document* document) {
         return false;
     }
     DocumentUpdateSyntax(document);
+    if (g_controller.model.activeDocument < kMaxOpenDocuments &&
+        &g_controller.model.documents[g_controller.model.activeDocument] == document)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
     ensureFindDocument(document);
     FindSearch(&g_findSession, document->documentId, document->buffer.generation,
                document->buffer.data, document->buffer.length);
@@ -2097,6 +2309,9 @@ static uint32_t replaceAllMatches(Document* document) {
         return 0;
     }
     DocumentUpdateSyntax(document);
+    if (g_controller.model.activeDocument < kMaxOpenDocuments &&
+        &g_controller.model.documents[g_controller.model.activeDocument] == document)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
     const uint32_t caret = GetCaretOffset(&document->buffer);
     FindSearch(&g_findSession, document->documentId, document->buffer.generation,
                document->buffer.data, document->buffer.length);
@@ -2115,6 +2330,9 @@ static void updateSyntaxAfterEdit(gx_app_context* ctx, Document* document) {
     if (!document || !document->buffer.lastMutationValid) return;
     const uint32_t startLine = document->buffer.lastMutationFirstLine;
     DocumentUpdateSyntax(document);
+    if (g_controller.model.activeDocument < kMaxOpenDocuments &&
+        &g_controller.model.documents[g_controller.model.activeDocument] == document)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
     if (document->syntax.lastUpdateWasIncremental && !g_syntaxIncrementalMarkerReported) {
         g_syntaxIncrementalMarkerReported = true;
         copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_incremental_tokenize=PASS start=");
@@ -2423,10 +2641,12 @@ static void drawShell(gx_app_context* ctx) {
     drawText(ctx, 490, 30, "Refresh");
     drawText(ctx, 575, 30, "Ctrl+N New Project");
     drawExplorer(ctx);
+    drawOutline(ctx);
     drawEditor(ctx);
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
+    drawSymbolSearch(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -2781,8 +3001,74 @@ static bool handleProjectSearchKey(gx_app_context* ctx, int keyCode, int action,
     return false;
 }
 
+static void symbolSearchInsert(char value) {
+    const uint32_t length = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery));
+    if (value == '\0' || length >= kSymbolMaxQueryBytes || g_symbolSearchCaret > length) return;
+    for (uint32_t i = length; i > g_symbolSearchCaret; --i) g_symbolSearchQuery[i] = g_symbolSearchQuery[i - 1];
+    g_symbolSearchQuery[g_symbolSearchCaret++] = value;
+    g_symbolSearchQuery[length + 1] = '\0';
+    symbolSearchRefresh();
+}
+
+static void symbolSearchBackspace() {
+    const uint32_t length = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery));
+    if (g_symbolSearchCaret == 0 || g_symbolSearchCaret > length) return;
+    for (uint32_t i = g_symbolSearchCaret - 1; i < length; ++i) g_symbolSearchQuery[i] = g_symbolSearchQuery[i + 1];
+    --g_symbolSearchCaret;
+    symbolSearchRefresh();
+}
+
+static void symbolSearchDelete() {
+    const uint32_t length = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery));
+    if (g_symbolSearchCaret >= length) return;
+    for (uint32_t i = g_symbolSearchCaret; i < length; ++i) g_symbolSearchQuery[i] = g_symbolSearchQuery[i + 1];
+    symbolSearchRefresh();
+}
+
+static bool handleSymbolSearchKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_symbolSearchOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { closeSymbolSearch(); return true; }
+    if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 73 || keyCode == 105)) {
+        g_symbolSearchCaseSensitive = !g_symbolSearchCaseSensitive;
+        symbolSearchRefresh();
+        return true;
+    }
+    if (keyCode == GX_KEY_UP) {
+        if (g_symbolSearchSelected > 0) --g_symbolSearchSelected;
+        symbolSearchRefresh();
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN) {
+        if (g_symbolSearchSelected + 1 < g_symbolSearchResultCount) ++g_symbolSearchSelected;
+        symbolSearchRefresh();
+        return true;
+    }
+    if (keyCode == 13) {
+        if (g_symbolSearchResultCount > 0) navigateSymbol(ctx, g_symbolSearchResults[g_symbolSearchSelected]);
+        return true;
+    }
+    if (keyCode == 8) { symbolSearchBackspace(); return true; }
+    if (keyCode == 46) { symbolSearchDelete(); return true; }
+    if (keyCode == GX_KEY_LEFT) { if (g_symbolSearchCaret > 0) --g_symbolSearchCaret; return true; }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery));
+        if (g_symbolSearchCaret < length) ++g_symbolSearchCaret;
+        return true;
+    }
+    if (keyCode == 36) { g_symbolSearchCaret = 0; return true; }
+    if (keyCode == 35) { g_symbolSearchCaret = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery)); return true; }
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value != '\0') { symbolSearchInsert(value); return true; }
+    return false;
+}
+
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 84 || keyCode == 116)) {
+        openSymbolSearch(ctx);
+        return;
+    }
+    if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 70 || keyCode == 102)) {
         if (g_findBarOpen) closeFindBar();
         if (!g_projectSearchPanelOpen) projectSearchInitializeDraft(WorkspaceControllerActiveDocument(&g_controller));
@@ -2870,6 +3156,29 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_symbolSearchOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_symbolSearchScroll = g_symbolSearchScroll > 3 ? g_symbolSearchScroll - 3 : 0;
+            else if (g_symbolSearchScroll + static_cast<uint32_t>(kSymbolSearchMaxRows) < g_symbolSearchResultCount)
+                ++g_symbolSearchScroll;
+            return;
+        }
+        if (button != GX_MOUSE_BUTTON_LEFT ||
+            (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+        if (x >= 198 && x < 758 && y >= 102 && y < 128) {
+            g_symbolSearchCaret = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery));
+        } else if (x >= 580 && y >= 78 && y < 96) {
+            g_symbolSearchCaseSensitive = !g_symbolSearchCaseSensitive;
+            symbolSearchRefresh();
+        } else if (x >= 198 && x < 758 && y >= 137 && y < 550 && g_symbolSearchResultCount > 0) {
+            const uint32_t row = g_symbolSearchScroll + static_cast<uint32_t>((y - 137) / kSymbolSearchRowHeight);
+            if (row < g_symbolSearchResultCount) {
+                g_symbolSearchSelected = row;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSymbol(ctx, g_symbolSearchResults[row]);
+            }
+        }
+        return;
+    }
     if (g_projectSearchPanelOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             const uint32_t total = projectSearchTotalRows();
@@ -2922,6 +3231,27 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         }
         drawShell(ctx);
         return;
+    }
+    if (x < kExplorerRect.width && y >= kOutlineTop - 24 && y < kOutlineTop + 178) {
+        const uint32_t count = outlineSymbolCount();
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_outlineScroll = g_outlineScroll > 3 ? g_outlineScroll - 3 : 0;
+            else if (g_outlineScroll + static_cast<uint32_t>(kOutlineMaxRows) < count) ++g_outlineScroll;
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) && y >= kOutlineTop) {
+            const uint32_t row = g_outlineScroll + static_cast<uint32_t>((y - kOutlineTop) / kOutlineRowHeight);
+            if (row < count) {
+                g_outlineSelected = row;
+                ensureOutlineSelectionVisible();
+                const uint32_t documentIndex = activeOutlineDocumentIndex();
+                const SymbolDocument* document = SymbolDatabaseDocumentAt(&g_symbolDatabase, documentIndex);
+                if (document && row < document->symbolCount)
+                    navigateSymbol(ctx, document->symbolStart + row);
+            }
+            return;
+        }
     }
     if (action == GX_MOUSE_ACTION_WHEEL) {
         if (y >= kOutputRect.y && y < kOutputRect.y + kOutputRect.height) {
@@ -3089,6 +3419,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_fileSystemContext.app = ctx;
     WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite, fsCreateDirectory, fsRemovePath };
     WorkspaceControllerInit(&g_controller, fileSystem);
+    SymbolDatabaseInit(&g_symbolDatabase, g_symbolProjectStorage, kSymbolMaxProjectSymbols,
+                       g_symbolDocumentStorage, kSymbolMaxDocuments,
+                       g_symbolScratchStorage, kSymbolMaxDocumentSymbols);
+    WorkspaceControllerAttachSymbolDatabase(&g_controller, &g_symbolDatabase);
     g_inputMode = InputMode::Normal;
     g_editorFocused = false;
     g_fileMenuOpen = false;
@@ -3117,6 +3451,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_projectSearchStatus[0] = '\0';
     g_lastProjectSearchQuery[0] = '\0';
     g_projectSearchTerminalReported = false;
+    g_symbolSearchOpen = false;
+    g_symbolSearchCaseSensitive = false;
+    g_symbolSearchCaret = 0;
+    g_symbolSearchSelected = 0;
+    g_symbolSearchScroll = 0;
+    g_symbolSearchResultCount = 0;
+    g_symbolSearchQuery[0] = '\0';
+    g_outlineSelected = 0;
+    g_outlineScroll = 0;
     OutputServiceInit(&g_outputService);
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
     g_runOperationId = 0;
@@ -3180,7 +3523,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     }
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
-                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen) {
+                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen && !g_symbolSearchOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;

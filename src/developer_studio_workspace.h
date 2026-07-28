@@ -2,6 +2,7 @@
 
 #include "developer_studio_projects.h"
 #include "developer_studio_output.h"
+#include "developer_studio_symbols.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -12,9 +13,11 @@ struct WorkspaceController {
     bool listingTruncated;
     ModelErrorCode lastError;
     ProjectErrorCode lastProjectError;
+    SymbolDatabase* symbolDatabase;
 };
 
 void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFileSystem& fileSystem);
+void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, SymbolDatabase* database);
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path);
 bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char* path);
 bool WorkspaceControllerCreateProject(WorkspaceController* controller, const ProjectCreateRequest& request, ProjectOperationResult* result);
@@ -23,6 +26,7 @@ bool WorkspaceControllerRefresh(WorkspaceController* controller);
 bool WorkspaceControllerEnterSelected(WorkspaceController* controller);
 bool WorkspaceControllerGoUp(WorkspaceController* controller);
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path);
+bool WorkspaceControllerUpdateDocumentSymbols(WorkspaceController* controller, uint32_t documentIndex);
 bool WorkspaceControllerOpenDocumentAtLocation(WorkspaceController* controller, const char* projectId, const char* relativePath,
                                                uint32_t line, uint32_t column, uint32_t* outDocumentIndex, OutputErrorCode* error);
 bool WorkspaceControllerSetCaretPosition(WorkspaceController* controller, uint32_t documentIndex, uint32_t line, uint32_t column,
