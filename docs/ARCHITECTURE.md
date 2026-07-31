@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, and bounded lexical Document Outline/Project Symbol Index
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, and bounded lexical Go To Definition
 
 ## Integration
 
@@ -235,6 +235,19 @@ indexed from memory, and source navigation reuses the existing validated
 `WorkspaceControllerOpenDocumentAtLocation` path before selecting the lexical
 identifier.
 
+## Lexical Go To Definition
+
+`developer_studio_navigation.*` builds a UI-independent query from the active
+caret or a valid identifier selection, captures explicit `::` qualifiers and
+bounded lexical scopes, ranks records from the existing SymbolDatabase, and
+returns either a direct result or a bounded candidate set. `F12` activates a
+strong unique result; ambiguous overloads and same-name symbols remain in the
+picker. `Alt+Left` and `Alt+Right` use generation-aware, project-relative,
+bounded history. The implementation is intentionally lexical and does not
+claim type inference, overload resolution, template or macro expansion,
+include search, Clang, or language-server compatibility. See
+[`GO_TO_DEFINITION.md`](GO_TO_DEFINITION.md).
+
 ## Run Project vertical slice
 
 Run Project is an explicit build-before-run sequence:
@@ -281,7 +294,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Go To Definition, Find All References, Rename, language server, semantic highlighting, completion, navigation beyond lexical locations, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
+Find All References, Rename, language server, semantic highlighting, completion, semantic navigation beyond this lexical phase, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

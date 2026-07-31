@@ -25,7 +25,9 @@ capacities while the Native ELF package uses the full configured bounds.
 The database stores documents in normalized path order and symbols in source
 order within each document. Project enumeration sorts directories and files
 deterministically. Lookup by file, kind, exact name, prefix, and bounded
-substring is exposed as model APIs.
+substring is exposed as model APIs. Each canonical symbol also retains a
+bounded qualified name, signature hint, and lexical declaration role
+(`Definition`, `Declaration`, `ForwardDeclaration`, `Alias`, or `Unknown`).
 
 ## Recognized symbols
 
@@ -91,7 +93,12 @@ matches.
 `Up`/`Down` selects, `Enter` navigates, and `Escape` closes. The picker is
 project-wide, while the Outline remains document-scoped.
 
-This navigation is intentionally not Go To Definition. A future semantic
-service could reuse `SymbolLocation`, the stable document identity, and the
-existing `WorkspaceControllerOpenDocumentAtLocation` path to add definition
-resolution without changing the lexical scanner contract.
+F12 Go To Definition reuses these same records. It captures a bounded
+identifier, explicit qualifier, and containing lexical scope, then ranks
+qualified and same-scope definitions ahead of same-name declarations. The
+resolver is UI-independent and returns a direct result only when its score
+margin is strong; otherwise the native shell displays a bounded candidate
+picker. `Alt+Left` returns to the origin through generation-aware navigation
+history. This remains lexical: it does not perform type inference, overload
+resolution, include expansion, template resolution, macro expansion, or
+language-server analysis. See [GO_TO_DEFINITION.md](GO_TO_DEFINITION.md).

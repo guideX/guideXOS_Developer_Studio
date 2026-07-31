@@ -7,6 +7,7 @@
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
 #include "developer_studio_symbols.h"
+#include "developer_studio_navigation.h"
 
 namespace {
 
@@ -91,6 +92,7 @@ using guidexos::developer_studio::ReplaceTextRange;
 using guidexos::developer_studio::ReplaceTextRanges;
 using guidexos::developer_studio::SelectTextRange;
 using guidexos::developer_studio::SetCaretOffset;
+using guidexos::developer_studio::OffsetToLineColumn;
 using guidexos::developer_studio::ValidateTextRange;
 using guidexos::developer_studio::DefaultSyntaxPalette;
 using guidexos::developer_studio::DetectSyntaxLanguage;
@@ -102,6 +104,7 @@ using guidexos::developer_studio::InitialTargetProfile;
 using guidexos::developer_studio::IsSupportedTextPath;
 using guidexos::developer_studio::IsValidTargetProfile;
 using guidexos::developer_studio::JoinWorkspacePath;
+using guidexos::developer_studio::PathContainsTraversal;
 using guidexos::developer_studio::ModelErrorCode;
 using guidexos::developer_studio::ModelErrorName;
 using guidexos::developer_studio::ProjectCreateRequest;
@@ -206,6 +209,24 @@ using guidexos::developer_studio::kSymbolMaxNameBytes;
 using guidexos::developer_studio::kSymbolMaxProjectSymbols;
 using guidexos::developer_studio::kSymbolMaxQueryBytes;
 using guidexos::developer_studio::kSymbolMaxVisibleResults;
+using guidexos::developer_studio::DefinitionCandidate;
+using guidexos::developer_studio::DefinitionIdentifier;
+using guidexos::developer_studio::DefinitionQuery;
+using guidexos::developer_studio::DefinitionResolution;
+using guidexos::developer_studio::DefinitionResolutionKind;
+using guidexos::developer_studio::ExtractDefinitionIdentifier;
+using guidexos::developer_studio::BuildDefinitionQuery;
+using guidexos::developer_studio::ResolveDefinition;
+using guidexos::developer_studio::DefinitionResolutionKindName;
+using guidexos::developer_studio::NavigationHistory;
+using guidexos::developer_studio::NavigationLocation;
+using guidexos::developer_studio::NavigationHistoryInit;
+using guidexos::developer_studio::NavigationHistoryBack;
+using guidexos::developer_studio::NavigationHistoryForward;
+using guidexos::developer_studio::NavigationHistoryPush;
+using guidexos::developer_studio::kDefinitionMaxCandidates;
+using guidexos::developer_studio::kDefinitionMaxVisibleCandidates;
+using guidexos::developer_studio::SymbolDeclarationRoleName;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -363,6 +384,17 @@ static uint32_t g_symbolSearchResults[kSymbolMaxVisibleResults] = {};
 static char g_symbolSearchQuery[kSymbolMaxQueryBytes + 1] = {};
 static uint32_t g_outlineSelected = 0;
 static uint32_t g_outlineScroll = 0;
+static NavigationHistory g_navigationHistory = {};
+static DefinitionCandidate g_definitionCandidates[kDefinitionMaxCandidates] = {};
+static DefinitionResolution g_definitionResolution = {};
+static DefinitionQuery g_definitionQuery = {};
+static NavigationLocation g_definitionOrigin = {};
+static bool g_definitionOriginValid = false;
+static bool g_definitionPickerOpen = false;
+static uint32_t g_definitionSelected = 0;
+static uint32_t g_definitionScroll = 0;
+static char g_definitionStatus[160] = {};
+static uint64_t g_nextDefinitionQueryId = 1;
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
@@ -603,6 +635,289 @@ static bool navigateSymbol(gx_app_context* ctx, uint32_t projectSymbolIndex) {
     closeSymbolSearch();
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER symbol_navigation=PASS");
     return true;
+}
+
+static void definitionSetStatus(const char* text) {
+    copyText(g_definitionStatus, sizeof(g_definitionStatus), text ? text : "");
+}
+
+static bool captureNavigationLocation(const Document& document, NavigationLocation* output) {
+    if (!output || !g_controller.model.hasProject) return false;
+    *output = {};
+    copyText(output->projectId, sizeof(output->projectId), g_controller.model.project.projectId);
+    output->projectGeneration = g_controller.model.projectGeneration;
+    output->documentId = document.documentId;
+    output->documentGeneration = document.buffer.generation;
+    if (!copyProjectRelativePath(g_controller.model, document.path, output->relativePath, sizeof(output->relativePath))) return false;
+    output->caretByteOffset = document.buffer.caret;
+    output->selectionStart = document.buffer.selectionActive && document.buffer.selectionAnchor < document.buffer.caret ?
+        document.buffer.selectionAnchor : (document.buffer.selectionActive ? document.buffer.caret : document.buffer.caret);
+    output->selectionEnd = document.buffer.selectionActive && document.buffer.selectionAnchor > document.buffer.caret ?
+        document.buffer.selectionAnchor : document.buffer.caret;
+    OffsetToLineColumn(&document.buffer, document.buffer.caret, &output->line, &output->column);
+    ++output->line;
+    ++output->column;
+    output->viewportTopLine = g_editorScrollLine;
+    return true;
+}
+
+static bool restoreNavigationLocation(gx_app_context* ctx, const NavigationLocation& location) {
+    if (!g_controller.model.open || !g_controller.model.hasProject ||
+        !searchTextEqual(location.projectId, g_controller.model.project.projectId) ||
+        location.projectGeneration != g_controller.model.projectGeneration) {
+        definitionSetStatus("Navigation history belongs to a stale project.");
+        if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=FAIL reason=NAVIGATION_HISTORY_PROJECT_STALE");
+        return false;
+    }
+    if (location.relativePath[0] == '\0' || PathContainsTraversal(location.relativePath) ||
+        location.relativePath[0] == '/' || location.relativePath[0] == '\\' || location.relativePath[1] == ':') {
+        definitionSetStatus("Navigation history path is invalid.");
+        if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=FAIL reason=NAVIGATION_HISTORY_PATH_INVALID");
+        return false;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   location.relativePath, location.line, location.column,
+                                                   &documentIndex, &error)) {
+        definitionSetStatus("Navigation history location is unavailable.");
+        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=FAIL", OutputErrorName(error));
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    if (document->documentId == location.documentId && document->buffer.generation == location.documentGeneration) {
+        uint32_t caret = location.caretByteOffset > document->buffer.length ? document->buffer.length : static_cast<uint32_t>(location.caretByteOffset);
+        SetCaretOffset(&document->buffer, caret);
+        if (location.selectionEnd > location.selectionStart && location.selectionStart <= document->buffer.length &&
+            location.selectionEnd <= document->buffer.length && location.selectionEnd > location.selectionStart)
+            SelectTextRange(&document->buffer, location.selectionStart, location.selectionEnd - location.selectionStart);
+    }
+    g_editorScrollLine = location.viewportTopLine;
+    g_editorFocused = true;
+    g_outputFocused = false;
+    keepCaretVisible(document);
+    definitionSetStatus("");
+    if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=PASS");
+    return true;
+}
+
+static bool selectDefinitionIdentifier(Document* document, const DefinitionCandidate& candidate, bool* stale) {
+    if (stale) *stale = false;
+    if (!document) return false;
+    const char* name = candidate.symbol.symbol.name;
+    const uint32_t nameLength = lengthOf(name, kSymbolMaxNameBytes);
+    if (nameLength == 0) return false;
+    const SymbolLocation& location = candidate.symbol.symbol.location;
+    if (location.documentId == document->documentId && location.generation == document->buffer.generation &&
+        location.identifierOffset <= document->buffer.length && nameLength <= document->buffer.length - location.identifierOffset &&
+        textAtOffset(document->buffer, location.identifierOffset, name))
+        return SelectTextRange(&document->buffer, location.identifierOffset, nameLength);
+    if (stale) *stale = true;
+    const uint32_t zeroLine = location.line > 0 ? location.line - 1 : 0;
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    if (zeroLine < lineCount) {
+        const uint32_t start = TextBufferLineStart(&document->buffer, zeroLine);
+        const uint32_t end = TextBufferLineEnd(&document->buffer, zeroLine);
+        uint32_t matches = 0;
+        uint32_t matchOffset = 0;
+        for (uint32_t offset = start; offset + nameLength <= end; ++offset) {
+            if (textAtOffset(document->buffer, offset, name)) { ++matches; matchOffset = offset; }
+        }
+        if (matches == 1) return SelectTextRange(&document->buffer, matchOffset, nameLength);
+    }
+    const uint32_t expected = location.identifierOffset;
+    const uint32_t start = expected > 16u * 1024u ? expected - 16u * 1024u : 0;
+    const uint32_t end = document->buffer.length < expected + 16u * 1024u ?
+        document->buffer.length : expected + 16u * 1024u;
+    uint32_t matches = 0;
+    uint32_t matchOffset = 0;
+    for (uint32_t offset = start; offset + nameLength <= end; ++offset) {
+        if (textAtOffset(document->buffer, offset, name)) { ++matches; matchOffset = offset; }
+    }
+    if (matches == 1) return SelectTextRange(&document->buffer, matchOffset, nameLength);
+    return false;
+}
+
+static bool activateDefinitionCandidate(gx_app_context* ctx, uint32_t index) {
+    if (!g_definitionPickerOpen && index >= g_definitionResolution.candidateCount) return false;
+    if (index >= g_definitionResolution.candidateCount || !g_controller.model.open || !g_controller.model.hasProject) return false;
+    if (g_definitionQuery.projectGeneration != g_controller.model.projectGeneration ||
+        !searchTextEqual(g_definitionQuery.projectId, g_controller.model.project.projectId)) {
+        definitionSetStatus("Definition result belongs to a stale project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", "GOTO_DEFINITION_PROJECT_STALE");
+        return false;
+    }
+    const DefinitionCandidate candidate = g_definitionResolution.candidates[index];
+    if (candidate.relativePath[0] == '\0' || PathContainsTraversal(candidate.relativePath) ||
+        candidate.relativePath[0] == '/' || candidate.relativePath[0] == '\\' || candidate.relativePath[1] == ':') {
+        definitionSetStatus("Definition path is outside the project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", "GOTO_DEFINITION_PATH_OUTSIDE_PROJECT");
+        return false;
+    }
+    if (!g_definitionOriginValid) {
+        Document* origin = WorkspaceControllerActiveDocument(&g_controller);
+        if (!origin || !captureNavigationLocation(*origin, &g_definitionOrigin)) return false;
+        g_definitionOriginValid = true;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   candidate.relativePath, candidate.symbol.symbol.location.line,
+                                                   candidate.symbol.symbol.location.column, &documentIndex, &error)) {
+        definitionSetStatus("Definition not found in the active project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", OutputErrorName(error));
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    bool stale = false;
+    const bool selected = selectDefinitionIdentifier(document, candidate, &stale);
+    if (!selected) WorkspaceControllerSetCaretPosition(&g_controller, documentIndex,
+                                                       candidate.symbol.symbol.location.line,
+                                                       candidate.symbol.symbol.location.column, nullptr, &error);
+    NavigationHistoryPush(&g_navigationHistory, g_definitionOrigin);
+    g_definitionOriginValid = false;
+    g_definitionPickerOpen = false;
+    g_editorFocused = true;
+    g_outputFocused = false;
+    keepCaretVisible(document);
+    if (stale) {
+        definitionSetStatus("Definition location may be stale.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=STALE");
+    } else if (g_definitionResolution.declarationsOnly) {
+        definitionSetStatus("Definition not found; showing declarations.");
+    } else {
+        definitionSetStatus("");
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=PASS path=");
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " line=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.line);
+        appendText(g_textScratch, sizeof(g_textScratch), " column=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.column);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static void closeDefinitionPicker() {
+    g_definitionPickerOpen = false;
+    g_definitionOriginValid = false;
+}
+
+static void ensureDefinitionSelectionVisible() {
+    if (g_definitionResolution.candidateCount == 0) { g_definitionSelected = 0; g_definitionScroll = 0; return; }
+    if (g_definitionSelected >= g_definitionResolution.candidateCount) g_definitionSelected = g_definitionResolution.candidateCount - 1;
+    if (g_definitionSelected < g_definitionScroll) g_definitionScroll = g_definitionSelected;
+    const uint32_t rows = 18;
+    if (g_definitionSelected >= g_definitionScroll + rows) g_definitionScroll = g_definitionSelected - rows + 1;
+}
+
+static void openDefinitionPicker(gx_app_context* ctx) {
+    g_definitionPickerOpen = true;
+    g_definitionSelected = 0;
+    g_definitionScroll = 0;
+    ensureDefinitionSelectionVisible();
+    g_editorFocused = false;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             g_definitionResolution.truncated
+                 ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_resolution=TRUNCATED candidates="
+                 : "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_resolution=MULTIPLE candidates=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_definitionResolution.candidateCount);
+    logMarker(ctx, g_textScratch);
+}
+
+static bool handleDefinitionPickerKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!g_definitionPickerOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { closeDefinitionPicker(); return true; }
+    if (keyCode == GX_KEY_UP) { if (g_definitionSelected > 0) --g_definitionSelected; ensureDefinitionSelectionVisible(); return true; }
+    if (keyCode == GX_KEY_DOWN) { if (g_definitionSelected + 1 < g_definitionResolution.candidateCount) ++g_definitionSelected; ensureDefinitionSelectionVisible(); return true; }
+    if (keyCode == 33) {
+        g_definitionSelected = g_definitionSelected > 18 ? g_definitionSelected - 18 : 0;
+        ensureDefinitionSelectionVisible(); return true;
+    }
+    if (keyCode == 34) {
+        const uint32_t last = g_definitionResolution.candidateCount == 0 ? 0 : g_definitionResolution.candidateCount - 1;
+        g_definitionSelected = g_definitionSelected + 18 < last ? g_definitionSelected + 18 : last;
+        ensureDefinitionSelectionVisible(); return true;
+    }
+    if (keyCode == 36) { g_definitionSelected = 0; ensureDefinitionSelectionVisible(); return true; }
+    if (keyCode == 35) { g_definitionSelected = g_definitionResolution.candidateCount == 0 ? 0 : g_definitionResolution.candidateCount - 1; ensureDefinitionSelectionVisible(); return true; }
+    if (keyCode == 13 && g_definitionResolution.candidateCount > 0) { activateDefinitionCandidate(ctx, g_definitionSelected); return true; }
+    return true;
+}
+
+static void startGoToDefinition(gx_app_context* ctx) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!g_controller.model.hasProject) { definitionSetStatus("No active project."); markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", "GOTO_DEFINITION_NO_PROJECT"); return; }
+    if (!document) { definitionSetStatus("No active document."); markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", "GOTO_DEFINITION_NO_DOCUMENT"); return; }
+    DefinitionIdentifier identifier = {};
+    if (!ExtractDefinitionIdentifier(document->buffer.data, document->buffer.length, document->buffer.caret,
+                                     document->buffer.selectionActive, document->buffer.selectionAnchor,
+                                     document->buffer.caret, &identifier)) {
+        definitionSetStatus(identifier.tooLong ? "Identifier is too long." : "No symbol under caret.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL",
+                      identifier.tooLong ? "GOTO_DEFINITION_IDENTIFIER_TOO_LONG" : "GOTO_DEFINITION_NO_IDENTIFIER");
+        return;
+    }
+    if (g_controller.model.activeDocument < kMaxOpenDocuments)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
+    char relativePath[kMaxPathBytes] = {};
+    if (!copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath))) {
+        definitionSetStatus("Active document path is invalid.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", "GOTO_DEFINITION_PATH_INVALID");
+        return;
+    }
+    if (!BuildDefinitionQuery(*document, g_controller.model.project.projectId, g_controller.model.projectGeneration,
+                              g_controller.model.rootPath, relativePath, g_nextDefinitionQueryId++, &g_definitionQuery)) {
+        definitionSetStatus("No symbol under caret.");
+        return;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_begin=PASS identifier=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_definitionQuery.identifier);
+    logMarker(ctx, g_textScratch);
+    g_definitionResolution = {};
+    if (!ResolveDefinition(&g_symbolDatabase, g_definitionQuery, g_definitionCandidates,
+                           kDefinitionMaxCandidates, &g_definitionResolution)) {
+        definitionSetStatus("Symbol index is not ready.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", "GOTO_DEFINITION_INDEX_NOT_READY");
+        return;
+    }
+    if (g_definitionResolution.kind == DefinitionResolutionKind::None) {
+        definitionSetStatus("Definition not found.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_resolution=NONE");
+        return;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_lookup=PASS candidates=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_definitionResolution.candidateCount);
+    logMarker(ctx, g_textScratch);
+    if (g_definitionResolution.kind == DefinitionResolutionKind::Direct) {
+        const DefinitionCandidate& candidate = g_definitionResolution.candidates[0];
+        const uint32_t candidateLength = lengthOf(candidate.symbol.symbol.name, kSymbolMaxNameBytes);
+        const bool alreadyAtDefinition = candidate.isDefinition &&
+            searchTextEqual(g_definitionQuery.relativePath, candidate.relativePath) &&
+            candidate.symbol.symbol.location.documentId == document->documentId &&
+            candidate.symbol.symbol.location.generation == document->buffer.generation &&
+            document->buffer.caret >= candidate.symbol.symbol.location.identifierOffset &&
+            document->buffer.caret <= candidate.symbol.symbol.location.identifierOffset + candidateLength;
+        if (alreadyAtDefinition) {
+            definitionSetStatus("Already at definition.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_resolution=DIRECT");
+            return;
+        }
+        if (!captureNavigationLocation(*document, &g_definitionOrigin)) return;
+        g_definitionOriginValid = true;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_resolution=DIRECT");
+        activateDefinitionCandidate(ctx, 0);
+        return;
+    }
+    if (g_definitionResolution.kind == DefinitionResolutionKind::Stale) definitionSetStatus("Definition location may be stale.");
+    else if (g_definitionResolution.declarationsOnly) definitionSetStatus("Definition not found; showing declarations.");
+    else if (g_definitionResolution.truncated) definitionSetStatus("Definition candidates truncated.");
+    else definitionSetStatus("Choose a definition candidate.");
+    if (!captureNavigationLocation(*document, &g_definitionOrigin)) return;
+    g_definitionOriginValid = true;
+    openDefinitionPicker(ctx);
 }
 
 static void projectSearchSetStatus(const char* text) {
@@ -1959,6 +2274,48 @@ static void drawSymbolSearch(gx_app_context* ctx) {
     drawText(ctx, 206, 576, "Up/Down Select   Enter Open   Esc Close   Ctrl+I Case");
 }
 
+static void drawDefinitionPicker(gx_app_context* ctx) {
+    if (!g_definitionPickerOpen) return;
+    drawPanel(ctx, { 136, 58, 688, 560 }, 0x2A3852u);
+    drawText(ctx, 158, 86, "Go To Definition");
+    copyText(g_textScratch, sizeof(g_textScratch), g_definitionQuery.identifier);
+    if (g_definitionQuery.lexicalQualifier[0] != '\0') {
+        appendText(g_textScratch, sizeof(g_textScratch), "  (");
+        appendText(g_textScratch, sizeof(g_textScratch), g_definitionQuery.lexicalQualifier);
+        appendText(g_textScratch, sizeof(g_textScratch), ")");
+    }
+    drawText(ctx, 158, 108, g_textScratch);
+    if (g_definitionResolution.truncated) drawText(ctx, 560, 86, "Truncated");
+    const uint32_t rows = 18;
+    const uint32_t end = g_definitionScroll + rows < g_definitionResolution.visibleCandidateCount ?
+        g_definitionScroll + rows : g_definitionResolution.visibleCandidateCount;
+    for (uint32_t row = g_definitionScroll; row < end; ++row) {
+        const DefinitionCandidate& candidate = g_definitionResolution.candidates[row];
+        const int y = 132 + static_cast<int>(row - g_definitionScroll) * 24;
+        if (row == g_definitionSelected) drawPanel(ctx, { 148, y - 14, 664, 22 }, 0x405775u);
+        copyText(g_textScratch, sizeof(g_textScratch), SymbolKindPrefix(candidate.symbol.symbol.kind));
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.qualifiedName[0] ?
+                   candidate.symbol.symbol.qualifiedName : candidate.symbol.symbol.name);
+        appendText(g_textScratch, sizeof(g_textScratch), "  ");
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.line);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.column);
+        drawText(ctx, 158, y, g_textScratch);
+        copyText(g_textScratch, sizeof(g_textScratch), "    ");
+        appendText(g_textScratch, sizeof(g_textScratch), SymbolDeclarationRoleName(candidate.symbol.symbol.declarationRole));
+        if (candidate.symbol.symbol.signature[0] != '\0') {
+            appendText(g_textScratch, sizeof(g_textScratch), "  ");
+            appendText(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.signature);
+        }
+        drawText(ctx, 174, y + 12, g_textScratch);
+    }
+    if (g_definitionStatus[0] != '\0') drawText(ctx, 158, 584, g_definitionStatus);
+    drawText(ctx, 158, 604, "Up/Down  PageUp/PageDown  Enter Open  Esc Close");
+}
+
 static uint32_t activeLine(const TextBuffer& buffer) {
     uint32_t line = 0;
     for (uint32_t i = 0; i < buffer.caret && i < buffer.length; ++i) if (buffer.data[i] == '\n') ++line;
@@ -2487,6 +2844,7 @@ static void drawEditor(gx_app_context* ctx) {
 }
 
 static void drawOutputAndStatus(gx_app_context* ctx) {
+    if (g_definitionStatus[0] != '\0') drawText(ctx, 16, 646, g_definitionStatus);
     drawText(ctx, 16, 536, g_outputProblemsTab ? "PROBLEMS" : "OUTPUT");
     drawText(ctx, 112, 536, "Output");
     drawText(ctx, 172, 536, "Problems");
@@ -2647,6 +3005,7 @@ static void drawShell(gx_app_context* ctx) {
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
     drawSymbolSearch(ctx);
+    drawDefinitionPicker(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -3064,11 +3423,13 @@ static bool handleSymbolSearchKey(gx_app_context* ctx, int keyCode, int action, 
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_definitionPickerOpen && handleDefinitionPickerKey(ctx, keyCode, action)) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 84 || keyCode == 116)) {
         openSymbolSearch(ctx);
         return;
     }
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
+    if (g_symbolSearchOpen) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 70 || keyCode == 102)) {
         if (g_findBarOpen) closeFindBar();
         if (!g_projectSearchPanelOpen) projectSearchInitializeDraft(WorkspaceControllerActiveDocument(&g_controller));
@@ -3080,6 +3441,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
+    if (g_projectSearchPanelOpen) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 70 || keyCode == 102)) {
         openFindBar(false, true);
         return;
@@ -3089,6 +3451,38 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     if (g_findBarOpen && handleFindKey(keyCode, action, modifiers)) return;
+    if ((modifiers & GX_KEY_MOD_ALT) && keyCode == GX_KEY_LEFT) {
+        Document* current = WorkspaceControllerActiveDocument(&g_controller);
+        NavigationLocation currentLocation = {};
+        NavigationLocation destination = {};
+        if (!current || !captureNavigationLocation(*current, &currentLocation) ||
+            !NavigationHistoryBack(&g_navigationHistory, currentLocation, &destination)) {
+            definitionSetStatus("Navigation history is empty.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=EMPTY");
+        } else {
+            restoreNavigationLocation(ctx, destination);
+        }
+        return;
+    }
+    if ((modifiers & GX_KEY_MOD_ALT) && keyCode == GX_KEY_RIGHT) {
+        Document* current = WorkspaceControllerActiveDocument(&g_controller);
+        NavigationLocation currentLocation = {};
+        NavigationLocation destination = {};
+        if (!current || !captureNavigationLocation(*current, &currentLocation) ||
+            !NavigationHistoryForward(&g_navigationHistory, currentLocation, &destination)) {
+            definitionSetStatus("Forward navigation history is empty.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=EMPTY");
+        } else {
+            restoreNavigationLocation(ctx, destination);
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=PASS");
+        }
+        return;
+    }
+    if (keyCode == 123) {
+        if (!g_editorFocused) { definitionSetStatus("Focus the editor before going to a definition."); return; }
+        startGoToDefinition(ctx);
+        return;
+    }
     if (g_outputFocused) {
         handleOutputKey(ctx, keyCode);
         return;
@@ -3156,6 +3550,25 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_definitionPickerOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_definitionScroll = g_definitionScroll > 3 ? g_definitionScroll - 3 : 0;
+            else if (g_definitionScroll + 18 < g_definitionResolution.visibleCandidateCount) ++g_definitionScroll;
+            ensureDefinitionSelectionVisible();
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+            x >= 148 && x < 812 && y >= 118 && y < 570) {
+            const uint32_t row = g_definitionScroll + static_cast<uint32_t>((y - 118) / 24);
+            if (row < g_definitionResolution.visibleCandidateCount) {
+                g_definitionSelected = row;
+                ensureDefinitionSelectionVisible();
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) activateDefinitionCandidate(ctx, row);
+            }
+        }
+        return;
+    }
     if (g_symbolSearchOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             if (event.param4 > 0) g_symbolSearchScroll = g_symbolSearchScroll > 3 ? g_symbolSearchScroll - 3 : 0;
@@ -3460,6 +3873,16 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_symbolSearchQuery[0] = '\0';
     g_outlineSelected = 0;
     g_outlineScroll = 0;
+    NavigationHistoryInit(&g_navigationHistory);
+    g_definitionResolution = {};
+    g_definitionQuery = {};
+    g_definitionOrigin = {};
+    g_definitionOriginValid = false;
+    g_definitionPickerOpen = false;
+    g_definitionSelected = 0;
+    g_definitionScroll = 0;
+    g_definitionStatus[0] = '\0';
+    g_nextDefinitionQueryId = 1;
     OutputServiceInit(&g_outputService);
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
     g_runOperationId = 0;

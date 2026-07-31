@@ -169,6 +169,49 @@ static bool appendTextRange(char* output, uint32_t capacity, uint32_t& length,
     return true;
 }
 
+static void qualifiedNameFor(const char* container, const char* name,
+                             char* output, uint32_t capacity) {
+    if (!output || capacity == 0) return;
+    output[0] = '\0';
+    uint32_t length = 0;
+    if (container && container[0] != '\0') {
+        appendTextRange(output, capacity, length, container, 0,
+                        textLength(container, kSymbolMaxContainerBytes));
+        appendTextRange(output, capacity, length, "::", 0, 2);
+    }
+    if (name) appendTextRange(output, capacity, length, name, 0,
+                              textLength(name, kSymbolMaxNameBytes));
+}
+
+static void signatureFor(const char* text, const LexToken& nameToken, SymbolKind kind,
+                         const char* name, char* output, uint32_t capacity) {
+    if (!output || capacity == 0) return;
+    output[0] = '\0';
+    if (!text || (kind != SymbolKind::Function && kind != SymbolKind::Method &&
+                  kind != SymbolKind::Constructor && kind != SymbolKind::Destructor)) return;
+    uint32_t length = 0;
+    if (name) appendTextRange(output, capacity, length, name, 0,
+                              textLength(name, kSymbolMaxNameBytes));
+    uint32_t cursor = nameToken.offset + nameToken.length;
+    uint32_t scanned = 0;
+    bool foundOpen = false;
+    uint32_t parenDepth = 0;
+    while (scanned < 768u && text[cursor] != '\0') {
+        const char value = text[cursor++];
+        ++scanned;
+        if (value == ';' || value == '{' || value == '}') break;
+        if (value == '(') { foundOpen = true; ++parenDepth; }
+        else if (value == ')' && parenDepth > 0) {
+            --parenDepth;
+            if (foundOpen && parenDepth == 0) {
+                appendChar(output, capacity, length, ')');
+                break;
+            }
+        }
+        if (foundOpen) appendChar(output, capacity, length, value);
+    }
+}
+
 static bool isConditionalWord(const char* text, uint32_t offset, uint32_t end,
                               const char* word, uint32_t* after) {
     uint32_t cursor = offset;
@@ -428,15 +471,19 @@ static uint32_t findTypeNameStart(const char* text, uint32_t keyword, SymbolKind
 static bool addSymbol(DocumentSymbol* output, uint32_t capacity, uint32_t& count,
                       SymbolKind kind, const char* text, const LexToken& nameToken,
                       const char* explicitName, const ParseScope& scope,
-                      uint64_t documentId, uint32_t generation, uint16_t flags = 0) {
+                      uint64_t documentId, uint32_t generation, uint16_t flags = 0,
+                      SymbolDeclarationRole declarationRole = SymbolDeclarationRole::Unknown) {
     if (!output || count >= capacity) return false;
     DocumentSymbol& symbol = output[count];
     symbol.kind = kind;
+    symbol.declarationRole = declarationRole;
     symbol.ordinal = count;
     symbol.flags = flags;
     scopeContainer(scope, symbol.container, sizeof(symbol.container), &symbol.depth);
     if (explicitName) copyText(symbol.name, sizeof(symbol.name), explicitName);
     else copyRange(symbol.name, sizeof(symbol.name), text, nameToken.offset, nameToken.length);
+    qualifiedNameFor(symbol.container, symbol.name, symbol.qualifiedName, sizeof(symbol.qualifiedName));
+    signatureFor(text, nameToken, kind, symbol.name, symbol.signature, sizeof(symbol.signature));
     symbol.location.documentId = documentId;
     symbol.location.generation = generation;
     symbol.location.line = nameToken.line;
@@ -811,6 +858,16 @@ const char* SymbolKindPrefix(SymbolKind kind) {
     }
 }
 
+const char* SymbolDeclarationRoleName(SymbolDeclarationRole role) {
+    switch (role) {
+    case SymbolDeclarationRole::Definition: return "Definition";
+    case SymbolDeclarationRole::Declaration: return "Declaration";
+    case SymbolDeclarationRole::ForwardDeclaration: return "Forward Declaration";
+    case SymbolDeclarationRole::Alias: return "Alias";
+    default: return "Unknown";
+    }
+}
+
 bool IsSymbolSourcePath(const char* path) {
     if (!path) return false;
     const char* name = BaseName(path);
@@ -869,14 +926,16 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
             if (kind == SymbolKind::Namespace && brace != tokenCount) {
                 LexToken anonymous = g_tokens[i];
                 if (!addSymbol(output, capacity, symbolCount, kind, text, anonymous, "anonymous", scope,
-                               documentId, generation, 1)) tokenTruncated = true;
+                               documentId, generation, 1, SymbolDeclarationRole::Definition)) tokenTruncated = true;
             }
         } else {
             uint32_t nameIndex = firstName;
             while (nameIndex < end) {
                 if (tokenIsIdentifier(g_tokens[nameIndex])) {
                     if (!addSymbol(output, capacity, symbolCount, kind, text, g_tokens[nameIndex], nullptr, scope,
-                                   documentId, generation)) tokenTruncated = true;
+                                   documentId, generation, 0,
+                                   brace != tokenCount ? SymbolDeclarationRole::Definition :
+                                       SymbolDeclarationRole::ForwardDeclaration)) tokenTruncated = true;
                 }
                 ++nameIndex;
                 if (kind != SymbolKind::Namespace) break;
@@ -921,7 +980,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
         if (nameIndex > 0 && tokenIsPunctuation(text, g_tokens[nameIndex - 1], "::")) {
             char qualifier[kSymbolMaxContainerBytes] = {};
             uint32_t qLength = 0;
-            uint32_t firstQualifier = nameIndex - 1;
+            uint32_t firstQualifier = nameIndex >= 2 ? nameIndex - 2 : nameIndex;
             while (firstQualifier >= 2 && tokenIsPunctuation(text, g_tokens[firstQualifier - 1], "::") &&
                    tokenIsIdentifier(g_tokens[firstQualifier - 2])) firstQualifier -= 2;
             for (uint32_t q = firstQualifier; q + 1 < nameIndex; ++q) {
@@ -933,7 +992,9 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
                 pushScope(qualifiedScope, SymbolKind::Class, qualifier);
         }
         if (!addSymbol(output, capacity, symbolCount, kind, text, g_tokens[nameIndex], name, qualifiedScope,
-                       documentId, generation, destructor ? 2 : 0)) tokenTruncated = true;
+                       documentId, generation, destructor ? 2 : 0,
+                       bodyBrace != tokenCount ? SymbolDeclarationRole::Definition :
+                           SymbolDeclarationRole::Declaration)) tokenTruncated = true;
         else if (destructor && nameIndex > 0 && tokenIsPunctuation(text, g_tokens[nameIndex - 1], "~")) {
             DocumentSymbol& symbol = output[symbolCount - 1];
             symbol.location.identifierOffset = g_tokens[nameIndex - 1].offset;
@@ -959,6 +1020,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
         if (!tokenIsPunctuation(text, g_tokens[i], ";") || hasFunctionScope(scope) || !namespaceScopeOnly(scope)) continue;
         bool excluded = false;
         bool isStatic = false;
+        bool isExtern = false;
         bool hasParen = false;
         uint32_t start = i;
         while (start > 0) {
@@ -974,11 +1036,13 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
                 tokenIs(text, g_tokens[j], "enum") || tokenIs(text, g_tokens[j], "namespace") ||
                 tokenIs(text, g_tokens[j], "union")) excluded = true;
             if (tokenIs(text, g_tokens[j], "static")) isStatic = true;
+            if (tokenIs(text, g_tokens[j], "extern")) isExtern = true;
             if (tokenIsIdentifier(g_tokens[j])) lastIdentifier = j;
         }
         if (excluded || hasParen || lastIdentifier == tokenCount) continue;
         if (!addSymbol(output, capacity, symbolCount, isStatic ? SymbolKind::StaticVariable : SymbolKind::GlobalVariable,
-                       text, g_tokens[lastIdentifier], nullptr, scope, documentId, generation)) tokenTruncated = true;
+                       text, g_tokens[lastIdentifier], nullptr, scope, documentId, generation, 0,
+                       isExtern ? SymbolDeclarationRole::Declaration : SymbolDeclarationRole::Definition)) tokenTruncated = true;
     }
 
     // Typedefs and using aliases are handled after declarations so their
@@ -1001,13 +1065,14 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
             for (uint32_t j = i + 1; j < tokenCount && !tokenIsPunctuation(text, g_tokens[j], ";"); ++j)
                 if (tokenIsIdentifier(g_tokens[j])) last = j;
             if (last != tokenCount && !addSymbol(output, capacity, symbolCount, SymbolKind::Typedef, text,
-                                                  g_tokens[last], nullptr, scope, documentId, generation)) tokenTruncated = true;
+                                                  g_tokens[last], nullptr, scope, documentId, generation, 0,
+                                                  SymbolDeclarationRole::Alias)) tokenTruncated = true;
         } else if (tokenIs(text, g_tokens[i], "using")) {
             uint32_t alias = i + 1;
             if (alias < tokenCount && tokenIsIdentifier(g_tokens[alias]) && alias + 1 < tokenCount &&
                 tokenIsPunctuation(text, g_tokens[alias + 1], "=")) {
                 if (!addSymbol(output, capacity, symbolCount, SymbolKind::UsingAlias, text, g_tokens[alias], nullptr,
-                               scope, documentId, generation)) tokenTruncated = true;
+                               scope, documentId, generation, 0, SymbolDeclarationRole::Alias)) tokenTruncated = true;
             }
         }
     }

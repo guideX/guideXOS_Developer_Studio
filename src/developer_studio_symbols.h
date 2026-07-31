@@ -14,6 +14,8 @@ static const uint32_t kSymbolMaxDocumentSymbols = 20000u;
 static const uint32_t kSymbolMaxDocuments = 2048u;
 static const uint32_t kSymbolMaxNameBytes = 96u;
 static const uint32_t kSymbolMaxContainerBytes = 192u;
+static const uint32_t kSymbolMaxQualifiedNameBytes = 512u;
+static const uint32_t kSymbolMaxSignatureBytes = 256u;
 static const uint32_t kSymbolMaxQueryBytes = 1024u;
 static const uint32_t kSymbolMaxVisibleResults = 100u;
 
@@ -34,6 +36,14 @@ enum class SymbolKind {
     Macro
 };
 
+enum class SymbolDeclarationRole {
+    Definition = 0,
+    Declaration,
+    ForwardDeclaration,
+    Alias,
+    Unknown
+};
+
 struct SymbolLocation {
     // documentId and generation make a location safe to compare with an
     // in-memory Document without retaining an editor pointer.
@@ -47,11 +57,14 @@ struct SymbolLocation {
 
 struct DocumentSymbol {
     SymbolKind kind;
+    SymbolDeclarationRole declarationRole;
     uint32_t ordinal;
     uint16_t depth;
     uint16_t flags;
     char name[kSymbolMaxNameBytes];
     char container[kSymbolMaxContainerBytes];
+    char qualifiedName[kSymbolMaxQualifiedNameBytes];
+    char signature[kSymbolMaxSignatureBytes];
     SymbolLocation location;
 };
 
@@ -101,6 +114,7 @@ struct SymbolDatabase {
 
 const char* SymbolKindName(SymbolKind kind);
 const char* SymbolKindPrefix(SymbolKind kind);
+const char* SymbolDeclarationRoleName(SymbolDeclarationRole role);
 bool IsSymbolSourcePath(const char* path);
 
 bool ScanDocumentSymbols(const char* text, uint32_t length,
