@@ -11,6 +11,7 @@
 #include "developer_studio_references.h"
 #include "developer_studio_rename.h"
 #include "developer_studio_completion.h"
+#include "developer_studio_signature.h"
 
 namespace {
 
@@ -310,6 +311,25 @@ using guidexos::developer_studio::DocumentWordEntry;
 using guidexos::developer_studio::kCompletionMaxDocumentWords;
 using guidexos::developer_studio::kCompletionMaxRetainedCandidates;
 using guidexos::developer_studio::kCompletionMaxVisibleCandidates;
+using guidexos::developer_studio::SignatureCandidate;
+using guidexos::developer_studio::SignatureContextKind;
+using guidexos::developer_studio::SignatureErrorCode;
+using guidexos::developer_studio::SignatureErrorName;
+using guidexos::developer_studio::SignatureHelpSession;
+using guidexos::developer_studio::SignatureHelpSessionActiveParameter;
+using guidexos::developer_studio::SignatureHelpSessionDismiss;
+using guidexos::developer_studio::SignatureHelpSessionEnd;
+using guidexos::developer_studio::SignatureHelpSessionHome;
+using guidexos::developer_studio::SignatureHelpSessionInit;
+using guidexos::developer_studio::SignatureHelpSessionMove;
+using guidexos::developer_studio::SignatureHelpSessionPage;
+using guidexos::developer_studio::SignatureHelpSessionRefresh;
+using guidexos::developer_studio::SignatureHelpSessionSelected;
+using guidexos::developer_studio::SignatureHelpBuildSession;
+using guidexos::developer_studio::SignatureStatusText;
+using guidexos::developer_studio::SignatureProjectId;
+using guidexos::developer_studio::kSignatureMaxParameters;
+using guidexos::developer_studio::kSignatureMaxRetainedCandidates;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -363,6 +383,9 @@ static const int kReferencesFieldWidth = 510;
 static const int kCompletionPopupWidth = 430;
 static const int kCompletionPopupRowHeight = 20;
 static const int kCompletionPopupMaxRows = 9;
+static const int kSignaturePopupWidth = 620;
+static const int kSignaturePopupRowHeight = 34;
+static const int kSignaturePopupMaxRows = 5;
 
 enum class InputMode {
     Normal = 0,
@@ -399,6 +422,13 @@ static DocumentWordEntry g_completionWordStorage[kCompletionMaxDocumentWords] = 
 static CompletionSession g_completionSession = {};
 static DocumentWordCache g_completionWordCache = {};
 static bool g_completionPopupOpen = false;
+static SignatureCandidate g_signatureCandidateStorage[kSignatureMaxRetainedCandidates] = {};
+static guidexos::developer_studio::SignatureParameter g_signatureParameterStorage[
+    kSignatureMaxRetainedCandidates * kSignatureMaxParameters] = {};
+static SignatureHelpSession g_signatureSession = {};
+static bool g_signaturePopupOpen = false;
+static uint32_t g_signatureScroll = 0;
+static char g_signatureStatus[192] = {};
 static char g_completionStatus[160] = {};
 static char g_completionProjectId[kMaxProjectIdBytes] = {};
 static bool g_completionUndoAvailable = false;
@@ -547,6 +577,9 @@ static bool openCompletion(gx_app_context* ctx);
 static bool refreshCompletion(gx_app_context* ctx);
 static bool acceptCompletion(gx_app_context* ctx);
 static bool undoCompletion(gx_app_context* ctx);
+static void dismissSignatureHelp(gx_app_context* ctx, const char* reason, bool showStatus);
+static bool openSignatureHelp(gx_app_context* ctx);
+static bool refreshSignatureHelp(gx_app_context* ctx);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -2212,6 +2245,7 @@ static void reportBuildResult(gx_app_context* ctx) {
 
 static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
     dismissCompletion(ctx, "build", false);
+    dismissSignatureHelp(ctx, "build", false);
     if (BuildControllerIsActive(&g_buildController)) {
         writeOutput("Build already running");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(BuildErrorCode::AlreadyRunning));
@@ -2325,6 +2359,7 @@ static void pollBuild(gx_app_context* ctx) {
 }
 
 static void requestBuild(gx_app_context* ctx) {
+    dismissSignatureHelp(ctx, "build", false);
     if (RunControllerIsActive(&g_runController)) {
         writeOutput("Run in progress; build blocked");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(BuildErrorCode::AlreadyRunning));
@@ -2347,6 +2382,7 @@ static void requestBuild(gx_app_context* ctx) {
 
 static void requestRun(gx_app_context* ctx) {
     dismissCompletion(ctx, "run", false);
+    dismissSignatureHelp(ctx, "run", false);
     if (RunControllerIsActive(&g_runController) || g_runWaitingForBuild) {
         writeOutput("Run already active");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", RunErrorName(RunErrorCode::AlreadyActive));
@@ -2528,6 +2564,7 @@ static void commitNewProject(gx_app_context* ctx) {
 
 static void commitProjectOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "project_changed", false);
+    dismissSignatureHelp(ctx, "project_changed", false);
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
         writeOutput("Project opened");
@@ -2543,6 +2580,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
 
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "workspace_changed", false);
+    dismissSignatureHelp(ctx, "workspace_changed", false);
     stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     reportWorkspaceOpen(ctx, success);
@@ -2552,6 +2590,7 @@ static bool commitWorkspaceOpen(gx_app_context* ctx) {
 
 static void requestWorkspaceOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "workspace_changed", false);
+    dismissSignatureHelp(ctx, "workspace_changed", false);
     if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
         copyText(g_pendingWorkspacePath, sizeof(g_pendingWorkspacePath), g_prompt);
         g_inputMode = InputMode::ConfirmWorkspace;
@@ -2564,6 +2603,7 @@ static void requestWorkspaceOpen(gx_app_context* ctx) {
 
 static void closeActiveDocument(gx_app_context* ctx, CloseDecision decision) {
     dismissCompletion(ctx, "document_changed", false);
+    dismissSignatureHelp(ctx, "document_changed", false);
     if (g_pendingDocument >= kMaxOpenDocuments) return;
     bool success = WorkspaceControllerCloseDocument(&g_controller, g_pendingDocument, decision);
     if (success) {
@@ -2576,6 +2616,7 @@ static void closeActiveDocument(gx_app_context* ctx, CloseDecision decision) {
 
 static void finishApplicationClose(gx_app_context* ctx, bool success) {
     dismissCompletion(ctx, "application_close", false);
+    dismissSignatureHelp(ctx, "application_close", false);
     if (!success) {
         writeOutput("Save failed; application remains open");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=FAIL", currentError());
@@ -3593,6 +3634,215 @@ static void completionSetStatus(const char* text) {
     copyText(g_completionStatus, sizeof(g_completionStatus), text ? text : "");
 }
 
+static void signatureSetStatus(const char* text) {
+    copyText(g_signatureStatus, sizeof(g_signatureStatus), text ? text : "");
+}
+
+static void signatureStatusForError(SignatureErrorCode error) {
+    const char* status = SignatureStatusText(error);
+    if (status[0] != '\0') signatureSetStatus(status);
+    else {
+        copyText(g_signatureStatus, sizeof(g_signatureStatus), "Signature Help unavailable: ");
+        appendText(g_signatureStatus, sizeof(g_signatureStatus), SignatureErrorName(error));
+    }
+}
+
+static void ensureSignatureSelectionVisible() {
+    if (g_signatureSession.selectedSignatureIndex < g_signatureScroll) g_signatureScroll = g_signatureSession.selectedSignatureIndex;
+    if (g_signatureSession.selectedSignatureIndex >= g_signatureScroll + static_cast<uint32_t>(kSignaturePopupMaxRows))
+        g_signatureScroll = g_signatureSession.selectedSignatureIndex - static_cast<uint32_t>(kSignaturePopupMaxRows) + 1;
+    if (g_signatureScroll > g_signatureSession.candidateCount) g_signatureScroll = g_signatureSession.candidateCount;
+}
+
+static void signatureUpdateStatus() {
+    if (g_signatureSession.truncated) signatureSetStatus("Signature results truncated.");
+    else if (g_signatureSession.context.kind == SignatureContextKind::MethodCallLexical)
+        signatureSetStatus("Receiver type unresolved; showing lexical method signatures.");
+    else if (g_signatureSession.context.parameterPositionApproximate)
+        signatureSetStatus("Parameter position is approximate.");
+    else if (SignatureHelpSessionSelected(&g_signatureSession) &&
+             SignatureHelpSessionSelected(&g_signatureSession)->parameterParseFailed)
+        signatureSetStatus("Parameter highlighting unavailable for this signature.");
+    else signatureSetStatus("");
+}
+
+static void dismissSignatureHelp(gx_app_context* ctx, const char* reason, bool showStatus) {
+    if (!g_signaturePopupOpen && !g_signatureSession.active) return;
+    SignatureHelpSessionDismiss(&g_signatureSession);
+    g_signaturePopupOpen = false;
+    g_signatureScroll = 0;
+    if (showStatus && reason) {
+        signatureSetStatus(reason);
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_dismiss=PASS reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), reason);
+        logMarker(ctx, g_textScratch);
+    } else signatureSetStatus("");
+}
+
+static bool openSignatureHelp(gx_app_context* ctx) {
+    dismissCompletion(ctx, "signature_help", false);
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        signatureStatusForError(SignatureErrorCode::NoProject);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_fail=FAIL reason=", SignatureErrorName(SignatureErrorCode::NoProject));
+        return false;
+    }
+    if (!document || !g_editorFocused) {
+        signatureStatusForError(SignatureErrorCode::NoDocument);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_fail=FAIL reason=", SignatureErrorName(SignatureErrorCode::NoDocument));
+        return false;
+    }
+    if (!document->syntax.valid || document->syntax.generation != document->buffer.generation) DocumentUpdateSyntax(document);
+    if (g_signatureSession.sessionId == 0) g_signatureSession.sessionId = 1;
+    else ++g_signatureSession.sessionId;
+    SignatureErrorCode error = SignatureErrorCode::None;
+    if (!SignatureHelpBuildSession(&g_signatureSession, *document,
+                                   SignatureProjectId(g_controller.model.project.projectId),
+                                   g_controller.model.projectGeneration, &g_symbolDatabase, &error)) {
+        signatureStatusForError(error);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_fail=FAIL reason=", SignatureErrorName(error));
+        g_signaturePopupOpen = false;
+        return false;
+    }
+    g_signatureScroll = 0;
+    g_signaturePopupOpen = g_signatureSession.active;
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_begin=PASS");
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_context=PASS callable=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_signatureSession.context.callableName);
+    appendText(g_textScratch, sizeof(g_textScratch), " argument=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.context.activeArgumentIndex);
+    logMarker(ctx, g_textScratch);
+    if (g_signatureSession.context.hasExplicitQualifier) {
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_context=QUALIFIED qualifier=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_signatureSession.context.explicitQualifier);
+        logMarker(ctx, g_textScratch);
+    }
+    if (g_signatureSession.context.kind == SignatureContextKind::MethodCallLexical)
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_context=MEMBER_LEXICAL");
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_candidates=PASS total=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.collectedCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " retained=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.candidateCount);
+    logMarker(ctx, g_textScratch);
+    if (g_signatureSession.truncated) {
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_candidates=TRUNCATED retained=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.candidateCount);
+        logMarker(ctx, g_textScratch);
+    }
+    if (g_signatureSession.activeParameterIndex != 0xFFFFFFFFu) {
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_parameter=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_signatureSession.context.parameterPositionApproximate ? "APPROXIMATE index=" : "PASS index=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.activeParameterIndex);
+        logMarker(ctx, g_textScratch);
+    }
+    signatureUpdateStatus();
+    if (error == SignatureErrorCode::ParseApproximate) signatureSetStatus("Parameter position is approximate.");
+    return true;
+}
+
+static bool refreshSignatureHelp(gx_app_context* ctx) {
+    if (!g_signaturePopupOpen) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) {
+        signatureStatusForError(SignatureErrorCode::NoDocument);
+        dismissSignatureHelp(ctx, "document_missing", true);
+        return false;
+    }
+    SignatureErrorCode error = SignatureErrorCode::None;
+    if (!SignatureHelpSessionRefresh(&g_signatureSession, *document,
+                                     SignatureProjectId(g_controller.model.project.projectId),
+                                     g_controller.model.projectGeneration, &g_symbolDatabase, &error)) {
+        signatureStatusForError(error == SignatureErrorCode::None ? SignatureErrorCode::SessionStale : error);
+        dismissSignatureHelp(ctx, "stale", true);
+        return false;
+    }
+    g_signaturePopupOpen = g_signatureSession.active;
+    ensureSignatureSelectionVisible();
+    signatureUpdateStatus();
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER signature_refresh=PASS argument=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.context.activeArgumentIndex);
+    logMarker(ctx, g_textScratch);
+    return g_signaturePopupOpen;
+}
+
+static bool handleSignatureKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_signaturePopupOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { dismissSignatureHelp(ctx, "escape", false); return true; }
+    if (keyCode == GX_KEY_UP) { SignatureHelpSessionMove(&g_signatureSession, -1); ensureSignatureSelectionVisible(); signatureUpdateStatus(); return true; }
+    if (keyCode == GX_KEY_DOWN) { SignatureHelpSessionMove(&g_signatureSession, 1); ensureSignatureSelectionVisible(); signatureUpdateStatus(); return true; }
+    if (keyCode == 33) { SignatureHelpSessionPage(&g_signatureSession, -1); ensureSignatureSelectionVisible(); signatureUpdateStatus(); return true; }
+    if (keyCode == 34) { SignatureHelpSessionPage(&g_signatureSession, 1); ensureSignatureSelectionVisible(); signatureUpdateStatus(); return true; }
+    if (keyCode == 36) { SignatureHelpSessionHome(&g_signatureSession); ensureSignatureSelectionVisible(); signatureUpdateStatus(); return true; }
+    if (keyCode == 35) { SignatureHelpSessionEnd(&g_signatureSession); ensureSignatureSelectionVisible(); signatureUpdateStatus(); return true; }
+    if (keyCode == GX_KEY_LEFT || keyCode == GX_KEY_RIGHT) { dismissSignatureHelp(ctx, "caret_moved", false); return false; }
+    if (keyCode == 46 && !(modifiers & GX_KEY_MOD_CTRL)) { dismissSignatureHelp(ctx, "caret_moved", false); return false; }
+    return false;
+}
+
+static bool signaturePopupBounds(gx_rect* output) {
+    if (!output || !g_signaturePopupOpen || !g_signatureSession.active) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    const uint32_t line = activeLine(document->buffer);
+    const uint32_t column = activeColumn(document->buffer, line);
+    const uint32_t visibleColumn = column > g_editorScrollColumn ? column - g_editorScrollColumn : 0;
+    const uint32_t visibleLine = line > g_editorScrollLine ? line - g_editorScrollLine : 0;
+    const int caretX = kEditorTextX + static_cast<int>(visibleColumn * 8u);
+    const int caretY = kEditorTop + static_cast<int>(visibleLine * kEditorLineHeight);
+    const uint32_t remaining = g_signatureSession.candidateCount > g_signatureScroll ?
+        g_signatureSession.candidateCount - g_signatureScroll : 0;
+    const uint32_t rows = remaining < static_cast<uint32_t>(kSignaturePopupMaxRows) ? remaining : static_cast<uint32_t>(kSignaturePopupMaxRows);
+    if (rows == 0) return false;
+    const int height = 30 + static_cast<int>(rows) * kSignaturePopupRowHeight + 28;
+    int x = caretX;
+    int y = caretY + kEditorLineHeight;
+    if (x + kSignaturePopupWidth > kEditorRect.x + kEditorRect.width) x = kEditorRect.x + kEditorRect.width - kSignaturePopupWidth;
+    if (x < kEditorRect.x) x = kEditorRect.x;
+    if (y + height > kEditorRect.y + kEditorRect.height) y = caretY - height;
+    if (y < kEditorRect.y) y = kEditorRect.y;
+    *output = { x, y, kSignaturePopupWidth, height };
+    return true;
+}
+
+static void drawSignaturePopup(gx_app_context* ctx) {
+    if (!ctx) return;
+    gx_rect bounds = {};
+    if (!signaturePopupBounds(&bounds)) return;
+    const uint32_t rows = (static_cast<uint32_t>(bounds.height) - 58u) / static_cast<uint32_t>(kSignaturePopupRowHeight);
+    drawPanel(ctx, bounds, 0x202A36u);
+    copyText(g_textScratch, sizeof(g_textScratch), "SIGNATURE HELP  ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.selectedSignatureIndex + 1);
+    appendText(g_textScratch, sizeof(g_textScratch), " of ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.candidateCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " overloads");
+    drawText(ctx, bounds.x + 8, bounds.y + 15, g_textScratch);
+    for (uint32_t row = 0; row < rows; ++row) {
+        const uint32_t index = g_signatureScroll + row;
+        if (index >= g_signatureSession.candidateCount) break;
+        const SignatureCandidate& candidate = g_signatureSession.candidates[index];
+        const int rowY = bounds.y + 30 + static_cast<int>(row) * kSignaturePopupRowHeight;
+        if (index == g_signatureSession.selectedSignatureIndex) drawPanel(ctx, { bounds.x + 2, rowY - 15, kSignaturePopupWidth - 4, kSignaturePopupRowHeight }, 0x34496Au);
+        drawText(ctx, bounds.x + 8, rowY, candidate.displaySignature);
+        drawText(ctx, bounds.x + 8, rowY + 13, candidate.detailText);
+    }
+    const SignatureCandidate* selected = SignatureHelpSessionSelected(&g_signatureSession);
+    const guidexos::developer_studio::SignatureParameter* parameter = SignatureHelpSessionActiveParameter(&g_signatureSession);
+    if (parameter) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Parameter ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_signatureSession.activeParameterIndex + 1);
+        appendText(g_textScratch, sizeof(g_textScratch), " of ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), selected ? selected->parameterCount : 0);
+        appendText(g_textScratch, sizeof(g_textScratch), ": ");
+        appendText(g_textScratch, sizeof(g_textScratch), parameter->displayText);
+        drawText(ctx, bounds.x + 8, bounds.y + bounds.height - 10, g_textScratch);
+    } else if (selected && selected->parameterParseFailed) {
+        drawText(ctx, bounds.x + 8, bounds.y + bounds.height - 10, "Parameter highlighting unavailable for this signature.");
+    } else if (g_signatureSession.context.parameterPositionApproximate) {
+        drawText(ctx, bounds.x + 8, bounds.y + bounds.height - 10, "Parameter position is approximate.");
+    }
+}
+
 static void completionStatusForError(CompletionErrorCode error) {
     const char* status = guidexos::developer_studio::CompletionStatusText(error);
     if (status[0] != '\0') completionSetStatus(status);
@@ -3625,6 +3875,7 @@ static void completionLogContext(gx_app_context* ctx) {
 }
 
 static bool openCompletion(gx_app_context* ctx) {
+    dismissSignatureHelp(ctx, "completion", false);
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!g_controller.model.open || !g_controller.model.hasProject) {
         completionSetStatus("Open a project before using Code Completion.");
@@ -3981,7 +4232,8 @@ static void drawEditor(gx_app_context* ctx) {
 }
 
 static void drawOutputAndStatus(gx_app_context* ctx) {
-    if (g_completionStatus[0] != '\0') drawText(ctx, 16, 646, g_completionStatus);
+    if (g_signatureStatus[0] != '\0') drawText(ctx, 16, 646, g_signatureStatus);
+    else if (g_completionStatus[0] != '\0') drawText(ctx, 16, 646, g_completionStatus);
     else if (g_definitionStatus[0] != '\0') drawText(ctx, 16, 646, g_definitionStatus);
     drawText(ctx, 16, 536, g_outputProblemsTab ? "PROBLEMS" : "OUTPUT");
     drawText(ctx, 112, 536, "Output");
@@ -4139,6 +4391,7 @@ static void drawShell(gx_app_context* ctx) {
     drawExplorer(ctx);
     drawOutline(ctx);
     drawEditor(ctx);
+    drawSignaturePopup(ctx);
     drawCompletionPopup(ctx);
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
@@ -4172,6 +4425,7 @@ static void selectDocumentTab(int x) {
         if (!g_controller.model.documents[i].used) continue;
         if (x >= tabX && x < tabX + 126) {
             dismissCompletion(nullptr, "document_changed", false);
+            dismissSignatureHelp(nullptr, "document_changed", false);
             g_controller.model.activeDocument = i;
             g_editorFocused = true;
             keepCaretVisible(&g_controller.model.documents[i]);
@@ -4184,6 +4438,7 @@ static void selectDocumentTab(int x) {
 static void placeCaretFromMouse(Document* document, int x, int y) {
     if (!document) return;
     dismissCompletion(nullptr, "caret_moved", false);
+    dismissSignatureHelp(nullptr, "caret_moved", false);
     int row = (y - kEditorTop + 12) / kEditorLineHeight;
     if (row < 0) row = 0;
     uint32_t line = g_editorScrollLine + static_cast<uint32_t>(row);
@@ -4356,6 +4611,7 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         logMarker(ctx, save ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=SAVE" : "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=DISCARD");
         if (save && !saveAll(ctx)) return;
         stopProjectSearch(ctx);
+        dismissSignatureHelp(ctx, "workspace_changed", false);
         WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
         if (g_workspaceSwitchPending) commitWorkspaceOpen(ctx);
         else {
@@ -4774,8 +5030,23 @@ static bool handleRenameKey(gx_app_context* ctx, int keyCode, int action, int mo
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_completionPopupOpen && (modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && keyCode == 32) {
+        dismissCompletion(ctx, "signature_help", false);
+        openSignatureHelp(ctx);
+        return;
+    }
     if (g_completionPopupOpen && handleCompletionKey(ctx, keyCode, action, modifiers)) return;
-    if ((modifiers & GX_KEY_MOD_CTRL) && keyCode == 32) {
+    if (g_signaturePopupOpen && (modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && keyCode == 32) {
+        dismissSignatureHelp(ctx, "completion", false);
+        openCompletion(ctx);
+        return;
+    }
+    if (g_signaturePopupOpen && handleSignatureKey(ctx, keyCode, action, modifiers)) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && keyCode == 32) {
+        openSignatureHelp(ctx);
+        return;
+    }
+    if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && keyCode == 32) {
         if (g_completionPopupOpen) refreshCompletion(ctx);
         else openCompletion(ctx);
         return;
@@ -4911,14 +5182,15 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     const bool completionWasOpen = g_completionPopupOpen;
+    const bool signatureWasOpen = g_signaturePopupOpen;
     bool changed = false;
     bool wasDirty = document->buffer.dirty;
-    if (keyCode == GX_KEY_LEFT) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveLeft(&document->buffer); }
-    else if (keyCode == GX_KEY_RIGHT) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveRight(&document->buffer); }
-    else if (keyCode == GX_KEY_UP) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveUp(&document->buffer); }
-    else if (keyCode == GX_KEY_DOWN) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveDown(&document->buffer); }
-    else if (keyCode == 36) { dismissCompletion(ctx, "caret_moved", false); TextBufferHome(&document->buffer); }
-    else if (keyCode == 35) { dismissCompletion(ctx, "caret_moved", false); TextBufferEnd(&document->buffer); }
+    if (keyCode == GX_KEY_LEFT) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferMoveLeft(&document->buffer); }
+    else if (keyCode == GX_KEY_RIGHT) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferMoveRight(&document->buffer); }
+    else if (keyCode == GX_KEY_UP) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferMoveUp(&document->buffer); }
+    else if (keyCode == GX_KEY_DOWN) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferMoveDown(&document->buffer); }
+    else if (keyCode == 36) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferHome(&document->buffer); }
+    else if (keyCode == 35) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferEnd(&document->buffer); }
     else if (keyCode == 8) { g_completionUndoAvailable = false; changed = TextBufferBackspace(&document->buffer); }
     else if (keyCode == 46) { g_completionUndoAvailable = false; dismissCompletion(ctx, "caret_moved", false); changed = TextBufferDelete(&document->buffer); }
     else if (keyCode == 13) { g_completionUndoAvailable = false; changed = TextBufferInsert(&document->buffer, "\n", 1); }
@@ -4932,6 +5204,8 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     keepCaretVisible(document);
     if (completionWasOpen && changed && (keyCode == 8 || keyCode == 13 || mapKeyToChar(keyCode, modifiers) != '\0'))
         refreshCompletion(ctx);
+    if (signatureWasOpen && changed && (keyCode == 8 || keyCode == 13 || mapKeyToChar(keyCode, modifiers) != '\0'))
+        refreshSignatureHelp(ctx);
     (void)running;
 }
 
@@ -4940,6 +5214,31 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_signaturePopupOpen) {
+        gx_rect bounds = {};
+        if (!signaturePopupBounds(&bounds)) { dismissSignatureHelp(ctx, "popup_expired", false); return; }
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_signatureScroll = g_signatureScroll > 3 ? g_signatureScroll - 3 : 0;
+            else if (g_signatureScroll + static_cast<uint32_t>(kSignaturePopupMaxRows) < g_signatureSession.candidateCount) ++g_signatureScroll;
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+            x >= bounds.x && x < bounds.x + bounds.width && y >= bounds.y + 30 &&
+            y < bounds.y + bounds.height - 28) {
+            const uint32_t row = g_signatureScroll + static_cast<uint32_t>((y - bounds.y - 30) / kSignaturePopupRowHeight);
+            if (row < g_signatureSession.candidateCount) {
+                g_signatureSession.selectedSignatureIndex = row;
+                ensureSignatureSelectionVisible();
+                signatureUpdateStatus();
+            }
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN) {
+            dismissSignatureHelp(ctx, "mouse_dismiss", false);
+            return;
+        }
+    }
     if (g_completionPopupOpen) {
         gx_rect bounds = {};
         if (!completionPopupBounds(&bounds)) { dismissCompletion(ctx, "popup_expired", false); return; }
@@ -5282,7 +5581,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress");
             else if (RunControllerIsActive(&g_runController)) writeOutput("Run in progress");
             else if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmWorkspace;
-            else { stopProjectSearch(ctx); WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard); }
+            else { stopProjectSearch(ctx); dismissSignatureHelp(ctx, "workspace_changed", false); WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard); }
         } else if (y < 188) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
             else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
@@ -5340,6 +5639,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_completionStatus[0] = '\0';
     g_completionProjectId[0] = '\0';
     g_completionUndoAvailable = false;
+    SignatureHelpSessionInit(&g_signatureSession, g_signatureCandidateStorage, kSignatureMaxRetainedCandidates,
+                             g_signatureParameterStorage, kSignatureMaxRetainedCandidates * kSignatureMaxParameters);
+    g_signaturePopupOpen = false;
+    g_signatureScroll = 0;
+    g_signatureStatus[0] = '\0';
     g_inputMode = InputMode::Normal;
     g_editorFocused = false;
     g_fileMenuOpen = false;
@@ -5483,7 +5787,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
-                             !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen) {
+                             !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
+                             !g_completionPopupOpen && !g_signaturePopupOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;

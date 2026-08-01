@@ -1,0 +1,237 @@
+Start testing: Aug 01 15:09 Pacific Daylight Time
+----------------------------------------------------------
+1/15 Testing: developer_studio_model_test
+1/15 Test: developer_studio_model_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_model_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_model_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_model_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_model_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/15 Testing: developer_studio_project_test
+2/15 Test: developer_studio_project_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_project_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_project_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio project parser/generator PASS
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_project_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_project_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/15 Testing: developer_studio_build_test
+3/15 Test: developer_studio_build_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_build_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_build_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio build controller PASS
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_build_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_build_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/15 Testing: developer_studio_run_test
+4/15 Test: developer_studio_run_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_run_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_run_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio run controller PASS
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_run_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_run_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/15 Testing: developer_studio_output_test
+5/15 Test: developer_studio_output_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_output_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_output_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio output service and diagnostic parser PASS
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_output_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_output_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/15 Testing: developer_studio_navigation_test
+6/15 Test: developer_studio_navigation_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_navigation_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_navigation_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio diagnostic navigation PASS
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_navigation_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_navigation_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/15 Testing: developer_studio_syntax_test
+7/15 Test: developer_studio_syntax_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_syntax_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_syntax_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio syntax tests PASS
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_syntax_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_syntax_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/15 Testing: developer_studio_find_test
+8/15 Test: developer_studio_find_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_find_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_find_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_find_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_find_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/15 Testing: developer_studio_project_search_test
+9/15 Test: developer_studio_project_search_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_project_search_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_project_search_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio project search PASS
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_project_search_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_project_search_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/15 Testing: developer_studio_symbol_test
+10/15 Test: developer_studio_symbol_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_symbol_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_symbol_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.46 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_symbol_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_symbol_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/15 Testing: developer_studio_navigation_definition_test
+11/15 Test: developer_studio_navigation_definition_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_navigation_definition_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_navigation_definition_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_navigation_definition_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_navigation_definition_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/15 Testing: developer_studio_reference_test
+12/15 Test: developer_studio_reference_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_reference_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_reference_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_reference_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_reference_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+13/15 Testing: developer_studio_rename_test
+13/15 Test: developer_studio_rename_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_rename_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_rename_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_rename_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_rename_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+14/15 Testing: developer_studio_completion_test
+14/15 Test: developer_studio_completion_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_completion_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_completion_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio completion model PASS
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_completion_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_completion_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/15 Testing: developer_studio_signature_test
+15/15 Test: developer_studio_signature_test
+Command: "D:/dev/guideXOS_Developer_Studio/build-gcc/developer_studio_signature_test.exe"
+Directory: D:/dev/guideXOS_Developer_Studio/build-gcc
+"developer_studio_signature_test" start time: Aug 01 15:09 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+Developer Studio signature help model PASS
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"developer_studio_signature_test" end time: Aug 01 15:09 Pacific Daylight Time
+"developer_studio_signature_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Aug 01 15:09 Pacific Daylight Time

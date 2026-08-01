@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, and manually invoked lightweight lexical Code Completion
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, and manually invoked lightweight lexical Signature Help
 
 ## Integration
 
@@ -213,6 +213,26 @@ expected text before reusing the existing text-buffer, syntax, symbol, word,
 and dirty-state paths. One bounded completion snapshot is available through the
 existing `Ctrl+Z` path. See [CODE_COMPLETION.md](CODE_COMPLETION.md) for the
 context grammar, sources, ranking, limits, markers, and deferred semantic work.
+
+## Lightweight Signature Help
+
+`developer_studio_signature.*` is a UI-independent, generation-bound lexical
+active-call model. It reuses syntax-cache spans for comments, strings,
+characters, raw strings, and preprocessor regions, scans backward at most
+64 KiB for the nearest unmatched invocation parenthesis, extracts bounded
+callable/qualifier/member hints, counts top-level arguments, and reads only
+the existing project `SymbolDatabase`. It does not scan the project filesystem
+per invocation or create a second signature database.
+
+`main.cpp` invokes the model from `Ctrl+Shift+Space`, renders one clamped popup,
+refreshes it after in-call typing, and dismisses it on stale generations,
+caret/document/project changes, Build, Run, and Escape. Completion and
+Signature Help are mutually exclusive. Overloads are retained separately and
+ranked deterministically without argument types; unresolved member receivers
+are explicitly lexical. Stored signatures omit some return-type and trailing
+qualifier information, so parsing failures disable parameter highlighting
+instead of inventing ranges. See [SIGNATURE_HELP.md](SIGNATURE_HELP.md) for
+the model contract, limits, status codes, markers, and future semantic path.
 
 ## Find and Replace
 
