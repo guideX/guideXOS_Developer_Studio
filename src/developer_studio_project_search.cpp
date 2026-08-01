@@ -521,6 +521,22 @@ static bool scanCurrentFile(ProjectSearchService* service, const char* absoluteP
         return false;
     }
     if (LooksBinary(data, bytes)) return false;
+    if (service->scanVisitor) {
+        ProjectSearchScanFile file = {};
+        file.relativePath = relativePath;
+        file.data = data;
+        file.length = bytes;
+        file.sourceKind = sourceKind;
+        file.fileSize = fileSize;
+        file.documentId = documentId;
+        file.documentGeneration = documentGeneration;
+        if (!service->scanVisitor(service->scanVisitorUserData, &file)) {
+            if (!service->operation.truncated)
+                markTruncated(service, ProjectSearchErrorCode::ResultLimit);
+            return false;
+        }
+        return true;
+    }
     return scanText(service, relativePath, data, bytes, sourceKind, fileSize, documentId, documentGeneration);
 }
 
@@ -663,6 +679,8 @@ void ProjectSearchServiceInit(ProjectSearchService* service) {
     ProjectSearchOptionsInit(&service->parsedOptions);
     service->includePatternCount = service->excludePatternCount = 0;
     service->dirtyDocumentCount = 0;
+    service->scanVisitor = nullptr;
+    service->scanVisitorUserData = nullptr;
     service->startedAtMs = 0;
     service->terminalReported = false;
     clearResultStorage(service);
@@ -693,6 +711,8 @@ bool ProjectSearchStart(ProjectSearchService* service, const ProjectSearchReques
     service->operation.options = request->options;
     service->parsedOptions = request->options;
     service->dirtyDocumentCount = request->dirtyDocumentCount > kMaxOpenDocuments ? kMaxOpenDocuments : request->dirtyDocumentCount;
+    service->scanVisitor = request->scanVisitor;
+    service->scanVisitorUserData = request->scanVisitorUserData;
     for (uint32_t i = 0; i < service->dirtyDocumentCount; ++i) {
         if (!request->dirtyDocuments) {
             service->dirtyDocumentCount = 0;
@@ -838,6 +858,25 @@ const ProjectSearchMatch* ProjectSearchResultMatchAt(const ProjectSearchService*
 
 const char* ProjectSearchQuery(const ProjectSearchService* service) {
     return service ? service->operation.options.query : "";
+}
+
+bool ProjectSearchBuildPreview(const char* data, uint32_t length, uint64_t offset,
+                               uint32_t matchLength, ProjectSearchPreview* output) {
+    if (!output) return false;
+    output->text[0] = '\0';
+    output->matchStart = 0;
+    output->matchLength = 0;
+    output->leftTruncated = false;
+    output->rightTruncated = false;
+    if (!data || offset > length || matchLength > length - offset) return false;
+    ProjectSearchMatch match = {};
+    makePreview(data, length, offset, matchLength, &match);
+    copyText(output->text, sizeof(output->text), match.preview);
+    output->matchStart = match.previewMatchStart;
+    output->matchLength = match.previewMatchLength;
+    output->leftTruncated = match.previewLeftTruncated;
+    output->rightTruncated = match.previewRightTruncated;
+    return true;
 }
 
 } // namespace developer_studio

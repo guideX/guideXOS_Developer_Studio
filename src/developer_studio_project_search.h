@@ -95,6 +95,22 @@ struct ProjectSearchDocumentSnapshot {
     uint32_t documentGeneration;
 };
 
+// Shared by Find in Files and lexical reference search. The visitor is
+// called synchronously while the bounded scanner owns the current file
+// buffer; it must consume the bytes before returning and must not retain the
+// data pointer.
+struct ProjectSearchScanFile {
+    const char* relativePath;
+    const char* data;
+    uint32_t length;
+    ProjectSearchSourceKind sourceKind;
+    uint64_t fileSize;
+    uint64_t documentId;
+    uint32_t documentGeneration;
+};
+
+typedef bool (*ProjectSearchScanVisitor)(void* userData, const ProjectSearchScanFile* file);
+
 struct ProjectSearchRequest {
     char projectId[kMaxProjectIdBytes];
     uint64_t projectGeneration;
@@ -103,6 +119,8 @@ struct ProjectSearchRequest {
     WorkspaceFileSystem fileSystem;
     const ProjectSearchDocumentSnapshot* dirtyDocuments;
     uint32_t dirtyDocumentCount;
+    ProjectSearchScanVisitor scanVisitor;
+    void* scanVisitorUserData;
 };
 
 struct ProjectSearchMatch {
@@ -168,6 +186,8 @@ struct ProjectSearchService {
     uint32_t excludePatternCount;
     ProjectSearchDocumentSnapshot dirtyDocuments[kMaxOpenDocuments];
     uint32_t dirtyDocumentCount;
+    ProjectSearchScanVisitor scanVisitor;
+    void* scanVisitorUserData;
     char scanBuffer[kProjectSearchMaxFileBytes + 1];
     ProjectSearchFileGroup groups[kProjectSearchMaxResultFiles];
     ProjectSearchMatch matches[kProjectSearchMaxTotalMatches];
@@ -196,6 +216,17 @@ const ProjectSearchMatch* ProjectSearchResultMatchAt(const ProjectSearchService*
                                                      const ProjectSearchFileGroup* group,
                                                      uint32_t matchIndex);
 const char* ProjectSearchQuery(const ProjectSearchService* service);
+
+struct ProjectSearchPreview {
+    char text[kProjectSearchMaxPreviewBytes + 1];
+    uint32_t matchStart;
+    uint32_t matchLength;
+    bool leftTruncated;
+    bool rightTruncated;
+};
+
+bool ProjectSearchBuildPreview(const char* data, uint32_t length, uint64_t offset,
+                               uint32_t matchLength, ProjectSearchPreview* output);
 
 } // namespace developer_studio
 } // namespace guidexos

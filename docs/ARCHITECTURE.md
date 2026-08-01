@@ -294,7 +294,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Find All References, Rename, language server, semantic highlighting, completion, semantic navigation beyond this lexical phase, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
+Rename, language server, semantic highlighting, completion, semantic navigation beyond this lexical phase, refactoring, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, and undo/redo remain deferred. Find All References is implemented as the bounded lexical `Shift+F12` phase documented in [FIND_ALL_REFERENCES.md](FIND_ALL_REFERENCES.md); semantic binding, safe rename, and language-service integration remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

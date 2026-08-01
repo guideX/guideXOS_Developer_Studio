@@ -8,6 +8,7 @@
 #include "developer_studio_project_search.h"
 #include "developer_studio_symbols.h"
 #include "developer_studio_navigation.h"
+#include "developer_studio_references.h"
 
 namespace {
 
@@ -188,6 +189,37 @@ using guidexos::developer_studio::ProjectSearchState;
 using guidexos::developer_studio::ProjectSearchStateName;
 using guidexos::developer_studio::ProjectSearchDocumentSnapshot;
 using guidexos::developer_studio::kProjectSearchMaxFileBytes;
+using guidexos::developer_studio::ReferenceConfidence;
+using guidexos::developer_studio::ReferenceConfidenceName;
+using guidexos::developer_studio::ReferenceFileGroup;
+using guidexos::developer_studio::ReferenceKind;
+using guidexos::developer_studio::ReferenceKindName;
+using guidexos::developer_studio::ReferenceMatch;
+using guidexos::developer_studio::ReferenceSearchCancel;
+using guidexos::developer_studio::ReferenceSearchErrorCode;
+using guidexos::developer_studio::ReferenceSearchErrorName;
+using guidexos::developer_studio::ReferenceSearchIsActive;
+using guidexos::developer_studio::ReferenceSearchOperation;
+using guidexos::developer_studio::ReferenceSearchOperationInfo;
+using guidexos::developer_studio::ReferenceSearchPoll;
+using guidexos::developer_studio::ReferenceSearchRelease;
+using guidexos::developer_studio::ReferenceSearchRequest;
+using guidexos::developer_studio::ReferenceSearchResultGroupAt;
+using guidexos::developer_studio::ReferenceSearchResultGroups;
+using guidexos::developer_studio::ReferenceSearchResultMatchAt;
+using guidexos::developer_studio::ReferenceSearchService;
+using guidexos::developer_studio::ReferenceSearchServiceInit;
+using guidexos::developer_studio::ReferenceSearchStart;
+using guidexos::developer_studio::ReferenceSearchState;
+using guidexos::developer_studio::ReferenceSearchStateName;
+using guidexos::developer_studio::ReferenceTarget;
+using guidexos::developer_studio::ReferenceTargetFromDefinitionCandidate;
+using guidexos::developer_studio::ReferenceTargetFromDefinitionQuery;
+using guidexos::developer_studio::ReferenceTargetResolution;
+using guidexos::developer_studio::ReferenceTargetResolutionKind;
+using guidexos::developer_studio::ResolveReferenceTarget;
+using guidexos::developer_studio::kReferenceMaxCandidates;
+using guidexos::developer_studio::kReferenceMaxVisibleCandidates;
 using guidexos::developer_studio::DocumentSymbol;
 using guidexos::developer_studio::ProjectSymbol;
 using guidexos::developer_studio::SymbolDatabase;
@@ -271,6 +303,12 @@ static const int kSearchFieldX = 86;
 static const int kSearchFieldWidth = 350;
 static const int kSearchIncludeY = 126;
 static const int kSearchExcludeY = 150;
+static const int kReferencesPanelTop = 48;
+static const int kReferencesPanelResultsTop = 190;
+static const int kReferencesPanelRowHeight = 17;
+static const int kReferencesPanelMaxRows = 25;
+static const int kReferencesFieldX = 86;
+static const int kReferencesFieldWidth = 510;
 
 enum class InputMode {
     Normal = 0,
@@ -374,6 +412,27 @@ static char g_projectSearchProjectId[kMaxProjectIdBytes] = {};
 static char g_projectSearchStatus[128] = {};
 static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
+static ReferenceSearchService g_referenceSearch = {};
+static ReferenceTarget g_referenceTarget = {};
+static ReferenceTargetResolution g_referenceTargetResolution = {};
+static DefinitionCandidate g_referenceCandidates[kReferenceMaxCandidates] = {};
+static DefinitionQuery g_referenceQuery = {};
+static NavigationLocation g_referenceOrigin = {};
+static bool g_referenceOriginValid = false;
+static bool g_referencesPanelOpen = false;
+static bool g_referencesResultsFocused = false;
+static bool g_referencePickerOpen = false;
+static uint32_t g_referenceSelectedCandidate = 0;
+static uint32_t g_referenceCandidateScroll = 0;
+static uint32_t g_referencesScroll = 0;
+static uint32_t g_referencesSelectedGroup = 0;
+static uint32_t g_referencesSelectedMatch = 0;
+static uint64_t g_referencesOperationId = 0;
+static uint64_t g_referencesProjectGeneration = 0;
+static char g_referencesProjectId[kMaxProjectIdBytes] = {};
+static char g_referencesStatus[160] = {};
+static bool g_referencesTerminalReported = false;
+static uint64_t g_nextReferenceQueryId = 1;
 static bool g_symbolSearchOpen = false;
 static bool g_symbolSearchCaseSensitive = false;
 static uint32_t g_symbolSearchCaret = 0;
@@ -399,6 +458,8 @@ static uint64_t g_nextDefinitionQueryId = 1;
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
 static void stopProjectSearch(gx_app_context* ctx);
+static uint32_t captureDirtyProjectSearchDocuments();
+static void stopReferenceSearch(gx_app_context* ctx);
 static void keepCaretVisible(const Document* document);
 
 static void clear_event(gx_event* event) {
@@ -924,6 +985,443 @@ static void projectSearchSetStatus(const char* text) {
     copyText(g_projectSearchStatus, sizeof(g_projectSearchStatus), text ? text : "");
 }
 
+static void referencesSetStatus(const char* text) {
+    copyText(g_referencesStatus, sizeof(g_referencesStatus), text ? text : "");
+}
+
+static void ensureReferenceCandidateVisible() {
+    const uint32_t count = g_referenceTargetResolution.visibleCandidateCount;
+    if (count == 0) { g_referenceSelectedCandidate = 0; g_referenceCandidateScroll = 0; return; }
+    if (g_referenceSelectedCandidate >= count) g_referenceSelectedCandidate = count - 1;
+    if (g_referenceSelectedCandidate < g_referenceCandidateScroll)
+        g_referenceCandidateScroll = g_referenceSelectedCandidate;
+    if (g_referenceSelectedCandidate >= g_referenceCandidateScroll + 18u)
+        g_referenceCandidateScroll = g_referenceSelectedCandidate - 17u;
+}
+
+static void openReferencePicker(gx_app_context* ctx) {
+    g_referencePickerOpen = true;
+    g_referenceSelectedCandidate = 0;
+    g_referenceCandidateScroll = 0;
+    ensureReferenceCandidateVisible();
+    g_editorFocused = false;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_target=MULTIPLE candidates=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_referenceTargetResolution.candidateCount);
+    logMarker(ctx, g_textScratch);
+}
+
+static void closeReferencePicker() {
+    g_referencePickerOpen = false;
+    g_referenceCandidateScroll = 0;
+}
+
+static void referenceSearchInitializeOptions(ProjectSearchOptions* options) {
+    if (!options) return;
+    ProjectSearchOptionsInit(options);
+    copyText(options->includePattern, sizeof(options->includePattern),
+             "*.c;*.h;*.cc;*.cpp;*.cxx;*.hh;*.hpp;*.hxx");
+    copyText(options->excludePattern, sizeof(options->excludePattern),
+             ".git/*;.vs/*;.idea/*;out/*;build/*;bin/*;obj/*;dist/*;node_modules/*");
+}
+
+static bool startReferenceSearchWithTarget(gx_app_context* ctx, const ReferenceTarget& target,
+                                           bool lexicalFallback) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        referencesSetStatus("Open a project before finding references.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::NoProject));
+        return false;
+    }
+    if (!ReferenceSearchIsActive(&g_referenceSearch) && g_referencesOperationId != 0)
+        ReferenceSearchRelease(&g_referenceSearch, g_referencesOperationId);
+    if (ReferenceSearchIsActive(&g_referenceSearch)) stopReferenceSearch(ctx);
+    ProjectSearchOptions options = {};
+    referenceSearchInitializeOptions(&options);
+    ReferenceSearchRequest request = {};
+    request.target = target;
+    copyText(request.projectId, sizeof(request.projectId), g_controller.model.project.projectId);
+    request.projectGeneration = g_controller.model.projectGeneration;
+    copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.rootPath);
+    request.scanOptions = options;
+    request.fileSystem = g_controller.fileSystem;
+    request.dirtyDocuments = g_projectSearchSnapshots;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.symbolDatabase = &g_symbolDatabase;
+    request.includeDeclarations = true;
+    request.includeAmbiguous = true;
+    request.lexicalFallback = lexicalFallback;
+    ReferenceSearchErrorCode error = ReferenceSearchErrorCode::None;
+    uint64_t operationId = 0;
+    if (!ReferenceSearchStart(&g_referenceSearch, &request, gx_get_ticks_ms(ctx), &operationId, &error)) {
+        g_referencesOperationId = operationId;
+        g_referencesTerminalReported = false;
+        referencesSetStatus("Reference search failed: ");
+        appendText(g_referencesStatus, sizeof(g_referencesStatus), ReferenceSearchErrorName(error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      ReferenceSearchErrorName(error));
+        return false;
+    }
+    g_referenceTarget = target;
+    g_referencesOperationId = operationId;
+    g_referencesProjectGeneration = request.projectGeneration;
+    copyText(g_referencesProjectId, sizeof(g_referencesProjectId), request.projectId);
+    g_referencesPanelOpen = true;
+    g_referencesResultsFocused = false;
+    g_referencesSelectedGroup = 0;
+    g_referencesSelectedMatch = 0;
+    g_referencesScroll = 0;
+    g_referencesTerminalReported = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
+    referencesSetStatus(lexicalFallback ?
+                        "No indexed symbol was resolved. Showing lexical identifier matches." :
+                        "Searching active project...");
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_search_begin=PASS");
+    logMarker(ctx, g_textScratch);
+    writeStudioOutput(lexicalFallback ? "Find All References started in lexical fallback mode" :
+                      "Find All References started");
+    return true;
+}
+
+static bool activateReferenceTargetCandidate(gx_app_context* ctx, uint32_t index) {
+    if (index >= g_referenceTargetResolution.candidateCount) return false;
+    if (!g_controller.model.hasProject) return false;
+    const DefinitionCandidate& candidate = g_referenceCandidates[index];
+    ReferenceTarget target = {};
+    if (!ReferenceTargetFromDefinitionCandidate(candidate, g_controller.model.project.projectId,
+                                                g_controller.model.projectGeneration, &target)) {
+        referencesSetStatus("Selected symbol cannot be used as a reference target.");
+        return false;
+    }
+    Document* origin = WorkspaceControllerActiveDocument(&g_controller);
+    if (origin && !g_referenceOriginValid) {
+        if (!captureNavigationLocation(*origin, &g_referenceOrigin)) return false;
+        g_referenceOriginValid = true;
+    }
+    closeReferencePicker();
+    return startReferenceSearchWithTarget(ctx, target, false);
+}
+
+static bool startFindAllReferences(gx_app_context* ctx) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!g_controller.model.hasProject) {
+        referencesSetStatus("No active project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::NoProject));
+        return false;
+    }
+    if (!document) {
+        referencesSetStatus("No active document.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::NoDocument));
+        return false;
+    }
+    DefinitionIdentifier identifier = {};
+    if (!ExtractDefinitionIdentifier(document->buffer.data, document->buffer.length, document->buffer.caret,
+                                     document->buffer.selectionActive, document->buffer.selectionAnchor,
+                                     document->buffer.caret, &identifier)) {
+        referencesSetStatus(identifier.tooLong ? "Identifier is too long." : "No identifier under caret.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      identifier.tooLong ? ReferenceSearchErrorName(ReferenceSearchErrorCode::IdentifierTooLong) :
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::NoIdentifier));
+        return false;
+    }
+    if (g_controller.model.activeDocument < kMaxOpenDocuments)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
+    char relativePath[kMaxPathBytes] = {};
+    if (!copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath))) {
+        referencesSetStatus("Active document path is invalid.");
+        return false;
+    }
+    if (!BuildDefinitionQuery(*document, g_controller.model.project.projectId,
+                              g_controller.model.projectGeneration, g_controller.model.rootPath,
+                              relativePath, g_nextReferenceQueryId++, &g_referenceQuery)) {
+        referencesSetStatus("No identifier under caret.");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_begin=PASS identifier=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_referenceQuery.identifier);
+    logMarker(ctx, g_textScratch);
+    g_referenceTargetResolution = {};
+    if (!ResolveReferenceTarget(&g_symbolDatabase, g_referenceQuery, g_referenceCandidates,
+                               kReferenceMaxCandidates, true, &g_referenceTargetResolution)) {
+        referencesSetStatus("Symbol index is not ready.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::IndexNotReady));
+        return false;
+    }
+    stopProjectSearch(ctx);
+    g_projectSearchPanelOpen = false;
+    g_findBarOpen = false;
+    if (g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::LexicalFallback) {
+        if (!ReferenceTargetFromDefinitionQuery(g_referenceQuery, g_controller.model.project.projectId,
+                                                g_controller.model.projectGeneration, &g_referenceTarget)) {
+            referencesSetStatus("Lexical fallback target is invalid.");
+            return false;
+        }
+        g_referenceOriginValid = captureNavigationLocation(*document, &g_referenceOrigin);
+        g_referencePickerOpen = false;
+        return startReferenceSearchWithTarget(ctx, g_referenceTarget, true);
+    }
+    if (g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::Direct) {
+        const DefinitionCandidate& candidate = g_referenceCandidates[0];
+        if (!ReferenceTargetFromDefinitionCandidate(candidate, g_controller.model.project.projectId,
+                                                    g_controller.model.projectGeneration, &g_referenceTarget))
+            return false;
+        g_referenceOriginValid = captureNavigationLocation(*document, &g_referenceOrigin);
+        return startReferenceSearchWithTarget(ctx, g_referenceTarget, false);
+    }
+    if (g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::Multiple ||
+        g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::Stale) {
+        referencesSetStatus("Choose Symbol for Find All References");
+        g_referencesPanelOpen = true;
+        openReferencePicker(ctx);
+        return true;
+    }
+    referencesSetStatus("No indexed symbol was resolved.");
+    return false;
+}
+
+static void pollReferences(gx_app_context* ctx) {
+    if (g_referencesOperationId == 0) return;
+    if (ReferenceSearchIsActive(&g_referenceSearch) &&
+        (!g_controller.model.open || !g_controller.model.hasProject ||
+         g_controller.model.projectGeneration != g_referencesProjectGeneration ||
+         !searchTextEqual(g_controller.model.project.projectId, g_referencesProjectId))) {
+        ReferenceSearchCancel(&g_referenceSearch, g_referencesOperationId);
+        referencesSetStatus("Project changed; cancelling reference search.");
+    }
+    ReferenceSearchPoll(&g_referenceSearch, g_referencesOperationId, 16, gx_get_ticks_ms(ctx));
+    const ReferenceSearchOperation* operation = ReferenceSearchOperationInfo(&g_referenceSearch);
+    if (!operation || ReferenceSearchIsActive(&g_referenceSearch) || g_referencesTerminalReported) return;
+    g_referencesTerminalReported = true;
+    if (operation->state == ReferenceSearchState::Completed) {
+        copyText(g_referencesStatus, sizeof(g_referencesStatus), operation->referencesFound == 0 ?
+                 "No references found." : "Search complete: ");
+        if (operation->referencesFound != 0) {
+            appendUnsigned(g_referencesStatus, sizeof(g_referencesStatus),
+                           static_cast<uint32_t>(operation->referencesFound));
+            appendText(g_referencesStatus, sizeof(g_referencesStatus),
+                       operation->truncated ? " references (truncated)" : " references");
+        }
+        copyText(g_textScratch, sizeof(g_textScratch), operation->truncated ?
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=TRUNCATED files=" :
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=PASS files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesSearched));
+        appendText(g_textScratch, sizeof(g_textScratch), " references=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->referencesFound));
+        logMarker(ctx, g_textScratch);
+        writeStudioOutput(operation->truncated ? "Find All References completed with truncated results" :
+                          "Find All References completed");
+    } else if (operation->state == ReferenceSearchState::Cancelled) {
+        referencesSetStatus("Reference search cancelled; partial results retained.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=CANCELLED");
+        writeStudioOutput("Find All References cancelled");
+    } else {
+        copyText(g_referencesStatus, sizeof(g_referencesStatus), "Reference search failed: ");
+        appendText(g_referencesStatus, sizeof(g_referencesStatus), ReferenceSearchErrorName(operation->error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_complete=FAIL",
+                      ReferenceSearchErrorName(operation->error));
+        writeStudioOutput("Find All References failed");
+    }
+}
+
+static void stopReferenceSearch(gx_app_context* ctx) {
+    if (g_referencesOperationId == 0) return;
+    if (ReferenceSearchIsActive(&g_referenceSearch)) {
+        ReferenceSearchCancel(&g_referenceSearch, g_referencesOperationId);
+        ReferenceSearchPoll(&g_referenceSearch, g_referencesOperationId, 1, gx_get_ticks_ms(ctx));
+    }
+    const ReferenceSearchOperation* operation = ReferenceSearchOperationInfo(&g_referenceSearch);
+    if (operation && operation->state != ReferenceSearchState::Idle)
+        ReferenceSearchRelease(&g_referenceSearch, g_referencesOperationId);
+    g_referencesOperationId = 0;
+    g_referencesTerminalReported = false;
+}
+
+static uint32_t referencesTotalRows() {
+    uint32_t rows = 0;
+    const uint32_t groups = ReferenceSearchResultGroups(&g_referenceSearch);
+    for (uint32_t i = 0; i < groups; ++i) {
+        const ReferenceFileGroup* group = ReferenceSearchResultGroupAt(&g_referenceSearch, i);
+        if (group) rows += 1 + group->matchCount;
+    }
+    return rows;
+}
+
+static bool referenceMatchForRow(uint32_t row, uint32_t* groupIndex, uint32_t* matchIndex) {
+    uint32_t current = 0;
+    const uint32_t groups = ReferenceSearchResultGroups(&g_referenceSearch);
+    for (uint32_t group = 0; group < groups; ++group) {
+        const ReferenceFileGroup* value = ReferenceSearchResultGroupAt(&g_referenceSearch, group);
+        if (!value) continue;
+        if (row == current) return false;
+        ++current;
+        for (uint32_t match = 0; match < value->matchCount; ++match) {
+            if (row == current) {
+                if (groupIndex) *groupIndex = group;
+                if (matchIndex) *matchIndex = match;
+                return true;
+            }
+            ++current;
+        }
+    }
+    return false;
+}
+
+static uint32_t selectedReferenceRow() {
+    uint32_t row = 0;
+    const uint32_t groups = ReferenceSearchResultGroups(&g_referenceSearch);
+    for (uint32_t group = 0; group < groups; ++group) {
+        const ReferenceFileGroup* value = ReferenceSearchResultGroupAt(&g_referenceSearch, group);
+        if (!value) continue;
+        if (group == g_referencesSelectedGroup) return row + 1 + g_referencesSelectedMatch;
+        row += 1 + value->matchCount;
+    }
+    return 0;
+}
+
+static void ensureReferenceSelectionVisible() {
+    const uint32_t row = selectedReferenceRow();
+    if (row < g_referencesScroll) g_referencesScroll = row;
+    if (row >= g_referencesScroll + static_cast<uint32_t>(kReferencesPanelMaxRows))
+        g_referencesScroll = row - kReferencesPanelMaxRows + 1;
+}
+
+static void moveReferenceSelection(int32_t delta) {
+    const uint32_t total = referencesTotalRows();
+    if (total == 0) return;
+    uint32_t row = selectedReferenceRow();
+    if (delta > 0 && row + 1 < total) ++row;
+    if (delta < 0 && row > 0) --row;
+    uint32_t group = 0, match = 0;
+    if (referenceMatchForRow(row, &group, &match)) {
+        g_referencesSelectedGroup = group;
+        g_referencesSelectedMatch = match;
+    } else if (row == 0) {
+        g_referencesSelectedGroup = 0;
+        g_referencesSelectedMatch = 0;
+    }
+    ensureReferenceSelectionVisible();
+}
+
+static bool referenceIdentifierBoundary(const TextBuffer& buffer, uint32_t offset, uint32_t length) {
+    if (offset > buffer.length || length > buffer.length - offset) return false;
+    const bool left = offset > 0 && ((buffer.data[offset - 1] >= 'A' && buffer.data[offset - 1] <= 'Z') ||
+        (buffer.data[offset - 1] >= 'a' && buffer.data[offset - 1] <= 'z') ||
+        (buffer.data[offset - 1] >= '0' && buffer.data[offset - 1] <= '9') || buffer.data[offset - 1] == '_');
+    const uint32_t end = offset + length;
+    const bool right = end < buffer.length && ((buffer.data[end] >= 'A' && buffer.data[end] <= 'Z') ||
+        (buffer.data[end] >= 'a' && buffer.data[end] <= 'z') ||
+        (buffer.data[end] >= '0' && buffer.data[end] <= '9') || buffer.data[end] == '_');
+    return !left && !right;
+}
+
+static bool selectReferenceIdentifier(Document* document, const ReferenceMatch& match, bool* stale) {
+    if (stale) *stale = false;
+    if (!document) return false;
+    const uint32_t length = lengthOf(g_referenceTarget.identifier, sizeof(g_referenceTarget.identifier));
+    if (match.sourceDocumentId == document->documentId &&
+        match.sourceDocumentGeneration == document->buffer.generation &&
+        match.byteOffset <= document->buffer.length && length <= document->buffer.length - match.byteOffset &&
+        textAtOffset(document->buffer, static_cast<uint32_t>(match.byteOffset), g_referenceTarget.identifier) &&
+        referenceIdentifierBoundary(document->buffer, static_cast<uint32_t>(match.byteOffset), length))
+        return SelectTextRange(&document->buffer, match.byteOffset, length);
+    if (stale) *stale = true;
+    const uint32_t zeroLine = match.line > 0 ? match.line - 1 : 0;
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    if (zeroLine >= lineCount) return false;
+    const uint32_t start = TextBufferLineStart(&document->buffer, zeroLine);
+    const uint32_t end = TextBufferLineEnd(&document->buffer, zeroLine);
+    uint32_t nearest = start;
+    uint32_t nearestDistance = 0xFFFFFFFFu;
+    bool found = false;
+    for (uint32_t offset = start; offset + length <= end; ++offset) {
+        if (!textAtOffset(document->buffer, offset, g_referenceTarget.identifier) ||
+            !referenceIdentifierBoundary(document->buffer, offset, length)) continue;
+        const uint32_t distance = offset > match.byteOffset ?
+            offset - static_cast<uint32_t>(match.byteOffset) : static_cast<uint32_t>(match.byteOffset) - offset;
+        if (!found || distance < nearestDistance) { found = true; nearest = offset; nearestDistance = distance; }
+    }
+    return found && SelectTextRange(&document->buffer, nearest, length);
+}
+
+static bool activateReferenceResult(gx_app_context* ctx, uint32_t groupIndex, uint32_t matchIndex) {
+    const ReferenceSearchOperation* operation = ReferenceSearchOperationInfo(&g_referenceSearch);
+    const ReferenceFileGroup* group = ReferenceSearchResultGroupAt(&g_referenceSearch, groupIndex);
+    const ReferenceMatch* match = ReferenceSearchResultMatchAt(&g_referenceSearch, group, matchIndex);
+    if (!operation || !group || !match || !g_controller.model.open || !g_controller.model.hasProject) {
+        referencesSetStatus("Reference result cannot be activated.");
+        return false;
+    }
+    if (operation->target.projectGeneration != g_controller.model.projectGeneration ||
+        !searchTextEqual(operation->target.projectIdText, g_controller.model.project.projectId)) {
+        referencesSetStatus("Reference result belongs to a stale project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_activate=STALE",
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::ActivationStale));
+        return false;
+    }
+    if (group->relativePath[0] == '\0' || PathContainsTraversal(group->relativePath) ||
+        group->relativePath[0] == '/' || group->relativePath[0] == '\\' || group->relativePath[1] == ':') {
+        referencesSetStatus("Reference result path rejected.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_activate=FAIL",
+                      ReferenceSearchErrorName(ReferenceSearchErrorCode::PathOutsideProject));
+        return false;
+    }
+    char absolutePath[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(g_controller.model.rootPath, group->relativePath, absolutePath, sizeof(absolutePath))) {
+        referencesSetStatus("Reference result is outside the project.");
+        return false;
+    }
+    (void)absolutePath;
+    if (!g_referenceOriginValid) {
+        Document* origin = WorkspaceControllerActiveDocument(&g_controller);
+        if (origin && !captureNavigationLocation(*origin, &g_referenceOrigin)) return false;
+        g_referenceOriginValid = origin != nullptr;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode navigationError = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   group->relativePath, match->line, match->column,
+                                                   &documentIndex, &navigationError)) {
+        referencesSetStatus("Unable to open reference result.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_activate=FAIL",
+                      OutputErrorName(navigationError));
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    bool stale = false;
+    const bool selected = selectReferenceIdentifier(document, *match, &stale);
+    if (!selected) WorkspaceControllerSetCaretPosition(&g_controller, documentIndex, match->line,
+                                                       match->column, nullptr, &navigationError);
+    if (g_referenceOriginValid) NavigationHistoryPush(&g_navigationHistory, g_referenceOrigin);
+    g_referenceOriginValid = false;
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_editorFocused = true;
+    g_outputFocused = false;
+    keepCaretVisible(document);
+    if (stale || !selected) {
+        referencesSetStatus("Reference location was stale; exact selection was not available.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_activate=STALE");
+    } else {
+        referencesSetStatus("");
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_activate=PASS path=");
+        appendText(g_textScratch, sizeof(g_textScratch), group->relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " line=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), match->line);
+        appendText(g_textScratch, sizeof(g_textScratch), " column=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), match->column);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
 static char* projectSearchFieldBuffer() {
     if (g_projectSearchField == ProjectSearchField::Include) return g_projectSearchDraft.includePattern;
     if (g_projectSearchField == ProjectSearchField::Exclude) return g_projectSearchDraft.excludePattern;
@@ -1026,6 +1524,12 @@ static void pollProjectSearch(gx_app_context* ctx) {
 }
 
 static void stopProjectSearch(gx_app_context* ctx) {
+    if (g_referencesOperationId != 0) {
+        stopReferenceSearch(ctx);
+        g_referencesPanelOpen = false;
+        g_referencesResultsFocused = false;
+        g_referencePickerOpen = false;
+    }
     if (g_projectSearchOperationId == 0) return;
     if (ProjectSearchIsActive(&g_projectSearch)) {
         ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
@@ -2058,6 +2562,108 @@ static void projectSearchMoveSelection(int32_t delta) {
     projectSearchEnsureSelectionVisible();
 }
 
+static void drawReferencePicker(gx_app_context* ctx) {
+    if (!g_referencePickerOpen) return;
+    drawPanel(ctx, { 112, 72, 736, 520 }, 0x2A3852u);
+    drawText(ctx, 140, 104, "Choose Symbol for Find All References");
+    drawText(ctx, 140, 128, "Enter: search selected symbol   Escape: cancel");
+    const uint32_t end = g_referenceCandidateScroll + 18u < g_referenceTargetResolution.visibleCandidateCount ?
+        g_referenceCandidateScroll + 18u : g_referenceTargetResolution.visibleCandidateCount;
+    for (uint32_t row = g_referenceCandidateScroll; row < end; ++row) {
+        const DefinitionCandidate& candidate = g_referenceCandidates[row];
+        const int y = 158 + static_cast<int>((row - g_referenceCandidateScroll) * 24);
+        if (row == g_referenceSelectedCandidate) drawPanel(ctx, { 132, y - 16, 696, 22 }, 0x405775u);
+        copyText(g_textScratch, sizeof(g_textScratch), SymbolKindPrefix(candidate.symbol.symbol.kind));
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.qualifiedName[0] ?
+                   candidate.symbol.symbol.qualifiedName : candidate.symbol.symbol.name);
+        appendText(g_textScratch, sizeof(g_textScratch), "  ");
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.line);
+        appendText(g_textScratch, sizeof(g_textScratch), "  ");
+        appendText(g_textScratch, sizeof(g_textScratch), SymbolDeclarationRoleName(candidate.symbol.symbol.declarationRole));
+        drawText(ctx, 144, y, g_textScratch);
+    }
+}
+
+static void drawReferencesPanel(gx_app_context* ctx) {
+    if (!g_referencesPanelOpen) return;
+    drawPanel(ctx, { 8, kReferencesPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 78, "Find All References");
+    drawText(ctx, 24, 103, "Target:");
+    drawPanel(ctx, { kReferencesFieldX, 87, kReferencesFieldWidth, 20 }, 0x202A36u);
+    copyText(g_textScratch, sizeof(g_textScratch), g_referenceTarget.qualifiedName[0] ?
+             g_referenceTarget.qualifiedName : g_referenceTarget.identifier);
+    drawText(ctx, kReferencesFieldX + 5, 102, g_textScratch);
+    drawText(ctx, 620, 103, "[x] declarations");
+    drawText(ctx, 748, 103, "[x] ambiguous");
+    const ReferenceSearchOperation* operation = ReferenceSearchOperationInfo(&g_referenceSearch);
+    const bool active = ReferenceSearchIsActive(&g_referenceSearch);
+    drawPanel(ctx, { 760, 120, 72, 20 }, 0x34496Au);
+    drawText(ctx, 770, 135, active ? "Running" : "Search");
+    drawPanel(ctx, { 840, 120, 72, 20 }, active ? 0xA96F2Au : 0x34496Au);
+    drawText(ctx, 851, 135, "Cancel");
+    if (active && operation) {
+        copyText(g_textScratch, sizeof(g_textScratch), ReferenceSearchStateName(operation->state));
+        appendText(g_textScratch, sizeof(g_textScratch), "  ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesSearched));
+        appendText(g_textScratch, sizeof(g_textScratch), " files, ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->referencesFound));
+        appendText(g_textScratch, sizeof(g_textScratch), " references");
+        drawText(ctx, 24, 177, g_textScratch);
+    } else if (g_referencesStatus[0] != '\0') {
+        drawText(ctx, 24, 177, g_referencesStatus);
+    }
+    if (operation && operation->lexicalFallback)
+        drawText(ctx, 24, 195, "Lexical fallback: results are identifier matches, not semantic bindings.");
+    drawPanel(ctx, { 16, kReferencesPanelResultsTop - 12, 928, 1 }, 0x405775u);
+    uint32_t row = 0;
+    const uint32_t firstRow = g_referencesScroll;
+    const uint32_t lastRow = firstRow + kReferencesPanelMaxRows;
+    const uint32_t groups = ReferenceSearchResultGroups(&g_referenceSearch);
+    for (uint32_t groupIndex = 0; groupIndex < groups; ++groupIndex) {
+        const ReferenceFileGroup* group = ReferenceSearchResultGroupAt(&g_referenceSearch, groupIndex);
+        if (!group) continue;
+        if (row >= firstRow && row < lastRow) {
+            copyText(g_textScratch, sizeof(g_textScratch), group->relativePath);
+            appendText(g_textScratch, sizeof(g_textScratch), " (");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), group->matchCount);
+            appendText(g_textScratch, sizeof(g_textScratch), ")");
+            drawText(ctx, 24, kReferencesPanelResultsTop + static_cast<int>((row - firstRow) * kReferencesPanelRowHeight), g_textScratch);
+        }
+        ++row;
+        for (uint32_t matchIndex = 0; matchIndex < group->matchCount; ++matchIndex, ++row) {
+            if (row < firstRow || row >= lastRow) continue;
+            const ReferenceMatch* match = ReferenceSearchResultMatchAt(&g_referenceSearch, group, matchIndex);
+            if (!match) continue;
+            const bool selected = g_referencesResultsFocused && groupIndex == g_referencesSelectedGroup &&
+                matchIndex == g_referencesSelectedMatch;
+            const int y = kReferencesPanelResultsTop + static_cast<int>((row - firstRow) * kReferencesPanelRowHeight);
+            if (selected) drawPanel(ctx, { 20, y - 12, 920, kReferencesPanelRowHeight }, 0x34496Au);
+            copyText(g_textScratch, sizeof(g_textScratch), "  ");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), match->line);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), match->column);
+            appendText(g_textScratch, sizeof(g_textScratch), "  ");
+            appendText(g_textScratch, sizeof(g_textScratch), ReferenceKindName(match->kind));
+            appendText(g_textScratch, sizeof(g_textScratch), " [");
+            appendText(g_textScratch, sizeof(g_textScratch), ReferenceConfidenceName(match->confidence));
+            appendText(g_textScratch, sizeof(g_textScratch), "]  ");
+            if (match->previewLeftTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+            appendText(g_textScratch, sizeof(g_textScratch), match->previewText);
+            if (match->previewRightTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+            drawText(ctx, 32, y, g_textScratch);
+        }
+    }
+    if (groups == 0 && operation && !active)
+        drawText(ctx, 24, kReferencesPanelResultsTop, "No references found.");
+    if (groups == 0 && active)
+        drawText(ctx, 24, kReferencesPanelResultsTop, "Scanning active project files...");
+    if (groups != 0 && referencesTotalRows() > static_cast<uint32_t>(kReferencesPanelMaxRows))
+        drawText(ctx, 720, 177, "Scroll: mouse wheel / Up / Down");
+}
+
 static void drawProjectSearchPanel(gx_app_context* ctx) {
     if (!g_projectSearchPanelOpen) return;
     drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
@@ -3004,8 +3610,10 @@ static void drawShell(gx_app_context* ctx) {
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
+    drawReferencesPanel(ctx);
     drawSymbolSearch(ctx);
     drawDefinitionPicker(ctx);
+    drawReferencePicker(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -3360,6 +3968,84 @@ static bool handleProjectSearchKey(gx_app_context* ctx, int keyCode, int action,
     return false;
 }
 
+static bool handleReferencePickerKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!g_referencePickerOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { closeReferencePicker(); g_referencesPanelOpen = false; return true; }
+    if (keyCode == GX_KEY_UP) {
+        if (g_referenceSelectedCandidate > 0) --g_referenceSelectedCandidate;
+        ensureReferenceCandidateVisible();
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN) {
+        if (g_referenceSelectedCandidate + 1 < g_referenceTargetResolution.visibleCandidateCount) ++g_referenceSelectedCandidate;
+        ensureReferenceCandidateVisible();
+        return true;
+    }
+    if (keyCode == 33) {
+        g_referenceSelectedCandidate = g_referenceSelectedCandidate > 18 ? g_referenceSelectedCandidate - 18 : 0;
+        ensureReferenceCandidateVisible();
+        return true;
+    }
+    if (keyCode == 34) {
+        const uint32_t last = g_referenceTargetResolution.visibleCandidateCount == 0 ? 0 :
+            g_referenceTargetResolution.visibleCandidateCount - 1;
+        g_referenceSelectedCandidate = g_referenceSelectedCandidate + 18 < last ?
+            g_referenceSelectedCandidate + 18 : last;
+        ensureReferenceCandidateVisible();
+        return true;
+    }
+    if (keyCode == 36) { g_referenceSelectedCandidate = 0; ensureReferenceCandidateVisible(); return true; }
+    if (keyCode == 35) {
+        g_referenceSelectedCandidate = g_referenceTargetResolution.visibleCandidateCount == 0 ? 0 :
+            g_referenceTargetResolution.visibleCandidateCount - 1;
+        ensureReferenceCandidateVisible();
+        return true;
+    }
+    if (keyCode == 13 && g_referenceTargetResolution.candidateCount > 0) {
+        activateReferenceTargetCandidate(ctx, g_referenceSelectedCandidate);
+        return true;
+    }
+    return true;
+}
+
+static bool handleReferencesKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!g_referencesPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    const bool active = ReferenceSearchIsActive(&g_referenceSearch);
+    if (keyCode == 27) {
+        if (active) {
+            ReferenceSearchCancel(&g_referenceSearch, g_referencesOperationId);
+            referencesSetStatus("Cancelling reference search...");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_cancel=REQUESTED");
+        } else {
+            g_referencesPanelOpen = false;
+            g_referencesResultsFocused = false;
+            stopReferenceSearch(ctx);
+        }
+        return true;
+    }
+    if (g_referencesResultsFocused) {
+        if (keyCode == GX_KEY_UP) { moveReferenceSelection(-1); return true; }
+        if (keyCode == GX_KEY_DOWN) { moveReferenceSelection(1); return true; }
+        if (keyCode == 13) {
+            activateReferenceResult(ctx, g_referencesSelectedGroup, g_referencesSelectedMatch);
+            return true;
+        }
+        if (keyCode == 9) { g_referencesResultsFocused = false; g_editorFocused = true; return true; }
+        return false;
+    }
+    if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
+        g_referencesResultsFocused = true;
+        moveReferenceSelection(keyCode == GX_KEY_UP ? -1 : 1);
+        return true;
+    }
+    if (keyCode == 13 && referencesTotalRows() > 0) {
+        g_referencesResultsFocused = true;
+        activateReferenceResult(ctx, g_referencesSelectedGroup, g_referencesSelectedMatch);
+        return true;
+    }
+    return true;
+}
+
 static void symbolSearchInsert(char value) {
     const uint32_t length = lengthOf(g_symbolSearchQuery, sizeof(g_symbolSearchQuery));
     if (value == '\0' || length >= kSymbolMaxQueryBytes || g_symbolSearchCaret > length) return;
@@ -3424,6 +4110,11 @@ static bool handleSymbolSearchKey(gx_app_context* ctx, int keyCode, int action, 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
     if (g_definitionPickerOpen && handleDefinitionPickerKey(ctx, keyCode, action)) return;
+    if (g_referencePickerOpen && handleReferencePickerKey(ctx, keyCode, action)) return;
+    if ((modifiers & GX_KEY_MOD_SHIFT) && keyCode == 123) {
+        startFindAllReferences(ctx);
+        return;
+    }
     if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 84 || keyCode == 116)) {
         openSymbolSearch(ctx);
         return;
@@ -3442,6 +4133,8 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     }
     if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
     if (g_projectSearchPanelOpen) return;
+    if (g_referencesPanelOpen && handleReferencesKey(ctx, keyCode, action)) return;
+    if (g_referencesPanelOpen) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 70 || keyCode == 102)) {
         openFindBar(false, true);
         return;
@@ -3569,6 +4262,28 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         }
         return;
     }
+    if (g_referencePickerOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_referenceCandidateScroll = g_referenceCandidateScroll > 3 ?
+                g_referenceCandidateScroll - 3 : 0;
+            else if (g_referenceCandidateScroll + 18 < g_referenceTargetResolution.visibleCandidateCount)
+                ++g_referenceCandidateScroll;
+            ensureReferenceCandidateVisible();
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+            x >= 132 && x < 828 && y >= 142 && y < 590) {
+            const uint32_t row = g_referenceCandidateScroll + static_cast<uint32_t>((y - 142) / 24);
+            if (row < g_referenceTargetResolution.visibleCandidateCount) {
+                g_referenceSelectedCandidate = row;
+                ensureReferenceCandidateVisible();
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                    activateReferenceTargetCandidate(ctx, row);
+            }
+        }
+        return;
+    }
     if (g_symbolSearchOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             if (event.param4 > 0) g_symbolSearchScroll = g_symbolSearchScroll > 3 ? g_symbolSearchScroll - 3 : 0;
@@ -3590,6 +4305,43 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSymbol(ctx, g_symbolSearchResults[row]);
             }
         }
+        return;
+    }
+    if (g_referencesPanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t total = referencesTotalRows();
+            const uint32_t maximum = total > static_cast<uint32_t>(kReferencesPanelMaxRows) ?
+                total - static_cast<uint32_t>(kReferencesPanelMaxRows) : 0;
+            if (event.param4 > 0) g_referencesScroll = g_referencesScroll > 3 ? g_referencesScroll - 3 : 0;
+            else g_referencesScroll = g_referencesScroll + 3 < maximum ? g_referencesScroll + 3 : maximum;
+            drawShell(ctx);
+            return;
+        }
+        if (button != GX_MOUSE_BUTTON_LEFT ||
+            (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+        if (y >= 120 && y < 142 && x >= 840 && x < 912) {
+            if (ReferenceSearchIsActive(&g_referenceSearch)) {
+                ReferenceSearchCancel(&g_referenceSearch, g_referencesOperationId);
+                referencesSetStatus("Cancelling reference search...");
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_cancel=REQUESTED");
+            } else {
+                g_referencesPanelOpen = false;
+                g_referencesResultsFocused = false;
+                stopReferenceSearch(ctx);
+            }
+        } else if (y >= kReferencesPanelResultsTop - 4 && y < kReferencesPanelTop + 580) {
+            const uint32_t row = g_referencesScroll + static_cast<uint32_t>((y - kReferencesPanelResultsTop) / kReferencesPanelRowHeight);
+            uint32_t groupIndex = 0;
+            uint32_t matchIndex = 0;
+            if (referenceMatchForRow(row, &groupIndex, &matchIndex)) {
+                g_referencesResultsFocused = true;
+                g_referencesSelectedGroup = groupIndex;
+                g_referencesSelectedMatch = matchIndex;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                    activateReferenceResult(ctx, groupIndex, matchIndex);
+            }
+        }
+        drawShell(ctx);
         return;
     }
     if (g_projectSearchPanelOpen) {
@@ -3864,6 +4616,26 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_projectSearchStatus[0] = '\0';
     g_lastProjectSearchQuery[0] = '\0';
     g_projectSearchTerminalReported = false;
+    ReferenceSearchServiceInit(&g_referenceSearch);
+    ReferenceTargetInit(&g_referenceTarget);
+    g_referenceTargetResolution = {};
+    g_referenceQuery = {};
+    g_referenceOrigin = {};
+    g_referenceOriginValid = false;
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_referencePickerOpen = false;
+    g_referenceSelectedCandidate = 0;
+    g_referenceCandidateScroll = 0;
+    g_referencesScroll = 0;
+    g_referencesSelectedGroup = 0;
+    g_referencesSelectedMatch = 0;
+    g_referencesOperationId = 0;
+    g_referencesProjectGeneration = 0;
+    g_referencesProjectId[0] = '\0';
+    g_referencesStatus[0] = '\0';
+    g_referencesTerminalReported = false;
+    g_nextReferenceQueryId = 1;
     g_symbolSearchOpen = false;
     g_symbolSearchCaseSensitive = false;
     g_symbolSearchCaret = 0;
@@ -3921,11 +4693,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (ctx->host->poll_event) {
         while (running) {
             pollProjectSearch(ctx);
+            pollReferences(ctx);
             pollBuild(ctx);
             pollRun(ctx);
             gx_event event;
             clear_event(&event);
-            gx_result result = ctx->host->poll_event(ctx, &event, ProjectSearchIsActive(&g_projectSearch) ? 50 : 500);
+            gx_result result = ctx->host->poll_event(ctx, &event,
+                (ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ? 50 : 500);
             if (result == GX_OK && event.window == g_window) {
                 if (gx_event_is_paint(&event)) drawShell(ctx);
                 else if (gx_event_is_close(&event)) {
@@ -3946,7 +4720,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     }
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
-                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen && !g_symbolSearchOpen) {
+                    else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
+                             !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
@@ -3961,6 +4736,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 pollBuild(ctx);
                 pollRun(ctx);
                 pollProjectSearch(ctx);
+                pollReferences(ctx);
                 drawShell(ctx);
             } else if (result != GX_OK && result != GX_ERROR_TIMEOUT) {
                 markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER event_loop=FAIL", "poll_event");

@@ -10,7 +10,7 @@ The current bounded phase proves the first useful source workflow:
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
 - a truthful AMD64 hosted guideXOS target profile; and
-- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, and bounded lexical Go To Definition (`F12`/`Alt+Left`).
+- deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, bounded lexical Go To Definition (`F12`/`Alt+Left`), and bounded project-local Find All References (`Shift+F12`).
 
 Debug/Debugging, additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
@@ -81,7 +81,7 @@ Supported text extensions are `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, 
 
 Limits are intentionally explicit: 128 visible entries per directory, 8 open documents, 256 KiB per editable file, 8 navigated workspace path segments, 768-byte model paths (the hosted ABI additionally bounds an entered host path to 240 bytes), and bounded output history. Directory enumeration is immediate-directory only and never follows symlinks or recursively scans without a user navigation action.
 
-The editor supports caret movement, bounded selection, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, bounded automatic horizontal scrolling, visible line separation, dirty tracking, tabs, save failure preservation, lexical C/C++ syntax highlighting, active-document literal Find/Replace, project-scoped Find in Files, a document Outline, project-wide Ctrl+T symbol lookup, and lexical F12 Go To Definition with Alt+Left/Alt+Right history. It has no clipboard, undo/redo, code completion, folding, regex, Replace in Files, or semantic services. See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md), [docs/FIND_IN_FILES.md](docs/FIND_IN_FILES.md), [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md), [docs/SYMBOL_INDEX.md](docs/SYMBOL_INDEX.md), and [docs/GO_TO_DEFINITION.md](docs/GO_TO_DEFINITION.md).
+The editor supports caret movement, bounded selection, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, bounded automatic horizontal scrolling, visible line separation, dirty tracking, tabs, save failure preservation, lexical C/C++ syntax highlighting, active-document literal Find/Replace, project-scoped Find in Files, a document Outline, project-wide Ctrl+T symbol lookup, lexical F12 Go To Definition with Alt+Left/Alt+Right history, and lexical Shift+F12 Find All References. It has no clipboard, undo/redo, code completion, folding, regex, Replace in Files, semantic reference binding, or Rename Symbol. See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md), [docs/FIND_IN_FILES.md](docs/FIND_IN_FILES.md), [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md), [docs/SYMBOL_INDEX.md](docs/SYMBOL_INDEX.md), [docs/GO_TO_DEFINITION.md](docs/GO_TO_DEFINITION.md), and [docs/FIND_ALL_REFERENCES.md](docs/FIND_ALL_REFERENCES.md).
 
 ## Build
 
@@ -128,3 +128,4 @@ See [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md) for lexical token
 See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md) for active-document literal search, navigation, replacement safety, limits, overlays, lifecycle, and keyboard shortcuts.
 See [docs/FIND_IN_FILES.md](docs/FIND_IN_FILES.md) for project scope, bounded asynchronous search, patterns, dirty-document policy, lifecycle, results, and navigation.
 See [docs/SYMBOL_INDEX.md](docs/SYMBOL_INDEX.md) for lexical symbol scanning, incremental indexing, storage bounds, Outline behavior, and Ctrl+T navigation.
+See [docs/FIND_ALL_REFERENCES.md](docs/FIND_ALL_REFERENCES.md) for lexical target resolution, token filtering, bounded asynchronous scanning, confidence labels, dirty snapshots, cancellation, and stale-safe activation.
