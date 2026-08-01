@@ -157,6 +157,7 @@ SyntaxLanguage DetectSyntaxLanguage(const char* path);
 const char* SyntaxLanguageName(SyntaxLanguage language);
 const char* SyntaxTokenKindName(SyntaxTokenKind kind);
 const char* SyntaxErrorName(SyntaxErrorCode code);
+bool SyntaxIsKeyword(const char* text);
 
 bool SyntaxLineStateEqual(const SyntaxLineState& left, const SyntaxLineState& right);
 bool SyntaxLineStateValid(const SyntaxLineState& state);

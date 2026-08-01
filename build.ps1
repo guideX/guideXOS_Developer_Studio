@@ -22,6 +22,7 @@ $SearchTest = Join-Path $ServerRoot "tmp\developer-studio-project-search-test.ex
 $SymbolTest = Join-Path $ServerRoot "tmp\developer-studio-symbol-test.exe"
 $NavigationTest = Join-Path $ServerRoot "tmp\developer-studio-navigation-definition-test.exe"
 $ReferenceTest = Join-Path $ServerRoot "tmp\developer-studio-reference-test.exe"
+$RenameTest = Join-Path $ServerRoot "tmp\developer-studio-rename-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -128,6 +129,14 @@ try {
     & $ReferenceTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio reference test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_project_search.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_navigation.cpp", "src\developer_studio_references.cpp", "src\developer_studio_rename.cpp", "tests\rename_test.cpp",
+        "-o", $RenameTest
+    )
+    & $RenameTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio rename test failed with exit code $LASTEXITCODE" }
+
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
@@ -146,6 +155,7 @@ try {
     $symbolObject = Join-Path $ObjectRoot "developer_studio_symbols.o"
     $navigationObject = Join-Path $ObjectRoot "developer_studio_navigation.o"
     $referencesObject = Join-Path $ObjectRoot "developer_studio_references.o"
+    $renameObject = Join-Path $ObjectRoot "developer_studio_rename.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
@@ -160,11 +170,12 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_symbols.cpp"), "-o", $symbolObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_navigation.cpp"), "-o", $navigationObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_references.cpp"), "-o", $referencesObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_rename.cpp"), "-o", $renameObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -189,5 +200,6 @@ try {
     if (Test-Path -LiteralPath $SymbolTest) { Remove-Item -LiteralPath $SymbolTest -Force }
     if (Test-Path -LiteralPath $NavigationTest) { Remove-Item -LiteralPath $NavigationTest -Force }
     if (Test-Path -LiteralPath $ReferenceTest) { Remove-Item -LiteralPath $ReferenceTest -Force }
+    if (Test-Path -LiteralPath $RenameTest) { Remove-Item -LiteralPath $RenameTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

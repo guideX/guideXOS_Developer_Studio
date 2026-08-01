@@ -420,6 +420,17 @@ const char* SyntaxErrorName(SyntaxErrorCode code) {
     }
 }
 
+bool SyntaxIsKeyword(const char* text) {
+    if (!text || text[0] == '\0') return false;
+    uint32_t length = 0;
+    while (length <= 1024u && text[length] != '\0') ++length;
+    if (length > 1024u) return false;
+    return isKeyword(SyntaxLanguage::C, text, 0, length) ||
+        isKeyword(SyntaxLanguage::Cpp, text, 0, length) ||
+        isTypeKeyword(SyntaxLanguage::C, text, 0, length) ||
+        isTypeKeyword(SyntaxLanguage::Cpp, text, 0, length);
+}
+
 bool SyntaxLineStateEqual(const SyntaxLineState& left, const SyntaxLineState& right) {
     return left.kind == right.kind && left.auxiliary == right.auxiliary;
 }

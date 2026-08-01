@@ -9,6 +9,7 @@
 #include "developer_studio_symbols.h"
 #include "developer_studio_navigation.h"
 #include "developer_studio_references.h"
+#include "developer_studio_rename.h"
 
 namespace {
 
@@ -103,6 +104,7 @@ using guidexos::developer_studio::FileInfoKind;
 using guidexos::developer_studio::FileListEntry;
 using guidexos::developer_studio::InitialTargetProfile;
 using guidexos::developer_studio::IsSupportedTextPath;
+using guidexos::developer_studio::IsSymbolSourcePath;
 using guidexos::developer_studio::IsValidTargetProfile;
 using guidexos::developer_studio::JoinWorkspacePath;
 using guidexos::developer_studio::PathContainsTraversal;
@@ -259,6 +261,29 @@ using guidexos::developer_studio::NavigationHistoryPush;
 using guidexos::developer_studio::kDefinitionMaxCandidates;
 using guidexos::developer_studio::kDefinitionMaxVisibleCandidates;
 using guidexos::developer_studio::SymbolDeclarationRoleName;
+using guidexos::developer_studio::RenameApply;
+using guidexos::developer_studio::RenameCandidateState;
+using guidexos::developer_studio::RenameCandidateStateName;
+using guidexos::developer_studio::RenameErrorName;
+using guidexos::developer_studio::RenameEditCandidate;
+using guidexos::developer_studio::RenameModel;
+using guidexos::developer_studio::RenameModelBuildFromReferences;
+using guidexos::developer_studio::RenameModelClearSelection;
+using guidexos::developer_studio::RenameModelInit;
+using guidexos::developer_studio::RenameModelSelectExact;
+using guidexos::developer_studio::RenameModelSelectedCount;
+using guidexos::developer_studio::RenameModelSetCandidateSelected;
+using guidexos::developer_studio::RenameModelSetNewName;
+using guidexos::developer_studio::RenameModelStatus;
+using guidexos::developer_studio::RenameState;
+using guidexos::developer_studio::RenameSymbolKindSupported;
+using guidexos::developer_studio::RenameUndoLast;
+using guidexos::developer_studio::RenameUndoManager;
+using guidexos::developer_studio::RenameUndoManagerInit;
+using guidexos::developer_studio::RenameUndoAvailable;
+using guidexos::developer_studio::RenameValidateNewName;
+using guidexos::developer_studio::kRenameMaxIdentifierBytes;
+using guidexos::developer_studio::RenameErrorCode;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -433,6 +458,16 @@ static char g_referencesProjectId[kMaxProjectIdBytes] = {};
 static char g_referencesStatus[160] = {};
 static bool g_referencesTerminalReported = false;
 static uint64_t g_nextReferenceQueryId = 1;
+static RenameModel g_renameModel = {};
+static RenameUndoManager g_renameUndo = {};
+static bool g_renamePanelOpen = false;
+static bool g_renameSearchPending = false;
+static bool g_renameTargetPickerPending = false;
+static bool g_renameNameFocused = true;
+static uint32_t g_renameNameCaret = 0;
+static uint32_t g_renameSelectedCandidate = 0;
+static uint32_t g_renameScroll = 0;
+static uint64_t g_nextRenameTransactionId = 1;
 static bool g_symbolSearchOpen = false;
 static bool g_symbolSearchCaseSensitive = false;
 static uint32_t g_symbolSearchCaret = 0;
@@ -461,6 +496,7 @@ static void stopProjectSearch(gx_app_context* ctx);
 static uint32_t captureDirtyProjectSearchDocuments();
 static void stopReferenceSearch(gx_app_context* ctx);
 static void keepCaretVisible(const Document* document);
+static bool startRenameSearchWithTarget(gx_app_context* ctx, const ReferenceTarget& target);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -1101,6 +1137,10 @@ static bool activateReferenceTargetCandidate(gx_app_context* ctx, uint32_t index
         g_referenceOriginValid = true;
     }
     closeReferencePicker();
+    if (g_renameTargetPickerPending) {
+        g_renameTargetPickerPending = false;
+        return startRenameSearchWithTarget(ctx, target);
+    }
     return startReferenceSearchWithTarget(ctx, target, false);
 }
 
@@ -1185,6 +1225,84 @@ static bool startFindAllReferences(gx_app_context* ctx) {
     return false;
 }
 
+static bool startRenameSearchWithTarget(gx_app_context* ctx, const ReferenceTarget& target) {
+    g_renameSearchPending = true;
+    if (!startReferenceSearchWithTarget(ctx, target, false)) {
+        g_renameSearchPending = false;
+        return false;
+    }
+    referencesSetStatus("Rename Symbol: scanning project references...");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_references_begin=PASS");
+    return true;
+}
+
+static bool startRenameSymbol(gx_app_context* ctx) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        referencesSetStatus("Open a project before using Rename Symbol.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", RenameErrorName(RenameErrorCode::NoProject));
+        return false;
+    }
+    if (!document) {
+        referencesSetStatus("Rename Symbol requires an active source document.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", RenameErrorName(RenameErrorCode::NoTarget));
+        return false;
+    }
+    if (!IsSymbolSourcePath(document->path)) {
+        referencesSetStatus("Rename Symbol is available only in C/C++ source files.");
+        return false;
+    }
+    DefinitionIdentifier identifier = {};
+    if (!ExtractDefinitionIdentifier(document->buffer.data, document->buffer.length, document->buffer.caret,
+                                     document->buffer.selectionActive, document->buffer.selectionAnchor,
+                                     document->buffer.caret, &identifier)) {
+        referencesSetStatus("Rename requires an identifier under the caret.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", RenameErrorName(RenameErrorCode::NoTarget));
+        return false;
+    }
+    if (g_controller.model.activeDocument < kMaxOpenDocuments)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
+    char relativePath[kMaxPathBytes] = {};
+    if (!copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath))) {
+        referencesSetStatus("Active document path is invalid.");
+        return false;
+    }
+    if (!BuildDefinitionQuery(*document, g_controller.model.project.projectId,
+                              g_controller.model.projectGeneration, g_controller.model.rootPath,
+                              relativePath, g_nextReferenceQueryId++, &g_referenceQuery)) {
+        referencesSetStatus("Rename requires an indexed symbol.");
+        return false;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_begin=PASS");
+    g_referenceTargetResolution = {};
+    if (!ResolveReferenceTarget(&g_symbolDatabase, g_referenceQuery, g_referenceCandidates,
+                               kReferenceMaxCandidates, false, &g_referenceTargetResolution)) {
+        referencesSetStatus("Rename requires an indexed symbol.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", RenameErrorName(RenameErrorCode::NoTarget));
+        return false;
+    }
+    if (g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::Direct) {
+        if (!ReferenceTargetFromDefinitionCandidate(g_referenceCandidates[0], g_controller.model.project.projectId,
+                                                    g_controller.model.projectGeneration, &g_referenceTarget)) {
+            referencesSetStatus("Rename target could not be resolved.");
+            return false;
+        }
+        return startRenameSearchWithTarget(ctx, g_referenceTarget);
+    }
+    if (g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::Multiple ||
+        g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::Stale) {
+        g_renameTargetPickerPending = true;
+        g_referencesPanelOpen = true;
+        referencesSetStatus("Choose the indexed symbol to rename.");
+        openReferencePicker(ctx);
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_target=MULTIPLE");
+        return true;
+    }
+    referencesSetStatus("Rename requires an indexed symbol.");
+    markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", RenameErrorName(RenameErrorCode::NoTarget));
+    return false;
+}
+
 static void pollReferences(gx_app_context* ctx) {
     if (g_referencesOperationId == 0) return;
     if (ReferenceSearchIsActive(&g_referenceSearch) &&
@@ -1198,6 +1316,45 @@ static void pollReferences(gx_app_context* ctx) {
     const ReferenceSearchOperation* operation = ReferenceSearchOperationInfo(&g_referenceSearch);
     if (!operation || ReferenceSearchIsActive(&g_referenceSearch) || g_referencesTerminalReported) return;
     g_referencesTerminalReported = true;
+    if (g_renameSearchPending) {
+        g_renameSearchPending = false;
+        if (operation->state == ReferenceSearchState::Completed) {
+            if (RenameModelBuildFromReferences(&g_renameModel, &g_referenceSearch)) {
+                g_renamePanelOpen = true;
+                g_renameNameFocused = true;
+                g_renameNameCaret = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName));
+                g_renameSelectedCandidate = 0;
+                g_renameScroll = 0;
+                g_referencesPanelOpen = false;
+                g_referencesResultsFocused = false;
+                g_editorFocused = false;
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_references_complete=PASS exact=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.exactCount);
+                appendText(g_textScratch, sizeof(g_textScratch), " likely=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.likelyCount);
+                appendText(g_textScratch, sizeof(g_textScratch), " ambiguous=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.ambiguousCount);
+                logMarker(ctx, g_textScratch);
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_preview=READY");
+            } else {
+                referencesSetStatus(RenameErrorName(g_renameModel.error));
+                g_referencesPanelOpen = false;
+            }
+        } else if (operation->state == ReferenceSearchState::Cancelled) {
+            referencesSetStatus("Rename Symbol search cancelled.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL reason=RENAME_CANCELLED");
+            g_referencesPanelOpen = false;
+        } else {
+            referencesSetStatus("Rename Symbol search failed: ");
+            appendText(g_referencesStatus, sizeof(g_referencesStatus), ReferenceSearchErrorName(operation->error));
+            markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", ReferenceSearchErrorName(operation->error));
+            g_referencesPanelOpen = false;
+        }
+        ReferenceSearchRelease(&g_referenceSearch, g_referencesOperationId);
+        g_referencesOperationId = 0;
+        g_referencesTerminalReported = false;
+        return;
+    }
     if (operation->state == ReferenceSearchState::Completed) {
         copyText(g_referencesStatus, sizeof(g_referencesStatus), operation->referencesFound == 0 ?
                  "No references found." : "Search complete: ");
@@ -2426,6 +2583,64 @@ static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color) {
     if (ctx && ctx->host && ctx->host->draw_rect) ctx->host->draw_rect(ctx, g_window, rect.x, rect.y, rect.width, rect.height, color);
 }
 
+static void drawRenamePanel(gx_app_context* ctx) {
+    if (!g_renamePanelOpen) return;
+    drawPanel(ctx, { 24, 58, 912, 580 }, 0x2A3852u);
+    drawText(ctx, 48, 88, "Rename Symbol");
+    copyText(g_textScratch, sizeof(g_textScratch), "Target: ");
+    appendText(g_textScratch, sizeof(g_textScratch), g_renameModel.target.qualifiedName[0]
+               ? g_renameModel.target.qualifiedName : g_renameModel.target.identifier);
+    appendText(g_textScratch, sizeof(g_textScratch), "  [");
+    appendText(g_textScratch, sizeof(g_textScratch), SymbolKindName(g_renameModel.target.kind));
+    appendText(g_textScratch, sizeof(g_textScratch), "]");
+    drawText(ctx, 48, 112, g_textScratch);
+    drawText(ctx, 48, 138, "New name:");
+    drawPanel(ctx, { 122, 120, 320, 26 }, g_renameNameFocused ? 0x405775u : 0x202A36u);
+    drawText(ctx, 130, 139, g_renameModel.newName);
+    copyText(g_textScratch, sizeof(g_textScratch), "Files: ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.fileCount);
+    appendText(g_textScratch, sizeof(g_textScratch), "  Exact selected: ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), RenameModelSelectedCount(&g_renameModel));
+    appendText(g_textScratch, sizeof(g_textScratch), "  Likely: ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.likelyCount);
+    appendText(g_textScratch, sizeof(g_textScratch), "  Ambiguous: ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.ambiguousCount);
+    drawText(ctx, 468, 138, g_textScratch);
+    if (g_renameModel.conflictSeverity != guidexos::developer_studio::RenameConflictSeverity::None)
+        drawText(ctx, 48, 166, g_renameModel.conflictMessage);
+    else drawText(ctx, 48, 166, "Exact references are selected. Likely and ambiguous references are excluded by default.");
+    drawText(ctx, 48, 190, "Tab: name/list   Space: toggle   E: select exact   C: clear   Enter: Apply   Escape: Cancel");
+    const uint32_t end = g_renameScroll + 10u < g_renameModel.candidateCount
+        ? g_renameScroll + 10u : g_renameModel.candidateCount;
+    int y = 218;
+    for (uint32_t index = g_renameScroll; index < end; ++index, y += 38) {
+        const RenameEditCandidate& candidate = g_renameModel.candidates[index];
+        if (index == g_renameSelectedCandidate && !g_renameNameFocused)
+            drawPanel(ctx, { 40, y - 14, 880, 18 }, 0x405775u);
+        const bool selected = candidate.state == RenameCandidateState::Selected;
+        copyText(g_textScratch, sizeof(g_textScratch), selected ? "[x] " :
+                 (candidate.state == RenameCandidateState::Disabled ? "[-] " : "[ ] "));
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.line);
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        appendText(g_textScratch, sizeof(g_textScratch), ReferenceKindName(candidate.referenceKind));
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        appendText(g_textScratch, sizeof(g_textScratch), ReferenceConfidenceName(candidate.confidence));
+        if (candidate.stale) appendText(g_textScratch, sizeof(g_textScratch), " STALE");
+        drawText(ctx, 48, y, g_textScratch);
+        copyText(g_lineScratch, sizeof(g_lineScratch), "- ");
+        appendText(g_lineScratch, sizeof(g_lineScratch), candidate.previewBefore);
+        drawText(ctx, 70, y + 14, g_lineScratch);
+        copyText(g_lineScratch, sizeof(g_lineScratch), "+ ");
+        appendText(g_lineScratch, sizeof(g_lineScratch), candidate.previewAfter);
+        drawText(ctx, 70, y + 28, g_lineScratch);
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "Status: ");
+    appendText(g_textScratch, sizeof(g_textScratch), RenameModelStatus(&g_renameModel));
+    drawText(ctx, 48, 620, g_textScratch);
+}
+
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix) {
     copyText(output, size, prefix);
     appendText(output, size, value ? value : "-");
@@ -3614,6 +3829,7 @@ static void drawShell(gx_app_context* ctx) {
     drawSymbolSearch(ctx);
     drawDefinitionPicker(ctx);
     drawReferencePicker(ctx);
+    drawRenamePanel(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -3970,7 +4186,12 @@ static bool handleProjectSearchKey(gx_app_context* ctx, int keyCode, int action,
 
 static bool handleReferencePickerKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_referencePickerOpen || action != GX_KEY_ACTION_DOWN) return false;
-    if (keyCode == 27) { closeReferencePicker(); g_referencesPanelOpen = false; return true; }
+    if (keyCode == 27) {
+        closeReferencePicker();
+        g_referencesPanelOpen = false;
+        g_renameTargetPickerPending = false;
+        return true;
+    }
     if (keyCode == GX_KEY_UP) {
         if (g_referenceSelectedCandidate > 0) --g_referenceSelectedCandidate;
         ensureReferenceCandidateVisible();
@@ -4014,11 +4235,15 @@ static bool handleReferencesKey(gx_app_context* ctx, int keyCode, int action) {
     if (keyCode == 27) {
         if (active) {
             ReferenceSearchCancel(&g_referenceSearch, g_referencesOperationId);
-            referencesSetStatus("Cancelling reference search...");
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_cancel=REQUESTED");
+            referencesSetStatus(g_renameSearchPending ? "Cancelling Rename Symbol search..." : "Cancelling reference search...");
+            logMarker(ctx, g_renameSearchPending
+                      ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_cancel=REQUESTED"
+                      : "GUIDEXOS_DEVELOPER_STUDIO_MARKER references_cancel=REQUESTED");
         } else {
             g_referencesPanelOpen = false;
             g_referencesResultsFocused = false;
+            g_renameSearchPending = false;
+            g_renameTargetPickerPending = false;
             stopReferenceSearch(ctx);
         }
         return true;
@@ -4107,12 +4332,137 @@ static bool handleSymbolSearchKey(gx_app_context* ctx, int keyCode, int action, 
     return false;
 }
 
+static void renameEnsureSelectionVisible() {
+    if (g_renameModel.candidateCount == 0) { g_renameSelectedCandidate = 0; g_renameScroll = 0; return; }
+    if (g_renameSelectedCandidate >= g_renameModel.candidateCount)
+        g_renameSelectedCandidate = g_renameModel.candidateCount - 1;
+    if (g_renameSelectedCandidate < g_renameScroll) g_renameScroll = g_renameSelectedCandidate;
+    if (g_renameSelectedCandidate >= g_renameScroll + 10u)
+        g_renameScroll = g_renameSelectedCandidate - 9u;
+}
+
+static void renameInsertCharacter(char value) {
+    if (value == '\0') return;
+    const uint32_t length = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName));
+    if (length >= kRenameMaxIdentifierBytes || g_renameNameCaret > length) return;
+    for (uint32_t i = length; i > g_renameNameCaret; --i)
+        g_renameModel.newName[i] = g_renameModel.newName[i - 1];
+    g_renameModel.newName[g_renameNameCaret++] = value;
+    g_renameModel.newName[length + 1] = '\0';
+    RenameModelSetNewName(&g_renameModel, g_renameModel.newName, &g_symbolDatabase);
+}
+
+static void renameBackspace() {
+    const uint32_t length = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName));
+    if (g_renameNameCaret == 0 || g_renameNameCaret > length) return;
+    for (uint32_t i = g_renameNameCaret - 1; i < length; ++i)
+        g_renameModel.newName[i] = g_renameModel.newName[i + 1];
+    --g_renameNameCaret;
+    RenameModelSetNewName(&g_renameModel, g_renameModel.newName, &g_symbolDatabase);
+}
+
+static void renameDelete() {
+    const uint32_t length = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName));
+    if (g_renameNameCaret >= length) return;
+    for (uint32_t i = g_renameNameCaret; i < length; ++i)
+        g_renameModel.newName[i] = g_renameModel.newName[i + 1];
+    RenameModelSetNewName(&g_renameModel, g_renameModel.newName, &g_symbolDatabase);
+}
+
+static bool applyRenameFromUi(gx_app_context* ctx) {
+    RenameErrorCode validation = RenameErrorCode::None;
+    if (!RenameValidateNewName(g_renameModel.currentName, g_renameModel.newName, &validation)) {
+        referencesSetStatus(RenameErrorName(validation));
+        g_renameModel.error = validation;
+        return false;
+    }
+    if (g_renameModel.conflictSeverity == guidexos::developer_studio::RenameConflictSeverity::Blocking) {
+        referencesSetStatus(g_renameModel.conflictMessage);
+        return false;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply_begin=PASS");
+    const uint64_t transactionId = g_nextRenameTransactionId == 0 ? 1 : g_nextRenameTransactionId++;
+    if (!RenameApply(&g_renameModel, &g_controller.model, g_controller.fileSystem, &g_symbolDatabase,
+                     g_controller.model.projectGeneration, &g_renameUndo, transactionId)) {
+        referencesSetStatus(RenameErrorName(g_renameModel.error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL", RenameErrorName(g_renameModel.error));
+        return false;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_revalidate=PASS");
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=PASS files=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.plan.fileCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " edits=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_renameModel.plan.totalEdits);
+    logMarker(ctx, g_textScratch);
+    writeStudioOutput("Rename Symbol applied as one workspace operation");
+    g_renamePanelOpen = false;
+    g_editorFocused = true;
+    referencesSetStatus("Rename Symbol applied. Ctrl+Z undoes the whole operation.");
+    return true;
+}
+
+static bool handleRenameKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_renamePanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) {
+        g_renamePanelOpen = false;
+        g_renameModel.state = RenameState::Cancelled;
+        g_editorFocused = true;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_apply=FAIL reason=RENAME_CANCELLED");
+        return true;
+    }
+    if (keyCode == 9) {
+        g_renameNameFocused = !g_renameNameFocused;
+        return true;
+    }
+    if (g_renameNameFocused) {
+        if (keyCode == GX_KEY_LEFT) { if (g_renameNameCaret > 0) --g_renameNameCaret; return true; }
+        if (keyCode == GX_KEY_RIGHT) {
+            const uint32_t length = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName));
+            if (g_renameNameCaret < length) ++g_renameNameCaret;
+            return true;
+        }
+        if (keyCode == 36) { g_renameNameCaret = 0; return true; }
+        if (keyCode == 35) { g_renameNameCaret = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName)); return true; }
+        if (keyCode == 8) { renameBackspace(); return true; }
+        if (keyCode == 46) { renameDelete(); return true; }
+        if (keyCode == 13) { applyRenameFromUi(ctx); return true; }
+        const char value = mapKeyToChar(keyCode, modifiers);
+        if (value != '\0') { renameInsertCharacter(value); return true; }
+        return true;
+    }
+    if (keyCode == GX_KEY_UP) {
+        if (g_renameSelectedCandidate > 0) --g_renameSelectedCandidate;
+        renameEnsureSelectionVisible();
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN) {
+        if (g_renameSelectedCandidate + 1 < g_renameModel.candidateCount) ++g_renameSelectedCandidate;
+        renameEnsureSelectionVisible();
+        return true;
+    }
+    if (keyCode == 32) {
+        const RenameEditCandidate& candidate = g_renameModel.candidates[g_renameSelectedCandidate];
+        RenameModelSetCandidateSelected(&g_renameModel, g_renameSelectedCandidate,
+                                         candidate.state != RenameCandidateState::Selected);
+        return true;
+    }
+    if (keyCode == 69 || keyCode == 101) { RenameModelSelectExact(&g_renameModel); return true; }
+    if (keyCode == 67 || keyCode == 99) { RenameModelClearSelection(&g_renameModel); return true; }
+    if (keyCode == 13) { applyRenameFromUi(ctx); return true; }
+    return true;
+}
+
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_renamePanelOpen && handleRenameKey(ctx, keyCode, action, modifiers)) return;
     if (g_definitionPickerOpen && handleDefinitionPickerKey(ctx, keyCode, action)) return;
     if (g_referencePickerOpen && handleReferencePickerKey(ctx, keyCode, action)) return;
     if ((modifiers & GX_KEY_MOD_SHIFT) && keyCode == 123) {
         startFindAllReferences(ctx);
+        return;
+    }
+    if (keyCode == 113 && g_editorFocused) {
+        startRenameSymbol(ctx);
         return;
     }
     if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 84 || keyCode == 116)) {
@@ -4174,6 +4524,21 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (keyCode == 123) {
         if (!g_editorFocused) { definitionSetStatus("Focus the editor before going to a definition."); return; }
         startGoToDefinition(ctx);
+        return;
+    }
+    if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 90 || keyCode == 122)) {
+        if (!RenameUndoAvailable(&g_renameUndo)) return;
+        RenameErrorCode undoError = RenameErrorCode::None;
+        if (RenameUndoLast(&g_renameUndo, &g_controller.model, g_controller.fileSystem, &g_symbolDatabase,
+                           g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+                           g_controller.model.projectGeneration, &undoError)) {
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_undo=PASS");
+            writeStudioOutput("Rename Symbol undone");
+            referencesSetStatus("Rename Symbol undone.");
+        } else {
+            markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER rename_undo=FAIL", RenameErrorName(undoError));
+            referencesSetStatus(RenameErrorName(undoError));
+        }
         return;
     }
     if (g_outputFocused) {
@@ -4243,6 +4608,31 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_renamePanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_renameScroll = g_renameScroll > 3 ? g_renameScroll - 3 : 0;
+            else if (g_renameScroll + 10u < g_renameModel.candidateCount) ++g_renameScroll;
+            return;
+        }
+        if (button != GX_MOUSE_BUTTON_LEFT ||
+            (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+        if (x >= 122 && x < 442 && y >= 120 && y < 148) {
+            g_renameNameFocused = true;
+            g_renameNameCaret = lengthOf(g_renameModel.newName, sizeof(g_renameModel.newName));
+        } else if (y >= 204 && y < 620) {
+            const uint32_t row = g_renameScroll + static_cast<uint32_t>((y - 204) / 38);
+            if (row < g_renameModel.candidateCount) {
+                g_renameNameFocused = false;
+                g_renameSelectedCandidate = row;
+                renameEnsureSelectionVisible();
+                const RenameEditCandidate& candidate = g_renameModel.candidates[row];
+                RenameModelSetCandidateSelected(&g_renameModel, row,
+                    candidate.state != RenameCandidateState::Selected);
+            }
+        }
+        drawShell(ctx);
+        return;
+    }
     if (g_definitionPickerOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             if (event.param4 > 0) g_definitionScroll = g_definitionScroll > 3 ? g_definitionScroll - 3 : 0;
@@ -4636,6 +5026,16 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_referencesStatus[0] = '\0';
     g_referencesTerminalReported = false;
     g_nextReferenceQueryId = 1;
+    RenameModelInit(&g_renameModel);
+    RenameUndoManagerInit(&g_renameUndo);
+    g_renamePanelOpen = false;
+    g_renameSearchPending = false;
+    g_renameTargetPickerPending = false;
+    g_renameNameFocused = true;
+    g_renameNameCaret = 0;
+    g_renameSelectedCandidate = 0;
+    g_renameScroll = 0;
+    g_nextRenameTransactionId = 1;
     g_symbolSearchOpen = false;
     g_symbolSearchCaseSensitive = false;
     g_symbolSearchCaret = 0;

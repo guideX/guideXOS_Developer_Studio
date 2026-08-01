@@ -5,7 +5,9 @@ lexical Find All References for C and C++. It is deliberately built on the
 existing symbol index, Go To Definition resolver, syntax tokenizer, dirty
 document snapshots, project search enumerator, and source-navigation path.
 It does not provide compiler binding, Clang, a language server, type
-inference, complete overload resolution, macro expansion, or Rename Symbol.
+inference, complete overload resolution, macro expansion, or semantic Rename
+Symbol. The bounded lexical Rename Symbol consumer is documented separately in
+[RENAME_SYMBOL.md](RENAME_SYMBOL.md).
 
 ## Workflow and target resolution
 

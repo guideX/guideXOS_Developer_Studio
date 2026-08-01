@@ -145,6 +145,10 @@ static bool isTypeLike(SymbolKind kind) {
         kind == SymbolKind::Union || kind == SymbolKind::Typedef || kind == SymbolKind::UsingAlias;
 }
 
+static bool isTypeKind(SymbolKind kind) {
+    return kind == SymbolKind::Class || kind == SymbolKind::Struct || kind == SymbolKind::Union;
+}
+
 static uint32_t lastQualifierSeparator(const char* qualifiedName) {
     uint32_t result = 0;
     if (!qualifiedName) return 0;
@@ -346,7 +350,24 @@ static void scopePop(ReferenceScopeStack* stack) {
 }
 
 static bool hintMatchesTarget(const ReferenceTarget& target, const ReferenceSymbolHint& hint) {
-    if (!equalText(target.identifier, hint.identifier, true)) return false;
+    const bool destructorIdentifier = isTypeKind(target.kind) && hint.kind == SymbolKind::Destructor &&
+        hint.identifier[0] == '~' && equalText(target.identifier, hint.identifier + 1, true);
+    if (!equalText(target.identifier, hint.identifier, true) && !destructorIdentifier) return false;
+    // A class/struct/union target carries the same lexical identifier as its
+    // constructor and destructor.  Treat those declaration records as the
+    // tightly coupled identity they are, while leaving unrelated functions
+    // and overloads separate.
+    if (isTypeKind(target.kind) && (hint.kind == SymbolKind::Constructor || hint.kind == SymbolKind::Destructor)) {
+        const uint32_t length = lengthOf(hint.qualifiedName, sizeof(hint.qualifiedName));
+        uint32_t separator = 0;
+        for (uint32_t i = 0; i + 1 < length; ++i)
+            if (hint.qualifiedName[i] == ':' && hint.qualifiedName[i + 1] == ':') separator = i + 2;
+        char parent[kReferenceMaxQualifiedNameBytes + 1] = {};
+        uint32_t out = 0;
+        for (uint32_t i = 0; i < separator && out + 1 < sizeof(parent); ++i) parent[out++] = hint.qualifiedName[i];
+        parent[out] = '\0';
+        return target.qualifiedName[0] != '\0' && equalText(target.qualifiedName, parent, true);
+    }
     if (target.hasQualifiedIdentity && !equalText(target.qualifiedName, hint.qualifiedName, true)) return false;
     if (target.hasSignature && target.signature[0] && hint.signature[0] &&
         !equalText(target.signature, hint.signature, true)) return false;
@@ -423,8 +444,8 @@ static uint64_t matchIdentity(const ReferenceTarget& target, const char* path, u
 }
 
 static bool appendMatch(ReferenceSearchService* service, const ProjectSearchScanFile& file,
-                        uint64_t offset, uint32_t line, uint32_t column, ReferenceKind kind,
-                        ReferenceConfidence confidence) {
+                        uint64_t offset, uint32_t line, uint32_t column, uint32_t identifierLength,
+                        ReferenceKind kind, ReferenceConfidence confidence) {
     if (!service) return false;
     const int32_t existingGroup = findGroupByCount(service, file.relativePath);
     int32_t groupIndex = existingGroup;
@@ -463,7 +484,8 @@ static bool appendMatch(ReferenceSearchService* service, const ProjectSearchScan
     match.byteOffset = offset;
     match.line = line;
     match.column = column;
-    match.identifierLength = lengthOf(service->operation.target.identifier, sizeof(service->operation.target.identifier));
+    match.identifierLength = identifierLength == 0
+        ? lengthOf(service->operation.target.identifier, sizeof(service->operation.target.identifier)) : identifierLength;
     match.kind = kind;
     match.confidence = confidence;
     match.sourceDocumentId = file.documentId;
@@ -550,6 +572,12 @@ static bool scanReferenceFile(ReferenceSearchService* service, const ProjectSear
                         matchOffset = absoluteOffset - 1;
                         matchLength = targetLength;
                     }
+                    if (!targetMatch && isTypeKind(service->operation.target.kind) && targetLength == span.length &&
+                        absoluteOffset > lineStart && file.data[absoluteOffset - 1] == '~') {
+                        targetMatch = true;
+                        matchOffset = absoluteOffset - 1;
+                        matchLength = span.length + 1;
+                    }
                     if (targetMatch) {
                         const int32_t hintIndex = findHint(service, file.relativePath, matchOffset);
                         const ReferenceSymbolHint* hint = hintIndex >= 0 ?
@@ -576,10 +604,10 @@ static bool scanReferenceFile(ReferenceSearchService* service, const ProjectSear
                         if (confidence == ReferenceConfidence::Ambiguous && !service->includeAmbiguous) continue;
                         if (service->operation.target.lexicallyAmbiguous) {
                             if (!appendMatch(service, file, matchOffset, line, matchOffset - lineStart + 1,
-                                              ReferenceKind::LexicalMatch, ReferenceConfidence::LexicalOnly)) return false;
+                                              matchLength, ReferenceKind::LexicalMatch, ReferenceConfidence::LexicalOnly)) return false;
                         } else {
                             if (!appendMatch(service, file, matchOffset, line, matchOffset - lineStart + 1,
-                                              kind, confidence)) return false;
+                                              matchLength, kind, confidence)) return false;
                         }
                     }
                 }
