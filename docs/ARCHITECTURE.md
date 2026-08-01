@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, and bounded lexical Go To Definition
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, and manually invoked lightweight lexical Code Completion
 
 ## Integration
 
@@ -187,6 +187,33 @@ The pre-existing ABI only provides uncolored text and rectangle drawing, so the
 renderer uses centralized token background colors and does not require a Server
 ABI change.
 
+## Lightweight Code Completion
+
+Code Completion is a source-editor-only, manually invoked `Ctrl+Space` feature.
+It is implemented by `developer_studio_completion.*` as a UI-independent,
+generation-bound lexical session. The session consumes the shared syntax-cache
+keyword/type list, the active document's lexical context and bounded document
+word cache, and the existing project `SymbolDatabase`. It does not introduce a
+second project index, background worker, Server ABI slot, compiler front end,
+language-server client, or semantic type resolver.
+
+The model extracts identifier, qualifier, member-like, comment/string,
+preprocessor, inactive-branch, replacement-range, and lexical-scope context.
+It collects keywords, current-scope/document/project symbols, and filtered
+document words, then applies deterministic match tiers, source/kind scoring,
+deduplication, overload collapsing, and stable tie-breaks. The model has fixed
+candidate, text, scan, and visible-result bounds; document-word indexing keeps a
+bounded conditional stack and scans each line once.
+
+`main.cpp` owns popup placement and input routing. The popup clamps to the
+editor viewport, accepts with `Enter` or `Tab`, supports bounded keyboard/mouse
+selection, and dismisses on incompatible edits or focus/document changes.
+Acceptance validates document/project generations, caret, replacement range, and
+expected text before reusing the existing text-buffer, syntax, symbol, word,
+and dirty-state paths. One bounded completion snapshot is available through the
+existing `Ctrl+Z` path. See [CODE_COMPLETION.md](CODE_COMPLETION.md) for the
+context grammar, sources, ranking, limits, markers, and deferred semantic work.
+
 ## Find and Replace
 
 The active-document Find/Replace service is UI-independent and owns fixed-size
@@ -294,7 +321,7 @@ The environment created three automatic Developer Studio checkpoint commits duri
 
 ## Deferred work
 
-Language server, semantic highlighting, completion, semantic navigation beyond this lexical phase, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, redo, and generic editor undo remain deferred. Find All References is implemented as the bounded lexical `Shift+F12` phase documented in [FIND_ALL_REFERENCES.md](FIND_ALL_REFERENCES.md), and conservative preview-first lexical Rename Symbol is documented in [RENAME_SYMBOL.md](RENAME_SYMBOL.md). Semantic binding, safe semantic rename, and language-service integration remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
+Language server, semantic highlighting, semantic navigation beyond this lexical phase, Git integration, terminal, visual designer, website preview, game editor, container tooling, remote deployment, extension loading, theme selection, session restore, crash recovery, binary/hex editing, clipboard, regex, Replace in Files, redo, and generic editor undo remain deferred. Find All References is implemented as the bounded lexical `Shift+F12` phase documented in [FIND_ALL_REFERENCES.md](FIND_ALL_REFERENCES.md), conservative preview-first lexical Rename Symbol is documented in [RENAME_SYMBOL.md](RENAME_SYMBOL.md), and lightweight lexical Code Completion is documented in [CODE_COMPLETION.md](CODE_COMPLETION.md). Semantic binding, safe semantic rename, and language-service integration remain deferred. Project migration, project references, dependencies, multiple configurations, target switching, and all project kinds other than Native GUI Application remain unsupported.
 
 ## Hosted Server dependency and path policy
 

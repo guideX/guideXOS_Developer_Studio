@@ -158,6 +158,8 @@ const char* SyntaxLanguageName(SyntaxLanguage language);
 const char* SyntaxTokenKindName(SyntaxTokenKind kind);
 const char* SyntaxErrorName(SyntaxErrorCode code);
 bool SyntaxIsKeyword(const char* text);
+uint32_t SyntaxKeywordCount(SyntaxLanguage language);
+const char* SyntaxKeywordAt(SyntaxLanguage language, uint32_t index);
 
 bool SyntaxLineStateEqual(const SyntaxLineState& left, const SyntaxLineState& right);
 bool SyntaxLineStateValid(const SyntaxLineState& state);

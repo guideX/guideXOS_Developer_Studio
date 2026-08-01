@@ -12,7 +12,7 @@ Document bytes
     -> comment/string/preprocessor-aware lexical tokenizer
     -> DocumentSymbol records
     -> path/identity/generation-aware SymbolDatabase
-    -> Outline panel or Ctrl+T result list
+    -> Outline panel, Ctrl+T result list, or Ctrl+Space completion candidates
     -> existing source-location navigation
 ```
 
@@ -28,6 +28,9 @@ deterministically. Lookup by file, kind, exact name, prefix, and bounded
 substring is exposed as model APIs. Each canonical symbol also retains a
 bounded qualified name, signature hint, and lexical declaration role
 (`Definition`, `Declaration`, `ForwardDeclaration`, `Alias`, or `Unknown`).
+Code Completion consumes these records read-only and applies its own
+generation-bound context filtering, match tiers, ranking, and deduplication;
+the symbol index does not become a semantic type index.
 
 ## Recognized symbols
 

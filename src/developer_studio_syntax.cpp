@@ -82,15 +82,14 @@ static char unpackRawDelimiter(uint32_t auxiliary, uint32_t index) {
     return static_cast<char>((auxiliary >> (index * 8u)) & 0xFFu);
 }
 
-static bool isKeyword(SyntaxLanguage language, const char* text, uint32_t start, uint32_t length) {
-    static const char* const cKeywords[] = {
+static const char* const kCKeywords[] = {
         "auto", "break", "case", "const", "continue", "default", "do", "else", "enum", "extern",
         "for", "goto", "if", "inline", "register", "restrict", "return", "sizeof", "static",
         "struct", "switch", "typedef", "union", "volatile", "while", "_Alignas", "_Alignof",
         "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn", "_Static_assert",
         "_Thread_local"
-    };
-    static const char* const cppKeywords[] = {
+};
+static const char* const kCppKeywords[] = {
         "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "break", "case",
         "catch", "class", "compl", "concept", "const", "consteval", "constexpr", "constinit",
         "const_cast", "continue", "co_await", "co_return", "co_yield", "decltype", "default", "delete",
@@ -100,28 +99,49 @@ static bool isKeyword(SyntaxLanguage language, const char* text, uint32_t start,
         "sizeof", "static", "static_assert", "static_cast", "struct", "switch", "template", "this",
         "thread_local", "throw", "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
         "virtual", "volatile", "while", "xor", "xor_eq", "override", "final"
-    };
-    const char* const* words = language == SyntaxLanguage::Cpp ? cppKeywords : cKeywords;
-    const uint32_t count = language == SyntaxLanguage::Cpp
-        ? static_cast<uint32_t>(sizeof(cppKeywords) / sizeof(cppKeywords[0]))
-        : static_cast<uint32_t>(sizeof(cKeywords) / sizeof(cKeywords[0]));
+};
+static const char* const kCTypes[] = {
+        "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
+        "size_t"
+};
+static const char* const kCppTypes[] = {
+        "void", "bool", "char", "short", "int", "long", "float", "double", "signed", "unsigned",
+        "wchar_t", "char8_t", "char16_t", "char32_t", "size_t", "nullptr", "true", "false"
+};
+
+static const char* const* keywordWords(SyntaxLanguage language) {
+    return language == SyntaxLanguage::Cpp ? kCppKeywords : kCKeywords;
+}
+
+static uint32_t keywordWordCount(SyntaxLanguage language) {
+    return language == SyntaxLanguage::Cpp
+        ? static_cast<uint32_t>(sizeof(kCppKeywords) / sizeof(kCppKeywords[0]))
+        : static_cast<uint32_t>(sizeof(kCKeywords) / sizeof(kCKeywords[0]));
+}
+
+static const char* const* typeWords(SyntaxLanguage language) {
+    return language == SyntaxLanguage::Cpp ? kCppTypes : kCTypes;
+}
+
+static uint32_t typeWordCount(SyntaxLanguage language) {
+    return language == SyntaxLanguage::Cpp
+        ? static_cast<uint32_t>(sizeof(kCppTypes) / sizeof(kCppTypes[0]))
+        : static_cast<uint32_t>(sizeof(kCTypes) / sizeof(kCTypes[0]));
+}
+
+static bool isKeyword(SyntaxLanguage language, const char* text, uint32_t start, uint32_t length) {
+    const char* const* words = keywordWords(language);
+    const uint32_t count = keywordWordCount(language);
     for (uint32_t i = 0; i < count; ++i) if (asciiEqualRange(text, start, length, words[i])) return true;
+    const char* const* types = typeWords(language);
+    const uint32_t typeCount = typeWordCount(language);
+    for (uint32_t i = 0; i < typeCount; ++i) if (asciiEqualRange(text, start, length, types[i])) return true;
     return false;
 }
 
 static bool isTypeKeyword(SyntaxLanguage language, const char* text, uint32_t start, uint32_t length) {
-    static const char* const cTypes[] = {
-        "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
-        "size_t"
-    };
-    static const char* const cppTypes[] = {
-        "void", "bool", "char", "short", "int", "long", "float", "double", "signed", "unsigned",
-        "wchar_t", "char8_t", "char16_t", "char32_t", "size_t", "nullptr", "true", "false"
-    };
-    const char* const* words = language == SyntaxLanguage::Cpp ? cppTypes : cTypes;
-    const uint32_t count = language == SyntaxLanguage::Cpp
-        ? static_cast<uint32_t>(sizeof(cppTypes) / sizeof(cppTypes[0]))
-        : static_cast<uint32_t>(sizeof(cTypes) / sizeof(cTypes[0]));
+    const char* const* words = typeWords(language);
+    const uint32_t count = typeWordCount(language);
     for (uint32_t i = 0; i < count; ++i) if (asciiEqualRange(text, start, length, words[i])) return true;
     return false;
 }
@@ -429,6 +449,20 @@ bool SyntaxIsKeyword(const char* text) {
         isKeyword(SyntaxLanguage::Cpp, text, 0, length) ||
         isTypeKeyword(SyntaxLanguage::C, text, 0, length) ||
         isTypeKeyword(SyntaxLanguage::Cpp, text, 0, length);
+}
+
+uint32_t SyntaxKeywordCount(SyntaxLanguage language) {
+    if (language != SyntaxLanguage::C && language != SyntaxLanguage::Cpp) return 0;
+    return keywordWordCount(language) + typeWordCount(language);
+}
+
+const char* SyntaxKeywordAt(SyntaxLanguage language, uint32_t index) {
+    if (language != SyntaxLanguage::C && language != SyntaxLanguage::Cpp) return "";
+    const uint32_t keywordCount = keywordWordCount(language);
+    if (index < keywordCount) return keywordWords(language)[index];
+    index -= keywordCount;
+    const uint32_t typeCount = typeWordCount(language);
+    return index < typeCount ? typeWords(language)[index] : "";
 }
 
 bool SyntaxLineStateEqual(const SyntaxLineState& left, const SyntaxLineState& right) {

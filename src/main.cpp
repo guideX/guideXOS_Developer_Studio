@@ -10,6 +10,7 @@
 #include "developer_studio_navigation.h"
 #include "developer_studio_references.h"
 #include "developer_studio_rename.h"
+#include "developer_studio_completion.h"
 
 namespace {
 
@@ -121,6 +122,7 @@ using guidexos::developer_studio::TextBufferDelete;
 using guidexos::developer_studio::TextBufferEnd;
 using guidexos::developer_studio::TextBufferHome;
 using guidexos::developer_studio::TextBufferInsert;
+using guidexos::developer_studio::TextBufferSet;
 using guidexos::developer_studio::TextBufferLineCount;
 using guidexos::developer_studio::TextBufferLineEnd;
 using guidexos::developer_studio::TextBufferLineStart;
@@ -284,6 +286,30 @@ using guidexos::developer_studio::RenameUndoAvailable;
 using guidexos::developer_studio::RenameValidateNewName;
 using guidexos::developer_studio::kRenameMaxIdentifierBytes;
 using guidexos::developer_studio::RenameErrorCode;
+using guidexos::developer_studio::CompletionCandidate;
+using guidexos::developer_studio::CompletionCandidateKindPrefix;
+using guidexos::developer_studio::CompletionContextKindName;
+using guidexos::developer_studio::CompletionErrorCode;
+using guidexos::developer_studio::CompletionErrorName;
+using guidexos::developer_studio::CompletionProjectId;
+using guidexos::developer_studio::CompletionSession;
+using guidexos::developer_studio::CompletionBuildSession;
+using guidexos::developer_studio::CompletionSessionDismiss;
+using guidexos::developer_studio::CompletionSessionEnd;
+using guidexos::developer_studio::CompletionSessionHome;
+using guidexos::developer_studio::CompletionSessionInit;
+using guidexos::developer_studio::CompletionSessionIsCurrent;
+using guidexos::developer_studio::CompletionSessionMove;
+using guidexos::developer_studio::CompletionSessionPage;
+using guidexos::developer_studio::CompletionSessionRefresh;
+using guidexos::developer_studio::CompletionSessionSelected;
+using guidexos::developer_studio::CompletionSessionTextMatches;
+using guidexos::developer_studio::DocumentWordCache;
+using guidexos::developer_studio::DocumentWordCacheInit;
+using guidexos::developer_studio::DocumentWordEntry;
+using guidexos::developer_studio::kCompletionMaxDocumentWords;
+using guidexos::developer_studio::kCompletionMaxRetainedCandidates;
+using guidexos::developer_studio::kCompletionMaxVisibleCandidates;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -334,6 +360,9 @@ static const int kReferencesPanelRowHeight = 17;
 static const int kReferencesPanelMaxRows = 25;
 static const int kReferencesFieldX = 86;
 static const int kReferencesFieldWidth = 510;
+static const int kCompletionPopupWidth = 430;
+static const int kCompletionPopupRowHeight = 20;
+static const int kCompletionPopupMaxRows = 9;
 
 enum class InputMode {
     Normal = 0,
@@ -365,6 +394,22 @@ static SymbolDatabase g_symbolDatabase = {};
 static ProjectSymbol g_symbolProjectStorage[kSymbolMaxProjectSymbols] = {};
 static SymbolDocument g_symbolDocumentStorage[kSymbolMaxDocuments] = {};
 static DocumentSymbol g_symbolScratchStorage[kSymbolMaxDocumentSymbols] = {};
+static CompletionCandidate g_completionCandidateStorage[kCompletionMaxRetainedCandidates] = {};
+static DocumentWordEntry g_completionWordStorage[kCompletionMaxDocumentWords] = {};
+static CompletionSession g_completionSession = {};
+static DocumentWordCache g_completionWordCache = {};
+static bool g_completionPopupOpen = false;
+static char g_completionStatus[160] = {};
+static char g_completionProjectId[kMaxProjectIdBytes] = {};
+static bool g_completionUndoAvailable = false;
+static uint64_t g_completionUndoDocumentId = 0;
+static uint32_t g_completionUndoGeneration = 0;
+static uint32_t g_completionUndoLength = 0;
+static bool g_completionUndoDirty = false;
+static uint32_t g_completionUndoCaret = 0;
+static uint32_t g_completionUndoSelectionAnchor = 0;
+static bool g_completionUndoSelectionActive = false;
+static char g_completionUndoText[kMaxEditorBytes + 1] = {};
 static NativeFileSystemContext g_fileSystemContext = {};
 static gx_handle g_window = 0;
 static InputMode g_inputMode = InputMode::Normal;
@@ -497,6 +542,11 @@ static uint32_t captureDirtyProjectSearchDocuments();
 static void stopReferenceSearch(gx_app_context* ctx);
 static void keepCaretVisible(const Document* document);
 static bool startRenameSearchWithTarget(gx_app_context* ctx, const ReferenceTarget& target);
+static void dismissCompletion(gx_app_context* ctx, const char* reason, bool showStatus);
+static bool openCompletion(gx_app_context* ctx);
+static bool refreshCompletion(gx_app_context* ctx);
+static bool acceptCompletion(gx_app_context* ctx);
+static bool undoCompletion(gx_app_context* ctx);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -2161,6 +2211,7 @@ static void reportBuildResult(gx_app_context* ctx) {
 }
 
 static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
+    dismissCompletion(ctx, "build", false);
     if (BuildControllerIsActive(&g_buildController)) {
         writeOutput("Build already running");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(BuildErrorCode::AlreadyRunning));
@@ -2295,6 +2346,7 @@ static void requestBuild(gx_app_context* ctx) {
 }
 
 static void requestRun(gx_app_context* ctx) {
+    dismissCompletion(ctx, "run", false);
     if (RunControllerIsActive(&g_runController) || g_runWaitingForBuild) {
         writeOutput("Run already active");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", RunErrorName(RunErrorCode::AlreadyActive));
@@ -2475,6 +2527,7 @@ static void commitNewProject(gx_app_context* ctx) {
 }
 
 static void commitProjectOpen(gx_app_context* ctx) {
+    dismissCompletion(ctx, "project_changed", false);
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
         writeOutput("Project opened");
@@ -2489,6 +2542,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
 }
 
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
+    dismissCompletion(ctx, "workspace_changed", false);
     stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     reportWorkspaceOpen(ctx, success);
@@ -2497,6 +2551,7 @@ static bool commitWorkspaceOpen(gx_app_context* ctx) {
 }
 
 static void requestWorkspaceOpen(gx_app_context* ctx) {
+    dismissCompletion(ctx, "workspace_changed", false);
     if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
         copyText(g_pendingWorkspacePath, sizeof(g_pendingWorkspacePath), g_prompt);
         g_inputMode = InputMode::ConfirmWorkspace;
@@ -2508,6 +2563,7 @@ static void requestWorkspaceOpen(gx_app_context* ctx) {
 }
 
 static void closeActiveDocument(gx_app_context* ctx, CloseDecision decision) {
+    dismissCompletion(ctx, "document_changed", false);
     if (g_pendingDocument >= kMaxOpenDocuments) return;
     bool success = WorkspaceControllerCloseDocument(&g_controller, g_pendingDocument, decision);
     if (success) {
@@ -2519,6 +2575,7 @@ static void closeActiveDocument(gx_app_context* ctx, CloseDecision decision) {
 }
 
 static void finishApplicationClose(gx_app_context* ctx, bool success) {
+    dismissCompletion(ctx, "application_close", false);
     if (!success) {
         writeOutput("Save failed; application remains open");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=FAIL", currentError());
@@ -3532,6 +3589,265 @@ static void updateSyntaxAfterEdit(gx_app_context* ctx, Document* document) {
     }
 }
 
+static void completionSetStatus(const char* text) {
+    copyText(g_completionStatus, sizeof(g_completionStatus), text ? text : "");
+}
+
+static void completionStatusForError(CompletionErrorCode error) {
+    const char* status = guidexos::developer_studio::CompletionStatusText(error);
+    if (status[0] != '\0') completionSetStatus(status);
+    else {
+        copyText(g_completionStatus, sizeof(g_completionStatus), "Completion unavailable: ");
+        appendText(g_completionStatus, sizeof(g_completionStatus), CompletionErrorName(error));
+    }
+}
+
+static void dismissCompletion(gx_app_context* ctx, const char* reason, bool showStatus) {
+    if (!g_completionPopupOpen && !g_completionSession.active) return;
+    CompletionSessionDismiss(&g_completionSession);
+    g_completionPopupOpen = false;
+    if (showStatus && reason) {
+        completionSetStatus(reason);
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_dismiss=PASS reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), reason);
+        logMarker(ctx, g_textScratch);
+    }
+}
+
+static void completionLogContext(gx_app_context* ctx) {
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_context=");
+    appendText(g_textScratch, sizeof(g_textScratch), CompletionContextKindName(g_completionSession.context.kind));
+    if (g_completionSession.context.hasExplicitQualifier) {
+        appendText(g_textScratch, sizeof(g_textScratch), " qualifier=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_completionSession.context.explicitQualifier);
+    }
+    logMarker(ctx, g_textScratch);
+}
+
+static bool openCompletion(gx_app_context* ctx) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        completionSetStatus("Open a project before using Code Completion.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(CompletionErrorCode::NoProject));
+        return false;
+    }
+    if (!document || !g_editorFocused) {
+        completionSetStatus("Focus the source editor before using Code Completion.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(CompletionErrorCode::NoDocument));
+        return false;
+    }
+    if (g_completionSession.sessionId == 0) g_completionSession.sessionId = 1;
+    else ++g_completionSession.sessionId;
+    CompletionErrorCode error = CompletionErrorCode::None;
+    copyText(g_completionProjectId, sizeof(g_completionProjectId), g_controller.model.project.projectId);
+    if (!CompletionBuildSession(&g_completionSession, *document,
+                                       CompletionProjectId(g_controller.model.project.projectId),
+                                       g_controller.model.projectGeneration, &g_symbolDatabase,
+                                       &g_completionWordCache, true, &error)) {
+        completionStatusForError(error);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(error));
+        g_completionPopupOpen = false;
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_begin=PASS prefix=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_completionSession.context.prefix);
+    logMarker(ctx, g_textScratch);
+    completionLogContext(ctx);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_candidates=PASS total=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_completionSession.collectedCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " retained=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_completionSession.candidateCount);
+    logMarker(ctx, g_textScratch);
+    g_completionPopupOpen = g_completionSession.active;
+    if (!g_completionPopupOpen) {
+        completionStatusForError(error == CompletionErrorCode::None ? CompletionErrorCode::NoResults : error);
+        return true;
+    }
+    if (g_completionSession.truncated) {
+        completionSetStatus("Completion results truncated.");
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_candidates=TRUNCATED retained=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_completionSession.candidateCount);
+        logMarker(ctx, g_textScratch);
+    } else if (g_completionSession.context.kind == guidexos::developer_studio::CompletionContextKind::MemberAccessLexical) {
+        completionSetStatus("Lexical suggestions; receiver type is unresolved.");
+    } else {
+        completionSetStatus("");
+    }
+    return true;
+}
+
+static bool refreshCompletion(gx_app_context* ctx) {
+    if (!g_completionPopupOpen) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) {
+        completionSetStatus("Completion session expired.");
+        dismissCompletion(ctx, "document_missing", true);
+        return false;
+    }
+    CompletionErrorCode error = CompletionErrorCode::None;
+    if (!CompletionSessionRefresh(&g_completionSession, *document,
+                                  CompletionProjectId(g_controller.model.project.projectId),
+                                  g_controller.model.projectGeneration, &g_symbolDatabase,
+                                  &g_completionWordCache, &error)) {
+        completionStatusForError(error == CompletionErrorCode::None ? CompletionErrorCode::SessionStale : error);
+        dismissCompletion(ctx, "stale", true);
+        return false;
+    }
+    g_completionPopupOpen = g_completionSession.active;
+    if (!g_completionPopupOpen) {
+        completionSetStatus("No completion suggestions.");
+        return true;
+    }
+    if (g_completionSession.truncated) completionSetStatus("Completion results truncated.");
+    else if (g_completionSession.context.kind == guidexos::developer_studio::CompletionContextKind::MemberAccessLexical)
+        completionSetStatus("Lexical suggestions; receiver type is unresolved.");
+    return true;
+}
+
+static bool acceptCompletion(gx_app_context* ctx) {
+    if (!g_completionPopupOpen) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    const CompletionCandidate* candidate = CompletionSessionSelected(&g_completionSession);
+    CompletionErrorCode error = CompletionErrorCode::None;
+    if (!document || !candidate ||
+        !CompletionSessionIsCurrent(&g_completionSession, *document,
+                                    CompletionProjectId(g_controller.model.project.projectId),
+                                    g_controller.model.projectGeneration, &error) ||
+        !CompletionSessionTextMatches(&g_completionSession, *document, &error)) {
+        completionSetStatus("Completion session expired.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=STALE", CompletionErrorName(error));
+        dismissCompletion(ctx, "stale", false);
+        return false;
+    }
+    const uint32_t insertionLength = lengthOf(candidate->insertionText, sizeof(candidate->insertionText));
+    if (insertionLength > guidexos::developer_studio::kCompletionMaxInsertionBytes) {
+        completionSetStatus("Completion insertion rejected.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(CompletionErrorCode::InsertionTooLong));
+        return false;
+    }
+    g_completionUndoAvailable = false;
+    if (document->buffer.length <= kMaxEditorBytes) {
+        for (uint32_t i = 0; i <= document->buffer.length; ++i) g_completionUndoText[i] = document->buffer.data[i];
+        g_completionUndoDocumentId = document->documentId;
+        g_completionUndoGeneration = document->buffer.generation;
+        g_completionUndoLength = document->buffer.length;
+        g_completionUndoDirty = document->buffer.dirty;
+        g_completionUndoCaret = document->buffer.caret;
+        g_completionUndoSelectionAnchor = document->buffer.selectionAnchor;
+        g_completionUndoSelectionActive = document->buffer.selectionActive;
+        g_completionUndoAvailable = true;
+    }
+    const uint32_t oldLength = g_completionSession.context.replacementEnd - g_completionSession.context.replacementStart;
+    if (!ReplaceTextRange(&document->buffer, g_completionSession.context.replacementStart, oldLength,
+                          candidate->insertionText, insertionLength)) {
+        g_completionUndoAvailable = false;
+        completionSetStatus("Completion insertion rejected.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(CompletionErrorCode::InsertionFailed));
+        return false;
+    }
+    updateSyntaxAfterEdit(ctx, document);
+    g_completionWordCache.valid = false;
+    CompletionErrorCode wordError = CompletionErrorCode::None;
+    DocumentWordCacheRefresh(&g_completionWordCache, *document, &wordError);
+    keepCaretVisible(document);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=PASS text=");
+    appendText(g_textScratch, sizeof(g_textScratch), candidate->insertionText);
+    logMarker(ctx, g_textScratch);
+    CompletionSessionDismiss(&g_completionSession);
+    g_completionPopupOpen = false;
+    completionSetStatus("");
+    return true;
+}
+
+static bool undoCompletion(gx_app_context* ctx) {
+    if (!g_completionUndoAvailable) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || document->documentId != g_completionUndoDocumentId ||
+        document->buffer.generation != g_completionUndoGeneration + 1u) {
+        g_completionUndoAvailable = false;
+        return false;
+    }
+    if (!TextBufferSet(&document->buffer, g_completionUndoText, g_completionUndoLength)) {
+        g_completionUndoAvailable = false;
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(CompletionErrorCode::InsertionFailed));
+        return false;
+    }
+    document->buffer.dirty = g_completionUndoDirty;
+    document->buffer.caret = g_completionUndoCaret <= document->buffer.length ? g_completionUndoCaret : document->buffer.length;
+    document->buffer.selectionAnchor = g_completionUndoSelectionAnchor <= document->buffer.length ? g_completionUndoSelectionAnchor : document->buffer.length;
+    document->buffer.selectionActive = g_completionUndoSelectionActive && document->buffer.selectionAnchor <= document->buffer.caret;
+    updateSyntaxAfterEdit(ctx, document);
+    g_completionWordCache.valid = false;
+    CompletionErrorCode wordError = CompletionErrorCode::None;
+    DocumentWordCacheRefresh(&g_completionWordCache, *document, &wordError);
+    g_completionUndoAvailable = false;
+    dismissCompletion(ctx, "undo", false);
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_undo=PASS");
+    return true;
+}
+
+static bool handleCompletionKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_completionPopupOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { dismissCompletion(ctx, "escape", false); return true; }
+    if (keyCode == GX_KEY_UP) { CompletionSessionMove(&g_completionSession, -1); return true; }
+    if (keyCode == GX_KEY_DOWN) { CompletionSessionMove(&g_completionSession, 1); return true; }
+    if (keyCode == 33) { CompletionSessionPage(&g_completionSession, -1); return true; }
+    if (keyCode == 34) { CompletionSessionPage(&g_completionSession, 1); return true; }
+    if (keyCode == 36) { CompletionSessionHome(&g_completionSession); return true; }
+    if (keyCode == 35) { CompletionSessionEnd(&g_completionSession); return true; }
+    if ((keyCode == 13 || keyCode == 9) && !(modifiers & GX_KEY_MOD_CTRL)) { acceptCompletion(ctx); return true; }
+    if (keyCode == GX_KEY_LEFT || keyCode == GX_KEY_RIGHT || keyCode == 46) {
+        dismissCompletion(ctx, "caret_moved", false);
+        return false;
+    }
+    if ((modifiers & GX_KEY_MOD_CTRL) && keyCode == 32) return refreshCompletion(ctx);
+    return false;
+}
+
+static bool completionPopupBounds(gx_rect* output) {
+    if (!output || !g_completionPopupOpen || !g_completionSession.active) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    const uint32_t line = activeLine(document->buffer);
+    const uint32_t column = activeColumn(document->buffer, line);
+    const uint32_t visibleColumn = column > g_editorScrollColumn ? column - g_editorScrollColumn : 0;
+    const uint32_t visibleLine = line > g_editorScrollLine ? line - g_editorScrollLine : 0;
+    const int caretX = kEditorTextX + static_cast<int>(visibleColumn * 8u);
+    const int caretY = kEditorTop + static_cast<int>(visibleLine * kEditorLineHeight);
+    const uint32_t remaining = g_completionSession.candidateCount > g_completionSession.visibleStart
+        ? g_completionSession.candidateCount - g_completionSession.visibleStart : 0;
+    const uint32_t rows = remaining < static_cast<uint32_t>(kCompletionPopupMaxRows) ? remaining : static_cast<uint32_t>(kCompletionPopupMaxRows);
+    if (rows == 0) return false;
+    const int height = 22 + static_cast<int>(rows) * kCompletionPopupRowHeight;
+    int x = caretX;
+    int y = caretY + kEditorLineHeight;
+    if (x + kCompletionPopupWidth > kEditorRect.x + kEditorRect.width) x = kEditorRect.x + kEditorRect.width - kCompletionPopupWidth;
+    if (x < kEditorRect.x) x = kEditorRect.x;
+    if (y + height > kEditorRect.y + kEditorRect.height) y = caretY - height;
+    if (y < kEditorRect.y) y = kEditorRect.y;
+    *output = { x, y, kCompletionPopupWidth, height };
+    return true;
+}
+
+static void drawCompletionPopup(gx_app_context* ctx) {
+    if (!ctx) return;
+    gx_rect bounds = {};
+    if (!completionPopupBounds(&bounds)) return;
+    const uint32_t rows = (static_cast<uint32_t>(bounds.height) - 22u) / static_cast<uint32_t>(kCompletionPopupRowHeight);
+    drawPanel(ctx, bounds, 0x202A36u);
+    drawText(ctx, bounds.x + 8, bounds.y + 15, "CODE COMPLETION");
+    for (uint32_t row = 0; row < rows; ++row) {
+        const uint32_t index = g_completionSession.visibleStart + row;
+        const CompletionCandidate& candidate = g_completionSession.candidates[index];
+        const int rowY = bounds.y + 22 + static_cast<int>(row) * kCompletionPopupRowHeight;
+        if (index == g_completionSession.selectedIndex) drawPanel(ctx, { bounds.x + 2, rowY - 15, kCompletionPopupWidth - 4, kCompletionPopupRowHeight }, 0x34496Au);
+        copyText(g_textScratch, sizeof(g_textScratch), CompletionCandidateKindPrefix(candidate.kind));
+        appendText(g_textScratch, sizeof(g_textScratch), " ");
+        appendText(g_textScratch, sizeof(g_textScratch), candidate.displayText);
+        drawText(ctx, bounds.x + 8, rowY, g_textScratch);
+    }
+}
+
 static void drawTabs(gx_app_context* ctx) {
     int x = 278;
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
@@ -3665,7 +3981,8 @@ static void drawEditor(gx_app_context* ctx) {
 }
 
 static void drawOutputAndStatus(gx_app_context* ctx) {
-    if (g_definitionStatus[0] != '\0') drawText(ctx, 16, 646, g_definitionStatus);
+    if (g_completionStatus[0] != '\0') drawText(ctx, 16, 646, g_completionStatus);
+    else if (g_definitionStatus[0] != '\0') drawText(ctx, 16, 646, g_definitionStatus);
     drawText(ctx, 16, 536, g_outputProblemsTab ? "PROBLEMS" : "OUTPUT");
     drawText(ctx, 112, 536, "Output");
     drawText(ctx, 172, 536, "Problems");
@@ -3822,6 +4139,7 @@ static void drawShell(gx_app_context* ctx) {
     drawExplorer(ctx);
     drawOutline(ctx);
     drawEditor(ctx);
+    drawCompletionPopup(ctx);
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
@@ -3853,6 +4171,7 @@ static void selectDocumentTab(int x) {
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
         if (!g_controller.model.documents[i].used) continue;
         if (x >= tabX && x < tabX + 126) {
+            dismissCompletion(nullptr, "document_changed", false);
             g_controller.model.activeDocument = i;
             g_editorFocused = true;
             keepCaretVisible(&g_controller.model.documents[i]);
@@ -3864,6 +4183,7 @@ static void selectDocumentTab(int x) {
 
 static void placeCaretFromMouse(Document* document, int x, int y) {
     if (!document) return;
+    dismissCompletion(nullptr, "caret_moved", false);
     int row = (y - kEditorTop + 12) / kEditorLineHeight;
     if (row < 0) row = 0;
     uint32_t line = g_editorScrollLine + static_cast<uint32_t>(row);
@@ -4454,6 +4774,12 @@ static bool handleRenameKey(gx_app_context* ctx, int keyCode, int action, int mo
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_completionPopupOpen && handleCompletionKey(ctx, keyCode, action, modifiers)) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && keyCode == 32) {
+        if (g_completionPopupOpen) refreshCompletion(ctx);
+        else openCompletion(ctx);
+        return;
+    }
     if (g_renamePanelOpen && handleRenameKey(ctx, keyCode, action, modifiers)) return;
     if (g_definitionPickerOpen && handleDefinitionPickerKey(ctx, keyCode, action)) return;
     if (g_referencePickerOpen && handleReferencePickerKey(ctx, keyCode, action)) return;
@@ -4527,6 +4853,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 90 || keyCode == 122)) {
+        if (undoCompletion(ctx)) return;
         if (!RenameUndoAvailable(&g_renameUndo)) return;
         RenameErrorCode undoError = RenameErrorCode::None;
         if (RenameUndoLast(&g_renameUndo, &g_controller.model, g_controller.fileSystem, &g_symbolDatabase,
@@ -4583,23 +4910,28 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         else if (keyCode == 8) WorkspaceControllerGoUp(&g_controller);
         return;
     }
+    const bool completionWasOpen = g_completionPopupOpen;
+    bool changed = false;
     bool wasDirty = document->buffer.dirty;
-    if (keyCode == GX_KEY_LEFT) TextBufferMoveLeft(&document->buffer);
-    else if (keyCode == GX_KEY_RIGHT) TextBufferMoveRight(&document->buffer);
-    else if (keyCode == GX_KEY_UP) TextBufferMoveUp(&document->buffer);
-    else if (keyCode == GX_KEY_DOWN) TextBufferMoveDown(&document->buffer);
-    else if (keyCode == 36) TextBufferHome(&document->buffer);
-    else if (keyCode == 35) TextBufferEnd(&document->buffer);
-    else if (keyCode == 8) TextBufferBackspace(&document->buffer);
-    else if (keyCode == 46) TextBufferDelete(&document->buffer);
-    else if (keyCode == 13) TextBufferInsert(&document->buffer, "\n", 1);
+    if (keyCode == GX_KEY_LEFT) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveLeft(&document->buffer); }
+    else if (keyCode == GX_KEY_RIGHT) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveRight(&document->buffer); }
+    else if (keyCode == GX_KEY_UP) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveUp(&document->buffer); }
+    else if (keyCode == GX_KEY_DOWN) { dismissCompletion(ctx, "caret_moved", false); TextBufferMoveDown(&document->buffer); }
+    else if (keyCode == 36) { dismissCompletion(ctx, "caret_moved", false); TextBufferHome(&document->buffer); }
+    else if (keyCode == 35) { dismissCompletion(ctx, "caret_moved", false); TextBufferEnd(&document->buffer); }
+    else if (keyCode == 8) { g_completionUndoAvailable = false; changed = TextBufferBackspace(&document->buffer); }
+    else if (keyCode == 46) { g_completionUndoAvailable = false; dismissCompletion(ctx, "caret_moved", false); changed = TextBufferDelete(&document->buffer); }
+    else if (keyCode == 13) { g_completionUndoAvailable = false; changed = TextBufferInsert(&document->buffer, "\n", 1); }
     else {
+        g_completionUndoAvailable = false;
         char value = mapKeyToChar(keyCode, modifiers);
-        if (value != '\0') TextBufferInsert(&document->buffer, &value, 1);
+        if (value != '\0') changed = TextBufferInsert(&document->buffer, &value, 1);
     }
     updateSyntaxAfterEdit(ctx, document);
     markDirtyIfNeeded(ctx, wasDirty);
     keepCaretVisible(document);
+    if (completionWasOpen && changed && (keyCode == 8 || keyCode == 13 || mapKeyToChar(keyCode, modifiers) != '\0'))
+        refreshCompletion(ctx);
     (void)running;
 }
 
@@ -4608,6 +4940,30 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_completionPopupOpen) {
+        gx_rect bounds = {};
+        if (!completionPopupBounds(&bounds)) { dismissCompletion(ctx, "popup_expired", false); return; }
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_completionSession.visibleStart = g_completionSession.visibleStart > 3 ? g_completionSession.visibleStart - 3 : 0;
+            else if (g_completionSession.visibleStart + static_cast<uint32_t>(kCompletionPopupMaxRows) < g_completionSession.candidateCount)
+                ++g_completionSession.visibleStart;
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+            x >= bounds.x && x < bounds.x + bounds.width && y >= bounds.y + 22 && y < bounds.y + bounds.height) {
+            const uint32_t row = g_completionSession.visibleStart + static_cast<uint32_t>((y - bounds.y - 22) / kCompletionPopupRowHeight);
+            if (row < g_completionSession.candidateCount) {
+                g_completionSession.selectedIndex = row;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) acceptCompletion(ctx);
+            }
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN) {
+            dismissCompletion(ctx, "mouse_dismiss", false);
+            return;
+        }
+    }
     if (g_renamePanelOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             if (event.param4 > 0) g_renameScroll = g_renameScroll > 3 ? g_renameScroll - 3 : 0;
@@ -4978,6 +5334,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                        g_symbolDocumentStorage, kSymbolMaxDocuments,
                        g_symbolScratchStorage, kSymbolMaxDocumentSymbols);
     WorkspaceControllerAttachSymbolDatabase(&g_controller, &g_symbolDatabase);
+    CompletionSessionInit(&g_completionSession, g_completionCandidateStorage, kCompletionMaxRetainedCandidates);
+    DocumentWordCacheInit(&g_completionWordCache, g_completionWordStorage, kCompletionMaxDocumentWords);
+    g_completionPopupOpen = false;
+    g_completionStatus[0] = '\0';
+    g_completionProjectId[0] = '\0';
+    g_completionUndoAvailable = false;
     g_inputMode = InputMode::Normal;
     g_editorFocused = false;
     g_fileMenuOpen = false;
