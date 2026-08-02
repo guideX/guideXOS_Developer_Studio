@@ -4,6 +4,7 @@
 
 #include "developer_studio_navigation.h"
 #include "developer_studio_project_search.h"
+#include "developer_studio_relationships.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -92,6 +93,7 @@ enum class ReferenceSearchErrorCode {
 
 struct ReferenceTarget {
     uint64_t targetId;
+    uint64_t relationshipSymbolId;
     uint64_t projectId;
     uint64_t projectGeneration;
     uint64_t sourceDocumentId;
@@ -189,12 +191,14 @@ struct ReferenceSearchRequest {
     // Used only during Start to copy matching declaration records into the
     // operation. The service never retains this pointer.
     const SymbolDatabase* symbolDatabase;
+    const SymbolRelationshipGraph* relationshipGraph;
     bool includeDeclarations;
     bool includeAmbiguous;
     bool lexicalFallback;
 };
 
 struct ReferenceSymbolHint {
+    uint64_t relationshipSymbolId;
     char relativePath[kMaxPathBytes];
     char identifier[kSymbolMaxNameBytes];
     char qualifiedName[kSymbolMaxQualifiedNameBytes];
@@ -219,6 +223,7 @@ struct ReferenceSearchService {
     uint32_t declarationHintCount;
     bool includeDeclarations;
     bool includeAmbiguous;
+    const SymbolRelationshipGraph* relationshipGraph;
     uint64_t startedAtMs;
     bool terminalReported;
 };

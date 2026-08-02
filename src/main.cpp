@@ -13,6 +13,7 @@
 #include "developer_studio_completion.h"
 #include "developer_studio_signature.h"
 #include "developer_studio_include_graph.h"
+#include "developer_studio_relationships.h"
 
 namespace {
 
@@ -247,6 +248,28 @@ using guidexos::developer_studio::kSymbolMaxNameBytes;
 using guidexos::developer_studio::kSymbolMaxProjectSymbols;
 using guidexos::developer_studio::kSymbolMaxQueryBytes;
 using guidexos::developer_studio::kSymbolMaxVisibleResults;
+using guidexos::developer_studio::SymbolRelationship;
+using guidexos::developer_studio::SymbolRelationshipGroup;
+using guidexos::developer_studio::SymbolRelationshipEndpoint;
+using guidexos::developer_studio::SymbolRelationshipGraph;
+using guidexos::developer_studio::SymbolRelationshipGraphBuildInfo;
+using guidexos::developer_studio::SymbolRelationshipGraphBuildIsActive;
+using guidexos::developer_studio::SymbolRelationshipGraphBuildPoll;
+using guidexos::developer_studio::SymbolRelationshipGraphBuildStart;
+using guidexos::developer_studio::SymbolRelationshipGraphInit;
+using guidexos::developer_studio::SymbolRelationshipGraphIsCurrent;
+using guidexos::developer_studio::SymbolRelationshipGraphService;
+using guidexos::developer_studio::SymbolRelationshipGraphServiceInit;
+using guidexos::developer_studio::SymbolRelationshipGraphStorage;
+using guidexos::developer_studio::SymbolRelationshipGraphStorageInit;
+using guidexos::developer_studio::SymbolRelationshipConfidence;
+using guidexos::developer_studio::RelationshipGraphState;
+using guidexos::developer_studio::SymbolRelationshipSymbolId;
+using guidexos::developer_studio::SymbolRelationshipGraphFindDefinitions;
+using guidexos::developer_studio::SymbolRelationshipGraphFindDeclarations;
+using guidexos::developer_studio::DefinitionReasonExactQualifiedName;
+using guidexos::developer_studio::DefinitionReasonMatchingKind;
+using guidexos::developer_studio::SymbolDeclarationRole;
 using guidexos::developer_studio::DefinitionCandidate;
 using guidexos::developer_studio::DefinitionIdentifier;
 using guidexos::developer_studio::DefinitionQuery;
@@ -637,6 +660,27 @@ static uint32_t g_definitionSelected = 0;
 static uint32_t g_definitionScroll = 0;
 static char g_definitionStatus[160] = {};
 static uint64_t g_nextDefinitionQueryId = 1;
+static const uint32_t kStudioRelationshipGroupCapacity = 1024u;
+static const uint32_t kStudioRelationshipEdgeCapacity = 2048u;
+static const uint32_t kStudioRelationshipEndpointCapacity = 8192u;
+static SymbolRelationshipGroup g_relationshipGroups[kStudioRelationshipGroupCapacity] = {};
+static SymbolRelationship g_relationshipEdges[kStudioRelationshipEdgeCapacity] = {};
+static uint32_t g_relationshipDeclarations[kStudioRelationshipEndpointCapacity] = {};
+static uint32_t g_relationshipDefinitions[kStudioRelationshipEndpointCapacity] = {};
+static uint32_t g_relationshipForwards[kStudioRelationshipEndpointCapacity] = {};
+static uint32_t g_relationshipSymbolGroups[kSymbolMaxProjectSymbols] = {};
+static SymbolRelationshipGroup g_relationshipBuildingGroups[kStudioRelationshipGroupCapacity] = {};
+static SymbolRelationship g_relationshipBuildingEdges[kStudioRelationshipEdgeCapacity] = {};
+static uint32_t g_relationshipBuildingDeclarations[kStudioRelationshipEndpointCapacity] = {};
+static uint32_t g_relationshipBuildingDefinitions[kStudioRelationshipEndpointCapacity] = {};
+static uint32_t g_relationshipBuildingForwards[kStudioRelationshipEndpointCapacity] = {};
+static uint32_t g_relationshipBuildingSymbolGroups[kSymbolMaxProjectSymbols] = {};
+static SymbolRelationshipGraphStorage g_relationshipStorage = {};
+static SymbolRelationshipGraphStorage g_relationshipBuildingStorage = {};
+static SymbolRelationshipGraph g_relationshipGraph = {};
+static SymbolRelationshipGraph g_relationshipBuildingGraph = {};
+static SymbolRelationshipGraphService g_relationshipService = {};
+static bool g_relationshipNavigationToDeclaration = false;
 
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
@@ -662,6 +706,7 @@ static bool handleIncludeTargetPickerKey(gx_app_context* ctx, int keyCode, int a
 static void drawIncludeGraphPanel(gx_app_context* ctx);
 static void drawIncludeTargetPicker(gx_app_context* ctx);
 static bool tryIncludeGraphDefinition(gx_app_context* ctx);
+static void openDefinitionPicker(gx_app_context* ctx);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -1027,8 +1072,8 @@ static bool activateDefinitionCandidate(gx_app_context* ctx, uint32_t index) {
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
                                                    candidate.relativePath, candidate.symbol.symbol.location.line,
                                                    candidate.symbol.symbol.location.column, &documentIndex, &error)) {
-        definitionSetStatus("Definition not found in the active project.");
-        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=FAIL", OutputErrorName(error));
+        definitionSetStatus(g_relationshipNavigationToDeclaration ? "Declaration not found in the active project." : "Definition not found in the active project.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER relationship_activation=FAIL", OutputErrorName(error));
         return false;
     }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
@@ -1045,13 +1090,15 @@ static bool activateDefinitionCandidate(gx_app_context* ctx, uint32_t index) {
     g_outputFocused = false;
     keepCaretVisible(document);
     if (stale) {
-        definitionSetStatus("Definition location may be stale.");
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=STALE");
+        definitionSetStatus(g_relationshipNavigationToDeclaration ? "Declaration location may be stale." : "Definition location may be stale.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER relationship_activation=STALE");
     } else if (g_definitionResolution.declarationsOnly) {
         definitionSetStatus("Definition not found; showing declarations.");
     } else {
-        definitionSetStatus("");
-        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=PASS path=");
+        definitionSetStatus(g_relationshipNavigationToDeclaration ? "Declaration found." : "");
+        copyText(g_textScratch, sizeof(g_textScratch), g_relationshipNavigationToDeclaration ?
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER relationship_activate=PASS path=" :
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER goto_definition_activate=PASS path=");
         appendText(g_textScratch, sizeof(g_textScratch), candidate.relativePath);
         appendText(g_textScratch, sizeof(g_textScratch), " line=");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.line);
@@ -1059,6 +1106,153 @@ static bool activateDefinitionCandidate(gx_app_context* ctx, uint32_t index) {
         appendUnsigned(g_textScratch, sizeof(g_textScratch), candidate.symbol.symbol.location.column);
         logMarker(ctx, g_textScratch);
     }
+    return true;
+}
+
+static const ProjectSymbol* relationshipProjectSymbolAt(uint64_t symbolId, uint32_t* index) {
+    for (uint32_t i = 0; i < SymbolDatabaseProjectSymbolCount(&g_symbolDatabase); ++i) {
+        const ProjectSymbol* symbol = SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, i);
+        if (!symbol) continue;
+        const char* path = SymbolDatabaseDocumentPath(&g_symbolDatabase, symbol->documentIndex);
+        if (SymbolRelationshipSymbolId(*symbol, path) == symbolId) {
+            if (index) *index = i;
+            return symbol;
+        }
+    }
+    return nullptr;
+}
+
+static int32_t relationshipSymbolUnderCaret(const Document& document) {
+    for (uint32_t i = 0; i < SymbolDatabaseProjectSymbolCount(&g_symbolDatabase); ++i) {
+        const ProjectSymbol* symbol = SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, i);
+        if (!symbol || symbol->symbol.location.documentId != document.documentId) continue;
+        const uint32_t start = symbol->symbol.location.identifierOffset;
+        const uint32_t length = symbol->symbol.location.identifierLength;
+        if (document.buffer.caret >= start && document.buffer.caret <= start + length) return static_cast<int32_t>(i);
+        if (document.buffer.selectionActive && document.buffer.selectionAnchor >= start &&
+            document.buffer.selectionAnchor <= start + length) return static_cast<int32_t>(i);
+    }
+    return -1;
+}
+
+static bool refreshRelationshipGraph(gx_app_context* ctx) {
+    if (!g_controller.model.hasProject) return false;
+    const IncludeGraph* includeGraph = IncludeGraphIsCurrent(&g_includeGraph,
+        g_controller.model.project.projectId, g_controller.model.projectGeneration) ? &g_includeGraph : nullptr;
+    SymbolRelationshipGraph* graph = g_relationshipService.completedGraph;
+    if (graph && SymbolRelationshipGraphIsCurrent(graph, g_controller.model.project.projectId,
+                                                   g_controller.model.projectGeneration,
+                                                   g_symbolDatabase.symbolDatabaseGeneration)) return true;
+    uint64_t operationId = 0;
+    if (!SymbolRelationshipGraphBuildStart(&g_relationshipService, &g_symbolDatabase, includeGraph,
+                                           g_controller.model.project.projectId,
+                                           g_controller.model.projectGeneration,
+                                           g_controller.model.rootPath,
+                                           ctx ? gx_get_ticks_ms(ctx) : 0, &operationId)) {
+        definitionSetStatus("Relationship graph is unavailable.");
+        return false;
+    }
+    while (SymbolRelationshipGraphBuildIsActive(&g_relationshipService)) {
+        if (!SymbolRelationshipGraphBuildPoll(&g_relationshipService, operationId, 4096,
+                                              ctx ? gx_get_ticks_ms(ctx) : 0)) {
+            definitionSetStatus("Relationship graph build failed.");
+            return false;
+        }
+    }
+    const RelationshipGraphState state = SymbolRelationshipGraphBuildInfo(&g_relationshipService)->state;
+    if (state != RelationshipGraphState::Completed) {
+        definitionSetStatus("Relationship graph build cancelled.");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER relationship_build=PASS groups=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_relationshipService.completedGraph->groupCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " relationships=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_relationshipService.completedGraph->relationshipCount);
+    if (ctx) logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool buildRelationshipDefinitionCandidate(const SymbolRelationshipEndpoint& endpoint,
+                                                 int32_t rankScore, DefinitionCandidate* output) {
+    if (!output) return false;
+    uint32_t symbolIndex = 0;
+    const ProjectSymbol* symbol = relationshipProjectSymbolAt(endpoint.symbolId, &symbolIndex);
+    if (!symbol) return false;
+    *output = DefinitionCandidate();
+    output->candidateId = endpoint.symbolId;
+    output->symbol = *symbol;
+    copyText(output->relativePath, sizeof(output->relativePath), endpoint.relativePath);
+    output->rankScore = rankScore;
+    output->isDefinition = endpoint.declarationRole == SymbolDeclarationRole::Definition;
+    output->isDeclaration = endpoint.declarationRole == SymbolDeclarationRole::Declaration;
+    output->isForwardDeclaration = endpoint.declarationRole == SymbolDeclarationRole::ForwardDeclaration;
+    output->stale = endpoint.documentGeneration == 0;
+    output->reasonFlags = DefinitionReasonExactQualifiedName | DefinitionReasonMatchingKind;
+    return true;
+}
+
+static bool startRelationshipNavigation(gx_app_context* ctx, bool toDeclaration) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || !g_controller.model.hasProject) return false;
+    if (g_controller.model.activeDocument < kMaxOpenDocuments)
+        WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
+    const int32_t symbolIndex = relationshipSymbolUnderCaret(*document);
+    if (symbolIndex < 0 || !refreshRelationshipGraph(ctx)) return false;
+    const ProjectSymbol* current = SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, static_cast<uint32_t>(symbolIndex));
+    if (!current) return false;
+    const uint64_t symbolId = SymbolRelationshipSymbolId(*current,
+        SymbolDatabaseDocumentPath(&g_symbolDatabase, current->documentIndex));
+    if ((!toDeclaration && current->symbol.declarationRole == SymbolDeclarationRole::Definition) ||
+        (toDeclaration && (current->symbol.declarationRole == SymbolDeclarationRole::Declaration ||
+                           current->symbol.declarationRole == SymbolDeclarationRole::ForwardDeclaration))) {
+        g_relationshipNavigationToDeclaration = toDeclaration;
+        definitionSetStatus(toDeclaration ? "Already at declaration." : "Already at definition.");
+        if (ctx) logMarker(ctx, toDeclaration ?
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER relationship_resolve_declaration=ALREADY" :
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER relationship_resolve_definition=ALREADY");
+        return true;
+    }
+    static SymbolRelationship relations[kDefinitionMaxCandidates] = {};
+    const SymbolRelationshipGraph* graph = g_relationshipService.completedGraph;
+    const uint32_t total = toDeclaration ?
+        SymbolRelationshipGraphFindDeclarations(graph, symbolId, relations, kDefinitionMaxCandidates) :
+        SymbolRelationshipGraphFindDefinitions(graph, symbolId, relations, kDefinitionMaxCandidates);
+    if (total == 0) {
+        if (toDeclaration) definitionSetStatus("Declaration not found in active project.");
+        return toDeclaration;
+    }
+    g_relationshipNavigationToDeclaration = toDeclaration;
+    const uint32_t retained = total < kDefinitionMaxCandidates ? total : kDefinitionMaxCandidates;
+    g_definitionResolution = {};
+    g_definitionResolution.queryId = g_nextDefinitionQueryId++;
+    g_definitionResolution.candidates = g_definitionCandidates;
+    g_definitionResolution.candidateCount = 0;
+    g_definitionResolution.visibleCandidateCount = 0;
+    g_definitionResolution.truncated = total > retained;
+    g_definitionResolution.kind = total == 1 ? DefinitionResolutionKind::Direct : DefinitionResolutionKind::Multiple;
+    for (uint32_t i = 0; i < retained; ++i) {
+        const SymbolRelationship& relation = relations[i];
+        const SymbolRelationshipEndpoint& endpoint = relation.source.symbolId == symbolId ? relation.target : relation.source;
+        if (!buildRelationshipDefinitionCandidate(endpoint, relation.rankScore, &g_definitionCandidates[g_definitionResolution.candidateCount])) continue;
+        ++g_definitionResolution.candidateCount;
+    }
+    g_definitionResolution.visibleCandidateCount = g_definitionResolution.candidateCount;
+    if (g_definitionResolution.candidateCount == 0) return toDeclaration;
+    char relativePath[kMaxPathBytes] = {};
+    if (!copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath)) ||
+        !BuildDefinitionQuery(*document, g_controller.model.project.projectId, g_controller.model.projectGeneration,
+                              g_controller.model.rootPath, relativePath, g_definitionResolution.queryId, &g_definitionQuery)) return false;
+    if (g_definitionResolution.kind == DefinitionResolutionKind::Direct &&
+        relations[0].confidence != SymbolRelationshipConfidence::Ambiguous) {
+        if (!captureNavigationLocation(*document, &g_definitionOrigin)) return false;
+        g_definitionOriginValid = true;
+        activateDefinitionCandidate(ctx, 0);
+        return true;
+    }
+    definitionSetStatus(toDeclaration ? "Choose a declaration candidate." : "Choose a definition candidate.");
+    if (!captureNavigationLocation(*document, &g_definitionOrigin)) return false;
+    g_definitionOriginValid = true;
+    openDefinitionPicker(ctx);
     return true;
 }
 
@@ -1124,6 +1318,7 @@ static void startGoToDefinition(gx_app_context* ctx) {
     }
     if (g_controller.model.activeDocument < kMaxOpenDocuments)
         WorkspaceControllerUpdateDocumentSymbols(&g_controller, g_controller.model.activeDocument);
+    if (startRelationshipNavigation(ctx, false)) return;
     char relativePath[kMaxPathBytes] = {};
     if (!copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath))) {
         definitionSetStatus("Active document path is invalid.");
@@ -1237,6 +1432,7 @@ static bool startReferenceSearchWithTarget(gx_app_context* ctx, const ReferenceT
     if (!ReferenceSearchIsActive(&g_referenceSearch) && g_referencesOperationId != 0)
         ReferenceSearchRelease(&g_referenceSearch, g_referencesOperationId);
     if (ReferenceSearchIsActive(&g_referenceSearch)) stopReferenceSearch(ctx);
+    if (!lexicalFallback) refreshRelationshipGraph(ctx);
     ProjectSearchOptions options = {};
     referenceSearchInitializeOptions(&options);
     ReferenceSearchRequest request = {};
@@ -1249,6 +1445,10 @@ static bool startReferenceSearchWithTarget(gx_app_context* ctx, const ReferenceT
     request.dirtyDocuments = g_projectSearchSnapshots;
     request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
     request.symbolDatabase = &g_symbolDatabase;
+    request.relationshipGraph = SymbolRelationshipGraphIsCurrent(
+        g_relationshipService.completedGraph, g_controller.model.project.projectId,
+        g_controller.model.projectGeneration, g_symbolDatabase.symbolDatabaseGeneration)
+        ? g_relationshipService.completedGraph : nullptr;
     request.includeDeclarations = true;
     request.includeAmbiguous = true;
     request.lexicalFallback = lexicalFallback;
@@ -3290,7 +3490,7 @@ static void drawSymbolSearch(gx_app_context* ctx) {
 static void drawDefinitionPicker(gx_app_context* ctx) {
     if (!g_definitionPickerOpen) return;
     drawPanel(ctx, { 136, 58, 688, 560 }, 0x2A3852u);
-    drawText(ctx, 158, 86, "Go To Definition");
+    drawText(ctx, 158, 86, g_relationshipNavigationToDeclaration ? "Go To Declaration" : "Go To Definition");
     copyText(g_textScratch, sizeof(g_textScratch), g_definitionQuery.identifier);
     if (g_definitionQuery.lexicalQualifier[0] != '\0') {
         appendText(g_textScratch, sizeof(g_textScratch), "  (");
@@ -5629,6 +5829,18 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (g_renamePanelOpen && handleRenameKey(ctx, keyCode, action, modifiers)) return;
     if (g_definitionPickerOpen && handleDefinitionPickerKey(ctx, keyCode, action)) return;
     if (g_referencePickerOpen && handleReferencePickerKey(ctx, keyCode, action)) return;
+    if ((modifiers & GX_KEY_MOD_ALT) && keyCode == 123) {
+        Document* current = WorkspaceControllerActiveDocument(&g_controller);
+        const int32_t index = current ? relationshipSymbolUnderCaret(*current) : -1;
+        const ProjectSymbol* symbol = index >= 0 ? SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, static_cast<uint32_t>(index)) : nullptr;
+        if (!symbol || !startRelationshipNavigation(ctx, symbol->symbol.declarationRole != SymbolDeclarationRole::Definition))
+            definitionSetStatus("No declaration/definition relationship under caret.");
+        return;
+    }
+    if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_SHIFT) && keyCode == 123) {
+        if (!startRelationshipNavigation(ctx, true)) definitionSetStatus("Declaration not found in active project.");
+        return;
+    }
     if ((modifiers & GX_KEY_MOD_SHIFT) && keyCode == 123) {
         startFindAllReferences(ctx);
         return;
@@ -6276,6 +6488,23 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                        g_symbolDocumentStorage, kSymbolMaxDocuments,
                        g_symbolScratchStorage, kSymbolMaxDocumentSymbols);
     WorkspaceControllerAttachSymbolDatabase(&g_controller, &g_symbolDatabase);
+    SymbolRelationshipGraphStorageInit(&g_relationshipStorage,
+                                       g_relationshipGroups, kStudioRelationshipGroupCapacity,
+                                       g_relationshipEdges, kStudioRelationshipEdgeCapacity,
+                                       g_relationshipDeclarations, kStudioRelationshipEndpointCapacity,
+                                       g_relationshipDefinitions, kStudioRelationshipEndpointCapacity,
+                                       g_relationshipForwards, kStudioRelationshipEndpointCapacity,
+                                       g_relationshipSymbolGroups, kSymbolMaxProjectSymbols);
+    SymbolRelationshipGraphStorageInit(&g_relationshipBuildingStorage,
+                                       g_relationshipBuildingGroups, kStudioRelationshipGroupCapacity,
+                                       g_relationshipBuildingEdges, kStudioRelationshipEdgeCapacity,
+                                       g_relationshipBuildingDeclarations, kStudioRelationshipEndpointCapacity,
+                                       g_relationshipBuildingDefinitions, kStudioRelationshipEndpointCapacity,
+                                       g_relationshipBuildingForwards, kStudioRelationshipEndpointCapacity,
+                                       g_relationshipBuildingSymbolGroups, kSymbolMaxProjectSymbols);
+    SymbolRelationshipGraphInit(&g_relationshipGraph, &g_relationshipStorage, "", 0, 0);
+    SymbolRelationshipGraphInit(&g_relationshipBuildingGraph, &g_relationshipBuildingStorage, "", 0, 0);
+    SymbolRelationshipGraphServiceInit(&g_relationshipService, &g_relationshipGraph, &g_relationshipBuildingGraph);
     CompletionSessionInit(&g_completionSession, g_completionCandidateStorage, kCompletionMaxRetainedCandidates);
     DocumentWordCacheInit(&g_completionWordCache, g_completionWordStorage, kCompletionMaxDocumentWords);
     g_completionPopupOpen = false;

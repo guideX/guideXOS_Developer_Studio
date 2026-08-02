@@ -349,7 +349,10 @@ static void scopePop(ReferenceScopeStack* stack) {
     if (stack && stack->count > 0) --stack->count;
 }
 
-static bool hintMatchesTarget(const ReferenceTarget& target, const ReferenceSymbolHint& hint) {
+static bool hintMatchesTarget(const ReferenceTarget& target, const ReferenceSymbolHint& hint,
+                              const SymbolRelationshipGraph* relationshipGraph) {
+    if (relationshipGraph && SymbolRelationshipGraphHasRelationship(relationshipGraph,
+            target.relationshipSymbolId, hint.relationshipSymbolId)) return true;
     const bool destructorIdentifier = isTypeKind(target.kind) && hint.kind == SymbolKind::Destructor &&
         hint.identifier[0] == '~' && equalText(target.identifier, hint.identifier + 1, true);
     if (!equalText(target.identifier, hint.identifier, true) && !destructorIdentifier) return false;
@@ -420,8 +423,10 @@ static ReferenceKind classifyKind(const ReferenceTarget& target, const char* dat
 }
 
 static ReferenceConfidence classifyConfidence(const ReferenceTarget& target, const char* qualifier,
-                                              const char* scope, bool member, int32_t hintIndex) {
+                                              const char* scope, bool member, bool relationshipMatch,
+                                              int32_t hintIndex) {
     if (target.lexicallyAmbiguous) return ReferenceConfidence::LexicalOnly;
+    if (relationshipMatch) return ReferenceConfidence::Exact;
     if (hintIndex >= 0) return ReferenceConfidence::Exact;
     if (qualifier && qualifier[0]) return qualifierMatchesTarget(target, qualifier) ?
         ReferenceConfidence::Exact : ReferenceConfidence::Ambiguous;
@@ -583,7 +588,12 @@ static bool scanReferenceFile(ReferenceSearchService* service, const ProjectSear
                         const ReferenceSymbolHint* hint = hintIndex >= 0 ?
                             &service->declarationHints[hintIndex] : nullptr;
                         if (service->operation.target.lexicallyAmbiguous) hint = nullptr;
-                        if (hint && !hintMatchesTarget(service->operation.target, *hint)) hint = nullptr;
+                        const bool relationshipMatch = hint && service->relationshipGraph &&
+                            SymbolRelationshipGraphHasRelationship(service->relationshipGraph,
+                                service->operation.target.relationshipSymbolId,
+                                hint->relationshipSymbolId);
+                        if (hint && !relationshipMatch &&
+                            !hintMatchesTarget(service->operation.target, *hint, service->relationshipGraph)) hint = nullptr;
                         if (hint && !service->includeDeclarations && hint->role != SymbolDeclarationRole::Definition)
                             continue;
                         const uint32_t before = previousNonSpace(file.data, matchOffset);
@@ -596,7 +606,8 @@ static bool scanReferenceFile(ReferenceSearchService* service, const ProjectSear
                         const ReferenceKind kind = classifyKind(service->operation.target, file.data, file.length,
                                                                  matchOffset, matchLength, hint);
                         ReferenceConfidence confidence = classifyConfidence(service->operation.target, qualifier,
-                                                                            scope, member, hint ? hintIndex : -1);
+                                                                            scope, member, relationshipMatch,
+                                                                            hint ? hintIndex : -1);
                         if (confidence == ReferenceConfidence::Ambiguous && !service->operation.target.lexicallyAmbiguous &&
                             !service->operation.target.hasQualifiedIdentity && service->operation.target.containingScope[0] == '\0')
                             confidence = ReferenceConfidence::Likely;
@@ -669,6 +680,7 @@ static void copyHints(ReferenceSearchService* service, const ReferenceSearchRequ
         copyText(hint.qualifiedName, sizeof(hint.qualifiedName), symbol.symbol.qualifiedName);
         copyText(hint.container, sizeof(hint.container), symbol.symbol.container);
         copyText(hint.signature, sizeof(hint.signature), symbol.symbol.signature);
+        hint.relationshipSymbolId = SymbolRelationshipSymbolId(symbol, hint.relativePath);
         hint.documentId = symbol.symbol.location.documentId;
         hint.generation = symbol.symbol.location.generation;
         hint.identifierOffset = symbol.symbol.location.identifierOffset;
@@ -807,6 +819,7 @@ bool ReferenceTargetFromDefinitionCandidate(const DefinitionCandidate& candidate
     output->hasSignature = output->signature[0] != '\0';
     output->lexicallyAmbiguous = false;
     output->targetId = targetIdentity(*output);
+    output->relationshipSymbolId = SymbolRelationshipSymbolId(candidate.symbol, candidate.relativePath);
     return output->identifier[0] != '\0' && output->targetId != 0;
 }
 
@@ -849,6 +862,7 @@ bool ReferenceTargetFromDefinitionQuery(const DefinitionQuery& query,
     output->hasQualifiedIdentity = query.lexicalQualifier[0] != '\0' || query.containingScope[0] != '\0';
     output->lexicallyAmbiguous = true;
     output->targetId = targetIdentity(*output);
+    output->relationshipSymbolId = 0;
     return output->targetId != 0;
 }
 
@@ -900,6 +914,7 @@ void ReferenceSearchServiceInit(ReferenceSearchService* service) {
     service->declarationHintCount = 0;
     service->includeDeclarations = true;
     service->includeAmbiguous = true;
+    service->relationshipGraph = nullptr;
     service->startedAtMs = 0;
     service->terminalReported = false;
     clearResults(service);
@@ -920,6 +935,7 @@ bool ReferenceSearchStart(ReferenceSearchService* service, const ReferenceSearch
     service->startedAtMs = nowMs;
     service->includeDeclarations = request->includeDeclarations;
     service->includeAmbiguous = request->includeAmbiguous;
+    service->relationshipGraph = request->relationshipGraph;
     copyHints(service, *request);
     ProjectSearchRequest scanRequest = {};
     copyText(scanRequest.projectId, sizeof(scanRequest.projectId), request->projectId);

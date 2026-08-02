@@ -128,6 +128,7 @@ struct DocumentWordCache {
 
 struct CompletionCandidate {
     uint64_t candidateId;
+    uint64_t relationshipIdentity;
     char insertionText[kCompletionMaxInsertionBytes + 1];
     char displayText[kCompletionMaxDisplayBytes + 1];
     char qualifiedName[kCompletionMaxQualifiedDisplayBytes + 1];

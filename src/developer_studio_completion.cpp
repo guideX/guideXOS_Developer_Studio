@@ -1,4 +1,5 @@
 #include "developer_studio_completion.h"
+#include "developer_studio_relationships.h"
 
 #include "developer_studio_syntax.h"
 
@@ -520,7 +521,10 @@ static void addCandidate(CompletionSession* session, const CompletionCandidate& 
         if (!equalText(existing.insertionText, candidate.insertionText, false)) continue;
         const bool callable = kindPriority(existing.kind) >= 9 || kindPriority(candidate.kind) >= 9 ||
             existing.kind == CompletionCandidateKind::Constructor;
-        const uint32_t overloadCount = existing.overloadCount + (callable ? 1u : 0u);
+        const bool sameRelationship = candidate.relationshipIdentity != 0 &&
+            candidate.relationshipIdentity == existing.relationshipIdentity;
+        const uint32_t overloadCount = existing.overloadCount +
+            (callable && !sameRelationship ? 1u : 0u);
         const bool fromCurrentScope = existing.fromCurrentScope || candidate.fromCurrentScope;
         const bool fromCurrentDocument = existing.fromCurrentDocument || candidate.fromCurrentDocument;
         const bool lexicallyAmbiguous = existing.lexicallyAmbiguous || candidate.lexicallyAmbiguous;
@@ -589,6 +593,17 @@ static bool symbolCandidate(const CompletionContext& context, const Document& do
     copyText(output->signature, sizeof(output->signature), symbol.signature);
     copyText(output->relativePath, sizeof(output->relativePath), SymbolDatabaseDocumentPath(database, projectSymbol.documentIndex));
     output->candidateId = hashText(symbol.qualifiedName) ^ hashText(symbol.signature) ^ symbol.location.identifierOffset;
+    char normalizedSignature[kCompletionMaxSignatureDisplayBytes + 1] = {};
+    uint32_t parameterCount = 0;
+    bool signatureComplete = false;
+    bool lexicallyApproximate = false;
+    if (NormalizeRelationshipSignature(symbol.signature, normalizedSignature, sizeof(normalizedSignature),
+                                       &parameterCount, &signatureComplete, &lexicallyApproximate)) {
+        uint64_t relationshipIdentity = hashText(symbol.qualifiedName);
+        relationshipIdentity ^= hashText(normalizedSignature);
+        relationshipIdentity ^= static_cast<uint64_t>(symbol.kind) + 1u;
+        output->relationshipIdentity = relationshipIdentity == 0 ? 1 : relationshipIdentity;
+    }
     output->kind = completionKind(symbol.kind);
     output->fromCurrentDocument = symbol.location.documentId == document.documentId;
     output->fromCurrentScope = scopeMatches(context.containingScope, symbol.container);

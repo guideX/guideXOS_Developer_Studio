@@ -26,6 +26,7 @@ $RenameTest = Join-Path $ServerRoot "tmp\developer-studio-rename-test.exe"
 $CompletionTest = Join-Path $ServerRoot "tmp\developer-studio-completion-test.exe"
 $SignatureTest = Join-Path $ServerRoot "tmp\developer-studio-signature-test.exe"
 $IncludeGraphTest = Join-Path $ServerRoot "tmp\developer-studio-include-graph-test.exe"
+$RelationshipTest = Join-Path $ServerRoot "tmp\developer-studio-relationship-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -126,7 +127,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_project_search.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_navigation.cpp", "src\developer_studio_references.cpp", "tests\reference_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_project_search.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_navigation.cpp", "src\developer_studio_references.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "tests\reference_test.cpp",
         "-o", $ReferenceTest
     )
     & $ReferenceTest
@@ -134,7 +135,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_project_search.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_navigation.cpp", "src\developer_studio_references.cpp", "src\developer_studio_rename.cpp", "tests\rename_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_project_search.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_navigation.cpp", "src\developer_studio_references.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "src\developer_studio_rename.cpp", "tests\rename_test.cpp",
         "-o", $RenameTest
     )
     & $RenameTest
@@ -142,7 +143,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_completion.cpp", "tests\completion_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "src\developer_studio_completion.cpp", "tests\completion_test.cpp",
         "-o", $CompletionTest
     )
     & $CompletionTest
@@ -150,7 +151,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_signature.cpp", "tests\signature_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "src\developer_studio_signature.cpp", "tests\signature_test.cpp",
         "-o", $SignatureTest
     )
     & $SignatureTest
@@ -163,6 +164,14 @@ try {
     )
     & $IncludeGraphTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio include graph model test failed with exit code $LASTEXITCODE" }
+
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "tests\relationship_test.cpp",
+        "-o", $RelationshipTest
+    )
+    & $RelationshipTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio declaration-definition relationship model test failed with exit code $LASTEXITCODE" }
 
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
@@ -186,6 +195,7 @@ try {
     $completionObject = Join-Path $ObjectRoot "developer_studio_completion.o"
     $signatureObject = Join-Path $ObjectRoot "developer_studio_signature.o"
     $includeGraphObject = Join-Path $ObjectRoot "developer_studio_include_graph.o"
+    $relationshipObject = Join-Path $ObjectRoot "developer_studio_relationships.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
@@ -204,11 +214,12 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_completion.cpp"), "-o", $completionObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_signature.cpp"), "-o", $signatureObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_include_graph.cpp"), "-o", $includeGraphObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_relationships.cpp"), "-o", $relationshipObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -237,5 +248,6 @@ try {
     if (Test-Path -LiteralPath $CompletionTest) { Remove-Item -LiteralPath $CompletionTest -Force }
     if (Test-Path -LiteralPath $SignatureTest) { Remove-Item -LiteralPath $SignatureTest -Force }
     if (Test-Path -LiteralPath $IncludeGraphTest) { Remove-Item -LiteralPath $IncludeGraphTest -Force }
+    if (Test-Path -LiteralPath $RelationshipTest) { Remove-Item -LiteralPath $RelationshipTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

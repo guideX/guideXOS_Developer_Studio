@@ -339,6 +339,18 @@ claim type inference, overload resolution, template or macro expansion,
 include search, Clang, or language-server compatibility. See
 [`GO_TO_DEFINITION.md`](GO_TO_DEFINITION.md).
 
+## Declaration–Definition Relationships
+
+`developer_studio_relationships.*` builds a generation-aware relationship graph
+from the lexical project symbol database. It normalizes callable parameter
+lists, preserves explicit ambiguity, and uses Include Graph and header/source
+proximity only as ranking evidence. F12 and Ctrl+F12 prefer graph-linked
+definitions and declarations, while the existing lexical resolver remains the
+fallback. The graph has a work-budgeted cancellable lifecycle and retains the
+last completed graph during rebuilds. It does not claim compiler-equivalent
+identity, template instantiation, overload resolution, or external-header
+semantics. See [DECLARATION_DEFINITION_RELATIONSHIPS.md](DECLARATION_DEFINITION_RELATIONSHIPS.md).
+
 ## Run Project vertical slice
 
 Run Project is an explicit build-before-run sequence:

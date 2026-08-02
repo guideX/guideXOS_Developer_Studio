@@ -104,6 +104,7 @@ struct SymbolDatabase {
     uint32_t droppedSymbols;
     uint32_t droppedDocuments;
     uint64_t projectGeneration;
+    uint64_t symbolDatabaseGeneration;
     uint64_t lastIndexedDocumentId;
     uint32_t lastIndexedSymbolCount;
     uint32_t fullIndexCount;

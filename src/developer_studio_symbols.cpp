@@ -210,6 +210,20 @@ static void signatureFor(const char* text, const LexToken& nameToken, SymbolKind
         }
         if (foundOpen) appendChar(output, capacity, length, value);
     }
+    // Keep the bounded trailing method qualifiers needed by lexical
+    // declaration/definition identity.  The function body is never copied.
+    if (foundOpen) {
+        while (scanned < 768u && text[cursor] != '\0') {
+            const char value = text[cursor++];
+            ++scanned;
+            if (value == ';' || value == '{' || value == '}') break;
+            appendChar(output, capacity, length, value);
+        }
+    }
+    while (length > 0 && (output[length - 1] == ' ' || output[length - 1] == '\t' ||
+                          output[length - 1] == '\r' || output[length - 1] == '\n')) {
+        output[--length] = '\0';
+    }
 }
 
 static bool isConditionalWord(const char* text, uint32_t offset, uint32_t end,
@@ -976,6 +990,14 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
         if (destructor) kind = SymbolKind::Destructor;
         else if (className[0] != '\0' && equalText(className, name, false)) kind = SymbolKind::Constructor;
         else if (className[0] != '\0' || (nameIndex > 0 && tokenIsPunctuation(text, g_tokens[nameIndex - 1], "::"))) kind = SymbolKind::Method;
+        if (kind == SymbolKind::Method && nameIndex >= 2 &&
+            tokenIsPunctuation(text, g_tokens[nameIndex - 1], "::") &&
+            tokenIsIdentifier(g_tokens[nameIndex - 2])) {
+            char qualifierTail[kSymbolMaxNameBytes] = {};
+            copyRange(qualifierTail, sizeof(qualifierTail), text,
+                      g_tokens[nameIndex - 2].offset, g_tokens[nameIndex - 2].length);
+            if (equalText(qualifierTail, name, false)) kind = SymbolKind::Constructor;
+        }
         ParseScope qualifiedScope = scope;
         if (nameIndex > 0 && tokenIsPunctuation(text, g_tokens[nameIndex - 1], "::")) {
             char qualifier[kSymbolMaxContainerBytes] = {};
@@ -1040,9 +1062,71 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
             if (tokenIsIdentifier(g_tokens[j])) lastIdentifier = j;
         }
         if (excluded || hasParen || lastIdentifier == tokenCount) continue;
-        if (!addSymbol(output, capacity, symbolCount, isStatic ? SymbolKind::StaticVariable : SymbolKind::GlobalVariable,
-                       text, g_tokens[lastIdentifier], nullptr, scope, documentId, generation, 0,
+        ParseScope qualifiedScope = scope;
+        bool qualifiedMember = lastIdentifier > start &&
+            tokenIsPunctuation(text, g_tokens[lastIdentifier - 1], "::");
+        if (qualifiedMember) {
+            char qualifier[kSymbolMaxContainerBytes] = {};
+            uint32_t qualifierLength = 0;
+            uint32_t first = lastIdentifier >= 2 ? lastIdentifier - 2 : lastIdentifier;
+            while (first >= 2 && tokenIsPunctuation(text, g_tokens[first - 1], "::") &&
+                   tokenIsIdentifier(g_tokens[first - 2])) first -= 2;
+            for (uint32_t q = first; q + 1 < lastIdentifier; ++q) {
+                if (!tokenIsIdentifier(g_tokens[q])) continue;
+                if (qualifierLength > 0) appendTextRange(qualifier, sizeof(qualifier), qualifierLength, "::", 0, 2);
+                appendRange(qualifier, sizeof(qualifier), qualifierLength, text, g_tokens[q]);
+            }
+            if (qualifier[0] != '\0' && qualifiedScope.count < kMaxScopeDepth)
+                pushScope(qualifiedScope, SymbolKind::Class, qualifier);
+        }
+        if (!addSymbol(output, capacity, symbolCount,
+                       (isStatic || qualifiedMember) ? SymbolKind::StaticVariable : SymbolKind::GlobalVariable,
+                       text, g_tokens[lastIdentifier], nullptr, qualifiedScope, documentId, generation, qualifiedMember ? 4u : 0u,
                        isExtern ? SymbolDeclarationRole::Declaration : SymbolDeclarationRole::Definition)) tokenTruncated = true;
+    }
+
+    // Class static data declarations are symbol records in their containing
+    // class scope.  Other fields remain intentionally outside this lexical
+    // index because they do not have a separate declaration/definition site.
+    scope = {};
+    for (uint32_t i = 0; i < tokenCount; ++i) {
+        if (tokenIsPunctuation(text, g_tokens[i], "}")) { popScope(scope); continue; }
+        if (tokenIsPunctuation(text, g_tokens[i], "{")) {
+            if (g_braceKinds[i] != kBraceNone) {
+                char nameScope[kSymbolMaxContainerBytes] = {};
+                const SymbolKind scopeKind = kindForBrace(g_braceKinds[i]);
+                if (scopeKind == SymbolKind::Class || scopeKind == SymbolKind::Struct ||
+                    scopeKind == SymbolKind::Union || scopeKind == SymbolKind::Enum)
+                    typeNameForBrace(text, i, scopeKind, nameScope, sizeof(nameScope));
+                pushScope(scope, scopeKind, nameScope);
+            } else pushScope(scope, SymbolKind::Function, "");
+            continue;
+        }
+        if (!tokenIsPunctuation(text, g_tokens[i], ";") || hasFunctionScope(scope) || scope.count == 0) continue;
+        SymbolKind nearest = SymbolKind::Namespace;
+        for (uint32_t s = scope.count; s > 0; --s) {
+            if (scope.frames[s - 1].kind == SymbolKind::Class || scope.frames[s - 1].kind == SymbolKind::Struct ||
+                scope.frames[s - 1].kind == SymbolKind::Union) { nearest = scope.frames[s - 1].kind; break; }
+        }
+        if (nearest == SymbolKind::Namespace) continue;
+        bool isStatic = false;
+        bool hasParen = false;
+        uint32_t start = i;
+        while (start > 0) {
+            --start;
+            if (tokenIsPunctuation(text, g_tokens[start], ";") || tokenIsPunctuation(text, g_tokens[start], "{") ||
+                tokenIsPunctuation(text, g_tokens[start], "}")) { ++start; break; }
+        }
+        uint32_t lastIdentifier = tokenCount;
+        for (uint32_t j = start; j < i; ++j) {
+            if (tokenIsPunctuation(text, g_tokens[j], "(")) hasParen = true;
+            if (tokenIs(text, g_tokens[j], "static")) isStatic = true;
+            if (tokenIsIdentifier(g_tokens[j])) lastIdentifier = j;
+        }
+        if (!isStatic || hasParen || lastIdentifier == tokenCount) continue;
+        if (!addSymbol(output, capacity, symbolCount, SymbolKind::StaticVariable, text,
+                       g_tokens[lastIdentifier], nullptr, scope, documentId, generation, 4u,
+                       SymbolDeclarationRole::Declaration)) tokenTruncated = true;
     }
 
     // Typedefs and using aliases are handled after declarations so their
@@ -1097,6 +1181,7 @@ void SymbolDatabaseInit(SymbolDatabase* database,
     database->droppedSymbols = 0;
     database->droppedDocuments = 0;
     database->projectGeneration = 0;
+    database->symbolDatabaseGeneration = 0;
     database->lastIndexedDocumentId = 0;
     database->lastIndexedSymbolCount = 0;
     database->fullIndexCount = 0;
@@ -1112,6 +1197,8 @@ void SymbolDatabaseClear(SymbolDatabase* database) {
     database->droppedSymbols = 0;
     database->droppedDocuments = 0;
     database->projectGeneration = 0;
+    if (database->symbolDatabaseGeneration == UINT64_MAX) database->symbolDatabaseGeneration = 1;
+    else ++database->symbolDatabaseGeneration;
     database->lastIndexedDocumentId = 0;
     database->lastIndexedSymbolCount = 0;
     database->projectIndexActive = false;
@@ -1135,6 +1222,8 @@ bool SymbolDatabaseIndexDocument(SymbolDatabase* database, const char* path,
     document.dirty = dirty;
     if (!replaceDocumentSymbols(database, static_cast<uint32_t>(index), database->scratchSymbols,
                                 result.symbolCount, result.truncated)) return false;
+    if (database->symbolDatabaseGeneration == UINT64_MAX) database->symbolDatabaseGeneration = 1;
+    else ++database->symbolDatabaseGeneration;
     if (!database->projectIndexActive) ++database->incrementalIndexCount;
     return true;
 }
@@ -1189,6 +1278,8 @@ bool SymbolDatabaseRemoveDocument(SymbolDatabase* database, const char* path) {
             if (database->projectSymbols[symbol].documentIndex == i + 1) database->projectSymbols[symbol].documentIndex = i;
     }
     --database->documentCount;
+    if (database->symbolDatabaseGeneration == UINT64_MAX) database->symbolDatabaseGeneration = 1;
+    else ++database->symbolDatabaseGeneration;
     return true;
 }
 

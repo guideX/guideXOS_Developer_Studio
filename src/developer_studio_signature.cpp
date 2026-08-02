@@ -1,4 +1,5 @@
 #include "developer_studio_signature.h"
+#include "developer_studio_relationships.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -519,6 +520,19 @@ static bool parseCandidateParameters(SignatureHelpSession* session, SignatureCan
 
 static bool normalizedSignatureEqual(const SignatureCandidate& left, const SignatureCandidate& right) {
     if (!equalText(left.qualifiedName, right.qualifiedName, false) || left.symbolKind != right.symbolKind) return false;
+    char leftNormalized[kSignatureMaxDisplayBytes + 1] = {};
+    char rightNormalized[kSignatureMaxDisplayBytes + 1] = {};
+    uint32_t leftParameters = 0;
+    uint32_t rightParameters = 0;
+    bool leftComplete = false;
+    bool rightComplete = false;
+    bool leftApproximate = false;
+    bool rightApproximate = false;
+    if (NormalizeRelationshipSignature(left.displaySignature, leftNormalized, sizeof(leftNormalized),
+                                       &leftParameters, &leftComplete, &leftApproximate) &&
+        NormalizeRelationshipSignature(right.displaySignature, rightNormalized, sizeof(rightNormalized),
+                                       &rightParameters, &rightComplete, &rightApproximate) &&
+        leftParameters == rightParameters && equalText(leftNormalized, rightNormalized, false)) return true;
     const uint32_t leftLength = textLength(left.displaySignature, sizeof(left.displaySignature));
     const uint32_t rightLength = textLength(right.displaySignature, sizeof(right.displaySignature));
     uint32_t l = 0, r = 0;

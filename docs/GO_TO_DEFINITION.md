@@ -22,6 +22,15 @@ painting, activation, and editor focus. Candidates contain project-relative
 paths, symbol locations, document identity, and text generations; they do not
 contain editor pointers, filesystem handles, or mutable document pointers.
 
+When an indexed declaration or forward declaration is under the caret, F12
+first consults the project-local Declaration–Definition Relationship Graph.
+`Ctrl+F12` performs the inverse definition-to-declaration navigation and
+`Alt+F12` switches direction. A unique relationship activates directly;
+multiple declarations or definitions use the bounded picker. If no relationship
+is available, F12 retains the resolver below as its lexical fallback. See
+[`DECLARATION_DEFINITION_RELATIONSHIPS.md`](DECLARATION_DEFINITION_RELATIONSHIPS.md)
+for the confidence and normalization contract.
+
 ## Symbol identity and declaration roles
 
 Canonical `DocumentSymbol` records retain the name, lexical container,
@@ -157,9 +166,11 @@ bytes, nearby stale recovery 16 KiB, and each history direction 256 entries.
 
 This phase does not implement overload or argument-type resolution, type
 inference, inheritance, templates, macro expansion, include expansion,
-system/external header indexing, cross-project references, rename, references,
-peek definition, Clang, or LSP. `.` and `->` expressions are weak lexical
-hints only. The future path is:
+system/external header indexing, cross-project references, peek definition,
+Clang, or LSP. References and Rename consume exact relationship endpoints
+when the current graph provides them, but unresolved call/member uses remain
+lexical. `.` and `->` expressions are weak lexical hints only. The future path
+is:
 
 ```text
 lexical navigation
