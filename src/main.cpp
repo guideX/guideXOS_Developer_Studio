@@ -12,6 +12,7 @@
 #include "developer_studio_rename.h"
 #include "developer_studio_completion.h"
 #include "developer_studio_signature.h"
+#include "developer_studio_include_graph.h"
 
 namespace {
 
@@ -330,6 +331,47 @@ using guidexos::developer_studio::SignatureStatusText;
 using guidexos::developer_studio::SignatureProjectId;
 using guidexos::developer_studio::kSignatureMaxParameters;
 using guidexos::developer_studio::kSignatureMaxRetainedCandidates;
+using guidexos::developer_studio::IncludeDelimiterKind;
+using guidexos::developer_studio::IncludeDirectiveState;
+using guidexos::developer_studio::IncludeResolutionState;
+using guidexos::developer_studio::IncludeGraph;
+using guidexos::developer_studio::IncludeGraphStorage;
+using guidexos::developer_studio::IncludeGraphBuildOperation;
+using guidexos::developer_studio::IncludeGraphBuildState;
+using guidexos::developer_studio::IncludeGraphErrorCode;
+using guidexos::developer_studio::IncludeEdge;
+using guidexos::developer_studio::IncludeNode;
+using guidexos::developer_studio::IncludeGraphTraversalDirection;
+using guidexos::developer_studio::IncludeGraphTraversalResult;
+using guidexos::developer_studio::IncludeGraphDocumentSnapshot;
+using guidexos::developer_studio::IncludeGraphRequest;
+using guidexos::developer_studio::IncludeGraphStorageInit;
+using guidexos::developer_studio::IncludeGraphInit;
+using guidexos::developer_studio::IncludeGraphStart;
+using guidexos::developer_studio::IncludeGraphPoll;
+using guidexos::developer_studio::IncludeGraphCancel;
+using guidexos::developer_studio::IncludeGraphIsActive;
+using guidexos::developer_studio::IncludeGraphOperationInfo;
+using guidexos::developer_studio::IncludeGraphRelease;
+using guidexos::developer_studio::IncludeGraphIsCurrent;
+using guidexos::developer_studio::IncludeGraphNodeAt;
+using guidexos::developer_studio::IncludeGraphEdgeAt;
+using guidexos::developer_studio::IncludeGraphCycleAt;
+using guidexos::developer_studio::IncludeGraphCandidateAt;
+using guidexos::developer_studio::IncludeGraphBuildTraversal;
+using guidexos::developer_studio::IncludeGraphFindDirectiveAt;
+using guidexos::developer_studio::IncludeGraphRescanDocument;
+using guidexos::developer_studio::IncludeGraphBuildStateName;
+using guidexos::developer_studio::IncludeGraphErrorName;
+using guidexos::developer_studio::IncludeGraphStatusText;
+using guidexos::developer_studio::IncludeDelimiterName;
+using guidexos::developer_studio::IncludeDirectiveStateName;
+using guidexos::developer_studio::IncludeResolutionStateName;
+using guidexos::developer_studio::IsIncludeGraphSourcePath;
+using guidexos::developer_studio::IsIncludeGraphHeaderPath;
+using guidexos::developer_studio::kIncludeGraphMaxNodes;
+using guidexos::developer_studio::kIncludeGraphMaxEdges;
+using guidexos::developer_studio::kIncludeGraphMaxAmbiguousCandidates;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -386,6 +428,11 @@ static const int kCompletionPopupMaxRows = 9;
 static const int kSignaturePopupWidth = 620;
 static const int kSignaturePopupRowHeight = 34;
 static const int kSignaturePopupMaxRows = 5;
+static const int kIncludeGraphPanelTop = 48;
+static const int kIncludeGraphPanelResultsTop = 190;
+static const int kIncludeGraphPanelRowHeight = 24;
+static const int kIncludeGraphPanelMaxRows = 17;
+static const int kIncludeGraphPanelModeWidth = 138;
 
 enum class InputMode {
     Normal = 0,
@@ -429,6 +476,32 @@ static SignatureHelpSession g_signatureSession = {};
 static bool g_signaturePopupOpen = false;
 static uint32_t g_signatureScroll = 0;
 static char g_signatureStatus[192] = {};
+static IncludeGraphStorage g_includeGraphStorage = {};
+static IncludeGraphStorage g_includeGraphBuildingStorage = {};
+static IncludeGraph g_includeGraph = {};
+static IncludeGraph g_includeGraphBuilding = {};
+static IncludeGraphBuildOperation g_includeGraphOperation = {};
+static uint64_t g_includeGraphOperationId = 0;
+static bool g_includeGraphPanelOpen = false;
+static bool g_includeGraphResultsFocused = false;
+static bool g_includeGraphTerminalReported = false;
+static uint32_t g_includeGraphMode = 0;
+static uint32_t g_includeGraphScroll = 0;
+static uint32_t g_includeGraphSelectedRow = 0;
+static uint32_t g_includeTraversalNodes[kIncludeGraphMaxNodes] = {};
+static uint32_t g_includeTraversalDepths[kIncludeGraphMaxNodes] = {};
+static uint32_t g_includeTraversalParents[kIncludeGraphMaxNodes] = {};
+static IncludeGraphTraversalResult g_includeTraversal = {
+    g_includeTraversalNodes, g_includeTraversalDepths, g_includeTraversalParents, 0,
+    kIncludeGraphMaxNodes, 0, 0, false
+};
+static char g_includeGraphStatus[192] = {};
+static bool g_includeTargetPickerOpen = false;
+static uint32_t g_includeTargetEdgeIndex = 0;
+static uint32_t g_includeTargetSelected = 0;
+static uint32_t g_includeTargetScroll = 0;
+static NavigationLocation g_includeNavigationOrigin = {};
+static bool g_includeNavigationOriginValid = false;
 static char g_completionStatus[160] = {};
 static char g_completionProjectId[kMaxProjectIdBytes] = {};
 static bool g_completionUndoAvailable = false;
@@ -580,6 +653,15 @@ static bool undoCompletion(gx_app_context* ctx);
 static void dismissSignatureHelp(gx_app_context* ctx, const char* reason, bool showStatus);
 static bool openSignatureHelp(gx_app_context* ctx);
 static bool refreshSignatureHelp(gx_app_context* ctx);
+static void pollIncludeGraph(gx_app_context* ctx);
+static bool startIncludeGraph(gx_app_context* ctx);
+static bool refreshIncludeGraphDocument(gx_app_context* ctx, Document* document);
+static void closeIncludeGraphPanel(gx_app_context* ctx);
+static bool handleIncludeGraphKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static bool handleIncludeTargetPickerKey(gx_app_context* ctx, int keyCode, int action);
+static void drawIncludeGraphPanel(gx_app_context* ctx);
+static void drawIncludeTargetPicker(gx_app_context* ctx);
+static bool tryIncludeGraphDefinition(gx_app_context* ctx);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -2522,6 +2604,9 @@ static void reportProjectFailure(gx_app_context* ctx, const char* marker, Projec
 }
 
 static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
+    if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    g_includeGraphPanelOpen = false;
+    g_includeTargetPickerOpen = false;
     stopProjectSearch(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_validation=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=PASS");
@@ -2544,6 +2629,9 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
 }
 
 static void commitNewProject(gx_app_context* ctx) {
+    if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    g_includeGraphPanelOpen = false;
+    g_includeTargetPickerOpen = false;
     stopProjectSearch(ctx);
     ProjectCreateRequest request = {};
     copyText(request.parentPath, sizeof(request.parentPath), g_projectDialog.parentPath);
@@ -2565,6 +2653,9 @@ static void commitNewProject(gx_app_context* ctx) {
 static void commitProjectOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "project_changed", false);
     dismissSignatureHelp(ctx, "project_changed", false);
+    if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    g_includeGraphPanelOpen = false;
+    g_includeTargetPickerOpen = false;
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
         writeOutput("Project opened");
@@ -2581,6 +2672,9 @@ static void commitProjectOpen(gx_app_context* ctx) {
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "workspace_changed", false);
     dismissSignatureHelp(ctx, "workspace_changed", false);
+    if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    g_includeGraphPanelOpen = false;
+    g_includeTargetPickerOpen = false;
     stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     reportWorkspaceOpen(ctx, success);
@@ -3628,6 +3722,7 @@ static void updateSyntaxAfterEdit(gx_app_context* ctx, Document* document) {
         appendText(g_textScratch, sizeof(g_textScratch), SyntaxErrorName(document->syntax.fallbackCode));
         logMarker(ctx, g_textScratch);
     }
+    if (g_includeGraphPanelOpen) refreshIncludeGraphDocument(ctx, document);
 }
 
 static void completionSetStatus(const char* text) {
@@ -3841,6 +3936,478 @@ static void drawSignaturePopup(gx_app_context* ctx) {
     } else if (g_signatureSession.context.parameterPositionApproximate) {
         drawText(ctx, bounds.x + 8, bounds.y + bounds.height - 10, "Parameter position is approximate.");
     }
+}
+
+static void includeGraphSetStatus(const char* text) {
+    copyText(g_includeGraphStatus, sizeof(g_includeGraphStatus), text ? text : "");
+}
+
+static uint32_t captureDirtyIncludeGraphDocuments() {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < kMaxOpenDocuments && count < kMaxOpenDocuments; ++i) {
+        const Document& document = g_controller.model.documents[i];
+        if (!document.used || !document.buffer.dirty || document.buffer.length > kMaxEditorBytes) continue;
+        IncludeGraphDocumentSnapshot& snapshot = g_includeGraphOperation.dirtyDocuments[count];
+        if (!copyProjectRelativePath(g_controller.model, document.path, snapshot.relativePath, sizeof(snapshot.relativePath))) continue;
+        snapshot.length = document.buffer.length;
+        snapshot.documentId = document.documentId;
+        snapshot.documentGeneration = document.buffer.generation;
+        for (uint32_t j = 0; j < snapshot.length; ++j) snapshot.data[j] = document.buffer.data[j];
+        snapshot.data[snapshot.length] = '\0';
+        ++count;
+    }
+    return count;
+}
+
+static void fillIncludeGraphRequest(IncludeGraphRequest* request) {
+    if (!request) return;
+    *request = IncludeGraphRequest();
+    if (!g_controller.model.hasProject) return;
+    copyText(request->projectId, sizeof(request->projectId), g_controller.model.project.projectId);
+    request->projectGeneration = g_controller.model.projectGeneration;
+    copyText(request->rootPath, sizeof(request->rootPath), g_controller.model.rootPath);
+    if (g_controller.model.project.sourceRoot[0] != '\0') {
+        copyText(request->includeRoots[0], sizeof(request->includeRoots[0]), g_controller.model.project.sourceRoot);
+        request->includeRootCount = 1;
+    }
+    // Version 1 project metadata has no separate include-root list. The
+    // project root is an intentional final fallback for paths such as
+    // "src/header.h", never an unrestricted host search.
+    request->allowProjectRoot = true;
+    request->fileSystem = g_controller.fileSystem;
+    request->dirtyDocuments = g_includeGraphOperation.dirtyDocuments;
+    request->dirtyDocumentCount = captureDirtyIncludeGraphDocuments();
+}
+
+static bool startIncludeGraph(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        includeGraphSetStatus("Open a project before using Include Graph.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_begin=FAIL", IncludeGraphErrorName(IncludeGraphErrorCode::NoProject));
+        return false;
+    }
+    IncludeGraphInit(&g_includeGraphBuilding, &g_includeGraphBuildingStorage,
+                     g_controller.model.project.projectId, g_controller.model.projectGeneration);
+    IncludeGraphRequest request = {};
+    fillIncludeGraphRequest(&request);
+    uint64_t operationId = 0;
+    IncludeGraphErrorCode error = IncludeGraphErrorCode::None;
+    if (!IncludeGraphStart(&g_includeGraphOperation, &g_includeGraphBuilding, request,
+                           gx_get_ticks_ms(ctx), &operationId, &error)) {
+        includeGraphSetStatus(IncludeGraphStatusText(error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_begin=FAIL", IncludeGraphErrorName(error));
+        return false;
+    }
+    g_includeGraphOperationId = operationId;
+    g_includeGraphTerminalReported = false;
+    g_includeGraphPanelOpen = true;
+    g_includeGraphResultsFocused = false;
+    g_includeGraphScroll = 0;
+    g_includeGraphSelectedRow = 0;
+    g_editorFocused = false;
+    includeGraphSetStatus("Building Include Graph...");
+    writeStudioOutput("Include Graph build started");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_begin=PASS");
+    return true;
+}
+
+static void pollIncludeGraph(gx_app_context* ctx) {
+    if (g_includeGraphOperationId == 0) return;
+    if (IncludeGraphIsActive(&g_includeGraphOperation) &&
+        (!g_controller.model.open || !g_controller.model.hasProject ||
+         g_includeGraphOperation.projectGeneration != g_controller.model.projectGeneration)) {
+        IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    }
+    IncludeGraphPoll(&g_includeGraphOperation, g_includeGraphOperationId, 8, gx_get_ticks_ms(ctx));
+    const IncludeGraphBuildOperation* operation = IncludeGraphOperationInfo(&g_includeGraphOperation);
+    if (!operation || IncludeGraphIsActive(operation) || g_includeGraphTerminalReported) {
+        if (operation && IncludeGraphIsActive(operation)) {
+            copyText(g_includeGraphStatus, sizeof(g_includeGraphStatus), IncludeGraphBuildStateName(operation->state));
+            appendText(g_includeGraphStatus, sizeof(g_includeGraphStatus), "  files=");
+            appendUnsigned(g_includeGraphStatus, sizeof(g_includeGraphStatus), static_cast<uint32_t>(operation->filesScanned));
+            appendText(g_includeGraphStatus, sizeof(g_includeGraphStatus), " directives=");
+            appendUnsigned(g_includeGraphStatus, sizeof(g_includeGraphStatus), static_cast<uint32_t>(operation->directivesFound));
+        }
+        return;
+    }
+    g_includeGraphTerminalReported = true;
+    if (operation->state == IncludeGraphBuildState::Completed) {
+        IncludeGraph oldGraph = g_includeGraph;
+        g_includeGraph = g_includeGraphBuilding;
+        g_includeGraphBuilding = oldGraph;
+        includeGraphSetStatus(g_includeGraph.truncated ? "Include Graph complete (truncated)." : "Include Graph complete.");
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_enumeration=PASS files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesEnumerated));
+        logMarker(ctx, g_textScratch);
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_scan=PASS files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesScanned));
+        appendText(g_textScratch, sizeof(g_textScratch), " directives=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->directivesFound));
+        logMarker(ctx, g_textScratch);
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_resolution=PASS resolved=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->edgesResolved));
+        appendText(g_textScratch, sizeof(g_textScratch), " unresolved=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->unresolvedEdges));
+        logMarker(ctx, g_textScratch);
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_reverse_edges=PASS");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_cycles=PASS");
+        writeStudioOutput("Include Graph build completed");
+    } else if (operation->state == IncludeGraphBuildState::Cancelled) {
+        includeGraphSetStatus("Include Graph build cancelled; last completed graph retained.");
+        writeStudioOutput("Include Graph build cancelled");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_cancelled=PASS");
+    } else {
+        copyText(g_includeGraphStatus, sizeof(g_includeGraphStatus), "Include Graph build failed: ");
+        appendText(g_includeGraphStatus, sizeof(g_includeGraphStatus), IncludeGraphErrorName(operation->error));
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_build=FAIL", IncludeGraphErrorName(operation->error));
+    }
+}
+
+static bool includeGraphActivePath(char* output, uint32_t outputSize) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    return document && copyProjectRelativePath(g_controller.model, document->path, output, outputSize);
+}
+
+static uint32_t includeGraphRowCount() {
+    if (!IncludeGraphIsCurrent(&g_includeGraph, g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+                               g_controller.model.projectGeneration)) return 0;
+    char activePath[kMaxPathBytes] = {};
+    if (!includeGraphActivePath(activePath, sizeof(activePath))) return 0;
+    if (g_includeGraphMode == 4) return g_includeGraph.cycleCount;
+    if (g_includeGraphMode == 5) {
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < g_includeGraph.edgeCount; ++i)
+            if (g_includeGraph.edges[i].resolution.state != IncludeResolutionState::Resolved) ++count;
+        return count;
+    }
+    const uint32_t nodeIndex = [&]() -> uint32_t { for (uint32_t i = 0; i < g_includeGraph.nodeCount; ++i) if (searchTextEqual(g_includeGraph.nodes[i].relativePath, activePath)) return i; return kIncludeGraphMaxNodes; }();
+    if (nodeIndex >= g_includeGraph.nodeCount) return 0;
+    if (g_includeGraphMode == 0) return g_includeGraph.nodes[nodeIndex].outgoingEdgeCount;
+    if (g_includeGraphMode == 1) return g_includeGraph.nodes[nodeIndex].incomingEdgeCount;
+    g_includeTraversal = { g_includeTraversalNodes, g_includeTraversalDepths, g_includeTraversalParents, 0,
+                           kIncludeGraphMaxNodes, 0, 0, false };
+    IncludeGraphBuildTraversal(&g_includeGraph, activePath,
+        g_includeGraphMode == 2 ? IncludeGraphTraversalDirection::Includes : IncludeGraphTraversalDirection::IncludedBy,
+        true, &g_includeTraversal);
+    return g_includeTraversal.nodeCount;
+}
+
+static const IncludeEdge* includeGraphEdgeForRow(uint32_t row, uint32_t* outIndex) {
+    if (outIndex) *outIndex = 0;
+    char activePath[kMaxPathBytes] = {};
+    if (!includeGraphActivePath(activePath, sizeof(activePath))) return nullptr;
+    uint32_t nodeIndex = kIncludeGraphMaxNodes;
+    for (uint32_t i = 0; i < g_includeGraph.nodeCount; ++i)
+        if (searchTextEqual(g_includeGraph.nodes[i].relativePath, activePath)) { nodeIndex = i; break; }
+    if (g_includeGraphMode == 4) {
+        if (row >= g_includeGraph.cycleCount) return nullptr;
+        const auto& cycle = g_includeGraph.cycles[row];
+        if (cycle.edgeCount == 0) return nullptr;
+        const uint32_t edgeIndex = g_includeGraph.cycleEdges[cycle.edgeOffset];
+        if (outIndex) *outIndex = edgeIndex;
+        return IncludeGraphEdgeAt(&g_includeGraph, edgeIndex);
+    }
+    if (g_includeGraphMode == 5) {
+        uint32_t found = 0;
+        for (uint32_t i = 0; i < g_includeGraph.edgeCount; ++i) {
+            if (g_includeGraph.edges[i].resolution.state == IncludeResolutionState::Resolved) continue;
+            if (found++ == row) { if (outIndex) *outIndex = i; return &g_includeGraph.edges[i]; }
+        }
+        return nullptr;
+    }
+    if (g_includeGraphMode == 2 || g_includeGraphMode == 3) {
+        if (row >= g_includeTraversal.nodeCount) return nullptr;
+        const uint32_t targetNode = g_includeTraversal.nodeIndices[row];
+        for (uint32_t i = 0; i < g_includeGraph.edgeCount; ++i) {
+            const auto& edge = g_includeGraph.edges[i];
+            if (edge.resolution.state != IncludeResolutionState::Resolved) continue;
+            const uint32_t source = [&]() -> uint32_t { for (uint32_t n = 0; n < g_includeGraph.nodeCount; ++n) if (searchTextEqual(g_includeGraph.nodes[n].relativePath, edge.sourceRelativePath)) return n; return kIncludeGraphMaxNodes; }();
+            const uint32_t target = [&]() -> uint32_t { for (uint32_t n = 0; n < g_includeGraph.nodeCount; ++n) if (searchTextEqual(g_includeGraph.nodes[n].relativePath, edge.targetRelativePath)) return n; return kIncludeGraphMaxNodes; }();
+            if ((g_includeGraphMode == 2 && target == targetNode) || (g_includeGraphMode == 3 && source == targetNode)) {
+                if (outIndex) *outIndex = i;
+                return &edge;
+            }
+        }
+        return nullptr;
+    }
+    if (nodeIndex >= g_includeGraph.nodeCount) return nullptr;
+    const IncludeNode& node = g_includeGraph.nodes[nodeIndex];
+    if (g_includeGraphMode == 0 && row < node.outgoingEdgeCount) {
+        const uint32_t edgeIndex = g_includeGraph.outgoingEdgeIndices[node.outgoingEdgeOffset + row];
+        if (outIndex) *outIndex = edgeIndex;
+        return &g_includeGraph.edges[edgeIndex];
+    }
+    if (g_includeGraphMode == 1 && row < node.incomingEdgeCount) {
+        const uint32_t edgeIndex = g_includeGraph.incomingEdgeIndices[node.incomingEdgeOffset + row];
+        if (outIndex) *outIndex = edgeIndex;
+        return &g_includeGraph.edges[edgeIndex];
+    }
+    return nullptr;
+}
+
+static bool activateIncludeEdge(gx_app_context* ctx, uint32_t edgeIndex) {
+    if (!IncludeGraphIsCurrent(&g_includeGraph, g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+                               g_controller.model.projectGeneration) || edgeIndex >= g_includeGraph.edgeCount) {
+        includeGraphSetStatus("Include Graph result is stale.");
+        return false;
+    }
+    const auto& edge = g_includeGraph.edges[edgeIndex];
+    Document* origin = WorkspaceControllerActiveDocument(&g_controller);
+    if (!origin || !captureNavigationLocation(*origin, &g_includeNavigationOrigin)) return false;
+    g_includeNavigationOriginValid = true;
+    const bool outgoing = g_includeGraphMode == 0 || g_includeGraphMode == 2;
+    const char* path = outgoing && edge.resolution.state == IncludeResolutionState::Resolved ? edge.targetRelativePath : edge.sourceRelativePath;
+    const uint32_t line = outgoing && edge.resolution.state == IncludeResolutionState::Resolved ? 1 : edge.directive.line;
+    const uint32_t column = outgoing && edge.resolution.state == IncludeResolutionState::Resolved ? 1 : edge.directive.column;
+    if (!path || path[0] == '\0') {
+        includeGraphSetStatus(IncludeResolutionStateName(edge.resolution.state));
+        g_includeNavigationOriginValid = false;
+        return false;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   path, line, column, &documentIndex, &error)) {
+        includeGraphSetStatus("Unable to open Include Graph location.");
+        g_includeNavigationOriginValid = false;
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_activation=FAIL", OutputErrorName(error));
+        return false;
+    }
+    NavigationHistoryPush(&g_navigationHistory, g_includeNavigationOrigin);
+    g_includeNavigationOriginValid = false;
+    g_includeGraphPanelOpen = false;
+    g_includeTargetPickerOpen = false;
+    g_editorFocused = true;
+    g_outputFocused = false;
+    keepCaretVisible(WorkspaceControllerActiveDocument(&g_controller));
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_activation=PASS");
+    return true;
+}
+
+static bool activateIncludeTargetCandidate(gx_app_context* ctx, uint32_t selected) {
+    if (!g_includeTargetPickerOpen || g_includeTargetEdgeIndex >= g_includeGraph.edgeCount) return false;
+    const auto& edge = g_includeGraph.edges[g_includeTargetEdgeIndex];
+    const char* path = IncludeGraphCandidateAt(&g_includeGraph, edge.resolution, selected);
+    if (!path || !g_includeNavigationOriginValid) return false;
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   path, 1, 1, &documentIndex, &error)) {
+        includeGraphSetStatus("Included file is no longer available.");
+        return false;
+    }
+    NavigationHistoryPush(&g_navigationHistory, g_includeNavigationOrigin);
+    g_includeNavigationOriginValid = false;
+    g_includeTargetPickerOpen = false;
+    g_includeGraphPanelOpen = false;
+    g_editorFocused = true;
+    keepCaretVisible(WorkspaceControllerActiveDocument(&g_controller));
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_picker_activation=PASS");
+    return true;
+}
+
+static bool handleIncludeTargetPickerKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!g_includeTargetPickerOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { g_includeTargetPickerOpen = false; g_includeNavigationOriginValid = false; return true; }
+    if (keyCode == GX_KEY_UP) { if (g_includeTargetSelected > 0) --g_includeTargetSelected; return true; }
+    const auto* edge = IncludeGraphEdgeAt(&g_includeGraph, g_includeTargetEdgeIndex);
+    const uint32_t count = edge ? edge->resolution.ambiguousCandidateCount : 0;
+    if (keyCode == GX_KEY_DOWN) { if (g_includeTargetSelected + 1 < count) ++g_includeTargetSelected; return true; }
+    if (keyCode == 33) { g_includeTargetSelected = g_includeTargetSelected > 10 ? g_includeTargetSelected - 10 : 0; return true; }
+    if (keyCode == 34) { g_includeTargetSelected = g_includeTargetSelected + 10 < count ? g_includeTargetSelected + 10 : (count ? count - 1 : 0); return true; }
+    if (keyCode == 36) { g_includeTargetSelected = 0; return true; }
+    if (keyCode == 35) { g_includeTargetSelected = count ? count - 1 : 0; return true; }
+    if (keyCode == 13 && count > 0) { activateIncludeTargetCandidate(ctx, g_includeTargetSelected); return true; }
+    return true;
+}
+
+static bool tryIncludeGraphDefinition(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    char relativePath[kMaxPathBytes] = {};
+    if (!document || !copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath)) ||
+        !IncludeGraphIsCurrent(&g_includeGraph, g_controller.model.project.projectId, g_controller.model.projectGeneration)) return false;
+    const auto* edge = IncludeGraphFindDirectiveAt(&g_includeGraph, relativePath, document->buffer.caret);
+    if (!edge) return false;
+    uint32_t edgeIndex = 0;
+    for (uint32_t i = 0; i < g_includeGraph.edgeCount; ++i) if (&g_includeGraph.edges[i] == edge) { edgeIndex = i; break; }
+    if (edge->resolution.state == IncludeResolutionState::Ambiguous) {
+        if (!captureNavigationLocation(*document, &g_includeNavigationOrigin)) return true;
+        g_includeNavigationOriginValid = true;
+        g_includeTargetEdgeIndex = edgeIndex;
+        g_includeTargetSelected = 0;
+        g_includeTargetScroll = 0;
+        g_includeTargetPickerOpen = true;
+        g_editorFocused = false;
+        return true;
+    }
+    if (edge->resolution.state != IncludeResolutionState::Resolved) {
+        includeGraphSetStatus(edge->resolution.state == IncludeResolutionState::ExternalUnresolved ?
+                              "External include is not indexed." : IncludeResolutionStateName(edge->resolution.state));
+        return true;
+    }
+    g_includeGraphMode = 0;
+    return activateIncludeEdge(ctx, edgeIndex);
+}
+
+static bool refreshIncludeGraphDocument(gx_app_context* ctx, Document* document) {
+    if (!document || !g_includeGraphPanelOpen || !g_controller.model.hasProject ||
+        !IncludeGraphIsCurrent(&g_includeGraph, g_controller.model.project.projectId, g_controller.model.projectGeneration)) return false;
+    char relativePath[kMaxPathBytes] = {};
+    if (!copyProjectRelativePath(g_controller.model, document->path, relativePath, sizeof(relativePath))) return false;
+    IncludeGraphRequest request = {};
+    fillIncludeGraphRequest(&request);
+    request.dirtyDocuments = nullptr;
+    request.dirtyDocumentCount = 0;
+    IncludeGraphErrorCode error = IncludeGraphErrorCode::None;
+    if (!IncludeGraphRescanDocument(&g_includeGraph, request, relativePath, document->documentId,
+                                    document->buffer.generation, document->buffer.data, document->buffer.length,
+                                    document->buffer.dirty, &error)) {
+        includeGraphSetStatus(IncludeGraphStatusText(error));
+        return false;
+    }
+    includeGraphSetStatus("Include Graph updated for active document.");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_incremental_update=PASS");
+    return true;
+}
+
+static void closeIncludeGraphPanel(gx_app_context* ctx) {
+    if (IncludeGraphIsActive(&g_includeGraphOperation)) {
+        IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+        includeGraphSetStatus("Cancelling Include Graph build...");
+    }
+    g_includeGraphPanelOpen = false;
+    g_includeGraphResultsFocused = false;
+    g_includeTargetPickerOpen = false;
+    g_includeNavigationOriginValid = false;
+    g_editorFocused = true;
+    if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER include_graph_panel=HIDDEN");
+}
+
+static bool handleIncludeGraphKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_includeGraphPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (g_includeTargetPickerOpen) return handleIncludeTargetPickerKey(ctx, keyCode, action);
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 73 || keyCode == 105)) {
+        startIncludeGraph(ctx);
+        return true;
+    }
+    if (keyCode == 27) { closeIncludeGraphPanel(ctx); return true; }
+    if (keyCode == 82 || keyCode == 114) { startIncludeGraph(ctx); return true; }
+    if (keyCode == 67 || keyCode == 99) {
+        if (IncludeGraphIsActive(&g_includeGraphOperation)) {
+            IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+            includeGraphSetStatus("Cancelling Include Graph build...");
+        }
+        return true;
+    }
+    if (keyCode == 9 || keyCode == GX_KEY_RIGHT) { g_includeGraphMode = (g_includeGraphMode + 1) % 6; g_includeGraphScroll = 0; g_includeGraphSelectedRow = 0; return true; }
+    if (keyCode == GX_KEY_LEFT) { g_includeGraphMode = g_includeGraphMode == 0 ? 5 : g_includeGraphMode - 1; g_includeGraphScroll = 0; g_includeGraphSelectedRow = 0; return true; }
+    const uint32_t total = includeGraphRowCount();
+    if (keyCode == GX_KEY_UP) { if (g_includeGraphSelectedRow > 0) --g_includeGraphSelectedRow; }
+    else if (keyCode == GX_KEY_DOWN) { if (g_includeGraphSelectedRow + 1 < total) ++g_includeGraphSelectedRow; }
+    else if (keyCode == 33) { g_includeGraphSelectedRow = g_includeGraphSelectedRow > kIncludeGraphPanelMaxRows ? g_includeGraphSelectedRow - kIncludeGraphPanelMaxRows : 0; }
+    else if (keyCode == 34) { g_includeGraphSelectedRow = g_includeGraphSelectedRow + kIncludeGraphPanelMaxRows < total ? g_includeGraphSelectedRow + kIncludeGraphPanelMaxRows : (total ? total - 1 : 0); }
+    else if (keyCode == 36) g_includeGraphSelectedRow = 0;
+    else if (keyCode == 35) g_includeGraphSelectedRow = total ? total - 1 : 0;
+    else if (keyCode == 13 && total > 0) {
+        uint32_t edgeIndex = 0;
+        const auto* edge = includeGraphEdgeForRow(g_includeGraphSelectedRow, &edgeIndex);
+        if (edge && edge->resolution.state == IncludeResolutionState::Ambiguous &&
+            (g_includeGraphMode == 0 || g_includeGraphMode == 2)) {
+            Document* document = WorkspaceControllerActiveDocument(&g_controller);
+            if (document) captureNavigationLocation(*document, &g_includeNavigationOrigin);
+            g_includeNavigationOriginValid = true;
+            g_includeTargetEdgeIndex = edgeIndex;
+            g_includeTargetSelected = 0;
+            g_includeTargetPickerOpen = true;
+            g_editorFocused = false;
+        } else if (edge) activateIncludeEdge(ctx, edgeIndex);
+    } else return true;
+    if (g_includeGraphSelectedRow < g_includeGraphScroll) g_includeGraphScroll = g_includeGraphSelectedRow;
+    if (g_includeGraphSelectedRow >= g_includeGraphScroll + kIncludeGraphPanelMaxRows)
+        g_includeGraphScroll = g_includeGraphSelectedRow - kIncludeGraphPanelMaxRows + 1;
+    (void)modifiers;
+    return true;
+}
+
+static void drawIncludeGraphPanel(gx_app_context* ctx) {
+    if (!ctx || !g_includeGraphPanelOpen) return;
+    drawPanel(ctx, { 8, kIncludeGraphPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 72, "INCLUDE GRAPH");
+    char activePath[kMaxPathBytes] = {};
+    includeGraphActivePath(activePath, sizeof(activePath));
+    copyText(g_textScratch, sizeof(g_textScratch), "File: ");
+    appendText(g_textScratch, sizeof(g_textScratch), activePath[0] ? activePath : "No active C/C++ file");
+    drawText(ctx, 24, 96, g_textScratch);
+    const char* modes[] = { "Direct Includes", "Included By", "Transitive Includes", "Transitive Included By", "Cycles", "Unresolved" };
+    for (uint32_t i = 0; i < 6; ++i) {
+        const int x = 18 + static_cast<int>(i) * kIncludeGraphPanelModeWidth;
+        drawPanel(ctx, { x, 110, kIncludeGraphPanelModeWidth - 4, 25 }, i == g_includeGraphMode ? 0x405775u : 0x202A36u);
+        drawText(ctx, x + 5, 127, modes[i]);
+    }
+    const auto* operation = IncludeGraphOperationInfo(&g_includeGraphOperation);
+    copyText(g_textScratch, sizeof(g_textScratch), "Graph: ");
+    if (operation && IncludeGraphIsActive(operation)) appendText(g_textScratch, sizeof(g_textScratch), IncludeGraphBuildStateName(operation->state));
+    else if (!g_includeGraph.complete) appendText(g_textScratch, sizeof(g_textScratch), "No completed graph");
+    else appendText(g_textScratch, sizeof(g_textScratch), g_includeGraph.truncated ? "Current (truncated)" : "Current");
+    appendText(g_textScratch, sizeof(g_textScratch), "   [R] Refresh  [C] Cancel  [Esc] Close");
+    drawText(ctx, 24, 155, g_textScratch);
+    const uint32_t total = includeGraphRowCount();
+    drawPanel(ctx, { 16, kIncludeGraphPanelResultsTop - 12, 928, 1 }, 0x405775u);
+    const uint32_t end = g_includeGraphScroll + kIncludeGraphPanelMaxRows < total ?
+        g_includeGraphScroll + kIncludeGraphPanelMaxRows : total;
+    for (uint32_t row = g_includeGraphScroll; row < end; ++row) {
+        uint32_t edgeIndex = 0;
+        const auto* edge = includeGraphEdgeForRow(row, &edgeIndex);
+        const int y = kIncludeGraphPanelResultsTop + static_cast<int>((row - g_includeGraphScroll) * kIncludeGraphPanelRowHeight);
+        if (row == g_includeGraphSelectedRow) drawPanel(ctx, { 20, y - 15, 920, kIncludeGraphPanelRowHeight }, 0x34496Au);
+        if (g_includeGraphMode == 4) {
+            const auto& cycle = g_includeGraph.cycles[row];
+            copyText(g_textScratch, sizeof(g_textScratch), "Cycle ");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), row + 1);
+            appendText(g_textScratch, sizeof(g_textScratch), cycle.selfCycle ? "  Self-cycle  " : (cycle.containsConditionalEdge ? "  Possible conditional  " : "  Definite  "));
+            appendText(g_textScratch, sizeof(g_textScratch), cycle.representativePath);
+        } else if (!edge) {
+            copyText(g_textScratch, sizeof(g_textScratch), "Dependency target");
+        } else {
+            const char* path = g_includeGraphMode == 1 || g_includeGraphMode == 3 ? edge->sourceRelativePath :
+                (edge->resolution.state == IncludeResolutionState::Resolved ? edge->targetRelativePath : edge->directive.requestedPath);
+            copyText(g_textScratch, sizeof(g_textScratch), "[");
+            appendText(g_textScratch, sizeof(g_textScratch), IncludeDelimiterName(edge->directive.delimiterKind));
+            appendText(g_textScratch, sizeof(g_textScratch), "] ");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), edge->directive.line);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), edge->directive.column);
+            appendText(g_textScratch, sizeof(g_textScratch), "  ");
+            appendText(g_textScratch, sizeof(g_textScratch), path);
+            appendText(g_textScratch, sizeof(g_textScratch), "  ");
+            appendText(g_textScratch, sizeof(g_textScratch), IncludeResolutionStateName(edge->resolution.state));
+            if (edge->directive.directiveState != IncludeDirectiveState::Active) {
+                appendText(g_textScratch, sizeof(g_textScratch), "  ");
+                appendText(g_textScratch, sizeof(g_textScratch), IncludeDirectiveStateName(edge->directive.directiveState));
+            }
+        }
+        drawText(ctx, 28, y, g_textScratch);
+    }
+    if (total == 0) drawText(ctx, 28, kIncludeGraphPanelResultsTop, g_includeGraphStatus[0] ? g_includeGraphStatus : "No rows for this view.");
+    else drawText(ctx, 28, 612, g_includeGraphStatus);
+    if (g_includeGraph.truncated) drawText(ctx, 600, 612, "TRUNCATED");
+}
+
+static void drawIncludeTargetPicker(gx_app_context* ctx) {
+    if (!ctx || !g_includeTargetPickerOpen) return;
+    const auto* edge = IncludeGraphEdgeAt(&g_includeGraph, g_includeTargetEdgeIndex);
+    if (!edge) return;
+    drawPanel(ctx, { 132, 92, 696, 500 }, 0x202A36u);
+    drawText(ctx, 150, 120, "CHOOSE INCLUDED FILE");
+    drawText(ctx, 150, 144, edge->directive.requestedPath);
+    const uint32_t count = edge->resolution.ambiguousCandidateCount;
+    const uint32_t end = g_includeTargetScroll + 18 < count ? g_includeTargetScroll + 18 : count;
+    for (uint32_t row = g_includeTargetScroll; row < end; ++row) {
+        const int y = 174 + static_cast<int>((row - g_includeTargetScroll) * 22);
+        if (row == g_includeTargetSelected) drawPanel(ctx, { 144, y - 15, 672, 20 }, 0x34496Au);
+        drawText(ctx, 152, y, IncludeGraphCandidateAt(&g_includeGraph, edge->resolution, row));
+    }
+    drawText(ctx, 150, 566, "Up/Down Select  Enter Open  Escape Cancel");
 }
 
 static void completionStatusForError(CompletionErrorCode error) {
@@ -4401,6 +4968,8 @@ static void drawShell(gx_app_context* ctx) {
     drawDefinitionPicker(ctx);
     drawReferencePicker(ctx);
     drawRenamePanel(ctx);
+    drawIncludeGraphPanel(ctx);
+    drawIncludeTargetPicker(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -5051,6 +5620,12 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         else openCompletion(ctx);
         return;
     }
+    if (g_includeTargetPickerOpen && handleIncludeTargetPickerKey(ctx, keyCode, action)) return;
+    if (g_includeGraphPanelOpen && handleIncludeGraphKey(ctx, keyCode, action, modifiers)) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 73 || keyCode == 105)) {
+        startIncludeGraph(ctx);
+        return;
+    }
     if (g_renamePanelOpen && handleRenameKey(ctx, keyCode, action, modifiers)) return;
     if (g_definitionPickerOpen && handleDefinitionPickerKey(ctx, keyCode, action)) return;
     if (g_referencePickerOpen && handleReferencePickerKey(ctx, keyCode, action)) return;
@@ -5120,6 +5695,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     }
     if (keyCode == 123) {
         if (!g_editorFocused) { definitionSetStatus("Focus the editor before going to a definition."); return; }
+        if (tryIncludeGraphDefinition(ctx)) return;
         startGoToDefinition(ctx);
         return;
     }
@@ -5214,6 +5790,66 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_includeTargetPickerOpen) {
+        const auto* edge = IncludeGraphEdgeAt(&g_includeGraph, g_includeTargetEdgeIndex);
+        const uint32_t count = edge ? edge->resolution.ambiguousCandidateCount : 0;
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            if (event.param4 > 0) g_includeTargetScroll = g_includeTargetScroll > 3 ? g_includeTargetScroll - 3 : 0;
+            else if (g_includeTargetScroll + 18 < count) ++g_includeTargetScroll;
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+            x >= 144 && x < 816 && y >= 158 && y < 558) {
+            const uint32_t row = g_includeTargetScroll + static_cast<uint32_t>((y - 158) / 22);
+            if (row < count) {
+                g_includeTargetSelected = row;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) activateIncludeTargetCandidate(ctx, row);
+            }
+        }
+        return;
+    }
+    if (g_includeGraphPanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t total = includeGraphRowCount();
+            const uint32_t maximum = total > static_cast<uint32_t>(kIncludeGraphPanelMaxRows) ?
+                total - static_cast<uint32_t>(kIncludeGraphPanelMaxRows) : 0;
+            if (event.param4 > 0) g_includeGraphScroll = g_includeGraphScroll > 3 ? g_includeGraphScroll - 3 : 0;
+            else g_includeGraphScroll = g_includeGraphScroll + 3 < maximum ? g_includeGraphScroll + 3 : maximum;
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (y >= 110 && y < 136 && x >= 18 && x < 18 + 6 * kIncludeGraphPanelModeWidth) {
+                g_includeGraphMode = static_cast<uint32_t>((x - 18) / kIncludeGraphPanelModeWidth);
+                g_includeGraphScroll = 0;
+                g_includeGraphSelectedRow = 0;
+            } else if (y >= 140 && y < 174 && x >= 760) {
+                startIncludeGraph(ctx);
+            } else if (y >= kIncludeGraphPanelResultsTop - 12 && y < 612) {
+                const uint32_t row = g_includeGraphScroll + static_cast<uint32_t>((y - (kIncludeGraphPanelResultsTop - 12)) / kIncludeGraphPanelRowHeight);
+                const uint32_t total = includeGraphRowCount();
+                if (row < total) {
+                    g_includeGraphSelectedRow = row;
+                    uint32_t edgeIndex = 0;
+                    const auto* edge = includeGraphEdgeForRow(row, &edgeIndex);
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK && edge) {
+                        if (edge->resolution.state == IncludeResolutionState::Ambiguous && (g_includeGraphMode == 0 || g_includeGraphMode == 2)) {
+                            Document* document = WorkspaceControllerActiveDocument(&g_controller);
+                            if (document) captureNavigationLocation(*document, &g_includeNavigationOrigin);
+                            g_includeNavigationOriginValid = true;
+                            g_includeTargetEdgeIndex = edgeIndex;
+                            g_includeTargetSelected = 0;
+                            g_includeTargetScroll = 0;
+                            g_includeTargetPickerOpen = true;
+                            g_editorFocused = false;
+                        } else activateIncludeEdge(ctx, edgeIndex);
+                    }
+                }
+            }
+        }
+        return;
+    }
     if (g_signaturePopupOpen) {
         gx_rect bounds = {};
         if (!signaturePopupBounds(&bounds)) { dismissSignatureHelp(ctx, "popup_expired", false); return; }
@@ -5581,7 +6217,14 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress");
             else if (RunControllerIsActive(&g_runController)) writeOutput("Run in progress");
             else if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmWorkspace;
-            else { stopProjectSearch(ctx); dismissSignatureHelp(ctx, "workspace_changed", false); WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard); }
+            else {
+                stopProjectSearch(ctx);
+                dismissSignatureHelp(ctx, "workspace_changed", false);
+                if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+                g_includeGraphPanelOpen = false;
+                g_includeTargetPickerOpen = false;
+                WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
+            }
         } else if (y < 188) {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
             else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
@@ -5644,6 +6287,21 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_signaturePopupOpen = false;
     g_signatureScroll = 0;
     g_signatureStatus[0] = '\0';
+    IncludeGraphStorageInit(&g_includeGraphStorage);
+    IncludeGraphStorageInit(&g_includeGraphBuildingStorage);
+    IncludeGraphInit(&g_includeGraph, &g_includeGraphStorage, "", 0);
+    IncludeGraphInit(&g_includeGraphBuilding, &g_includeGraphBuildingStorage, "", 0);
+    g_includeGraphOperation = IncludeGraphBuildOperation();
+    g_includeGraphOperationId = 0;
+    g_includeGraphPanelOpen = false;
+    g_includeGraphResultsFocused = false;
+    g_includeGraphTerminalReported = false;
+    g_includeGraphMode = 0;
+    g_includeGraphScroll = 0;
+    g_includeGraphSelectedRow = 0;
+    g_includeGraphStatus[0] = '\0';
+    g_includeTargetPickerOpen = false;
+    g_includeNavigationOriginValid = false;
     g_inputMode = InputMode::Normal;
     g_editorFocused = false;
     g_fileMenuOpen = false;
@@ -5758,6 +6416,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     bool running = true;
     if (ctx->host->poll_event) {
         while (running) {
+            pollIncludeGraph(ctx);
             pollProjectSearch(ctx);
             pollReferences(ctx);
             pollBuild(ctx);
@@ -5765,7 +6424,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             gx_event event;
             clear_event(&event);
             gx_result result = ctx->host->poll_event(ctx, &event,
-                (ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ? 50 : 500);
+                (IncludeGraphIsActive(&g_includeGraphOperation) || ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ? 50 : 500);
             if (result == GX_OK && event.window == g_window) {
                 if (gx_event_is_paint(&event)) drawShell(ctx);
                 else if (gx_event_is_close(&event)) {
@@ -5800,6 +6459,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     handleMouse(ctx, event);
                     if (g_requestExit) running = false;
                 }
+                pollIncludeGraph(ctx);
                 pollBuild(ctx);
                 pollRun(ctx);
                 pollProjectSearch(ctx);

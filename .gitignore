@@ -3,6 +3,7 @@
 /out/
 /bin/
 /obj/
+/build-gcc/
 *.o
 *.obj
 *.elf

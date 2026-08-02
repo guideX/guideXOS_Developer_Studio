@@ -234,6 +234,50 @@ qualifier information, so parsing failures disable parameter highlighting
 instead of inventing ranges. See [SIGNATURE_HELP.md](SIGNATURE_HELP.md) for
 the model contract, limits, status codes, markers, and future semantic path.
 
+## Project-local Include Graph
+
+`developer_studio_include_graph.*` owns the project-local lexical dependency
+model. It is separate from the symbol database and reuses the existing
+`WorkspaceFileSystem` callbacks; no Server ABI extension is needed. The model
+enumerates only supported C/C++ source and header paths under the selected
+project root, overlays bounded snapshots of open dirty documents, scans
+line-start preprocessor directives, resolves quoted and angled includes
+against the source directory/include roots/project root, and records explicit
+unresolved states instead of guessing.
+
+The build is a generation-bound state machine:
+
+```text
+Enumerating -> Scanning -> Resolving -> BuildingReverseEdges -> DetectingCycles -> Completed
+       \                           cancel / timeout                       /
+        ------------------------ Cancelled or Failed --------------------
+```
+
+`IncludeGraphPoll` consumes a small work budget per event-loop tick. The UI
+retains the previous completed graph while a second fixed graph storage is
+being built, cancels on project/workspace changes, and rejects activation when
+the graph project identity or generation is stale. Editing the active document
+while the panel is open uses `IncludeGraphRescanDocument` to replace only that
+source's edges and deterministically rebuild resolution, reverse edges, and
+cycle groups.
+
+The panel is opened with `Ctrl+Shift+I` and provides direct, reverse,
+transitive, cycle, and unresolved views. Include-aware `F12` navigation runs
+before the existing lexical definition resolver and reuses the existing
+navigation history for `Alt+Left`. Ambiguous case-folded candidates use a
+bounded picker. Conditional `#if 0` edges are retained for diagnostics but
+excluded from traversal/cycles; unknown conditional edges are explicitly
+marked and can be included or excluded by traversal policy.
+
+The production model uses fixed storage and hard limits: 1,024 eligible
+files/nodes, 4,096 edges, 4,096 directories, 256 KiB per file, 256 MiB total
+scanned bytes, bounded directive/continuation/conditional nesting, bounded
+ambiguous candidates, bounded traversal/cycle storage, and a five-minute
+operation timeout. Truncation is surfaced in the graph status. Stable markers
+cover begin, enumeration, scan, resolution, reverse-edge construction,
+cycles, cancellation, incremental update, and activation. See
+[INCLUDE_GRAPH.md](INCLUDE_GRAPH.md) for the user contract and status matrix.
+
 ## Find and Replace
 
 The active-document Find/Replace service is UI-independent and owns fixed-size
