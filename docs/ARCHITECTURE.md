@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, and manually invoked lightweight lexical Signature Help
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, and project-local Header / Source Ownership
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, UI-independent lexical SymbolDatabase, syntax tokenizer/cache, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, UI-independent lexical SymbolDatabase, Include Graph, Declaration–Definition Relationship Graph, Header / Source Ownership Graph, syntax tokenizer/cache, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -350,6 +350,30 @@ fallback. The graph has a work-budgeted cancellable lifecycle and retains the
 last completed graph during rebuilds. It does not claim compiler-equivalent
 identity, template instantiation, overload resolution, or external-header
 semantics. See [DECLARATION_DEFINITION_RELATIONSHIPS.md](DECLARATION_DEFINITION_RELATIONSHIPS.md).
+
+## Header / Source Ownership
+
+`developer_studio_ownership.*` builds a bounded project-local ownership graph
+from indexed code-file inventory records. It classifies C/C++ sources and
+headers, creates exact-stem, conservative-normalized-stem, module-path,
+Include Graph, Relationship Graph, and optional metadata candidates, then
+collects bounded lexical evidence and deterministic confidence. It preserves
+one-to-one, one-to-many, many-to-one, many-to-many, header-only, source-only,
+and ambiguous forms.
+
+The ownership builder is UI-independent and stores project-relative paths,
+document identities, document generations, and explicit graph generations. It
+uses caller-owned flat storage and a work-budgeted lifecycle. Rebuilds are
+full-from-indexed-data and source-rescan-free when supplied indexed data is
+current. The last completed graph remains available during cancellation or
+supersession. Ownership activation reuses the existing workspace controller
+and shared `Alt+Left` / `Alt+Right` history; it does not add semantic or
+compiler ownership.
+
+The UI command is `Switch Header / Source`. `Ctrl+O` remains Open Workspace,
+so the shortcut audit selected the safe fallback `Alt+O`; `Alt+Shift+O` opens
+the File Ownership inspection panel. See
+[`HEADER_SOURCE_OWNERSHIP.md`](HEADER_SOURCE_OWNERSHIP.md).
 
 ## Run Project vertical slice
 

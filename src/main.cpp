@@ -14,6 +14,7 @@
 #include "developer_studio_signature.h"
 #include "developer_studio_include_graph.h"
 #include "developer_studio_relationships.h"
+#include "developer_studio_ownership.h"
 
 namespace {
 
@@ -232,12 +233,14 @@ using guidexos::developer_studio::ProjectSymbol;
 using guidexos::developer_studio::SymbolDatabase;
 using guidexos::developer_studio::SymbolDocument;
 using guidexos::developer_studio::SymbolDatabaseDocumentPath;
+using guidexos::developer_studio::SymbolDatabaseDocumentCount;
 using guidexos::developer_studio::SymbolDatabaseDocumentSymbolAt;
 using guidexos::developer_studio::SymbolDatabaseFindDocumentById;
 using guidexos::developer_studio::SymbolDatabaseFindSymbols;
 using guidexos::developer_studio::SymbolDatabaseInit;
 using guidexos::developer_studio::SymbolDatabaseProjectSymbolAt;
 using guidexos::developer_studio::SymbolDatabaseProjectSymbolCount;
+using guidexos::developer_studio::SymbolDatabaseIsTruncated;
 using guidexos::developer_studio::SymbolDatabaseDocumentAt;
 using guidexos::developer_studio::SymbolKindPrefix;
 using guidexos::developer_studio::SymbolKindName;
@@ -267,6 +270,45 @@ using guidexos::developer_studio::RelationshipGraphState;
 using guidexos::developer_studio::SymbolRelationshipSymbolId;
 using guidexos::developer_studio::SymbolRelationshipGraphFindDefinitions;
 using guidexos::developer_studio::SymbolRelationshipGraphFindDeclarations;
+using guidexos::developer_studio::FileOwnershipEndpoint;
+using guidexos::developer_studio::FileOwnershipGroup;
+using guidexos::developer_studio::FileOwnershipGraph;
+using guidexos::developer_studio::OwnershipBucket;
+using guidexos::developer_studio::OwnershipBucketRef;
+using guidexos::developer_studio::OwnershipEvidence;
+using guidexos::developer_studio::OwnershipPairSlot;
+using guidexos::developer_studio::OwnershipRelationshipIdentity;
+using guidexos::developer_studio::OwnershipBuildRequest;
+using guidexos::developer_studio::OwnershipBuildScratch;
+using guidexos::developer_studio::OwnershipBuildState;
+using guidexos::developer_studio::OwnershipBuildStateName;
+using guidexos::developer_studio::OwnershipClassifyPath;
+using guidexos::developer_studio::OwnershipEvidenceKindName;
+using guidexos::developer_studio::OwnershipFileRecord;
+using guidexos::developer_studio::OwnershipGraphBuildCancel;
+using guidexos::developer_studio::OwnershipGraphBuildInfo;
+using guidexos::developer_studio::OwnershipGraphBuildIsActive;
+using guidexos::developer_studio::OwnershipGraphBuildPoll;
+using guidexos::developer_studio::OwnershipGraphBuildStart;
+using guidexos::developer_studio::OwnershipGraphCandidateAt;
+using guidexos::developer_studio::OwnershipGraphCandidatesForFile;
+using guidexos::developer_studio::OwnershipGraphInit;
+using guidexos::developer_studio::OwnershipGraphIsCurrent;
+using guidexos::developer_studio::OwnershipGraphService;
+using guidexos::developer_studio::OwnershipGraphServiceInit;
+using guidexos::developer_studio::OwnershipGraphStorage;
+using guidexos::developer_studio::OwnershipGraphStorageInit;
+using guidexos::developer_studio::OwnershipHashText;
+using guidexos::developer_studio::OwnershipResolution;
+using guidexos::developer_studio::OwnershipResolutionKind;
+using guidexos::developer_studio::OwnershipResolveFile;
+using guidexos::developer_studio::ProjectCodeFileKind;
+using guidexos::developer_studio::ProjectCodeFileKindName;
+using guidexos::developer_studio::CounterpartConfidenceName;
+using guidexos::developer_studio::kOwnershipMaxPathBytes;
+using guidexos::developer_studio::kOwnershipMaxVisiblePickerCandidates;
+using guidexos::developer_studio::kOwnershipMaxEvidenceDetailBytes;
+using guidexos::developer_studio::FileCounterpartCandidate;
 using guidexos::developer_studio::DefinitionReasonExactQualifiedName;
 using guidexos::developer_studio::DefinitionReasonMatchingKind;
 using guidexos::developer_studio::SymbolDeclarationRole;
@@ -682,6 +724,56 @@ static SymbolRelationshipGraph g_relationshipBuildingGraph = {};
 static SymbolRelationshipGraphService g_relationshipService = {};
 static bool g_relationshipNavigationToDeclaration = false;
 
+// Embedded ownership storage is intentionally smaller than the public model
+// limits.  A truncated graph remains explicit and never falls back to a
+// header x source Cartesian scan.
+static const uint32_t kStudioOwnershipFileCapacity = 1024u;
+static const uint32_t kStudioOwnershipCandidateCapacity = 256u;
+static const uint32_t kStudioOwnershipGroupCapacity = 128u;
+static const uint32_t kStudioOwnershipEvidenceCapacity = 4096u;
+static const uint32_t kStudioOwnershipEndpointCapacity = 256u;
+static OwnershipFileRecord g_ownershipInventory[kStudioOwnershipFileCapacity] = {};
+static FileOwnershipEndpoint g_ownershipCompletedFiles[kStudioOwnershipFileCapacity] = {};
+static FileOwnershipEndpoint g_ownershipBuildingFiles[kStudioOwnershipFileCapacity] = {};
+static FileCounterpartCandidate g_ownershipCompletedCandidates[kStudioOwnershipCandidateCapacity] = {};
+static FileCounterpartCandidate g_ownershipBuildingCandidates[kStudioOwnershipCandidateCapacity] = {};
+static guidexos::developer_studio::FileOwnershipGroup g_ownershipCompletedGroups[kStudioOwnershipGroupCapacity] = {};
+static guidexos::developer_studio::FileOwnershipGroup g_ownershipBuildingGroups[kStudioOwnershipGroupCapacity] = {};
+static guidexos::developer_studio::OwnershipEvidence g_ownershipCompletedEvidence[kStudioOwnershipEvidenceCapacity] = {};
+static guidexos::developer_studio::OwnershipEvidence g_ownershipBuildingEvidence[kStudioOwnershipEvidenceCapacity] = {};
+static FileOwnershipEndpoint g_ownershipCompletedHeaders[kStudioOwnershipEndpointCapacity] = {};
+static FileOwnershipEndpoint g_ownershipBuildingHeaders[kStudioOwnershipEndpointCapacity] = {};
+static FileOwnershipEndpoint g_ownershipCompletedSources[kStudioOwnershipEndpointCapacity] = {};
+static FileOwnershipEndpoint g_ownershipBuildingSources[kStudioOwnershipEndpointCapacity] = {};
+static uint64_t g_ownershipCompletedCandidateIds[kStudioOwnershipCandidateCapacity * 2u] = {};
+static uint64_t g_ownershipBuildingCandidateIds[kStudioOwnershipCandidateCapacity * 2u] = {};
+static OwnershipGraphStorage g_ownershipCompletedStorage = {};
+static OwnershipGraphStorage g_ownershipBuildingStorage = {};
+static FileOwnershipGraph g_ownershipCompletedGraph = {};
+static FileOwnershipGraph g_ownershipBuildingGraph = {};
+static OwnershipGraphService g_ownershipService = {};
+static OwnershipBuildScratch g_ownershipScratch = {};
+static OwnershipBucketRef g_ownershipExactRefs[kStudioOwnershipFileCapacity] = {};
+static OwnershipBucketRef g_ownershipNormalizedRefs[kStudioOwnershipFileCapacity] = {};
+static OwnershipBucketRef g_ownershipModuleRefs[kStudioOwnershipFileCapacity] = {};
+static OwnershipBucket g_ownershipExactBuckets[kStudioOwnershipFileCapacity] = {};
+static OwnershipBucket g_ownershipNormalizedBuckets[kStudioOwnershipFileCapacity] = {};
+static OwnershipBucket g_ownershipModuleBuckets[kStudioOwnershipFileCapacity] = {};
+static OwnershipPairSlot g_ownershipPairSlots[kStudioOwnershipCandidateCapacity * 4u] = {};
+static uint32_t g_ownershipCandidateCounts[kStudioOwnershipFileCapacity] = {};
+static OwnershipRelationshipIdentity g_ownershipRelationshipIdentities[kStudioOwnershipCandidateCapacity * 16u] = {};
+static uint32_t g_ownershipIncludeQueue[kIncludeGraphMaxNodes] = {};
+static bool g_ownershipIncludeVisited[kIncludeGraphMaxNodes] = {};
+static uint32_t g_ownershipCandidateIndices[kOwnershipMaxVisiblePickerCandidates] = {};
+static OwnershipResolution g_ownershipResolution = {};
+static uint64_t g_ownershipOperationId = 0;
+static bool g_ownershipPanelOpen = false;
+static bool g_ownershipPickerOpen = false;
+static bool g_ownershipTerminalReported = false;
+static uint32_t g_ownershipSelectedCandidate = 0;
+static uint32_t g_ownershipScroll = 0;
+static char g_ownershipStatus[192] = {};
+
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
 static void stopProjectSearch(gx_app_context* ctx);
@@ -707,6 +799,16 @@ static void drawIncludeGraphPanel(gx_app_context* ctx);
 static void drawIncludeTargetPicker(gx_app_context* ctx);
 static bool tryIncludeGraphDefinition(gx_app_context* ctx);
 static void openDefinitionPicker(gx_app_context* ctx);
+static uint32_t captureOwnershipInventory();
+static bool startOwnershipBuild(gx_app_context* ctx);
+static void pollOwnership(gx_app_context* ctx);
+static void openFileOwnership(gx_app_context* ctx);
+static bool switchHeaderSource(gx_app_context* ctx);
+static bool handleOwnershipKey(gx_app_context* ctx, int keyCode, int action);
+static void drawOwnershipPanel(gx_app_context* ctx);
+static bool activateOwnershipCandidate(gx_app_context* ctx, uint32_t index);
+static void drawText(gx_app_context* ctx, int x, int y, const char* text);
+static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -1254,6 +1356,350 @@ static bool startRelationshipNavigation(gx_app_context* ctx, bool toDeclaration)
     g_definitionOriginValid = true;
     openDefinitionPicker(ctx);
     return true;
+}
+
+static uint32_t captureOwnershipInventory() {
+    uint32_t count = 0;
+    if (!g_controller.model.hasProject) return 0;
+    for (uint32_t i = 0; i < SymbolDatabaseDocumentCount(&g_symbolDatabase) && count < kStudioOwnershipFileCapacity; ++i) {
+        const SymbolDocument* indexed = SymbolDatabaseDocumentAt(&g_symbolDatabase, i);
+        const char* absolute = indexed ? SymbolDatabaseDocumentPath(&g_symbolDatabase, i) : nullptr;
+        if (!indexed || !absolute) continue;
+        char relative[kOwnershipMaxPathBytes + 1] = {};
+        if (!copyProjectRelativePath(g_controller.model, absolute, relative, sizeof(relative))) continue;
+        ProjectCodeFileKind kind = ProjectCodeFileKind::Unknown;
+        if (!OwnershipClassifyPath(relative, &kind)) continue;
+        bool duplicate = false;
+        for (uint32_t j = 0; j < count; ++j) if (searchTextEqual(g_ownershipInventory[j].relativePath, relative)) { duplicate = true; break; }
+        if (duplicate) continue;
+        OwnershipFileRecord& record = g_ownershipInventory[count++];
+        record = {};
+        record.fileId = OwnershipHashText(relative);
+        copyText(record.relativePath, sizeof(record.relativePath), relative);
+        record.fileKind = kind;
+        record.documentId = indexed->documentId;
+        record.documentGeneration = indexed->generation;
+        record.open = false;
+        record.dirty = indexed->dirty;
+        for (uint32_t d = 0; d < kMaxOpenDocuments; ++d) {
+            const Document& document = g_controller.model.documents[d];
+            char openRelative[kOwnershipMaxPathBytes + 1] = {};
+            if (!document.used || !copyProjectRelativePath(g_controller.model, document.path, openRelative, sizeof(openRelative)) ||
+                !searchTextEqual(openRelative, relative)) continue;
+            record.open = true;
+            record.dirty = document.buffer.dirty;
+            record.documentId = document.documentId;
+            record.documentGeneration = document.buffer.generation;
+            break;
+        }
+    }
+    for (uint32_t d = 0; d < kMaxOpenDocuments && count < kStudioOwnershipFileCapacity; ++d) {
+        const Document& document = g_controller.model.documents[d];
+        if (!document.used) continue;
+        char relative[kOwnershipMaxPathBytes + 1] = {};
+        if (!copyProjectRelativePath(g_controller.model, document.path, relative, sizeof(relative))) continue;
+        bool duplicate = false;
+        for (uint32_t j = 0; j < count; ++j) if (searchTextEqual(g_ownershipInventory[j].relativePath, relative)) { duplicate = true; break; }
+        if (duplicate) continue;
+        ProjectCodeFileKind kind = ProjectCodeFileKind::Unknown;
+        if (!OwnershipClassifyPath(relative, &kind)) continue;
+        OwnershipFileRecord& record = g_ownershipInventory[count++];
+        record = {};
+        record.fileId = OwnershipHashText(relative);
+        copyText(record.relativePath, sizeof(record.relativePath), relative);
+        record.fileKind = kind;
+        record.documentId = document.documentId;
+        record.documentGeneration = document.buffer.generation;
+        record.open = true;
+        record.dirty = document.buffer.dirty;
+    }
+    return count;
+}
+
+static const FileOwnershipGraph* currentOwnershipGraph() {
+    return g_ownershipService.completedGraph;
+}
+
+static bool ownershipGraphCurrent() {
+    const FileOwnershipGraph* graph = currentOwnershipGraph();
+    const bool includeCurrent = IncludeGraphIsCurrent(&g_includeGraph,
+        g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+        g_controller.model.projectGeneration);
+    const bool relationshipCurrent = SymbolRelationshipGraphIsCurrent(
+        g_relationshipService.completedGraph,
+        g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+        g_controller.model.projectGeneration, g_symbolDatabase.symbolDatabaseGeneration);
+    const uint64_t includeGeneration = includeCurrent ? g_includeGraph.graphGeneration : 0;
+    const uint64_t relationshipGeneration = relationshipCurrent ? g_relationshipService.completedGraph->graphId : 0;
+    return graph && OwnershipGraphIsCurrent(graph,
+        g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+        g_controller.model.projectGeneration, g_symbolDatabase.symbolDatabaseGeneration,
+        includeGeneration, relationshipGeneration);
+}
+
+static bool startOwnershipBuild(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Open a project before using File Ownership.");
+        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build=FAIL", "OWNERSHIP_NO_PROJECT");
+        return false;
+    }
+    const bool includeCurrent = IncludeGraphIsCurrent(&g_includeGraph,
+        g_controller.model.project.projectId, g_controller.model.projectGeneration);
+    if (!SymbolRelationshipGraphIsCurrent(g_relationshipService.completedGraph,
+            g_controller.model.project.projectId, g_controller.model.projectGeneration,
+            g_symbolDatabase.symbolDatabaseGeneration)) {
+        refreshRelationshipGraph(ctx);
+    }
+    const bool relationshipCurrent = SymbolRelationshipGraphIsCurrent(
+        g_relationshipService.completedGraph, g_controller.model.project.projectId,
+        g_controller.model.projectGeneration, g_symbolDatabase.symbolDatabaseGeneration);
+    const uint32_t fileCount = captureOwnershipInventory();
+    OwnershipBuildRequest request = {};
+    copyText(request.projectIdText, sizeof(request.projectIdText), g_controller.model.project.projectId);
+    copyText(request.projectRoot, sizeof(request.projectRoot), g_controller.model.rootPath);
+    request.projectId = OwnershipHashText(request.projectIdText);
+    request.projectGeneration = g_controller.model.projectGeneration;
+    request.symbolGeneration = g_symbolDatabase.symbolDatabaseGeneration;
+    request.files = g_ownershipInventory;
+    request.fileCount = fileCount;
+    request.inventoryTruncated = SymbolDatabaseIsTruncated(&g_symbolDatabase);
+    request.includeGraph = includeCurrent ? &g_includeGraph : nullptr;
+    request.relationshipGraph = relationshipCurrent ? g_relationshipService.completedGraph : nullptr;
+    request.symbolDatabase = &g_symbolDatabase;
+    request.scratch = &g_ownershipScratch;
+    uint64_t operationId = 0;
+    if (!OwnershipGraphBuildStart(&g_ownershipService, request, ctx ? gx_get_ticks_ms(ctx) : 0, &operationId)) {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "File Ownership build could not start.");
+        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build=FAIL", "OWNERSHIP_INTERNAL");
+        return false;
+    }
+    g_ownershipOperationId = operationId;
+    g_ownershipTerminalReported = false;
+    copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Building File Ownership from indexed records...");
+    g_ownershipPanelOpen = true;
+    g_ownershipPickerOpen = false;
+    g_ownershipSelectedCandidate = 0;
+    g_ownershipScroll = 0;
+    g_editorFocused = false;
+    if (ctx) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build_begin=PASS");
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_files=PASS total=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), fileCount);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static void pollOwnership(gx_app_context* ctx) {
+    if (g_ownershipOperationId == 0) return;
+    if (OwnershipGraphBuildIsActive(&g_ownershipService) &&
+        (!g_controller.model.open || !g_controller.model.hasProject ||
+         g_ownershipService.operation.request.projectGeneration != g_controller.model.projectGeneration)) {
+        OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
+    }
+    OwnershipGraphBuildPoll(&g_ownershipService, g_ownershipOperationId, 8, ctx ? gx_get_ticks_ms(ctx) : 0);
+    const auto* operation = OwnershipGraphBuildInfo(&g_ownershipService);
+    if (!operation || OwnershipGraphBuildIsActive(&g_ownershipService) || g_ownershipTerminalReported) return;
+    g_ownershipTerminalReported = true;
+    if (operation->state == OwnershipBuildState::Completed) {
+        const FileOwnershipGraph* graph = currentOwnershipGraph();
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), graph && graph->truncated ?
+                 "File Ownership complete (truncated)." : "File Ownership complete.");
+        if (ctx && graph) {
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_candidates=PASS total=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), graph->candidateCount);
+            logMarker(ctx, g_textScratch);
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_groups=PASS groups=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), graph->groupCount);
+            logMarker(ctx, g_textScratch);
+            copyText(g_textScratch, sizeof(g_textScratch), graph->truncated ?
+                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build=TRUNCATED reason=OWNERSHIP_RESULTS_TRUNCATED" :
+                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build=PASS groups=");
+            if (!graph->truncated) {
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), graph->groupCount);
+                appendText(g_textScratch, sizeof(g_textScratch), " pairs=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), graph->candidateCount);
+            }
+            logMarker(ctx, g_textScratch);
+        }
+    } else if (operation->state == OwnershipBuildState::Cancelled) {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "File Ownership build cancelled; last completed graph retained.");
+        if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build=CANCELLED");
+    } else {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "File Ownership build failed.");
+        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_build=FAIL", "OWNERSHIP_INTERNAL");
+    }
+}
+
+static bool activeOwnershipPath(char* output, uint32_t capacity) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    return document && copyProjectRelativePath(g_controller.model, document->path, output, capacity);
+}
+
+static uint32_t ownershipRelationshipDestination(const char* targetPath, uint64_t symbolId,
+                                                 uint32_t* line, uint32_t* column) {
+    const SymbolRelationshipGraph* graph = g_relationshipService.completedGraph;
+    if (!graph || !targetPath || symbolId == 0) return 0;
+    for (uint32_t i = 0; i < graph->relationshipCount; ++i) {
+        const SymbolRelationship* relationship = SymbolRelationshipGraphRelationshipAt(graph, i);
+        if (!relationship || relationship->stale) continue;
+        const SymbolRelationshipEndpoint* endpoint = nullptr;
+        if (relationship->source.symbolId == symbolId && searchTextEqual(relationship->target.relativePath, targetPath)) endpoint = &relationship->target;
+        else if (relationship->target.symbolId == symbolId && searchTextEqual(relationship->source.relativePath, targetPath)) endpoint = &relationship->source;
+        if (!endpoint) continue;
+        if (line) *line = endpoint->line;
+        if (column) *column = endpoint->column;
+        return 1;
+    }
+    return 0;
+}
+
+static bool activateOwnershipCandidate(gx_app_context* ctx, uint32_t index) {
+    const FileOwnershipGraph* graph = currentOwnershipGraph();
+    if (!graph || !ownershipGraphCurrent() || index >= graph->candidateCount) {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "File Ownership result is stale.");
+        if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_activate=STALE");
+        return false;
+    }
+    const FileCounterpartCandidate& candidate = graph->candidates[index];
+    char currentPath[kOwnershipMaxPathBytes + 1] = {};
+    if (!activeOwnershipPath(currentPath, sizeof(currentPath))) return false;
+    const char* destinationPath = nullptr;
+    if (searchTextEqual(candidate.source.relativePath, currentPath)) destinationPath = candidate.target.relativePath;
+    else if (searchTextEqual(candidate.target.relativePath, currentPath)) destinationPath = candidate.source.relativePath;
+    if (!destinationPath || destinationPath[0] == '\0' || PathContainsTraversal(destinationPath) || destinationPath[0] == '/' || destinationPath[0] == '\\') {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Counterpart path is outside the project.");
+        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_activate=FAIL", "OWNERSHIP_TARGET_OUTSIDE_PROJECT");
+        return false;
+    }
+    Document* origin = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation originLocation = {};
+    if (!origin || !captureNavigationLocation(*origin, &originLocation)) return false;
+    uint32_t line = 1;
+    uint32_t column = 1;
+    const int32_t symbolIndex = relationshipSymbolUnderCaret(*origin);
+    if (symbolIndex >= 0) {
+        const ProjectSymbol* symbol = SymbolDatabaseProjectSymbolAt(&g_symbolDatabase, static_cast<uint32_t>(symbolIndex));
+        if (symbol) ownershipRelationshipDestination(destinationPath,
+            SymbolRelationshipSymbolId(*symbol, SymbolDatabaseDocumentPath(&g_symbolDatabase, symbol->documentIndex)), &line, &column);
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   destinationPath, line, column, &documentIndex, &error)) {
+        copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Counterpart file could not be opened.");
+        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_activate=FAIL", OutputErrorName(error));
+        return false;
+    }
+    NavigationHistoryPush(&g_navigationHistory, originLocation);
+    g_ownershipPanelOpen = false;
+    g_ownershipPickerOpen = false;
+    g_editorFocused = true;
+    g_outputFocused = false;
+    copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Switched Header / Source.");
+    if (ctx) {
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER ownership_activate=PASS path=");
+        appendText(g_textScratch, sizeof(g_textScratch), destinationPath);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static void openFileOwnership(gx_app_context* ctx) {
+    if (!g_controller.model.hasProject) { startOwnershipBuild(ctx); return; }
+    if (!ownershipGraphCurrent()) { startOwnershipBuild(ctx); return; }
+    char path[kOwnershipMaxPathBytes + 1] = {};
+    if (!activeOwnershipPath(path, sizeof(path))) return;
+    g_ownershipResolution = {};
+    g_ownershipResolution.candidateIndices = g_ownershipCandidateIndices;
+    g_ownershipResolution.candidateCapacity = kOwnershipMaxVisiblePickerCandidates;
+    OwnershipResolveFile(currentOwnershipGraph(), path, &g_ownershipResolution);
+    g_ownershipSelectedCandidate = 0;
+    g_ownershipScroll = 0;
+    g_ownershipPanelOpen = true;
+    g_ownershipPickerOpen = g_ownershipResolution.kind == OwnershipResolutionKind::Multiple;
+    g_editorFocused = false;
+}
+
+static bool switchHeaderSource(gx_app_context* ctx) {
+    if (!g_controller.model.hasProject) { copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Open a project before switching Header / Source."); return false; }
+    if (!ownershipGraphCurrent()) { startOwnershipBuild(ctx); return true; }
+    char path[kOwnershipMaxPathBytes + 1] = {};
+    if (!activeOwnershipPath(path, sizeof(path))) return false;
+    g_ownershipResolution = {};
+    g_ownershipResolution.candidateIndices = g_ownershipCandidateIndices;
+    g_ownershipResolution.candidateCapacity = kOwnershipMaxVisiblePickerCandidates;
+    OwnershipResolveFile(currentOwnershipGraph(), path, &g_ownershipResolution);
+    if (g_ownershipResolution.kind == OwnershipResolutionKind::Direct && g_ownershipResolution.candidateCount == 1)
+        return activateOwnershipCandidate(ctx, g_ownershipCandidateIndices[0]);
+    g_ownershipPanelOpen = true;
+    g_ownershipPickerOpen = g_ownershipResolution.kind == OwnershipResolutionKind::Multiple;
+    g_ownershipSelectedCandidate = 0;
+    g_ownershipScroll = 0;
+    g_editorFocused = false;
+    if (g_ownershipResolution.kind == OwnershipResolutionKind::HeaderOnly) copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Header-only file; no external source counterpart.");
+    else if (g_ownershipResolution.kind == OwnershipResolutionKind::SourceOnly) copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Source-only file; no credible header counterpart.");
+    else if (g_ownershipResolution.candidateCount == 0) copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "No Header / Source counterpart found.");
+    else copyText(g_ownershipStatus, sizeof(g_ownershipStatus), "Choose a Header / Source counterpart.");
+    return true;
+}
+
+static bool handleOwnershipKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!g_ownershipPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { g_ownershipPanelOpen = false; g_ownershipPickerOpen = false; g_editorFocused = true; return true; }
+    if (keyCode == 82 || keyCode == 114) { startOwnershipBuild(ctx); return true; }
+    if (!g_ownershipPickerOpen) return true;
+    const uint32_t count = g_ownershipResolution.visibleCandidateCount;
+    if (keyCode == GX_KEY_UP && g_ownershipSelectedCandidate > 0) --g_ownershipSelectedCandidate;
+    else if (keyCode == GX_KEY_DOWN && g_ownershipSelectedCandidate + 1 < count) ++g_ownershipSelectedCandidate;
+    else if (keyCode == 33) g_ownershipSelectedCandidate = g_ownershipSelectedCandidate > 15 ? g_ownershipSelectedCandidate - 15 : 0;
+    else if (keyCode == 34) g_ownershipSelectedCandidate = g_ownershipSelectedCandidate + 15 < count ? g_ownershipSelectedCandidate + 15 : (count ? count - 1 : 0);
+    else if (keyCode == 36) g_ownershipSelectedCandidate = 0;
+    else if (keyCode == 35) g_ownershipSelectedCandidate = count ? count - 1 : 0;
+    else if (keyCode == 13 && count > 0) { activateOwnershipCandidate(ctx, g_ownershipCandidateIndices[g_ownershipSelectedCandidate]); return true; }
+    if (g_ownershipSelectedCandidate < g_ownershipScroll) g_ownershipScroll = g_ownershipSelectedCandidate;
+    if (g_ownershipSelectedCandidate >= g_ownershipScroll + 15u) g_ownershipScroll = g_ownershipSelectedCandidate - 14u;
+    return true;
+}
+
+static void drawOwnershipPanel(gx_app_context* ctx) {
+    if (!g_ownershipPanelOpen) return;
+    drawPanel(ctx, { 128, 58, 704, 560 }, 0x2A3852u);
+    drawText(ctx, 150, 86, g_ownershipPickerOpen ? "Choose Header / Source Counterpart" : "File Ownership");
+    char path[kOwnershipMaxPathBytes + 1] = {};
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (document && copyProjectRelativePath(g_controller.model, document->path, path, sizeof(path))) {
+        drawText(ctx, 150, 112, "Current file:");
+        drawText(ctx, 270, 112, path);
+        ProjectCodeFileKind kind = ProjectCodeFileKind::Unknown;
+        OwnershipClassifyPath(path, &kind);
+        drawText(ctx, 150, 136, "Classification:");
+        drawText(ctx, 270, 136, ProjectCodeFileKindName(kind));
+    }
+    if (OwnershipGraphBuildIsActive(&g_ownershipService)) {
+        drawText(ctx, 150, 164, OwnershipBuildStateName(g_ownershipService.operation.state));
+        drawText(ctx, 150, 188, "Indexed records are authoritative; source content is not rescanned.");
+    } else if (g_ownershipStatus[0] != '\0') drawText(ctx, 150, 164, g_ownershipStatus);
+    if (g_ownershipResolution.candidateCount == 0) {
+        if (g_ownershipStatus[0] == '\0') drawText(ctx, 150, 220, "No unique primary counterpart.");
+        drawText(ctx, 150, 588, "R Refresh   Esc Close");
+        return;
+    }
+    const uint32_t first = g_ownershipScroll;
+    const uint32_t end = first + 15u < g_ownershipResolution.visibleCandidateCount ? first + 15u : g_ownershipResolution.visibleCandidateCount;
+    for (uint32_t row = first; row < end; ++row) {
+        const uint32_t candidateIndex = g_ownershipCandidateIndices[row];
+        const FileCounterpartCandidate* candidate = OwnershipGraphCandidateAt(currentOwnershipGraph(), candidateIndex);
+        if (!candidate) continue;
+        const int y = 224 + static_cast<int>(row - first) * 24;
+        if (g_ownershipPickerOpen && row == g_ownershipSelectedCandidate) drawPanel(ctx, { 142, y - 16, 676, 22 }, 0x405775u);
+        const char* displayPath = searchTextEqual(candidate->source.relativePath, path) ? candidate->target.relativePath : candidate->source.relativePath;
+        drawText(ctx, 150, y, displayPath);
+        drawText(ctx, 650, y, CounterpartConfidenceName(candidate->confidence));
+        if (candidate->evidenceCount > 0) drawText(ctx, 150, y + 14, candidate->evidence[0].detail);
+    }
+    if (g_ownershipResolution.truncated) drawText(ctx, 150, 582, "Results truncated; showing strongest deterministic candidates.");
+    else drawText(ctx, 150, 582, g_ownershipPickerOpen ? "Up/Down Page Home/End Enter Select   Esc Close" : "Esc Close");
 }
 
 static void closeDefinitionPicker() {
@@ -2805,8 +3251,10 @@ static void reportProjectFailure(gx_app_context* ctx, const char* marker, Projec
 
 static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
     g_includeTargetPickerOpen = false;
+    g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_validation=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=PASS");
@@ -2830,8 +3278,10 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
 
 static void commitNewProject(gx_app_context* ctx) {
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
     g_includeTargetPickerOpen = false;
+    g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     ProjectCreateRequest request = {};
     copyText(request.parentPath, sizeof(request.parentPath), g_projectDialog.parentPath);
@@ -2854,8 +3304,10 @@ static void commitProjectOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "project_changed", false);
     dismissSignatureHelp(ctx, "project_changed", false);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
     g_includeTargetPickerOpen = false;
+    g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
         writeOutput("Project opened");
@@ -2873,8 +3325,10 @@ static bool commitWorkspaceOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "workspace_changed", false);
     dismissSignatureHelp(ctx, "workspace_changed", false);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+    if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
     g_includeTargetPickerOpen = false;
+    g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     reportWorkspaceOpen(ctx, success);
@@ -3430,6 +3884,7 @@ static void drawExplorer(gx_app_context* ctx) {
     }
     if (g_controller.listingTruncated) drawText(ctx, 16, 484, "Entry limit reached");
     drawText(ctx, 16, 502, "Enter: open   Backspace: up   F5: refresh");
+    drawText(ctx, 16, 520, "Alt+O: Switch Header / Source");
 }
 
 static void drawOutline(gx_app_context* ctx) {
@@ -5170,14 +5625,17 @@ static void drawShell(gx_app_context* ctx) {
     drawRenamePanel(ctx);
     drawIncludeGraphPanel(ctx);
     drawIncludeTargetPicker(ctx);
+    drawOwnershipPanel(ctx);
     if (g_fileMenuOpen) {
-        drawPanel(ctx, { 8, 42, 250, 158 }, 0x34496Au);
+        drawPanel(ctx, { 8, 42, 270, 202 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
         drawText(ctx, 20, 86, "Open Project");
         drawText(ctx, 20, 108, "Open Workspace");
         drawText(ctx, 20, 130, "Close Document");
         drawText(ctx, 20, 152, "Close Workspace");
-        drawText(ctx, 20, 174, "Exit");
+        drawText(ctx, 20, 174, "Switch Header / Source (Alt+O)");
+        drawText(ctx, 20, 196, "File Ownership (Alt+Shift+O)");
+        drawText(ctx, 20, 218, "Exit");
     }
     if (g_buildMenuOpen) {
         drawPanel(ctx, { 300, 42, 260, 92 }, 0x34496Au);
@@ -5381,6 +5839,8 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         if (save && !saveAll(ctx)) return;
         stopProjectSearch(ctx);
         dismissSignatureHelp(ctx, "workspace_changed", false);
+        if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
+        g_ownershipPanelOpen = false;
         WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
         if (g_workspaceSwitchPending) commitWorkspaceOpen(ctx);
         else {
@@ -5820,6 +6280,18 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         else openCompletion(ctx);
         return;
     }
+    if (g_ownershipPanelOpen && handleOwnershipKey(ctx, keyCode, action)) return;
+    // Ctrl+O is an existing workspace command.  The ownership audit therefore
+    // selects the non-conflicting Alt+O fallback instead of stealing either
+    // Ctrl+K or Ctrl+O for a chord.
+    if ((modifiers & GX_KEY_MOD_ALT) && keyCode == 79 && !(modifiers & GX_KEY_MOD_SHIFT)) {
+        switchHeaderSource(ctx);
+        return;
+    }
+    if ((modifiers & GX_KEY_MOD_ALT) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 79 || keyCode == 111)) {
+        openFileOwnership(ctx);
+        return;
+    }
     if (g_includeTargetPickerOpen && handleIncludeTargetPickerKey(ctx, keyCode, action)) return;
     if (g_includeGraphPanelOpen && handleIncludeGraphKey(ctx, keyCode, action, modifiers)) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 73 || keyCode == 105)) {
@@ -6002,6 +6474,25 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (g_ownershipPanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t count = g_ownershipResolution.visibleCandidateCount;
+            if (event.param4 > 0) g_ownershipScroll = g_ownershipScroll > 3 ? g_ownershipScroll - 3 : 0;
+            else if (g_ownershipScroll + 15 < count) ++g_ownershipScroll;
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+            x >= 142 && x < 820 && y >= 208 && y < 580) {
+            const uint32_t row = g_ownershipScroll + static_cast<uint32_t>((y - 208) / 24);
+            if (row < g_ownershipResolution.visibleCandidateCount) {
+                g_ownershipSelectedCandidate = row;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK && g_ownershipResolution.candidateCount > row)
+                    activateOwnershipCandidate(ctx, g_ownershipCandidateIndices[row]);
+            }
+        }
+        return;
+    }
     if (g_includeTargetPickerOpen) {
         const auto* edge = IncludeGraphEdgeAt(&g_includeGraph, g_includeTargetEdgeIndex);
         const uint32_t count = edge ? edge->resolution.ambiguousCandidateCount : 0;
@@ -6416,7 +6907,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (g_fileMenuOpen && x >= 8 && x < 258 && y >= 42 && y < 200) {
+    if (g_fileMenuOpen && x >= 8 && x < 278 && y >= 42 && y < 244) {
         if (y < 68) showNewProjectPrompt(ctx);
         else if (y < 92) showOpenProjectPrompt();
         else if (y < 116) showWorkspacePrompt();
@@ -6433,11 +6924,17 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 stopProjectSearch(ctx);
                 dismissSignatureHelp(ctx, "workspace_changed", false);
                 if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
+                if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
                 g_includeGraphPanelOpen = false;
                 g_includeTargetPickerOpen = false;
+                g_ownershipPanelOpen = false;
                 WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
             }
         } else if (y < 188) {
+            switchHeaderSource(ctx);
+        } else if (y < 210) {
+            openFileOwnership(ctx);
+        } else {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
             else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
             else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
@@ -6505,6 +7002,43 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     SymbolRelationshipGraphInit(&g_relationshipGraph, &g_relationshipStorage, "", 0, 0);
     SymbolRelationshipGraphInit(&g_relationshipBuildingGraph, &g_relationshipBuildingStorage, "", 0, 0);
     SymbolRelationshipGraphServiceInit(&g_relationshipService, &g_relationshipGraph, &g_relationshipBuildingGraph);
+    OwnershipGraphStorageInit(&g_ownershipCompletedStorage,
+                              g_ownershipCompletedFiles, kStudioOwnershipFileCapacity,
+                              g_ownershipCompletedCandidates, kStudioOwnershipCandidateCapacity,
+                              g_ownershipCompletedGroups, kStudioOwnershipGroupCapacity,
+                              g_ownershipCompletedEvidence, kStudioOwnershipEvidenceCapacity,
+                              g_ownershipCompletedHeaders, kStudioOwnershipEndpointCapacity,
+                              g_ownershipCompletedSources, kStudioOwnershipEndpointCapacity,
+                              g_ownershipCompletedCandidateIds, kStudioOwnershipCandidateCapacity * 2u);
+    OwnershipGraphStorageInit(&g_ownershipBuildingStorage,
+                              g_ownershipBuildingFiles, kStudioOwnershipFileCapacity,
+                              g_ownershipBuildingCandidates, kStudioOwnershipCandidateCapacity,
+                              g_ownershipBuildingGroups, kStudioOwnershipGroupCapacity,
+                              g_ownershipBuildingEvidence, kStudioOwnershipEvidenceCapacity,
+                              g_ownershipBuildingHeaders, kStudioOwnershipEndpointCapacity,
+                              g_ownershipBuildingSources, kStudioOwnershipEndpointCapacity,
+                              g_ownershipBuildingCandidateIds, kStudioOwnershipCandidateCapacity * 2u);
+    OwnershipGraphInit(&g_ownershipCompletedGraph, &g_ownershipCompletedStorage, "", 0, 0, 0, 0);
+    OwnershipGraphInit(&g_ownershipBuildingGraph, &g_ownershipBuildingStorage, "", 0, 0, 0, 0);
+    OwnershipGraphServiceInit(&g_ownershipService, &g_ownershipCompletedGraph,
+                              &g_ownershipBuildingGraph, &g_ownershipBuildingStorage);
+    OwnershipBuildScratchInit(&g_ownershipScratch,
+                              g_ownershipExactRefs, kStudioOwnershipFileCapacity,
+                              g_ownershipNormalizedRefs, kStudioOwnershipFileCapacity,
+                              g_ownershipModuleRefs, kStudioOwnershipFileCapacity,
+                              g_ownershipExactBuckets, kStudioOwnershipFileCapacity,
+                              g_ownershipNormalizedBuckets, kStudioOwnershipFileCapacity,
+                              g_ownershipModuleBuckets, kStudioOwnershipFileCapacity,
+                              g_ownershipPairSlots, kStudioOwnershipCandidateCapacity * 4u,
+                              g_ownershipCandidateCounts, kStudioOwnershipFileCapacity,
+                              g_ownershipRelationshipIdentities, kStudioOwnershipCandidateCapacity * 16u,
+                              g_ownershipIncludeQueue, kIncludeGraphMaxNodes,
+                              g_ownershipIncludeVisited, kIncludeGraphMaxNodes);
+    g_ownershipOperationId = 0;
+    g_ownershipPanelOpen = false;
+    g_ownershipPickerOpen = false;
+    g_ownershipTerminalReported = false;
+    g_ownershipStatus[0] = '\0';
     CompletionSessionInit(&g_completionSession, g_completionCandidateStorage, kCompletionMaxRetainedCandidates);
     DocumentWordCacheInit(&g_completionWordCache, g_completionWordStorage, kCompletionMaxDocumentWords);
     g_completionPopupOpen = false;
@@ -6646,6 +7180,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (ctx->host->poll_event) {
         while (running) {
             pollIncludeGraph(ctx);
+            pollOwnership(ctx);
             pollProjectSearch(ctx);
             pollReferences(ctx);
             pollBuild(ctx);
@@ -6653,7 +7188,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             gx_event event;
             clear_event(&event);
             gx_result result = ctx->host->poll_event(ctx, &event,
-                (IncludeGraphIsActive(&g_includeGraphOperation) || ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ? 50 : 500);
+                (IncludeGraphIsActive(&g_includeGraphOperation) || OwnershipGraphBuildIsActive(&g_ownershipService) ||
+                 ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ? 50 : 500);
             if (result == GX_OK && event.window == g_window) {
                 if (gx_event_is_paint(&event)) drawShell(ctx);
                 else if (gx_event_is_close(&event)) {
@@ -6676,7 +7212,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
-                             !g_completionPopupOpen && !g_signaturePopupOpen) {
+                             !g_completionPopupOpen && !g_signaturePopupOpen && !g_ownershipPanelOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
@@ -6689,6 +7225,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (g_requestExit) running = false;
                 }
                 pollIncludeGraph(ctx);
+                pollOwnership(ctx);
                 pollBuild(ctx);
                 pollRun(ctx);
                 pollProjectSearch(ctx);

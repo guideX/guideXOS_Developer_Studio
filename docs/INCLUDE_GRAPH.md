@@ -2,6 +2,10 @@
 
 Include Graph is a project-local, lexical dependency view for C and C++ source and header files. It is intentionally separate from the symbol index and does not add a compiler front end, macro expansion, language-server client, or Server ABI slot.
 
+Header / Source Ownership consumes the completed Include Graph as bounded
+direct and transitive evidence. Ownership does not rebuild or redefine this
+graph; see [HEADER_SOURCE_OWNERSHIP.md](HEADER_SOURCE_OWNERSHIP.md).
+
 ## User workflow
 
 With a project open, press `Ctrl+Shift+I` to open the graph for the active C/C++ document. The panel provides six deterministic views:

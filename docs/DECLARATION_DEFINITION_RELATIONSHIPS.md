@@ -5,6 +5,11 @@ relationship graph in `developer_studio_relationships.*`. The graph is built
 from the existing lexical `SymbolDatabase`; it does not invoke Clang, parse a
 compiler AST, implement a language server, or scan external headers.
 
+Header / Source Ownership consumes the completed relationship graph as its
+strongest inferred lexical evidence. It preserves relationship ambiguity and
+generation checks rather than treating every endpoint as file ownership; see
+[HEADER_SOURCE_OWNERSHIP.md](HEADER_SOURCE_OWNERSHIP.md).
+
 ## Identity and normalization
 
 Each eligible symbol is copied into a deterministic `SymbolRelationshipKey`.

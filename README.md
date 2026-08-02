@@ -10,6 +10,8 @@ The current bounded phase proves the first useful source workflow:
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
 - a truthful AMD64 hosted guideXOS target profile; and
+- bounded project-local Header / Source Ownership with `Alt+O` switching and
+  `Alt+Shift+O` File Ownership inspection; see [docs/HEADER_SOURCE_OWNERSHIP.md](docs/HEADER_SOURCE_OWNERSHIP.md).
 - deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, bounded lexical Go To Definition (`F12`/`Alt+Left`), project-local Declaration–Definition Relationships (`F12`/`Ctrl+F12`/`Alt+F12`), bounded project-local Find All References (`Shift+F12`), manually invoked lightweight lexical Code Completion (`Ctrl+Space`), bounded lexical Signature Help (`Ctrl+Shift+Space`), and a project-local bounded Include Graph (`Ctrl+Shift+I`).
 
 Debug/Debugging, additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
@@ -131,3 +133,4 @@ See [docs/SYMBOL_INDEX.md](docs/SYMBOL_INDEX.md) for lexical symbol scanning, in
 See [docs/SIGNATURE_HELP.md](docs/SIGNATURE_HELP.md) for bounded active-call discovery, lexical candidate lookup, parameter parsing, popup behavior, staleness, limits, and known limitations.
 See [docs/FIND_ALL_REFERENCES.md](docs/FIND_ALL_REFERENCES.md) for lexical target resolution, token filtering, bounded asynchronous scanning, confidence labels, dirty snapshots, cancellation, and stale-safe activation.
 See [docs/INCLUDE_GRAPH.md](docs/INCLUDE_GRAPH.md) for project-local include scanning, deterministic resolution, reverse edges, transitive traversal, cycle diagnostics, dirty-document updates, lifecycle, limits, and F12 navigation.
+See [docs/HEADER_SOURCE_OWNERSHIP.md](docs/HEADER_SOURCE_OWNERSHIP.md) for lexical ownership classification, bounded candidate generation, evidence, ambiguity, lifecycle, and navigation behavior.

@@ -26,6 +26,7 @@ add_library(developer_studio_models STATIC
     src/developer_studio_signature.cpp
     src/developer_studio_include_graph.cpp
     src/developer_studio_relationships.cpp
+    src/developer_studio_ownership.cpp
 )
 target_include_directories(developer_studio_models PUBLIC src)
 
@@ -153,6 +154,13 @@ target_link_libraries(developer_studio_relationship_test PRIVATE developer_studi
 set_target_properties(developer_studio_relationship_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_relationship_test COMMAND developer_studio_relationship_test)
 
+add_executable(developer_studio_ownership_test
+    tests/ownership_test.cpp
+)
+target_link_libraries(developer_studio_ownership_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_ownership_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_ownership_test COMMAND developer_studio_ownership_test)
+
 # The production Native ELF link is intentionally driven by build.ps1. That
 # script follows the Server SDK's direct clang/ld.lld convention and writes the
 # package into the Server checkout rather than creating a second SDK copy here.
@@ -182,6 +190,7 @@ add_executable(developerstudio.elf
         src/developer_studio_signature.cpp
         src/developer_studio_include_graph.cpp
         src/developer_studio_relationships.cpp
+        src/developer_studio_ownership.cpp
         src/freestanding_memory.cpp
         src/main.cpp
     )
