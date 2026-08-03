@@ -5600,6 +5600,10 @@ static void drawModal(gx_app_context* ctx) {
 }
 
 static void drawShell(gx_app_context* ctx) {
+    // Native compositor drawing is retained between redraws. Clear the
+    // previous frame before publishing the current bounded surface so
+    // repeated input/render cycles do not grow the retained layer forever.
+    drawText(ctx, 0, 0, "\f");
     drawPanel(ctx, kWindowRect, 0x151B28u);
     drawPanel(ctx, kCommandRect, 0x243451u);
     drawPanel(ctx, kExplorerRect, 0x1D2636u);
