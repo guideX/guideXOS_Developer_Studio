@@ -4,6 +4,9 @@ namespace guidexos {
 namespace developer_studio {
 namespace {
 
+static FileListEntry g_workspaceRefreshEntries[kMaxWorkspaceEntries];
+static char g_workspaceDocumentReadBuffer[kMaxEditorBytes + 1];
+
 static void setControllerError(WorkspaceController* controller, ModelErrorCode code) {
     if (!controller) return;
     controller->lastError = code;
@@ -198,7 +201,7 @@ bool WorkspaceControllerRefresh(WorkspaceController* controller) {
     if (!controller || !controller->model.open || !controller->fileSystem.list) { if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen); return false; }
     char directory[kMaxPathBytes];
     if (!pathForBrowse(controller->model, directory, sizeof(directory))) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
-    FileListEntry entries[kMaxWorkspaceEntries];
+    FileListEntry* entries = g_workspaceRefreshEntries;
     bool truncated = false;
     uint32_t count = 0;
     if (!controller->fileSystem.list(controller->fileSystem.userData, directory, entries, kMaxWorkspaceEntries, &count, &truncated)) {
@@ -271,7 +274,7 @@ bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char
     if (info.kind != FileInfoKind::RegularFile) { setControllerError(controller, ModelErrorCode::NotFile); return false; }
     if (!IsSupportedTextPath(normalized)) { setControllerError(controller, ModelErrorCode::UnsupportedFile); return false; }
     if (info.size > kMaxEditorBytes) { setControllerError(controller, ModelErrorCode::FileTooLarge); return false; }
-    char bytes[kMaxEditorBytes + 1];
+    char* bytes = g_workspaceDocumentReadBuffer;
     uint32_t count = 0;
     if (!controller->fileSystem.read(controller->fileSystem.userData, normalized, bytes, kMaxEditorBytes, &count)) { setControllerError(controller, ModelErrorCode::ReadFailed); return false; }
     if (count > kMaxEditorBytes || LooksBinary(bytes, count)) { setControllerError(controller, count > kMaxEditorBytes ? ModelErrorCode::FileTooLarge : ModelErrorCode::BinaryFile); return false; }

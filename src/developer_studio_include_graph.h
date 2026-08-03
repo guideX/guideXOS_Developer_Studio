@@ -297,6 +297,7 @@ const char* IncludeGraphStatusText(IncludeGraphErrorCode error);
 bool IsIncludeGraphSourcePath(const char* path);
 bool IsIncludeGraphHeaderPath(const char* path);
 void IncludeGraphStorageInit(IncludeGraphStorage* storage);
+void IncludeGraphBuildOperationInit(IncludeGraphBuildOperation* operation);
 void IncludeGraphInit(IncludeGraph* graph, IncludeGraphStorage* storage,
                       const char* projectId, uint64_t projectGeneration);
 bool IncludeGraphIsCurrent(const IncludeGraph* graph, const char* projectId, uint64_t projectGeneration);

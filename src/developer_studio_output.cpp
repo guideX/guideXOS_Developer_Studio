@@ -4,6 +4,12 @@ namespace guidexos {
 namespace developer_studio {
 namespace {
 
+static void clearBytes(void* value, uint32_t size) {
+    if (!value) return;
+    unsigned char* bytes = static_cast<unsigned char*>(value);
+    for (uint32_t i = 0; i < size; ++i) bytes[i] = 0;
+}
+
 static uint32_t lengthOf(const char* value, uint32_t capacity) {
     if (!value) return 0;
     uint32_t length = 0;
@@ -420,7 +426,7 @@ const char* OutputErrorName(OutputErrorCode error) {
 
 void OutputServiceInit(OutputService* service) {
     if (!service) return;
-    *service = OutputService();
+    clearBytes(service, sizeof(*service));
     service->nextSequence = 1;
     service->nextOperationId = 1;
     service->activeChannel = OutputChannel::All;

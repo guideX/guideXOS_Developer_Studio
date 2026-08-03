@@ -28,27 +28,34 @@ $startInfo.RedirectStandardError = $true
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
 $lines = New-Object 'System.Collections.Generic.List[string]'
+$outputQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
 $windowIds = New-Object 'System.Collections.Generic.List[string]'
 $errorTask = $null
+$outputSubscription = $null
 
 function Read-Until([scriptblock]$Predicate, [int]$TimeoutSeconds = 20) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $readTask = $process.StandardOutput.ReadLineAsync()
-        while (-not $readTask.IsCompleted -and [DateTime]::UtcNow -lt $deadline) {
-            Start-Sleep -Milliseconds 25
+        $line = $null
+        if ($outputQueue.TryDequeue([ref]$line)) {
+            $lines.Add($line)
+            if (& $Predicate $line $lines) { return $line }
+            continue
         }
-        if (-not $readTask.IsCompleted) { break }
-        $line = $readTask.Result
-        if ($null -eq $line) { break }
-        $lines.Add($line)
-        if (& $Predicate $line $lines) { return $line }
+        if ($process.HasExited) { break }
+        Start-Sleep -Milliseconds 25
     }
-    throw "Timed out waiting for hosted Server output."
+    $lastLine = if ($lines.Count -gt 0) { $lines[$lines.Count - 1] } else { "<none>" }
+    throw "Timed out waiting for hosted Server output. processExited=$($process.HasExited) lastLine=$lastLine"
 }
 
 try {
     Assert-True $process.Start() "hosted Server starts"
+    $outputSubscription = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -MessageData $outputQueue -Action {
+        $line = $Event.SourceEventArgs.Data
+        if ($null -ne $line) { $Event.MessageData.Enqueue($line) }
+    }
+    $process.BeginOutputReadLine()
     $errorTask = $process.StandardError.ReadToEndAsync()
 
     for ($index = 1; $index -le $LaunchCount; $index++) {
@@ -58,7 +65,13 @@ try {
 
         $ownerStart = $lines.Count
         $process.StandardInput.WriteLine("desktop.windows.owners")
-        Read-Until { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
+        Read-Until {
+            param($line, $all)
+            $currentOwnership = @($all | Select-Object -Skip $ownerStart)
+            $hasOwner = @($currentOwnership | Where-Object { $_ -match 'window id=\d+.*title=guideXOS Developer Studio' }).Count -gt 0
+            $hasEnd = @($currentOwnership | Where-Object { $_ -eq "DESKTOP_WINDOW_OWNERS_END" }).Count -gt 0
+            return $hasOwner -and $hasEnd
+        } | Out-Null
         $ownerLines = @($lines | Select-Object -Skip $ownerStart)
         $ownerLine = @($ownerLines | Where-Object { $_ -match 'title=guideXOS Developer Studio' } | Select-Object -Last 1)
         $ownerMatch = [regex]::Match([string]$ownerLine, 'window id=(\d+)')
@@ -71,7 +84,13 @@ try {
 
         $windowStart = $lines.Count
         $process.StandardInput.WriteLine("desktop.windows.owners")
-        Read-Until { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
+        Read-Until {
+            param($line, $all)
+            $currentOwnership = @($all | Select-Object -Skip $windowStart)
+            $hasZero = @($currentOwnership | Where-Object { $_ -eq "windowCount=0" }).Count -gt 0
+            $hasEnd = @($currentOwnership | Where-Object { $_ -eq "DESKTOP_WINDOW_OWNERS_END" }).Count -gt 0
+            return $hasZero -and $hasEnd
+        } | Out-Null
         $windowLines = @($lines | Select-Object -Skip $windowStart)
         Assert-True (@($windowLines | Where-Object { $_ -eq "windowCount=0" }).Count -gt 0) "launch $index leaves zero windows"
 
@@ -93,5 +112,9 @@ finally {
         $process.WaitForExit()
     }
     if ($errorTask) { $null = $errorTask.Result }
+    if ($outputSubscription) {
+        Unregister-Event -SubscriptionId $outputSubscription.Id -ErrorAction SilentlyContinue
+        Remove-Job -Id $outputSubscription.Id -Force -ErrorAction SilentlyContinue
+    }
     $process.Dispose()
 }

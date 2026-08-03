@@ -6,6 +6,12 @@ namespace guidexos {
 namespace developer_studio {
 namespace {
 
+static void clearBytes(void* value, uint32_t size) {
+    if (!value) return;
+    unsigned char* bytes = static_cast<unsigned char*>(value);
+    for (uint32_t i = 0; i < size; ++i) bytes[i] = 0;
+}
+
 static uint32_t textLength(const char* text, uint32_t limit) {
     if (!text) return 0;
     uint32_t length = 0;
@@ -664,7 +670,7 @@ void ProjectSearchOptionsInit(ProjectSearchOptions* options) {
 
 void ProjectSearchServiceInit(ProjectSearchService* service) {
     if (!service) return;
-    service->operation = ProjectSearchOperation();
+    clearBytes(&service->operation, sizeof(service->operation));
     service->operation.state = ProjectSearchState::Idle;
     ProjectSearchOptionsInit(&service->operation.options);
     service->fileSystem = WorkspaceFileSystem();

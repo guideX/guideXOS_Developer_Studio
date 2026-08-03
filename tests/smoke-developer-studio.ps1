@@ -18,6 +18,33 @@ function Assert-True([bool]$Condition, [string]$Message) {
     Write-Host "PASS: $Message"
 }
 
+function Normalize-PackageRelativePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    $normalized = $Path.Replace('\', '/')
+    while ($normalized.StartsWith('./', [StringComparison]::Ordinal)) {
+        $normalized = $normalized.Substring(2)
+    }
+    return $normalized
+}
+
+function Assert-ResolverEntryPath([string]$Output) {
+    $expectedRelativePath = Normalize-PackageRelativePath 'bin/amd64/developerstudio.elf'
+    $resolverMatch = [regex]::Match(
+        $Output,
+        '(?m)^\[LaunchResolver\]\s+App:\s+com\.guidexos\.developerstudio\s+Strategy:\s+NativeElf\s+Architecture:\s+amd64\s+Entry:\s+(?<entry>\S+)\s+Result:\s+success\b')
+    Assert-True $resolverMatch.Success "resolver emits a successful canonical NativeElf decision"
+
+    $actualRelativePath = Normalize-PackageRelativePath $resolverMatch.Groups['entry'].Value
+    Assert-True ($actualRelativePath -eq $expectedRelativePath) "resolver selected the expected package-relative ELF identity"
+
+    $packageRootFull = [IO.Path]::GetFullPath($PackageRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $resolvedEntry = [IO.Path]::GetFullPath([IO.Path]::Combine($packageRootFull, $actualRelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)))
+    $packageBinaryFull = [IO.Path]::GetFullPath($PackageBinary)
+    $contained = $resolvedEntry.StartsWith($packageRootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    Assert-True $contained "resolver entry remains contained by the Developer Studio package"
+    Assert-True ($resolvedEntry.Equals($packageBinaryFull, [StringComparison]::OrdinalIgnoreCase)) "resolver entry resolves to the packaged ELF file"
+}
+
 function Invoke-Server([string[]]$Commands, [string]$Executable) {
     Push-Location $ServerRoot
     try {
@@ -28,20 +55,20 @@ function Invoke-Server([string[]]$Commands, [string]$Executable) {
     }
 }
 
-function Read-ServerLine([Diagnostics.Process]$Process, [System.Collections.Generic.List[string]]$Lines, [scriptblock]$Predicate, [int]$TimeoutSeconds = 15) {
+function Read-ServerLine([Diagnostics.Process]$Process, [System.Collections.Concurrent.ConcurrentQueue[string]]$Queue, [System.Collections.Generic.List[string]]$Lines, [scriptblock]$Predicate, [int]$TimeoutSeconds = 15) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $readTask = $Process.StandardOutput.ReadLineAsync()
-        while (-not $readTask.IsCompleted -and [DateTime]::UtcNow -lt $deadline) {
-            Start-Sleep -Milliseconds 25
+        $line = $null
+        if ($Queue.TryDequeue([ref]$line)) {
+            $Lines.Add($line)
+            if (& $Predicate $line $Lines) { return $line }
+            continue
         }
-        if (-not $readTask.IsCompleted) { break }
-        $line = $readTask.Result
-        if ($null -eq $line) { break }
-        $Lines.Add($line)
-        if (& $Predicate $line $Lines) { return $line }
+        if ($Process.HasExited) { break }
+        Start-Sleep -Milliseconds 25
     }
-    throw "Timed out waiting for hosted Server output."
+    $lastLine = if ($Lines.Count -gt 0) { $Lines[$Lines.Count - 1] } else { "<none>" }
+    throw "Timed out waiting for hosted Server output. processExited=$($Process.HasExited) lastLine=$lastLine"
 }
 
 function Invoke-InteractiveLaunch([string]$Executable) {
@@ -55,25 +82,32 @@ function Invoke-InteractiveLaunch([string]$Executable) {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
     $lines = New-Object 'System.Collections.Generic.List[string]'
+    $outputQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
     $errorTask = $null
+    $outputSubscription = $null
     try {
         Assert-True $process.Start() "hosted runtime starts for interactive launch smoke"
+        $outputSubscription = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -MessageData $outputQueue -Action {
+            $line = $Event.SourceEventArgs.Data
+            if ($null -ne $line) { $Event.MessageData.Enqueue($line) }
+        }
+        $process.BeginOutputReadLine()
         $errorTask = $process.StandardError.ReadToEndAsync()
         $process.StandardInput.WriteLine("desktop.launch guideXOS Developer Studio")
-        Read-ServerLine $process $lines { param($line, $all) $line.Contains("Desktop launch successful: guideXOS Developer Studio") } | Out-Null
-        Read-ServerLine $process $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS") } | Out-Null
+        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line.Contains("Desktop launch successful: guideXOS Developer Studio") } | Out-Null
+        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS") } | Out-Null
 
         $process.StandardInput.WriteLine("desktop.windows.owners")
-        Read-ServerLine $process $lines { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
+        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
         $ownerLine = @($lines | Where-Object { $_ -match 'title=guideXOS Developer Studio' } | Select-Object -Last 1)
         $ownerMatch = [regex]::Match([string]$ownerLine, 'window id=(\d+)')
         Assert-True $ownerMatch.Success "hosted window ownership includes the Developer Studio title"
         $windowId = $ownerMatch.Groups[1].Value
 
         $process.StandardInput.WriteLine("gui.close $windowId")
-        Read-ServerLine $process $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS") } | Out-Null
+        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS") } | Out-Null
         $process.StandardInput.WriteLine("nativeapp.processes")
-        Read-ServerLine $process $lines { param($line, $all) $line -match 'appId=com.guidexos.developerstudio.*state=Exited' } | Out-Null
+        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line -match 'appId=com.guidexos.developerstudio.*state=Exited' } | Out-Null
         $process.StandardInput.WriteLine("exit")
         $process.StandardInput.Close()
         $process.WaitForExit()
@@ -84,6 +118,10 @@ function Invoke-InteractiveLaunch([string]$Executable) {
             $process.WaitForExit()
         }
         if ($errorTask) { $null = $errorTask.Result }
+        if ($outputSubscription) {
+            Unregister-Event -SubscriptionId $outputSubscription.Id -ErrorAction SilentlyContinue
+            Remove-Job -Id $outputSubscription.Id -Force -ErrorAction SilentlyContinue
+        }
         $process.Dispose()
     }
 }
@@ -131,7 +169,7 @@ $startupOutput = Invoke-Server @(
 Assert-True ($startupOutput.Contains("guideXOS Developer Studio [NativeElf] id=com.guidexos.developerstudio")) "Developer Studio is registered in the App Model list"
 Assert-True ($startupOutput.Contains("AppModel registry candidate:  displayName=guideXOS Developer Studio id=com.guidexos.developerstudio")) "registration diagnostic identifies the Developer Studio manifest"
 Assert-True ($startupOutput.Contains("appId: com.guidexos.developerstudio")) "canonical ID resolves through launch resolution"
-Assert-True ($startupOutput.Contains("selectedStrategy: NativeElf") -and $startupOutput.Contains("selectedEntryPath: bin/amd64/developerstudio.elf")) "manifest entry resolves to the amd64 Native ELF path"
+Assert-ResolverEntryPath $startupOutput
 Assert-True ($startupOutput.Contains("windowCount=0")) "registration and resolution do not auto-launch Developer Studio"
 
 $launchOutput = Invoke-InteractiveLaunch $experimentalServer

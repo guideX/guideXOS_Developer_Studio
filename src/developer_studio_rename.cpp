@@ -10,6 +10,12 @@ static char g_renameReadScratch[kProjectSearchMaxFileBytes + 1u] = {};
 static TextBuffer g_renameTemporaryBuffer = {};
 static RenameUndoRecord g_renameWorkingUndo = {};
 
+static void clearBytes(void* value, uint32_t size) {
+    if (!value) return;
+    unsigned char* bytes = static_cast<unsigned char*>(value);
+    for (uint32_t i = 0; i < size; ++i) bytes[i] = 0;
+}
+
 static uint32_t lengthOf(const char* text, uint32_t limit) {
     if (!text) return 0;
     uint32_t length = 0;
@@ -569,7 +575,7 @@ const char* RenameErrorName(RenameErrorCode error) {
 
 void RenameModelInit(RenameModel* model) {
     if (!model) return;
-    *model = RenameModel();
+    clearBytes(model, sizeof(*model));
     model->state = RenameState::Idle;
     model->error = RenameErrorCode::None;
     ReferenceTargetInit(&model->target);
@@ -578,7 +584,7 @@ void RenameModelInit(RenameModel* model) {
 
 void RenameUndoManagerInit(RenameUndoManager* manager) {
     if (!manager) return;
-    *manager = RenameUndoManager();
+    clearBytes(manager, sizeof(*manager));
 }
 
 bool RenameSymbolKindSupported(SymbolKind kind) {

@@ -37,6 +37,9 @@ struct ParseScope {
 static LexToken g_tokens[kMaxTokens];
 static uint8_t g_braceKinds[kMaxTokens];
 static char g_projectReadBuffer[kMaxEditorBytes + 1];
+static ParseScope g_scanScope;
+static ParseScope g_scanQualifiedScope;
+static FileListEntry g_indexEntries[kMaxProjectDepth + 1][kMaxWorkspaceEntries];
 static const uint8_t kBraceNone = 0;
 static const uint8_t kBraceNamespace = 1;
 static const uint8_t kBraceClass = 2;
@@ -778,7 +781,7 @@ static bool indexDirectory(SymbolDatabase* database, const WorkspaceFileSystem& 
                            const Document* dirtyDocuments, uint32_t dirtyCount,
                            uint64_t projectGeneration) {
     if (depth > kMaxProjectDepth) { database->truncated = true; return false; }
-    FileListEntry entries[kMaxWorkspaceEntries];
+    FileListEntry* entries = g_indexEntries[depth];
     uint32_t count = 0;
     bool truncated = false;
     if (!fileSystem.list || !fileSystem.list(fileSystem.userData, directory, entries,
@@ -906,7 +909,10 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
     bool tokenTruncated = false;
     const uint32_t tokenCount = tokenize(text, length, &tokenTruncated);
     uint32_t symbolCount = 0;
-    ParseScope scope = {};
+    ParseScope& scope = g_scanScope;
+    ParseScope& qualifiedScope = g_scanQualifiedScope;
+    clearBytes(reinterpret_cast<char*>(&scope), sizeof(scope));
+    clearBytes(reinterpret_cast<char*>(&qualifiedScope), sizeof(qualifiedScope));
 
     // Type declarations are recognized while walking braces so nested
     // namespace/class containers remain lexical and deterministic.
@@ -961,7 +967,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
 
     // Functions are identified by a named parameter list followed by a body
     // or declaration terminator. Calls, control flow and lambdas are skipped.
-    scope = {};
+    clearBytes(reinterpret_cast<char*>(&scope), sizeof(scope));
     for (uint32_t i = 0; i < tokenCount; ++i) {
         if (tokenIsPunctuation(text, g_tokens[i], "}")) { popScope(scope); continue; }
         if (tokenIsPunctuation(text, g_tokens[i], "{")) {
@@ -998,7 +1004,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
                       g_tokens[nameIndex - 2].offset, g_tokens[nameIndex - 2].length);
             if (equalText(qualifierTail, name, false)) kind = SymbolKind::Constructor;
         }
-        ParseScope qualifiedScope = scope;
+        qualifiedScope = scope;
         if (nameIndex > 0 && tokenIsPunctuation(text, g_tokens[nameIndex - 1], "::")) {
             char qualifier[kSymbolMaxContainerBytes] = {};
             uint32_t qLength = 0;
@@ -1028,7 +1034,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
 
     // Namespace-scope declarations provide the bounded global/static portion
     // of the index. Class fields and locals are intentionally omitted.
-    scope = {};
+    clearBytes(reinterpret_cast<char*>(&scope), sizeof(scope));
     for (uint32_t i = 0; i < tokenCount; ++i) {
         if (tokenIsPunctuation(text, g_tokens[i], "}")) { popScope(scope); continue; }
         if (tokenIsPunctuation(text, g_tokens[i], "{")) {
@@ -1062,7 +1068,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
             if (tokenIsIdentifier(g_tokens[j])) lastIdentifier = j;
         }
         if (excluded || hasParen || lastIdentifier == tokenCount) continue;
-        ParseScope qualifiedScope = scope;
+        qualifiedScope = scope;
         bool qualifiedMember = lastIdentifier > start &&
             tokenIsPunctuation(text, g_tokens[lastIdentifier - 1], "::");
         if (qualifiedMember) {
@@ -1088,7 +1094,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
     // Class static data declarations are symbol records in their containing
     // class scope.  Other fields remain intentionally outside this lexical
     // index because they do not have a separate declaration/definition site.
-    scope = {};
+    clearBytes(reinterpret_cast<char*>(&scope), sizeof(scope));
     for (uint32_t i = 0; i < tokenCount; ++i) {
         if (tokenIsPunctuation(text, g_tokens[i], "}")) { popScope(scope); continue; }
         if (tokenIsPunctuation(text, g_tokens[i], "{")) {
@@ -1131,7 +1137,7 @@ bool ScanDocumentSymbols(const char* text, uint32_t length,
 
     // Typedefs and using aliases are handled after declarations so their
     // final declarator name is unambiguous in the bounded token stream.
-    scope = {};
+    clearBytes(reinterpret_cast<char*>(&scope), sizeof(scope));
     for (uint32_t i = 0; i < tokenCount; ++i) {
         if (tokenIsPunctuation(text, g_tokens[i], "}")) { popScope(scope); continue; }
         if (tokenIsPunctuation(text, g_tokens[i], "{")) {

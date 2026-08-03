@@ -6,6 +6,12 @@ namespace {
 
 static const uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
+static void clearBytes(void* value, uint32_t size) {
+    if (!value) return;
+    unsigned char* bytes = static_cast<unsigned char*>(value);
+    for (uint32_t i = 0; i < size; ++i) bytes[i] = 0;
+}
+
 static uint32_t textLength(const char* text, uint32_t limit) {
     if (!text) return 0;
     uint32_t length = 0;
@@ -1027,7 +1033,14 @@ bool IsIncludeGraphHeaderPath(const char* path) {
 
 void IncludeGraphStorageInit(IncludeGraphStorage* storage) {
     if (!storage) return;
-    *storage = IncludeGraphStorage();
+    clearBytes(storage, sizeof(*storage));
+}
+
+void IncludeGraphBuildOperationInit(IncludeGraphBuildOperation* operation) {
+    if (!operation) return;
+    clearBytes(operation, sizeof(*operation));
+    operation->state = IncludeGraphBuildState::Idle;
+    operation->error = IncludeGraphErrorCode::None;
 }
 
 void IncludeGraphInit(IncludeGraph* graph, IncludeGraphStorage* storage,
@@ -1446,7 +1459,7 @@ bool IncludeGraphStart(IncludeGraphBuildOperation* operation, IncludeGraph* grap
         operation->state = IncludeGraphBuildState::Cancelled;
         operation->terminalReported = true;
     }
-    *operation = IncludeGraphBuildOperation();
+    IncludeGraphBuildOperationInit(operation);
     operation->operationId = nextOperationId == 0 ? 1 : nextOperationId++;
     if (nextOperationId == 0) nextOperationId = 1;
     operation->projectId = hashText(request.projectId);
