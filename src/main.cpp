@@ -15,6 +15,7 @@
 #include "developer_studio_include_graph.h"
 #include "developer_studio_relationships.h"
 #include "developer_studio_ownership.h"
+#include "developer_studio_types.h"
 
 namespace {
 
@@ -438,6 +439,23 @@ using guidexos::developer_studio::IsIncludeGraphHeaderPath;
 using guidexos::developer_studio::kIncludeGraphMaxNodes;
 using guidexos::developer_studio::kIncludeGraphMaxEdges;
 using guidexos::developer_studio::kIncludeGraphMaxAmbiguousCandidates;
+using guidexos::developer_studio::TypeDatabase;
+using guidexos::developer_studio::TypeDocument;
+using guidexos::developer_studio::TypeDatabaseClear;
+using guidexos::developer_studio::TypeDatabaseIndexDocument;
+using guidexos::developer_studio::TypeDatabaseIndexProject;
+using guidexos::developer_studio::TypeDatabaseInit;
+using guidexos::developer_studio::TypeDatabaseInspectAt;
+using guidexos::developer_studio::TypeDatabaseIsCurrent;
+using guidexos::developer_studio::TypeDatabaseIsTruncated;
+using guidexos::developer_studio::TypeDeclarationKindName;
+using guidexos::developer_studio::TypeInspection;
+using guidexos::developer_studio::TypeInspectionState;
+using guidexos::developer_studio::TypeInspectionStateName;
+using guidexos::developer_studio::TypeRecord;
+using guidexos::developer_studio::TypeSourceName;
+using guidexos::developer_studio::kTypeMaxHoverTextBytes;
+using guidexos::developer_studio::kTypeMaxRecords;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -494,6 +512,9 @@ static const int kCompletionPopupMaxRows = 9;
 static const int kSignaturePopupWidth = 620;
 static const int kSignaturePopupRowHeight = 34;
 static const int kSignaturePopupMaxRows = 5;
+static const int kTypePopupWidth = 610;
+static const int kTypePopupRowHeight = 22;
+static const int kTypePopupMaxRows = 8;
 static const int kIncludeGraphPanelTop = 48;
 static const int kIncludeGraphPanelResultsTop = 190;
 static const int kIncludeGraphPanelRowHeight = 24;
@@ -542,6 +563,13 @@ static SignatureHelpSession g_signatureSession = {};
 static bool g_signaturePopupOpen = false;
 static uint32_t g_signatureScroll = 0;
 static char g_signatureStatus[192] = {};
+static TypeDatabase g_typeDatabase = {};
+static TypeRecord g_typeRecordStorage[kTypeMaxRecords] = {};
+static TypeDocument g_typeDocumentStorage[256] = {};
+static TypeInspection g_typeInspection = {};
+static bool g_typePopupOpen = false;
+static char g_typeStatus[160] = {};
+static char g_typeDisplayScratch[kTypeMaxHoverTextBytes + 1] = {};
 static IncludeGraphStorage g_includeGraphStorage = {};
 static IncludeGraphStorage g_includeGraphBuildingStorage = {};
 static IncludeGraph g_includeGraph = {};
@@ -788,6 +816,11 @@ static bool openCompletion(gx_app_context* ctx);
 static bool refreshCompletion(gx_app_context* ctx);
 static bool acceptCompletion(gx_app_context* ctx);
 static bool undoCompletion(gx_app_context* ctx);
+static void dismissTypeInfo(gx_app_context* ctx, const char* reason, bool showStatus);
+static bool openTypeInfo(gx_app_context* ctx);
+static bool handleTypeInfoKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static bool typePopupBounds(gx_rect* output);
+static void drawTypePopup(gx_app_context* ctx);
 static void dismissSignatureHelp(gx_app_context* ctx, const char* reason, bool showStatus);
 static bool openSignatureHelp(gx_app_context* ctx);
 static bool refreshSignatureHelp(gx_app_context* ctx);
@@ -3280,6 +3313,7 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
 }
 
 static void commitNewProject(gx_app_context* ctx) {
+    dismissTypeInfo(ctx, "project_changed", false);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
     if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
@@ -3306,6 +3340,7 @@ static void commitNewProject(gx_app_context* ctx) {
 static void commitProjectOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "project_changed", false);
     dismissSignatureHelp(ctx, "project_changed", false);
+    dismissTypeInfo(ctx, "project_changed", false);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
     if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
@@ -3327,6 +3362,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
     dismissCompletion(ctx, "workspace_changed", false);
     dismissSignatureHelp(ctx, "workspace_changed", false);
+    dismissTypeInfo(ctx, "workspace_changed", false);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
     if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
@@ -3355,6 +3391,7 @@ static void requestWorkspaceOpen(gx_app_context* ctx) {
 static void closeActiveDocument(gx_app_context* ctx, CloseDecision decision) {
     dismissCompletion(ctx, "document_changed", false);
     dismissSignatureHelp(ctx, "document_changed", false);
+    dismissTypeInfo(ctx, "document_changed", false);
     if (g_pendingDocument >= kMaxOpenDocuments) return;
     bool success = WorkspaceControllerCloseDocument(&g_controller, g_pendingDocument, decision);
     if (success) {
@@ -3368,6 +3405,7 @@ static void closeActiveDocument(gx_app_context* ctx, CloseDecision decision) {
 static void finishApplicationClose(gx_app_context* ctx, bool success) {
     dismissCompletion(ctx, "application_close", false);
     dismissSignatureHelp(ctx, "application_close", false);
+    dismissTypeInfo(ctx, "application_close", false);
     if (!success) {
         writeOutput("Save failed; application remains open");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=FAIL", currentError());
@@ -4494,6 +4532,168 @@ static bool openSignatureHelp(gx_app_context* ctx) {
     return true;
 }
 
+static void typeSetStatus(const char* text) {
+    copyText(g_typeStatus, sizeof(g_typeStatus), text ? text : "");
+}
+
+static bool ensureTypeDatabase(Document* document) {
+    if (!document || !g_controller.model.hasProject) return false;
+    const uint64_t projectGeneration = g_controller.model.projectGeneration;
+    const uint64_t symbolsGeneration = g_symbolDatabase.symbolDatabaseGeneration;
+    if (TypeDatabaseIsCurrent(&g_typeDatabase, projectGeneration, symbolsGeneration)) return true;
+    const bool indexed = TypeDatabaseIndexProject(&g_typeDatabase, g_controller.fileSystem,
+                                                  g_controller.model.project.rootPath,
+                                                  g_controller.model.documents, kMaxOpenDocuments,
+                                                  projectGeneration, &g_symbolDatabase);
+    if (indexed && TypeDatabaseIsCurrent(&g_typeDatabase, projectGeneration, symbolsGeneration)) return true;
+    if (TypeDatabaseIndexDocument(&g_typeDatabase, g_controller.model.project.rootPath,
+                                  document->path, document->documentId, document->buffer.generation,
+                                  projectGeneration, document->buffer.data, document->buffer.length)) {
+        g_typeDatabase.symbolDatabaseGeneration = symbolsGeneration;
+        g_typeDatabase.current = true;
+        return true;
+    }
+    return false;
+}
+
+static void dismissTypeInfo(gx_app_context* ctx, const char* reason, bool showStatus) {
+    if (!g_typePopupOpen) return;
+    g_typePopupOpen = false;
+    g_typeInspection = TypeInspection();
+    if (showStatus && reason) {
+        typeSetStatus(reason);
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info_dismiss=PASS reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), reason);
+        logMarker(ctx, g_textScratch);
+    } else typeSetStatus("");
+}
+
+static bool openTypeInfo(gx_app_context* ctx) {
+    dismissCompletion(ctx, "type_info", false);
+    dismissSignatureHelp(ctx, "type_info", false);
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        typeSetStatus("Open a project before using Quick Type Info.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=FAIL", "no_project");
+        return false;
+    }
+    if (!document || !g_editorFocused) {
+        typeSetStatus("Focus the source editor before using Quick Type Info.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=FAIL", "no_document");
+        return false;
+    }
+    if (!ensureTypeDatabase(document)) {
+        typeSetStatus("Type information is unavailable while the project index is stale.");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=FAIL", "index_stale");
+        return false;
+    }
+    TypeInspection inspection = {};
+    const bool resolved = TypeDatabaseInspectAt(&g_typeDatabase, *document,
+                                               g_controller.model.projectGeneration,
+                                               document->buffer.caret, &inspection);
+    g_typeInspection = inspection;
+    if (inspection.identifier[0] == '\0') {
+        typeSetStatus(resolved ? "No identifier under the caret." : "Type information unavailable.");
+        g_typePopupOpen = false;
+        return false;
+    }
+    g_typePopupOpen = true;
+    typeSetStatus("");
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=PASS state=");
+    appendText(g_textScratch, sizeof(g_textScratch), TypeInspectionStateName(inspection.state));
+    appendText(g_textScratch, sizeof(g_textScratch), " identifier=");
+    appendText(g_textScratch, sizeof(g_textScratch), inspection.identifier);
+    logMarker(ctx, g_textScratch);
+    if (TypeDatabaseIsTruncated(&g_typeDatabase))
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=TRUNCATED");
+    return true;
+}
+
+static bool handleTypeInfoKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_typePopupOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { dismissTypeInfo(ctx, "escape", false); return true; }
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_ALT) &&
+        (keyCode == 84 || keyCode == 116)) { openTypeInfo(ctx); return true; }
+    dismissTypeInfo(ctx, "input", false);
+    return false;
+}
+
+static bool typePopupBounds(gx_rect* output) {
+    if (!output || !g_typePopupOpen || g_typeInspection.identifier[0] == '\0') return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    const uint32_t line = activeLine(document->buffer);
+    const uint32_t column = activeColumn(document->buffer, line);
+    const uint32_t visibleColumn = column > g_editorScrollColumn ? column - g_editorScrollColumn : 0;
+    const uint32_t visibleLine = line > g_editorScrollLine ? line - g_editorScrollLine : 0;
+    const int caretX = kEditorTextX + static_cast<int>(visibleColumn * 8u);
+    const int caretY = kEditorTop + static_cast<int>(visibleLine * kEditorLineHeight);
+    const int rows = g_typeInspection.state == TypeInspectionState::Exact ||
+        g_typeInspection.state == TypeInspectionState::Conservative ? 7 : 2;
+    const int height = 30 + rows * kTypePopupRowHeight + 28;
+    int x = caretX;
+    int y = caretY + kEditorLineHeight;
+    if (x + kTypePopupWidth > kEditorRect.x + kEditorRect.width) x = kEditorRect.x + kEditorRect.width - kTypePopupWidth;
+    if (x < kEditorRect.x) x = kEditorRect.x;
+    if (y + height > kEditorRect.y + kEditorRect.height) y = caretY - height;
+    if (y < kEditorRect.y) y = kEditorRect.y;
+    *output = { x, y, kTypePopupWidth, height };
+    return true;
+}
+
+static void typeLine(char* output, uint32_t capacity, const char* label, const char* value) {
+    output[0] = '\0';
+    appendText(output, capacity, label);
+    appendText(output, capacity, value ? value : "");
+}
+
+static void drawTypePopup(gx_app_context* ctx) {
+    if (!ctx) return;
+    gx_rect bounds = {};
+    if (!typePopupBounds(&bounds)) return;
+    drawPanel(ctx, bounds, 0x202A36u);
+    copyText(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "QUICK TYPE INFO  ");
+    appendText(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), g_typeInspection.identifier);
+    drawText(ctx, bounds.x + 8, bounds.y + 15, g_typeDisplayScratch);
+    uint32_t row = 0;
+    if (g_typeInspection.state == TypeInspectionState::Ambiguous ||
+        g_typeInspection.state == TypeInspectionState::Unknown ||
+        g_typeInspection.state == TypeInspectionState::Stale) {
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight,
+                 g_typeInspection.state == TypeInspectionState::Ambiguous ? "Type unavailable" : "Type information unavailable.");
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight,
+                 g_typeInspection.detail[0] ? g_typeInspection.detail :
+                 (g_typeInspection.state == TypeInspectionState::Ambiguous ? "Multiple declarations match." : "No truthful bounded type determination.") );
+    } else {
+        typeLine(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "Type: ",
+                 g_typeInspection.displayType[0] ? g_typeInspection.displayType : g_typeInspection.type.spelling);
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, g_typeDisplayScratch);
+        typeLine(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "Declared in: ", g_typeInspection.type.declarationLocation.relativePath);
+        appendText(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), ":");
+        appendUnsigned(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), g_typeInspection.type.declarationLocation.line);
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, g_typeDisplayScratch);
+        typeLine(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "Kind: ", TypeDeclarationKindName(g_typeInspection.declarationKind));
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, g_typeDisplayScratch);
+        typeLine(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "Type source: ", TypeSourceName(g_typeInspection.type.source));
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, g_typeDisplayScratch);
+        if (g_typeInspection.type.aliasName[0] != '\0' && g_typeInspection.type.resolvedAlias[0] != '\0') {
+            typeLine(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "Alias: ", g_typeInspection.type.aliasName);
+            appendText(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), " -> ");
+            appendText(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), g_typeInspection.type.resolvedAlias);
+            drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, g_typeDisplayScratch);
+        } else if (g_typeInspection.type.source == guidexos::developer_studio::TypeSource::FunctionReturnInference) {
+            drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, "Inferred from: function return type");
+        } else {
+            drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, "Type source: direct declaration");
+        }
+        typeLine(g_typeDisplayScratch, sizeof(g_typeDisplayScratch), "Confidence: ", TypeInspectionStateName(g_typeInspection.state));
+        drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, g_typeDisplayScratch);
+        if (g_typeInspection.truncated || g_typeInspection.type.truncated)
+            drawText(ctx, bounds.x + 8, bounds.y + 30 + static_cast<int>(row++) * kTypePopupRowHeight, "Bounded result truncated.");
+    }
+    drawText(ctx, bounds.x + 8, bounds.y + bounds.height - 10, "Ctrl+Alt+T Refresh  Esc Close");
+}
+
 static bool refreshSignatureHelp(gx_app_context* ctx) {
     if (!g_signaturePopupOpen) return false;
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
@@ -5459,6 +5659,7 @@ static void drawEditor(gx_app_context* ctx) {
 static void drawOutputAndStatus(gx_app_context* ctx) {
     if (g_signatureStatus[0] != '\0') drawText(ctx, 16, 646, g_signatureStatus);
     else if (g_completionStatus[0] != '\0') drawText(ctx, 16, 646, g_completionStatus);
+    else if (g_typeStatus[0] != '\0') drawText(ctx, 16, 646, g_typeStatus);
     else if (g_definitionStatus[0] != '\0') drawText(ctx, 16, 646, g_definitionStatus);
     drawText(ctx, 16, 536, g_outputProblemsTab ? "PROBLEMS" : "OUTPUT");
     drawText(ctx, 112, 536, "Output");
@@ -5622,6 +5823,7 @@ static void drawShell(gx_app_context* ctx) {
     drawEditor(ctx);
     drawSignaturePopup(ctx);
     drawCompletionPopup(ctx);
+    drawTypePopup(ctx);
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
@@ -5846,9 +6048,11 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         if (save && !saveAll(ctx)) return;
         stopProjectSearch(ctx);
         dismissSignatureHelp(ctx, "workspace_changed", false);
+        dismissTypeInfo(ctx, "workspace_changed", false);
         if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
         g_ownershipPanelOpen = false;
         WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
+        TypeDatabaseClear(&g_typeDatabase);
         if (g_workspaceSwitchPending) commitWorkspaceOpen(ctx);
         else {
             g_inputMode = InputMode::Normal;
@@ -6266,6 +6470,12 @@ static bool handleRenameKey(gx_app_context* ctx, int keyCode, int action, int mo
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_typePopupOpen && handleTypeInfoKey(ctx, keyCode, action, modifiers)) return;
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_ALT) &&
+        (keyCode == 84 || keyCode == 116)) {
+        openTypeInfo(ctx);
+        return;
+    }
     if (g_completionPopupOpen && (modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && keyCode == 32) {
         dismissCompletion(ctx, "signature_help", false);
         openSignatureHelp(ctx);
@@ -6468,6 +6678,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     }
     updateSyntaxAfterEdit(ctx, document);
     markDirtyIfNeeded(ctx, wasDirty);
+    if (changed) dismissTypeInfo(ctx, "document_changed", false);
     keepCaretVisible(document);
     if (completionWasOpen && changed && (keyCode == 8 || keyCode == 13 || mapKeyToChar(keyCode, modifiers) != '\0'))
         refreshCompletion(ctx);
@@ -6559,6 +6770,15 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             }
         }
         return;
+    }
+    if (g_typePopupOpen) {
+        gx_rect bounds = {};
+        if (!typePopupBounds(&bounds)) { dismissTypeInfo(ctx, "popup_expired", false); return; }
+        if (action == GX_MOUSE_ACTION_WHEEL) return;
+        if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN) {
+            if (x >= bounds.x && x < bounds.x + bounds.width && y >= bounds.y && y < bounds.y + bounds.height) return;
+            dismissTypeInfo(ctx, "mouse_dismiss", false);
+        }
     }
     if (g_signaturePopupOpen) {
         gx_rect bounds = {};
@@ -6930,12 +7150,14 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             else {
                 stopProjectSearch(ctx);
                 dismissSignatureHelp(ctx, "workspace_changed", false);
+                dismissTypeInfo(ctx, "workspace_changed", false);
                 if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
                 if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
                 g_includeGraphPanelOpen = false;
                 g_includeTargetPickerOpen = false;
                 g_ownershipPanelOpen = false;
                 WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
+                TypeDatabaseClear(&g_typeDatabase);
             }
         } else if (y < 188) {
             switchHeaderSource(ctx);
@@ -7057,6 +7279,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_signaturePopupOpen = false;
     g_signatureScroll = 0;
     g_signatureStatus[0] = '\0';
+    TypeDatabaseInit(&g_typeDatabase, g_typeRecordStorage, kTypeMaxRecords,
+                     g_typeDocumentStorage, sizeof(g_typeDocumentStorage) / sizeof(g_typeDocumentStorage[0]));
+    g_typeInspection = TypeInspection();
+    g_typePopupOpen = false;
+    g_typeStatus[0] = '\0';
+    g_typeDisplayScratch[0] = '\0';
     IncludeGraphStorageInit(&g_includeGraphStorage);
     IncludeGraphStorageInit(&g_includeGraphBuildingStorage);
     IncludeGraphInit(&g_includeGraph, &g_includeGraphStorage, "", 0);
@@ -7219,7 +7447,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
-                             !g_completionPopupOpen && !g_signaturePopupOpen && !g_ownershipPanelOpen) {
+                             !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;

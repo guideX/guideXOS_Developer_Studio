@@ -28,6 +28,7 @@ $SignatureTest = Join-Path $ServerRoot "tmp\developer-studio-signature-test.exe"
 $IncludeGraphTest = Join-Path $ServerRoot "tmp\developer-studio-include-graph-test.exe"
 $RelationshipTest = Join-Path $ServerRoot "tmp\developer-studio-relationship-test.exe"
 $OwnershipTest = Join-Path $ServerRoot "tmp\developer-studio-ownership-test.exe"
+$TypesTest = Join-Path $ServerRoot "tmp\developer-studio-types-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -182,6 +183,14 @@ try {
     & $OwnershipTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio ownership model test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_types.cpp", "tests\types_test.cpp",
+        "-o", $TypesTest
+    )
+    & $TypesTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio type intelligence model test failed with exit code $LASTEXITCODE" }
+
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
@@ -206,6 +215,7 @@ try {
     $includeGraphObject = Join-Path $ObjectRoot "developer_studio_include_graph.o"
     $relationshipObject = Join-Path $ObjectRoot "developer_studio_relationships.o"
     $ownershipObject = Join-Path $ObjectRoot "developer_studio_ownership.o"
+    $typesObject = Join-Path $ObjectRoot "developer_studio_types.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
@@ -226,11 +236,12 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_include_graph.cpp"), "-o", $includeGraphObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_relationships.cpp"), "-o", $relationshipObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_ownership.cpp"), "-o", $ownershipObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_types.cpp"), "-o", $typesObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -261,5 +272,6 @@ try {
     if (Test-Path -LiteralPath $IncludeGraphTest) { Remove-Item -LiteralPath $IncludeGraphTest -Force }
     if (Test-Path -LiteralPath $RelationshipTest) { Remove-Item -LiteralPath $RelationshipTest -Force }
     if (Test-Path -LiteralPath $OwnershipTest) { Remove-Item -LiteralPath $OwnershipTest -Force }
+    if (Test-Path -LiteralPath $TypesTest) { Remove-Item -LiteralPath $TypesTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

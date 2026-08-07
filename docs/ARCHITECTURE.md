@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, and project-local Header / Source Ownership
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, project-local Header / Source Ownership, and generation-aware Lightweight Type Intelligence / Quick Type Info
 
 ## Integration
 
@@ -39,7 +39,7 @@ UI shell
   |
 Workspace/document controller
   |
-Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, UI-independent lexical SymbolDatabase, Include Graph, Declaration–Definition Relationship Graph, Header / Source Ownership Graph, syntax tokenizer/cache, and workspace/document/text-buffer models
+Project parser/generator, build controller, run controller, UI-independent Find/Replace, UI-independent ProjectSearchService, UI-independent lexical SymbolDatabase, Include Graph, Declaration–Definition Relationship Graph, Header / Source Ownership Graph, Lightweight Type Intelligence, syntax tokenizer/cache, and workspace/document/text-buffer models
   |
 Filesystem abstraction
   |
@@ -233,6 +233,30 @@ are explicitly lexical. Stored signatures omit some return-type and trailing
 qualifier information, so parsing failures disable parameter highlighting
 instead of inventing ranges. See [SIGNATURE_HELP.md](SIGNATURE_HELP.md) for
 the model contract, limits, status codes, markers, and future semantic path.
+
+## Lightweight Type Intelligence
+
+`developer_studio_types.*` is a UI-independent, generation-aware bounded type
+provider. It consumes the existing project document inventory, dirty document
+snapshots, and SymbolDatabase generation rather than creating a second project
+index. Its lexical parser recognizes bounded primitive/named declarations,
+parameters, ordinary returns, simple members, aliases, pointer/reference and
+qualification declarators, literals, and unique function-call return inference.
+
+Lookup is nearest-supported-scope first: local, parameter, directly known
+member, project/namespace, then global. Alias traversal is capped and cycle
+checked. Exact, Conservative, Ambiguous, Unknown, and Stale states are
+explicit; the UI never turns an ambiguous or unknown result into an exact
+type. Storage and parser inputs have explicit caps, and document, project, and
+symbol-index generations invalidate stale inspections. Indexing is synchronous
+because the bounded first pass does not require background cancellation.
+
+The first UI surface is Quick Type Info (`Ctrl+Alt+T`), a bounded overlay that
+reuses existing editor popup/input lifecycle behavior. It closes on Escape,
+outside mouse interaction, or editing. This milestone does not claim automatic
+mouse-hover timing. The complete supported subset, limits, confidence policy,
+alias and `auto` limitations, and deferred C++ semantics are documented in
+[`LIGHTWEIGHT_TYPE_INTELLIGENCE.md`](LIGHTWEIGHT_TYPE_INTELLIGENCE.md).
 
 ## Project-local Include Graph
 
