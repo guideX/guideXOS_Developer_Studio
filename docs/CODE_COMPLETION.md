@@ -1,9 +1,10 @@
-# Lightweight Code Completion
+# Code Completion and Type-Aware Member Completion
 
-Developer Studio provides a bounded, lexical C/C++ completion session. It is
-opened explicitly with `Ctrl+Space` in the source editor. The feature is a
-predictable editor aid; it is not IntelliSense, a compiler front end, a type
-checker, or a language-server client.
+Developer Studio provides a bounded C/C++ completion session. Generic
+completion remains a predictable lexical editor aid opened with `Ctrl+Space`;
+the same session also provides Type-Aware Member Completion for truthful,
+bounded direct members after `.` and `->`. This is not full IntelliSense, a
+compiler front end, a type checker, or a language-server client.
 
 ## Data flow
 
@@ -11,7 +12,8 @@ checker, or a language-server client.
 active document
   -> syntax-cache token spans and lexical context
   -> CompletionContext
-  -> shared keyword list, SymbolDatabase, document-word cache
+  -> shared keyword list, SymbolDatabase, document-word cache, or
+     Lightweight Type Intelligence direct-member index
   -> bounded CompletionSession
   -> popup rows and guarded text replacement
 ```
@@ -40,10 +42,22 @@ as a whole; a non-identifier selection is treated as an empty-prefix request at
 the caret. Qualifiers and prefixes are copied into fixed-size buffers, and an
 overlong request fails explicitly instead of growing storage.
 
-Member completion is lexical. The session can use the expression's visible
-lexical candidates, but it does not infer the receiver type. When a member
-request is unresolved, the popup remains useful as a lexical fallback and marks
-the candidate set as ambiguous in its detail text.
+For `identifier.` and `identifier->`, a bounded receiver extractor retains one
+identifier and asks Lightweight Type Intelligence for its current type. The
+operator is checked against pointer depth, then the owner-type bucket supplies
+direct fields and methods. Unknown, ambiguous, stale, wrong-operator,
+unsupported-pointer-depth, chained, and arbitrary-expression receivers do not
+receive unrelated project-wide symbols; the popup may be empty with a modest
+status reason.
+
+Supported first-pass forms include local objects, pointer locals, parameters,
+lvalue references, aliases and pointer aliases, and conservative `auto` values
+whose initializer is a unique known function return. `const` receivers may
+list known members; complete const-callability filtering is not modeled. Only
+direct members are listed. Inheritance, access-control filtering, templates,
+overload resolution, conversions, `Type::` static access, and arbitrary
+chained expressions remain deferred. Access metadata is not guessed, so all
+known direct members may be shown.
 
 ## Candidate sources
 
@@ -60,7 +74,11 @@ Document words exclude keywords, comments, strings, character literals,
 preprocessor text, and inactive `#if 0` branches. The cache is rebuilt after
 an edit and is generation-bound to the document. The project symbol index is
 consumed read-only; completion does not add a second project index or a Server
-ABI call.
+ABI call. For a proven member context, only the type-aware direct-member pass
+is used. Member candidates are self-contained copies of the bounded name,
+owner, kind, type/signature, declaration location, and project/document
+generations. The member index is built during Type Intelligence indexing, so a
+`.` lookup uses an owner bucket rather than scanning all declarations.
 
 Destructors are not inserted as ordinary names. Constructor/class duplicates are
 collapsed by insertion text. Callable overloads are also collapsed by
@@ -103,8 +121,9 @@ cannot be incorporated into the current session.
 
 Typing and backspace update the editor through the normal text-buffer path and
 refresh the active session. Left/right movement, delete, and other navigation
-actions dismiss it. The popup is not opened automatically by ordinary typing in
-this phase.
+actions dismiss it. Typing `.` after a resolvable receiver or completing `->`
+opens the same popup automatically; typing the member prefix refreshes it.
+`Ctrl+Space` remains the manual trigger and no new shortcut is assigned.
 
 ## Acceptance, dirty state, and staleness
 
@@ -125,12 +144,16 @@ undo path; it does not claim general multi-level undo or redo.
 
 ## Bounds and diagnostics
 
-The package uses fixed storage for a 1,024-byte prefix/insertion, 2,048-byte
-qualifier, 2,048-byte scope, 8 KiB context scan, 5,000 collected candidates,
-1,000 contextual candidates, 1,000 retained candidates, 100 visible candidates,
-8 MiB of document-word scanning, and 20,000 document words. Display, signature,
-and detail strings have separate limits. The document-word pass maintains a
-bounded 64-level conditional stack and scans each source line once.
+The package uses fixed storage for a 1,024-byte prefix/insertion, 256-byte
+single receiver, 192-byte owner type, 2,048-byte qualifier, 2,048-byte scope,
+8 KiB context scan, 512 indexed member references scanned per request, 256
+member candidates, 5,000 generic collected candidates, 1,000 contextual
+candidates, 1,000 retained candidates, 100 visible candidates, 8 MiB of
+document-word scanning, and 20,000 document words. Display, signature, and
+detail strings have separate limits. The document-word pass maintains a
+bounded 64-level conditional stack and scans each source line once. Owner
+buckets are capped at 512 and member data is generation-bound; index
+truncation is retained and reported as truncated.
 
 The status bar reports concise states such as no results, truncated results,
 an expired session, or unavailable lexical contexts. Stable markers include:
@@ -149,11 +172,12 @@ and full paths are not emitted by the completion model.
 
 ## Known limitations and future work
 
-This phase intentionally does not perform type inference, include expansion,
-macro expansion, template instantiation, overload resolution, conversion
-ranking, semantic member lookup, completion snippets, automatic invocation,
-signature help, or a language-server protocol. It does not add a background
-indexer or server-side completion service. Future work can replace the lexical
-candidate provider with a semantic provider behind the same bounded session,
-staleness, popup, acceptance, and marker contracts.
-
+This phase intentionally does not perform include expansion, macro expansion,
+template instantiation, overload resolution, conversion ranking, inheritance
+lookup, access-control filtering, static `Type::` completion, arbitrary
+expression evaluation, completion snippets, or a language-server protocol. It
+does not add a background indexer or server-side completion service. Signature
+Help remains responsible for callable signatures after an inserted method and
+Quick Type Info continues to use the shared Type Intelligence path. Future
+work can extend the bounded provider behind the same session, staleness,
+popup, acceptance, and marker contracts.

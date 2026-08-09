@@ -145,7 +145,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "src\developer_studio_completion.cpp", "tests\completion_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_include_graph.cpp", "src\developer_studio_relationships.cpp", "src\developer_studio_types.cpp", "src\developer_studio_completion.cpp", "tests\completion_test.cpp",
         "-o", $CompletionTest
     )
     & $CompletionTest

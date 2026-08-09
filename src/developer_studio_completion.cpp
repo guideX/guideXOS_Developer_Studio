@@ -300,9 +300,45 @@ static void inferScopeFromSymbols(const SymbolDatabase* database, const Document
     }
 }
 
-static bool precedingMemberAccess(const Document& document, uint32_t offset) {
-    if (offset > 0 && document.buffer.data[offset - 1] == '.') return true;
-    return offset > 1 && document.buffer.data[offset - 1] == '>' && document.buffer.data[offset - 2] == '-';
+static bool extractMemberAccess(const Document& document, uint32_t replacementStart,
+                                CompletionContext* context, CompletionErrorCode* error) {
+    if (!context || replacementStart > document.buffer.length) return false;
+    uint32_t operatorStart = replacementStart;
+    CompletionMemberOperator memberOperator = CompletionMemberOperator::None;
+    if (operatorStart > 0 && document.buffer.data[operatorStart - 1] == '.') {
+        memberOperator = CompletionMemberOperator::Dot;
+        --operatorStart;
+    } else if (operatorStart > 1 && document.buffer.data[operatorStart - 1] == '>' &&
+               document.buffer.data[operatorStart - 2] == '-') {
+        memberOperator = CompletionMemberOperator::Arrow;
+        operatorStart -= 2;
+    } else return false;
+    context->memberOperator = memberOperator;
+    context->memberReceiverStart = operatorStart;
+    context->memberReceiverEnd = operatorStart;
+    uint32_t receiverEnd = operatorStart;
+    while (receiverEnd > 0 && isWhitespace(document.buffer.data[receiverEnd - 1])) --receiverEnd;
+    uint32_t receiverStart = receiverEnd;
+    while (receiverStart > 0 && isIdentifierPart(document.buffer.data[receiverStart - 1])) --receiverStart;
+    if (receiverStart == receiverEnd || !isIdentifierStart(document.buffer.data[receiverStart])) return true;
+    // Keep this first pass to one receiver identifier. Chained and arbitrary
+    // expressions are intentionally deferred rather than inferred heuristically.
+    if (receiverStart > 0 && (document.buffer.data[receiverStart - 1] == '.' ||
+                              document.buffer.data[receiverStart - 1] == '>' ||
+                              document.buffer.data[receiverStart - 1] == ':')) return true;
+    const uint32_t receiverLength = receiverEnd - receiverStart;
+    if (receiverLength > kCompletionMaxReceiverBytes) {
+        if (error) *error = CompletionErrorCode::ReceiverTooLong;
+        return true;
+    }
+    const SyntaxTokenKind receiverKind = syntaxKindAt(document, receiverStart);
+    if (receiverKind == SyntaxTokenKind::Comment || receiverKind == SyntaxTokenKind::StringLiteral ||
+        receiverKind == SyntaxTokenKind::CharacterLiteral || receiverKind == SyntaxTokenKind::Preprocessor) return true;
+    context->memberReceiverStart = receiverStart;
+    context->memberReceiverEnd = receiverEnd;
+    copyRange(context->memberReceiver, sizeof(context->memberReceiver), document.buffer.data,
+              receiverStart, receiverLength);
+    return true;
 }
 
 static bool explicitQualifierAt(const Document& document, uint32_t replacementStart,
@@ -375,6 +411,7 @@ static int32_t sourceScore(CompletionCandidateSource source) {
     case CompletionCandidateSource::ProjectIndex: return 400;
     case CompletionCandidateSource::DocumentWordSet: return 250;
     case CompletionCandidateSource::KeywordSet: return 150;
+    case CompletionCandidateSource::TypeAwareMember: return 1100;
     default: return 0;
     }
 }
@@ -386,6 +423,7 @@ static int32_t sourcePriority(CompletionCandidateSource source) {
     case CompletionCandidateSource::ProjectIndex: return 3;
     case CompletionCandidateSource::KeywordSet: return 2;
     case CompletionCandidateSource::DocumentWordSet: return 1;
+    case CompletionCandidateSource::TypeAwareMember: return 6;
     default: return 0;
     }
 }
@@ -662,6 +700,113 @@ static void addSymbols(CompletionSession* session, const Document& document,
     }
 }
 
+static bool addTypeAwareMembers(CompletionSession* session, const Document& document,
+                                const TypeDatabase* typeDatabase) {
+    if (!session || session->context.kind != CompletionContextKind::MemberAccessLexical) return false;
+    session->context.memberResolution = CompletionMemberResolution::Unknown;
+    if (!typeDatabase || !typeDatabase->current || typeDatabase->projectGeneration != session->context.projectGeneration) {
+        session->context.memberResolution = CompletionMemberResolution::Stale;
+        return false;
+    }
+    if (session->context.memberReceiver[0] == '\0') return false;
+    TypeInspection inspection = {};
+    if (!TypeDatabaseInspectAt(typeDatabase, document, session->context.projectGeneration,
+                               session->context.memberReceiverStart, &inspection)) {
+        session->context.memberResolution = inspection.state == TypeInspectionState::Stale
+            ? CompletionMemberResolution::Stale : CompletionMemberResolution::Unknown;
+        return false;
+    }
+    if (inspection.state == TypeInspectionState::Stale) {
+        session->context.memberResolution = CompletionMemberResolution::Stale;
+        return false;
+    }
+    if (inspection.state == TypeInspectionState::Ambiguous) {
+        session->context.memberResolution = CompletionMemberResolution::Ambiguous;
+        return false;
+    }
+    if (!inspection.available || (inspection.state != TypeInspectionState::Exact &&
+                                  inspection.state != TypeInspectionState::Conservative)) {
+        session->context.memberResolution = CompletionMemberResolution::Unknown;
+        return false;
+    }
+    if (!TypeInspectionIsCurrent(&inspection, document, session->context.projectGeneration)) {
+        session->context.memberResolution = CompletionMemberResolution::Stale;
+        return false;
+    }
+    const TypeInfo& type = inspection.type;
+    if (type.baseKind != TypeBaseKind::Named || type.baseName[0] == '\0') {
+        session->context.memberResolution = CompletionMemberResolution::Unknown;
+        return false;
+    }
+    if (session->context.memberOperator == CompletionMemberOperator::Dot && type.pointerDepth != 0) {
+        session->context.memberResolution = type.pointerDepth > 1
+            ? CompletionMemberResolution::PointerDepthUnsupported : CompletionMemberResolution::WrongOperator;
+        return false;
+    }
+    if (session->context.memberOperator == CompletionMemberOperator::Arrow &&
+        (type.pointerDepth != 1 || type.referenceKind != TypeReferenceKind::None)) {
+        session->context.memberResolution = type.pointerDepth > 1
+            ? CompletionMemberResolution::PointerDepthUnsupported : CompletionMemberResolution::WrongOperator;
+        return false;
+    }
+    const char* ownerName = type.canonicalName[0] != '\0' ? type.canonicalName : type.baseName;
+    copyText(session->context.memberOwnerType, sizeof(session->context.memberOwnerType), ownerName);
+    static uint32_t memberIndices[kCompletionMaxMemberScan] = {};
+    bool memberIndexTruncated = false;
+    const uint32_t memberCount = TypeDatabaseLookupDirectMembers(typeDatabase, ownerName,
+                                                                  memberIndices, kCompletionMaxMemberScan,
+                                                                  &memberIndexTruncated);
+    session->context.memberResolution = inspection.state == TypeInspectionState::Conservative
+        ? CompletionMemberResolution::Conservative : CompletionMemberResolution::Exact;
+    if (memberIndexTruncated) session->truncated = true;
+    for (uint32_t i = 0; i < memberCount; ++i) {
+        const TypeRecord* record = TypeDatabaseRecordAt(typeDatabase, memberIndices[i]);
+        if (!record || record->container[0] == '\0' ||
+            (record->kind != TypeDeclarationKind::Member && record->kind != TypeDeclarationKind::Function)) continue;
+        bool exactCase = false;
+        bool insensitivePrefix = false;
+        bool substring = false;
+        const uint32_t tier = matchingTier(record->name, session->context.prefix,
+                                            &exactCase, &insensitivePrefix, &substring);
+        // Member completion is deliberately prefix-only. Generic completion
+        // retains its existing substring behavior outside this context.
+        if (session->context.prefix[0] != '\0' && tier < 3) continue;
+        CompletionCandidate candidate = {};
+        copyText(candidate.insertionText, sizeof(candidate.insertionText), record->name);
+        copyText(candidate.ownerType, sizeof(candidate.ownerType), ownerName);
+        copyText(candidate.qualifiedName, sizeof(candidate.qualifiedName), record->qualifiedName);
+        if (candidate.qualifiedName[0] == '\0') {
+            copyText(candidate.qualifiedName, sizeof(candidate.qualifiedName), ownerName);
+            appendText(candidate.qualifiedName, sizeof(candidate.qualifiedName), "::");
+            appendText(candidate.qualifiedName, sizeof(candidate.qualifiedName), record->name);
+        }
+        copyText(candidate.relativePath, sizeof(candidate.relativePath), record->type.declarationLocation.relativePath);
+        candidate.line = record->type.declarationLocation.line;
+        candidate.column = record->type.declarationLocation.column;
+        candidate.kind = record->kind == TypeDeclarationKind::Function
+            ? CompletionCandidateKind::Method : CompletionCandidateKind::Member;
+        candidate.source = CompletionCandidateSource::TypeAwareMember;
+        candidate.exactCasePrefix = exactCase;
+        candidate.caseInsensitivePrefix = insensitivePrefix;
+        candidate.substringMatch = false;
+        candidate.typeAwareMember = true;
+        candidate.semanticProjectGeneration = typeDatabase->projectGeneration;
+        candidate.semanticDocumentGeneration = record->documentGeneration;
+        candidate.candidateId = hashText(candidate.qualifiedName) ^
+            static_cast<uint64_t>(record->declarationOffset) ^ typeDatabase->projectGeneration;
+        candidate.relationshipIdentity = candidate.candidateId == 0 ? 1 : candidate.candidateId;
+        if (candidate.kind == CompletionCandidateKind::Method) {
+            copyText(candidate.signature, sizeof(candidate.signature), "()");
+            appendText(candidate.signature, sizeof(candidate.signature), "  ");
+            appendText(candidate.signature, sizeof(candidate.signature), record->type.spelling);
+        } else copyText(candidate.signature, sizeof(candidate.signature), record->type.spelling);
+        candidate.rankScore = matchScore(tier) + sourceScore(candidate.source);
+        if (candidate.exactCasePrefix) candidate.rankScore += 200;
+        addCandidate(session, candidate, kCompletionMaxMemberCandidates);
+    }
+    return memberCount != 0;
+}
+
 static void addWords(CompletionSession* session, const DocumentWordCache* cache, uint32_t collectionLimit) {
     if (!session || !cache || !cache->valid) return;
     for (uint32_t i = 0; i < cache->count; ++i) {
@@ -734,6 +879,7 @@ const char* CompletionCandidateSourceName(CompletionCandidateSource source) {
     case CompletionCandidateSource::ProjectIndex: return "Project index";
     case CompletionCandidateSource::KeywordSet: return "Keyword";
     case CompletionCandidateSource::DocumentWordSet: return "Document word";
+    case CompletionCandidateSource::TypeAwareMember: return "Type-aware member";
     default: return "Unknown";
     }
 }
@@ -748,6 +894,39 @@ const char* CompletionContextKindName(CompletionContextKind kind) {
     case CompletionContextKind::Preprocessor: return "PREPROCESSOR";
     case CompletionContextKind::CommentOrString: return "COMMENT_OR_STRING";
     default: return "UNSUPPORTED";
+    }
+}
+
+const char* CompletionMemberOperatorName(CompletionMemberOperator kind) {
+    switch (kind) {
+    case CompletionMemberOperator::Dot: return ".";
+    case CompletionMemberOperator::Arrow: return "->";
+    default: return "none";
+    }
+}
+
+const char* CompletionMemberResolutionName(CompletionMemberResolution resolution) {
+    switch (resolution) {
+    case CompletionMemberResolution::Exact: return "EXACT";
+    case CompletionMemberResolution::Conservative: return "CONSERVATIVE";
+    case CompletionMemberResolution::Unknown: return "UNKNOWN";
+    case CompletionMemberResolution::Ambiguous: return "AMBIGUOUS";
+    case CompletionMemberResolution::Stale: return "STALE";
+    case CompletionMemberResolution::WrongOperator: return "WRONG_OPERATOR";
+    case CompletionMemberResolution::PointerDepthUnsupported: return "POINTER_DEPTH_UNSUPPORTED";
+    case CompletionMemberResolution::Truncated: return "TRUNCATED";
+    default: return "NONE";
+    }
+}
+
+const char* CompletionMemberResolutionStatusText(CompletionMemberResolution resolution) {
+    switch (resolution) {
+    case CompletionMemberResolution::Unknown: return "Member completion unavailable: receiver type is unknown.";
+    case CompletionMemberResolution::Ambiguous: return "Member completion unavailable: receiver type is ambiguous.";
+    case CompletionMemberResolution::Stale: return "Member completion unavailable: type information is stale.";
+    case CompletionMemberResolution::WrongOperator: return "Member completion unavailable: access operator does not match receiver type.";
+    case CompletionMemberResolution::PointerDepthUnsupported: return "Member completion unavailable: pointer depth is unsupported.";
+    default: return "";
     }
 }
 
@@ -776,6 +955,7 @@ const char* CompletionErrorName(CompletionErrorCode code) {
     case CompletionErrorCode::ExpectedTextMismatch: return "COMPLETION_EXPECTED_TEXT_MISMATCH";
     case CompletionErrorCode::InsertionTooLong: return "COMPLETION_INSERTION_TOO_LONG";
     case CompletionErrorCode::InsertionFailed: return "COMPLETION_INSERTION_FAILED";
+    case CompletionErrorCode::ReceiverTooLong: return "COMPLETION_RECEIVER_TOO_LONG";
     default: return "COMPLETION_INTERNAL";
     }
 }
@@ -784,6 +964,7 @@ const char* CompletionStatusText(CompletionErrorCode code) {
     switch (code) {
     case CompletionErrorCode::NoResults: return "No completion suggestions.";
     case CompletionErrorCode::ResultsTruncated: return "Completion results truncated.";
+    case CompletionErrorCode::ReceiverTooLong: return "Member receiver is too long.";
     case CompletionErrorCode::SessionStale: return "Completion session expired.";
     case CompletionErrorCode::InComment:
     case CompletionErrorCode::InString:
@@ -907,6 +1088,8 @@ bool CompletionExtractContext(const Document& document, uint64_t projectId,
     output->documentId = document.documentId;
     output->documentGeneration = document.buffer.generation;
     output->manuallyInvoked = manuallyInvoked;
+    output->memberOperator = CompletionMemberOperator::None;
+    output->memberResolution = CompletionMemberResolution::None;
     output->caretByteOffset = document.buffer.caret <= document.buffer.length ? document.buffer.caret : document.buffer.length;
     if (!document.used) {
         if (error) *error = CompletionErrorCode::NoDocument;
@@ -969,7 +1152,8 @@ bool CompletionExtractContext(const Document& document, uint64_t projectId,
     } else if (qualifierError != CompletionErrorCode::None) {
         if (error) *error = qualifierError;
         return false;
-    } else if (precedingMemberAccess(document, start)) {
+    } else if (extractMemberAccess(document, start, output, error)) {
+        if (error && *error != CompletionErrorCode::None) return false;
         output->kind = CompletionContextKind::MemberAccessLexical;
     } else {
         output->kind = CompletionContextKind::Identifier;
@@ -988,7 +1172,8 @@ void CompletionSessionInit(CompletionSession* session, CompletionCandidate* stor
 bool CompletionBuildSession(CompletionSession* session, const Document& document,
                             uint64_t projectId, uint64_t projectGeneration,
                             const SymbolDatabase* database, DocumentWordCache* wordCache,
-                            bool manuallyInvoked, CompletionErrorCode* error) {
+                            bool manuallyInvoked, const TypeDatabase* typeDatabase,
+                            CompletionErrorCode* error) {
     if (error) *error = CompletionErrorCode::None;
     if (!session || !session->candidates || session->candidateCapacity == 0) {
         if (error) *error = CompletionErrorCode::Internal;
@@ -1018,10 +1203,14 @@ bool CompletionBuildSession(CompletionSession* session, const Document& document
     }
     const uint32_t collectionLimit = session->context.prefix[0] == '\0'
         ? kCompletionMaxContextualCollection : kCompletionMaxCandidateCollection;
-    addKeywords(session, document, collectionLimit);
-    addSymbols(session, document, database, collectionLimit, true);
-    addWords(session, wordCache, collectionLimit);
-    addSymbols(session, document, database, collectionLimit, false);
+    if (session->context.kind == CompletionContextKind::MemberAccessLexical) {
+        addTypeAwareMembers(session, document, typeDatabase);
+    } else {
+        addKeywords(session, document, collectionLimit);
+        addSymbols(session, document, database, collectionLimit, true);
+        addWords(session, wordCache, collectionLimit);
+        addSymbols(session, document, database, collectionLimit, false);
+    }
     sortCandidates(session);
     rebuildDisplay(session);
     session->active = session->candidateCount > 0;
@@ -1033,10 +1222,18 @@ bool CompletionBuildSession(CompletionSession* session, const Document& document
     return true;
 }
 
+bool CompletionBuildSession(CompletionSession* session, const Document& document,
+                            uint64_t projectId, uint64_t projectGeneration,
+                            const SymbolDatabase* database, DocumentWordCache* wordCache,
+                            bool manuallyInvoked, CompletionErrorCode* error) {
+    return CompletionBuildSession(session, document, projectId, projectGeneration,
+                                  database, wordCache, manuallyInvoked, nullptr, error);
+}
+
 bool CompletionSessionRefresh(CompletionSession* session, const Document& document,
                               uint64_t projectId, uint64_t projectGeneration,
                               const SymbolDatabase* database, DocumentWordCache* wordCache,
-                              CompletionErrorCode* error) {
+                              const TypeDatabase* typeDatabase, CompletionErrorCode* error) {
     if (error) *error = CompletionErrorCode::None;
     if (!session) {
         if (error) *error = CompletionErrorCode::Internal;
@@ -1047,7 +1244,7 @@ bool CompletionSessionRefresh(CompletionSession* session, const Document& docume
     if (selected) copyText(selectedText, sizeof(selectedText), selected->insertionText);
     const uint64_t sessionId = session->sessionId;
     if (!CompletionBuildSession(session, document, projectId, projectGeneration, database,
-                                wordCache, true, error)) return false;
+                                wordCache, true, typeDatabase, error)) return false;
     session->sessionId = sessionId;
     session->context.sessionId = sessionId;
     for (uint32_t i = 0; i < session->candidateCount; ++i) {
@@ -1058,6 +1255,14 @@ bool CompletionSessionRefresh(CompletionSession* session, const Document& docume
     }
     if (session->selectedIndex >= session->candidateCount) session->selectedIndex = 0;
     return true;
+}
+
+bool CompletionSessionRefresh(CompletionSession* session, const Document& document,
+                              uint64_t projectId, uint64_t projectGeneration,
+                              const SymbolDatabase* database, DocumentWordCache* wordCache,
+                              CompletionErrorCode* error) {
+    return CompletionSessionRefresh(session, document, projectId, projectGeneration,
+                                    database, wordCache, nullptr, error);
 }
 
 const CompletionCandidate* CompletionSessionSelected(const CompletionSession* session) {

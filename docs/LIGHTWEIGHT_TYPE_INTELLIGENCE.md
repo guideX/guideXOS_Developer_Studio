@@ -28,7 +28,9 @@ Alias chains retain the displayed alias and the resolved underlying type where k
 
 `auto` is intentionally narrow. Literal initializers such as `42`, `true`, `3.14f`, and character literals are recognized. A call initializer can use a unique known project function return type. Unknown initializers, ambiguous calls, conversions, overload resolution, and general C++ deduction remain unknown or ambiguous.
 
-Function return types are exposed as records for inspection and for conservative call-result inference. This API is available for future completion and signature-help improvements without changing those features in this milestone.
+Function return types are exposed as records for inspection and conservative
+call-result inference. Type-Aware Member Completion consumes the same records
+and bounded alias/inference results; it does not create a second type parser.
 
 ## Boundedness and generations
 
@@ -44,4 +46,11 @@ Exact and conservative results show the type, declaration path/line, declaration
 
 ## Deferred semantics
 
-Templates, concepts, SFINAE, overload resolution, conversions, inheritance lookup, virtual dispatch, operator overloads, dependent names, complete `decltype`, complex function pointers, complete array decay/reference collapsing, macro-generated types, compiler ASTs, Clang/GCC/libclang, language servers, and C# semantics are intentionally deferred. Member completion is also deferred; the type API is only a future query surface for completion and signature help.
+Templates, concepts, SFINAE, overload resolution, conversions, inheritance
+lookup, virtual dispatch, operator overloads, dependent names, complete
+`decltype`, complex function pointers, complete array decay/reference
+collapsing, macro-generated types, compiler ASTs, Clang/GCC/libclang, language
+servers, and C# semantics are intentionally deferred. Member completion uses
+this layer only for bounded direct members after `.` and `->`; it defers
+inheritance, access-control filtering, template instantiation, static
+`Type::` lookup, arbitrary chained expressions, and overload resolution.

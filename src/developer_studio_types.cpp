@@ -1025,6 +1025,82 @@ static void updateRecordLocations(TypeDatabase* database) {
     }
 }
 
+static bool memberRecord(const TypeRecord& record) {
+    return record.used && record.container[0] != '\0' &&
+        (record.kind == TypeDeclarationKind::Member || record.kind == TypeDeclarationKind::Function);
+}
+
+static bool memberIndexBefore(const TypeDatabase* database, uint32_t leftIndex, uint32_t rightIndex) {
+    const TypeRecord& left = database->records[leftIndex];
+    const TypeRecord& right = database->records[rightIndex];
+    int32_t owner = 0;
+    const uint32_t ownerLength = lengthOf(left.container, sizeof(left.container));
+    const uint32_t rightOwnerLength = lengthOf(right.container, sizeof(right.container));
+    const uint32_t common = ownerLength < rightOwnerLength ? ownerLength : rightOwnerLength;
+    for (uint32_t i = 0; i < common; ++i) {
+        if (left.container[i] < right.container[i]) { owner = -1; break; }
+        if (left.container[i] > right.container[i]) { owner = 1; break; }
+    }
+    if (owner == 0 && ownerLength != rightOwnerLength) owner = ownerLength < rightOwnerLength ? -1 : 1;
+    if (owner != 0) return owner < 0;
+    if (left.declarationOffset != right.declarationOffset)
+        return left.declarationOffset < right.declarationOffset;
+    return left.ordinal < right.ordinal;
+}
+
+static int32_t findMemberBucket(const TypeDatabase* database, const char* ownerName) {
+    if (!database || !ownerName || ownerName[0] == '\0') return -1;
+    for (uint32_t i = 0; i < database->memberBucketCount; ++i)
+        if (equalText(database->memberBuckets[i].ownerName, ownerName)) return static_cast<int32_t>(i);
+    return -1;
+}
+
+static void buildMemberIndex(TypeDatabase* database) {
+    if (!database) return;
+    database->memberBucketCount = 0;
+    database->memberIndexCount = 0;
+    database->memberIndexTruncated = false;
+    if (!database->memberBuckets || database->memberBucketCapacity == 0 ||
+        !database->memberIndices || database->memberIndexCapacity == 0) {
+        return;
+    }
+    for (uint32_t i = 0; i < database->recordCount; ++i) {
+        if (!memberRecord(database->records[i])) continue;
+        if (database->memberIndexCount >= database->memberIndexCapacity) {
+            database->memberIndexTruncated = true;
+            continue;
+        }
+        database->memberIndices[database->memberIndexCount++] = i;
+    }
+    for (uint32_t i = 1; i < database->memberIndexCount; ++i) {
+        const uint32_t value = database->memberIndices[i];
+        uint32_t cursor = i;
+        while (cursor > 0 && memberIndexBefore(database, value, database->memberIndices[cursor - 1])) {
+            database->memberIndices[cursor] = database->memberIndices[cursor - 1];
+            --cursor;
+        }
+        database->memberIndices[cursor] = value;
+    }
+    for (uint32_t i = 0; i < database->memberIndexCount; ++i) {
+        const TypeRecord& record = database->records[database->memberIndices[i]];
+        int32_t bucketIndex = findMemberBucket(database, record.container);
+        if (bucketIndex < 0) {
+            if (database->memberBucketCount >= database->memberBucketCapacity) {
+                database->memberIndexTruncated = true;
+                continue;
+            }
+            bucketIndex = static_cast<int32_t>(database->memberBucketCount++);
+            TypeMemberBucket& bucket = database->memberBuckets[bucketIndex];
+            bucket = TypeMemberBucket();
+            copyText(bucket.ownerName, sizeof(bucket.ownerName), record.container);
+            bucket.firstIndex = i;
+        }
+        TypeMemberBucket& bucket = database->memberBuckets[bucketIndex];
+        ++bucket.memberCount;
+    }
+    if (database->memberIndexTruncated) database->truncated = true;
+}
+
 static int32_t recordAtIdentifier(const TypeDatabase* /*database*/, const Document& document, uint32_t offset,
                                   char* identifier, uint32_t identifierCapacity) {
     bool lexicalTruncated = false;
@@ -1151,26 +1227,45 @@ const char* TypeReferenceKindName(TypeReferenceKind kind) {
 
 void TypeDatabaseInit(TypeDatabase* database, TypeRecord* recordStorage, uint32_t recordCapacity,
                       TypeDocument* documentStorage, uint32_t documentCapacity) {
+    TypeDatabaseInit(database, recordStorage, recordCapacity, documentStorage, documentCapacity,
+                     nullptr, 0, nullptr, 0);
+}
+
+void TypeDatabaseInit(TypeDatabase* database, TypeRecord* recordStorage, uint32_t recordCapacity,
+                      TypeDocument* documentStorage, uint32_t documentCapacity,
+                      TypeMemberBucket* memberBucketStorage, uint32_t memberBucketCapacity,
+                      uint32_t* memberIndexStorage, uint32_t memberIndexCapacity) {
     if (!database) return;
     *database = TypeDatabase();
     database->records = recordStorage;
     database->documents = documentStorage;
     database->recordCapacity = recordCapacity;
     database->documentCapacity = documentCapacity;
+    database->memberBuckets = memberBucketStorage;
+    database->memberIndices = memberIndexStorage;
+    database->memberBucketCapacity = memberBucketCapacity > kTypeMaxMemberBuckets
+        ? kTypeMaxMemberBuckets : memberBucketCapacity;
+    database->memberIndexCapacity = memberIndexCapacity > kTypeMaxRecords
+        ? kTypeMaxRecords : memberIndexCapacity;
     clearBytes(recordStorage, recordCapacity * sizeof(TypeRecord));
     clearBytes(documentStorage, documentCapacity * sizeof(TypeDocument));
+    clearBytes(memberBucketStorage, database->memberBucketCapacity * sizeof(TypeMemberBucket));
+    clearBytes(memberIndexStorage, database->memberIndexCapacity * sizeof(uint32_t));
 }
 
 void TypeDatabaseClear(TypeDatabase* database) {
     if (!database) return;
     database->recordCount = 0;
     database->documentCount = 0;
+    database->memberBucketCount = 0;
+    database->memberIndexCount = 0;
     database->droppedRecords = 0;
     database->droppedDocuments = 0;
     database->projectGeneration = 0;
     database->symbolDatabaseGeneration = 0;
     database->current = false;
     database->truncated = false;
+    database->memberIndexTruncated = false;
     database->rootPath[0] = '\0';
 }
 
@@ -1198,6 +1293,7 @@ bool TypeDatabaseIndexDocument(TypeDatabase* database, const char* rootPath, con
     resolveAliases(database);
     inferAutoTypes(database);
     updateRecordLocations(database);
+    buildMemberIndex(database);
     return true;
 }
 
@@ -1242,6 +1338,7 @@ bool TypeDatabaseIndexProject(TypeDatabase* database, const WorkspaceFileSystem&
     resolveAliases(database);
     inferAutoTypes(database);
     updateRecordLocations(database);
+    buildMemberIndex(database);
     return traversed;
 }
 
@@ -1254,6 +1351,21 @@ bool TypeDatabaseIsTruncated(const TypeDatabase* database) { return database && 
 uint32_t TypeDatabaseRecordCount(const TypeDatabase* database) { return database ? database->recordCount : 0; }
 const TypeRecord* TypeDatabaseRecordAt(const TypeDatabase* database, uint32_t index) {
     return database && index < database->recordCount ? &database->records[index] : nullptr;
+}
+
+uint32_t TypeDatabaseLookupDirectMembers(const TypeDatabase* database, const char* ownerName,
+                                         uint32_t* indices, uint32_t capacity, bool* truncated) {
+    if (truncated) *truncated = false;
+    if (!database || !ownerName || ownerName[0] == '\0' || !database->memberBuckets ||
+        !database->memberIndices || !indices || capacity == 0) return 0;
+    const int32_t bucketIndex = findMemberBucket(database, ownerName);
+    if (bucketIndex < 0) return 0;
+    const TypeMemberBucket& bucket = database->memberBuckets[bucketIndex];
+    const uint32_t retained = bucket.memberCount < capacity ? bucket.memberCount : capacity;
+    for (uint32_t i = 0; i < retained; ++i)
+        indices[i] = database->memberIndices[bucket.firstIndex + i];
+    if (truncated) *truncated = database->memberIndexTruncated || bucket.memberCount > capacity;
+    return retained;
 }
 
 bool TypeDatabaseInspectAt(const TypeDatabase* database, const Document& document,

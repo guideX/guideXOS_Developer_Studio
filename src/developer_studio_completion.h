@@ -4,6 +4,7 @@
 
 #include "developer_studio_models.h"
 #include "developer_studio_symbols.h"
+#include "developer_studio_types.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -23,6 +24,10 @@ static const uint32_t kCompletionMaxDisplayBytes = 1024u;
 static const uint32_t kCompletionMaxQualifiedDisplayBytes = 2048u;
 static const uint32_t kCompletionMaxSignatureDisplayBytes = 256u;
 static const uint32_t kCompletionMaxDetailDisplayBytes = 512u;
+static const uint32_t kCompletionMaxReceiverBytes = 256u;
+static const uint32_t kCompletionMaxMemberOwnerBytes = 192u;
+static const uint32_t kCompletionMaxMemberScan = 512u;
+static const uint32_t kCompletionMaxMemberCandidates = 256u;
 static const uint32_t kCompletionMaxDocumentWordScanBytes = 8u * 1024u * 1024u;
 static const uint32_t kCompletionMaxDocumentWords = 20000u;
 
@@ -51,7 +56,8 @@ enum class CompletionCandidateSource {
     CurrentDocument,
     ProjectIndex,
     KeywordSet,
-    DocumentWordSet
+    DocumentWordSet,
+    TypeAwareMember
 };
 
 enum class CompletionContextKind {
@@ -63,6 +69,24 @@ enum class CompletionContextKind {
     Preprocessor,
     CommentOrString,
     Unsupported
+};
+
+enum class CompletionMemberOperator {
+    None = 0,
+    Dot,
+    Arrow
+};
+
+enum class CompletionMemberResolution {
+    None = 0,
+    Exact,
+    Conservative,
+    Unknown,
+    Ambiguous,
+    Stale,
+    WrongOperator,
+    PointerDepthUnsupported,
+    Truncated
 };
 
 enum class CompletionErrorCode {
@@ -89,6 +113,7 @@ enum class CompletionErrorCode {
     ExpectedTextMismatch,
     InsertionTooLong,
     InsertionFailed,
+    ReceiverTooLong,
     Internal
 };
 
@@ -104,6 +129,12 @@ struct CompletionContext {
     char prefix[kCompletionMaxPrefixBytes + 1];
     char explicitQualifier[kCompletionMaxQualifierBytes + 1];
     char containingScope[kCompletionMaxScopeBytes + 1];
+    char memberReceiver[kCompletionMaxReceiverBytes + 1];
+    char memberOwnerType[kCompletionMaxMemberOwnerBytes + 1];
+    uint32_t memberReceiverStart;
+    uint32_t memberReceiverEnd;
+    CompletionMemberOperator memberOperator;
+    CompletionMemberResolution memberResolution;
     CompletionContextKind kind;
     bool manuallyInvoked;
     bool hasExplicitQualifier;
@@ -147,6 +178,10 @@ struct CompletionCandidate {
     bool fromCurrentScope;
     bool fromCurrentDocument;
     bool lexicallyAmbiguous;
+    bool typeAwareMember;
+    uint64_t semanticProjectGeneration;
+    uint32_t semanticDocumentGeneration;
+    char ownerType[kCompletionMaxMemberOwnerBytes + 1];
 };
 
 struct CompletionSession {
@@ -166,6 +201,9 @@ const char* CompletionCandidateKindName(CompletionCandidateKind kind);
 const char* CompletionCandidateKindPrefix(CompletionCandidateKind kind);
 const char* CompletionCandidateSourceName(CompletionCandidateSource source);
 const char* CompletionContextKindName(CompletionContextKind kind);
+const char* CompletionMemberOperatorName(CompletionMemberOperator kind);
+const char* CompletionMemberResolutionName(CompletionMemberResolution resolution);
+const char* CompletionMemberResolutionStatusText(CompletionMemberResolution resolution);
 const char* CompletionErrorName(CompletionErrorCode code);
 uint64_t CompletionProjectId(const char* projectId);
 
@@ -185,10 +223,19 @@ bool CompletionBuildSession(CompletionSession* session, const Document& document
                             uint64_t projectId, uint64_t projectGeneration,
                             const SymbolDatabase* database, DocumentWordCache* wordCache,
                             bool manuallyInvoked, CompletionErrorCode* error);
+bool CompletionBuildSession(CompletionSession* session, const Document& document,
+                            uint64_t projectId, uint64_t projectGeneration,
+                            const SymbolDatabase* database, DocumentWordCache* wordCache,
+                            bool manuallyInvoked, const TypeDatabase* typeDatabase,
+                            CompletionErrorCode* error);
 bool CompletionSessionRefresh(CompletionSession* session, const Document& document,
                               uint64_t projectId, uint64_t projectGeneration,
                               const SymbolDatabase* database, DocumentWordCache* wordCache,
                               CompletionErrorCode* error);
+bool CompletionSessionRefresh(CompletionSession* session, const Document& document,
+                              uint64_t projectId, uint64_t projectGeneration,
+                              const SymbolDatabase* database, DocumentWordCache* wordCache,
+                              const TypeDatabase* typeDatabase, CompletionErrorCode* error);
 const CompletionCandidate* CompletionSessionSelected(const CompletionSession* session);
 bool CompletionSessionMove(CompletionSession* session, int32_t delta);
 bool CompletionSessionPage(CompletionSession* session, int32_t direction);

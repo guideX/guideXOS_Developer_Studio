@@ -13,6 +13,7 @@ The current bounded phase proves the first useful source workflow:
 - bounded project-local Header / Source Ownership with `Alt+O` switching and
   `Alt+Shift+O` File Ownership inspection; see [docs/HEADER_SOURCE_OWNERSHIP.md](docs/HEADER_SOURCE_OWNERSHIP.md).
 - bounded, generation-aware Lightweight Type Intelligence with Quick Type Info via `Ctrl+Alt+T`; see [docs/LIGHTWEIGHT_TYPE_INTELLIGENCE.md](docs/LIGHTWEIGHT_TYPE_INTELLIGENCE.md).
+- Type-Aware Member Completion uses that shared type layer for bounded direct members after `.` and `->`; see [docs/CODE_COMPLETION.md](docs/CODE_COMPLETION.md).
 - deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, bounded lexical Go To Definition (`F12`/`Alt+Left`), project-local Declaration–Definition Relationships (`F12`/`Ctrl+F12`/`Alt+F12`), bounded project-local Find All References (`Shift+F12`), manually invoked lightweight lexical Code Completion (`Ctrl+Space`), bounded lexical Signature Help (`Ctrl+Shift+Space`), and a project-local bounded Include Graph (`Ctrl+Shift+I`).
 
 Debug/Debugging, additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
@@ -85,6 +86,12 @@ Supported text extensions are `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hh`, `.hpp`, 
 Limits are intentionally explicit: 128 visible entries per directory, 8 open documents, 256 KiB per editable file, 8 navigated workspace path segments, 768-byte model paths (the hosted ABI additionally bounds an entered host path to 240 bytes), and bounded output history. Directory enumeration is immediate-directory only and never follows symlinks or recursively scans without a user navigation action.
 
 The editor supports caret movement, bounded selection, insertion, Enter, Backspace, Delete, arrows, Home, End, mouse placement, vertical wheel scrolling, bounded automatic horizontal scrolling, visible line separation, dirty tracking, tabs, save failure preservation, lexical C/C++ syntax highlighting, active-document literal Find/Replace, project-scoped Find in Files, a document Outline, project-wide Ctrl+T symbol lookup, lexical F12 Go To Definition with Ctrl+F12 declaration navigation, Alt+F12 switching, and Alt+Left/Alt+Right history, lexical Shift+F12 Find All References, conservative preview-first F2 Rename Symbol with one-operation Ctrl+Z undo, manually invoked lexical Code Completion with Ctrl+Space, manually invoked lexical Signature Help with Ctrl+Shift+Space, Quick Type Info with Ctrl+Alt+T, and project-local Include Graph views with F12 include navigation. It has no clipboard, redo, folding, regex, Replace in Files, or full semantic reference binding. See [docs/FIND_AND_REPLACE.md](docs/FIND_AND_REPLACE.md), [docs/FIND_IN_FILES.md](docs/FIND_IN_FILES.md), [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md), [docs/SYMBOL_INDEX.md](docs/SYMBOL_INDEX.md), [docs/CODE_COMPLETION.md](docs/CODE_COMPLETION.md), [docs/SIGNATURE_HELP.md](docs/SIGNATURE_HELP.md), [docs/LIGHTWEIGHT_TYPE_INTELLIGENCE.md](docs/LIGHTWEIGHT_TYPE_INTELLIGENCE.md), [docs/GO_TO_DEFINITION.md](docs/GO_TO_DEFINITION.md), [docs/DECLARATION_DEFINITION_RELATIONSHIPS.md](docs/DECLARATION_DEFINITION_RELATIONSHIPS.md), [docs/FIND_ALL_REFERENCES.md](docs/FIND_ALL_REFERENCES.md), [docs/RENAME_SYMBOL.md](docs/RENAME_SYMBOL.md), and [docs/INCLUDE_GRAPH.md](docs/INCLUDE_GRAPH.md).
+
+Type-Aware Member Completion is automatic after a typed `.` or completed `->`,
+and remains available through the existing `Ctrl+Space` completion command.
+It is intentionally limited to direct members of a truthfully resolved type;
+inheritance, access filtering, templates, static `Type::` lookup, and arbitrary
+chained expressions remain deferred.
 
 ## Build
 

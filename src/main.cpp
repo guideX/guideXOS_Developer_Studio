@@ -357,6 +357,9 @@ using guidexos::developer_studio::RenameErrorCode;
 using guidexos::developer_studio::CompletionCandidate;
 using guidexos::developer_studio::CompletionCandidateKindPrefix;
 using guidexos::developer_studio::CompletionContextKindName;
+using guidexos::developer_studio::CompletionContext;
+using guidexos::developer_studio::CompletionExtractContext;
+using guidexos::developer_studio::CompletionMemberResolutionStatusText;
 using guidexos::developer_studio::CompletionErrorCode;
 using guidexos::developer_studio::CompletionErrorName;
 using guidexos::developer_studio::CompletionProjectId;
@@ -453,9 +456,11 @@ using guidexos::developer_studio::TypeInspection;
 using guidexos::developer_studio::TypeInspectionState;
 using guidexos::developer_studio::TypeInspectionStateName;
 using guidexos::developer_studio::TypeRecord;
+using guidexos::developer_studio::TypeMemberBucket;
 using guidexos::developer_studio::TypeSourceName;
 using guidexos::developer_studio::kTypeMaxHoverTextBytes;
 using guidexos::developer_studio::kTypeMaxRecords;
+using guidexos::developer_studio::kTypeMaxMemberBuckets;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -566,6 +571,8 @@ static char g_signatureStatus[192] = {};
 static TypeDatabase g_typeDatabase = {};
 static TypeRecord g_typeRecordStorage[kTypeMaxRecords] = {};
 static TypeDocument g_typeDocumentStorage[256] = {};
+static TypeMemberBucket g_typeMemberBucketStorage[kTypeMaxMemberBuckets] = {};
+static uint32_t g_typeMemberIndexStorage[kTypeMaxRecords] = {};
 static TypeInspection g_typeInspection = {};
 static bool g_typePopupOpen = false;
 static char g_typeStatus[160] = {};
@@ -812,7 +819,7 @@ static void stopReferenceSearch(gx_app_context* ctx);
 static void keepCaretVisible(const Document* document);
 static bool startRenameSearchWithTarget(gx_app_context* ctx, const ReferenceTarget& target);
 static void dismissCompletion(gx_app_context* ctx, const char* reason, bool showStatus);
-static bool openCompletion(gx_app_context* ctx);
+static bool openCompletion(gx_app_context* ctx, bool manuallyInvoked = true);
 static bool refreshCompletion(gx_app_context* ctx);
 static bool acceptCompletion(gx_app_context* ctx);
 static bool undoCompletion(gx_app_context* ctx);
@@ -4541,6 +4548,18 @@ static bool ensureTypeDatabase(Document* document) {
     const uint64_t projectGeneration = g_controller.model.projectGeneration;
     const uint64_t symbolsGeneration = g_symbolDatabase.symbolDatabaseGeneration;
     if (TypeDatabaseIsCurrent(&g_typeDatabase, projectGeneration, symbolsGeneration)) return true;
+    // An editor mutation updates only the active document and advances the
+    // symbol generation. Refresh that document in-place so member completion
+    // stays bounded during typing; a project-generation change still takes
+    // the normal full-project path below.
+    if (g_typeDatabase.current && g_typeDatabase.projectGeneration == projectGeneration &&
+        TypeDatabaseIndexDocument(&g_typeDatabase, g_controller.model.project.rootPath,
+                                  document->path, document->documentId, document->buffer.generation,
+                                  projectGeneration, document->buffer.data, document->buffer.length)) {
+        g_typeDatabase.symbolDatabaseGeneration = symbolsGeneration;
+        g_typeDatabase.current = true;
+        return true;
+    }
     const bool indexed = TypeDatabaseIndexProject(&g_typeDatabase, g_controller.fileSystem,
                                                   g_controller.model.project.rootPath,
                                                   g_controller.model.documents, kMaxOpenDocuments,
@@ -5299,7 +5318,7 @@ static void completionLogContext(gx_app_context* ctx) {
     logMarker(ctx, g_textScratch);
 }
 
-static bool openCompletion(gx_app_context* ctx) {
+static bool openCompletion(gx_app_context* ctx, bool manuallyInvoked) {
     dismissSignatureHelp(ctx, "completion", false);
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!g_controller.model.open || !g_controller.model.hasProject) {
@@ -5316,10 +5335,19 @@ static bool openCompletion(gx_app_context* ctx) {
     else ++g_completionSession.sessionId;
     CompletionErrorCode error = CompletionErrorCode::None;
     copyText(g_completionProjectId, sizeof(g_completionProjectId), g_controller.model.project.projectId);
+    CompletionContext preflight = {};
+    CompletionErrorCode preflightError = CompletionErrorCode::None;
+    const bool memberContext = CompletionExtractContext(
+        *document, CompletionProjectId(g_controller.model.project.projectId),
+        g_controller.model.projectGeneration, g_completionSession.sessionId,
+        manuallyInvoked, &preflight, &preflightError) &&
+        preflight.kind == guidexos::developer_studio::CompletionContextKind::MemberAccessLexical;
+    const TypeDatabase* typeDatabase = memberContext && ensureTypeDatabase(document)
+        ? &g_typeDatabase : nullptr;
     if (!CompletionBuildSession(&g_completionSession, *document,
-                                       CompletionProjectId(g_controller.model.project.projectId),
-                                       g_controller.model.projectGeneration, &g_symbolDatabase,
-                                       &g_completionWordCache, true, &error)) {
+                                        CompletionProjectId(g_controller.model.project.projectId),
+                                        g_controller.model.projectGeneration, &g_symbolDatabase,
+                                        &g_completionWordCache, manuallyInvoked, typeDatabase, &error)) {
         completionStatusForError(error);
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=FAIL", CompletionErrorName(error));
         g_completionPopupOpen = false;
@@ -5336,7 +5364,11 @@ static bool openCompletion(gx_app_context* ctx) {
     logMarker(ctx, g_textScratch);
     g_completionPopupOpen = g_completionSession.active;
     if (!g_completionPopupOpen) {
-        completionStatusForError(error == CompletionErrorCode::None ? CompletionErrorCode::NoResults : error);
+        const char* memberStatus = g_completionSession.context.kind ==
+            guidexos::developer_studio::CompletionContextKind::MemberAccessLexical
+            ? CompletionMemberResolutionStatusText(g_completionSession.context.memberResolution) : "";
+        if (memberStatus[0] != '\0') completionSetStatus(memberStatus);
+        else completionStatusForError(error == CompletionErrorCode::None ? CompletionErrorCode::NoResults : error);
         return true;
     }
     if (g_completionSession.truncated) {
@@ -5345,7 +5377,7 @@ static bool openCompletion(gx_app_context* ctx) {
         appendUnsigned(g_textScratch, sizeof(g_textScratch), g_completionSession.candidateCount);
         logMarker(ctx, g_textScratch);
     } else if (g_completionSession.context.kind == guidexos::developer_studio::CompletionContextKind::MemberAccessLexical) {
-        completionSetStatus("Lexical suggestions; receiver type is unresolved.");
+        completionSetStatus(CompletionMemberResolutionStatusText(g_completionSession.context.memberResolution));
     } else {
         completionSetStatus("");
     }
@@ -5361,22 +5393,34 @@ static bool refreshCompletion(gx_app_context* ctx) {
         return false;
     }
     CompletionErrorCode error = CompletionErrorCode::None;
+    CompletionContext preflight = {};
+    CompletionErrorCode preflightError = CompletionErrorCode::None;
+    const bool memberContext = CompletionExtractContext(
+        *document, CompletionProjectId(g_controller.model.project.projectId),
+        g_controller.model.projectGeneration, g_completionSession.sessionId,
+        true, &preflight, &preflightError) &&
+        preflight.kind == guidexos::developer_studio::CompletionContextKind::MemberAccessLexical;
+    const TypeDatabase* typeDatabase = memberContext && ensureTypeDatabase(document)
+        ? &g_typeDatabase : nullptr;
     if (!CompletionSessionRefresh(&g_completionSession, *document,
                                   CompletionProjectId(g_controller.model.project.projectId),
                                   g_controller.model.projectGeneration, &g_symbolDatabase,
-                                  &g_completionWordCache, &error)) {
+                                  &g_completionWordCache, typeDatabase, &error)) {
         completionStatusForError(error == CompletionErrorCode::None ? CompletionErrorCode::SessionStale : error);
         dismissCompletion(ctx, "stale", true);
         return false;
     }
     g_completionPopupOpen = g_completionSession.active;
     if (!g_completionPopupOpen) {
-        completionSetStatus("No completion suggestions.");
+        const char* memberStatus = g_completionSession.context.kind ==
+            guidexos::developer_studio::CompletionContextKind::MemberAccessLexical
+            ? CompletionMemberResolutionStatusText(g_completionSession.context.memberResolution) : "";
+        completionSetStatus(memberStatus[0] != '\0' ? memberStatus : "No completion suggestions.");
         return true;
     }
     if (g_completionSession.truncated) completionSetStatus("Completion results truncated.");
     else if (g_completionSession.context.kind == guidexos::developer_studio::CompletionContextKind::MemberAccessLexical)
-        completionSetStatus("Lexical suggestions; receiver type is unresolved.");
+        completionSetStatus(CompletionMemberResolutionStatusText(g_completionSession.context.memberResolution));
     return true;
 }
 
@@ -6661,6 +6705,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     const bool completionWasOpen = g_completionPopupOpen;
     const bool signatureWasOpen = g_signaturePopupOpen;
     bool changed = false;
+    char typedValue = '\0';
     bool wasDirty = document->buffer.dirty;
     if (keyCode == GX_KEY_LEFT) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferMoveLeft(&document->buffer); }
     else if (keyCode == GX_KEY_RIGHT) { dismissCompletion(ctx, "caret_moved", false); dismissSignatureHelp(ctx, "caret_moved", false); TextBufferMoveRight(&document->buffer); }
@@ -6673,15 +6718,19 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     else if (keyCode == 13) { g_completionUndoAvailable = false; changed = TextBufferInsert(&document->buffer, "\n", 1); }
     else {
         g_completionUndoAvailable = false;
-        char value = mapKeyToChar(keyCode, modifiers);
-        if (value != '\0') changed = TextBufferInsert(&document->buffer, &value, 1);
+        typedValue = mapKeyToChar(keyCode, modifiers);
+        if (typedValue != '\0') changed = TextBufferInsert(&document->buffer, &typedValue, 1);
     }
     updateSyntaxAfterEdit(ctx, document);
     markDirtyIfNeeded(ctx, wasDirty);
     if (changed) dismissTypeInfo(ctx, "document_changed", false);
     keepCaretVisible(document);
-    if (completionWasOpen && changed && (keyCode == 8 || keyCode == 13 || mapKeyToChar(keyCode, modifiers) != '\0'))
+    const bool memberTrigger = changed && (typedValue == '.' ||
+        (typedValue == '>' && document->buffer.caret >= 2 &&
+         document->buffer.data[document->buffer.caret - 2] == '-'));
+    if (completionWasOpen && changed && (keyCode == 8 || keyCode == 13 || typedValue != '\0'))
         refreshCompletion(ctx);
+    else if (memberTrigger) openCompletion(ctx, false);
     if (signatureWasOpen && changed && (keyCode == 8 || keyCode == 13 || mapKeyToChar(keyCode, modifiers) != '\0'))
         refreshSignatureHelp(ctx);
     (void)running;
@@ -7280,7 +7329,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_signatureScroll = 0;
     g_signatureStatus[0] = '\0';
     TypeDatabaseInit(&g_typeDatabase, g_typeRecordStorage, kTypeMaxRecords,
-                     g_typeDocumentStorage, sizeof(g_typeDocumentStorage) / sizeof(g_typeDocumentStorage[0]));
+                     g_typeDocumentStorage, sizeof(g_typeDocumentStorage) / sizeof(g_typeDocumentStorage[0]),
+                     g_typeMemberBucketStorage, kTypeMaxMemberBuckets,
+                     g_typeMemberIndexStorage, kTypeMaxRecords);
     g_typeInspection = TypeInspection();
     g_typePopupOpen = false;
     g_typeStatus[0] = '\0';

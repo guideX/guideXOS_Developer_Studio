@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "developer_studio_completion.h"
+#include "developer_studio_types.h"
 
 using namespace guidexos::developer_studio;
 
@@ -40,6 +41,216 @@ static void buildIndex(const Document& document, const char* text,
     assert(SymbolDatabaseIndexDocument(database, document.path, document.documentId,
                                        document.buffer.generation, true, text,
                                        static_cast<uint32_t>(strlen(text))));
+}
+
+static void buildTypeIndex(const Document& document, const char* text,
+                           TypeDatabase* database, TypeRecord* records,
+                           TypeDocument* documents, TypeMemberBucket* buckets,
+                           uint32_t* memberIndices, uint32_t memberIndexCapacity = 1024) {
+    TypeDatabaseInit(database, records, 1024, documents, 8, buckets, 64,
+                     memberIndices, memberIndexCapacity);
+    assert(TypeDatabaseIndexDocument(database, "", document.path, document.documentId,
+                                     document.buffer.generation, 8, text,
+                                     static_cast<uint32_t>(strlen(text))));
+}
+
+static void buildMemberSession(const char* text, CompletionSession* session,
+                               CompletionCandidate* candidates, TypeDatabase* typeDatabase,
+                               TypeRecord* records, TypeDocument* documents,
+                               TypeMemberBucket* buckets, uint32_t* memberIndices,
+                               CompletionErrorCode* error) {
+    static Document document = {};
+    prepareDocument(&document, "src/member.cpp", text);
+    setCaret(&document, document.buffer.length);
+    buildTypeIndex(document, text, typeDatabase, records, documents, buckets, memberIndices);
+    CompletionSessionInit(session, candidates, 128);
+    assert(CompletionBuildSession(session, document, CompletionProjectId("demo"), 8,
+                                  nullptr, nullptr, true, typeDatabase, error));
+}
+
+static void testTypeAwareDirectMembers() {
+    const char text[] =
+        "struct Window {\n"
+        "    int width;\n"
+        "    int height;\n"
+        "};\n"
+        "Window window;\n"
+        "window.";
+    static CompletionCandidate candidates[128] = {};
+    static CompletionSession session = {};
+    static TypeDatabase typeDatabase = {};
+    static TypeRecord records[1024] = {};
+    static TypeDocument documents[8] = {};
+    static TypeMemberBucket buckets[64] = {};
+    static uint32_t memberIndices[1024] = {};
+    CompletionErrorCode error = CompletionErrorCode::None;
+    buildMemberSession(text, &session, candidates, &typeDatabase, records, documents,
+                       buckets, memberIndices, &error);
+    assert(session.active);
+    assert(session.context.memberResolution == CompletionMemberResolution::Exact);
+    assert(findCandidate(session, "width") >= 0);
+    assert(findCandidate(session, "height") >= 0);
+    assert(session.candidates[findCandidate(session, "width")].kind == CompletionCandidateKind::Member);
+}
+
+static void testTypeAwarePointerReferenceAndParameter() {
+    const char pointerText[] =
+        "struct Window { int width; void show(); };\n"
+        "Window* window;\n"
+        "window->";
+    static CompletionCandidate candidates[128] = {};
+    static CompletionSession session = {};
+    static TypeDatabase typeDatabase = {};
+    static TypeRecord records[1024] = {};
+    static TypeDocument documents[8] = {};
+    static TypeMemberBucket buckets[64] = {};
+    static uint32_t memberIndices[1024] = {};
+    CompletionErrorCode error = CompletionErrorCode::None;
+    buildMemberSession(pointerText, &session, candidates, &typeDatabase, records, documents,
+                       buckets, memberIndices, &error);
+    assert(session.active && findCandidate(session, "width") >= 0);
+    assert(findCandidate(session, "show") >= 0);
+    const int method = findCandidate(session, "show");
+    assert(method >= 0 && session.candidates[method].kind == CompletionCandidateKind::Method);
+
+    const char referenceText[] =
+        "struct Window { int width; };\n"
+        "void draw(Window& window) { window.";
+    buildMemberSession(referenceText, &session, candidates, &typeDatabase, records, documents,
+                       buckets, memberIndices, &error);
+    assert(session.active && findCandidate(session, "width") >= 0);
+}
+
+static void testTypeAwareAliasesAutoAndShadowing() {
+    const char text[] =
+        "struct A { int fromA; };\n"
+        "struct B { int fromB; };\n"
+        "using MainWindow = A;\n"
+        "using WindowPtr = B*;\n"
+        "B* currentWindow();\n"
+        "MainWindow window;\n"
+        "WindowPtr pointer;\n"
+        "auto inferred = currentWindow();\n"
+        "void test() { B value; value.";
+    static CompletionCandidate candidates[128] = {};
+    static CompletionSession session = {};
+    static TypeDatabase typeDatabase = {};
+    static TypeRecord records[1024] = {};
+    static TypeDocument documents[8] = {};
+    static TypeMemberBucket buckets[64] = {};
+    static uint32_t memberIndices[1024] = {};
+    CompletionErrorCode error = CompletionErrorCode::None;
+
+    buildMemberSession("struct A { int fromA; };\nstruct B { int fromB; };\nusing MainWindow = A;\nMainWindow window;\nwindow.",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(session.active && findCandidate(session, "fromA") >= 0 && findCandidate(session, "fromB") < 0);
+
+    buildMemberSession("struct B { int fromB; };\nusing WindowPtr = B*;\nWindowPtr pointer;\npointer->",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(session.active && findCandidate(session, "fromB") >= 0);
+
+    buildMemberSession("struct B { int fromB; };\nB* currentWindow();\nauto inferred = currentWindow();\ninferred->",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(session.active && session.context.memberResolution == CompletionMemberResolution::Conservative &&
+           findCandidate(session, "fromB") >= 0);
+
+    buildMemberSession(text, &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(session.active && findCandidate(session, "fromB") >= 0 && findCandidate(session, "fromA") < 0);
+}
+
+static void testTypeAwareSafetyAndFiltering() {
+    static CompletionCandidate candidates[128] = {};
+    static CompletionSession session = {};
+    static TypeDatabase typeDatabase = {};
+    static TypeRecord records[1024] = {};
+    static TypeDocument documents[8] = {};
+    static TypeMemberBucket buckets[64] = {};
+    static uint32_t memberIndices[1024] = {};
+    CompletionErrorCode error = CompletionErrorCode::None;
+
+    buildMemberSession("struct Window { int width; };\nWindow* window;\nwindow.",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(!session.active && session.context.memberResolution == CompletionMemberResolution::WrongOperator);
+    buildMemberSession("struct Window { int width; };\nWindow window;\nwindow->",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(!session.active && session.context.memberResolution == CompletionMemberResolution::WrongOperator);
+    buildMemberSession("struct Window { int width; };\nWindow** window;\nwindow->",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(!session.active && session.context.memberResolution == CompletionMemberResolution::PointerDepthUnsupported);
+    buildMemberSession("struct Window { int width; };\nconst Window window;\nwindow.wi",
+                       &session, candidates, &typeDatabase, records, documents, buckets, memberIndices, &error);
+    assert(session.active && session.candidateCount == 1 && findCandidate(session, "width") >= 0);
+    buildMemberSession("auto window = somethingUnknown();\nwindow.",
+                       &session, candidates, &typeDatabase, records, documents, buckets, memberIndices, &error);
+    assert(!session.active && session.context.memberResolution == CompletionMemberResolution::Unknown);
+    buildMemberSession("struct A { int fromA; };\nA make();\nA make();\nauto window = make();\nwindow.",
+                       &session, candidates, &typeDatabase, records, documents, buckets, memberIndices, &error);
+    assert(!session.active && session.context.memberResolution == CompletionMemberResolution::Ambiguous);
+    buildMemberSession("// window.\nconst char* value = \"window.\";\n.",
+                       &session, candidates, &typeDatabase, records, documents, buckets, memberIndices, &error);
+    assert(!session.active);
+
+    static Document staleDocument = {};
+    const char staleText[] = "struct Window { int width; };\nWindow window;\nwindow.";
+    prepareDocument(&staleDocument, "src/member.cpp", staleText);
+    setCaret(&staleDocument, staleDocument.buffer.length);
+    buildTypeIndex(staleDocument, staleText, &typeDatabase, records, documents, buckets, memberIndices);
+    assert(TextBufferInsert(&staleDocument.buffer, "x", 1));
+    CompletionSessionInit(&session, candidates, 128);
+    assert(CompletionBuildSession(&session, staleDocument, CompletionProjectId("demo"), 8,
+                                  nullptr, nullptr, true, &typeDatabase, &error));
+    assert(!session.active && session.context.memberResolution == CompletionMemberResolution::Stale);
+}
+
+static void testTypeAwareOverloadsAndTruncation() {
+    const char text[] =
+        "struct Window {\n"
+        "    int width;\n"
+        "    int weight;\n"
+        "    void setValue(int);\n"
+        "    void setValue(float);\n"
+        "};\n"
+        "Window window;\n"
+        "window.se";
+    static CompletionCandidate candidates[128] = {};
+    static CompletionSession session = {};
+    static TypeDatabase typeDatabase = {};
+    static TypeRecord records[1024] = {};
+    static TypeDocument documents[8] = {};
+    static TypeMemberBucket buckets[64] = {};
+    static uint32_t memberIndices[1024] = {};
+    CompletionErrorCode error = CompletionErrorCode::None;
+    buildMemberSession(text, &session, candidates, &typeDatabase, records, documents,
+                       buckets, memberIndices, &error);
+    assert(session.active && session.candidateCount == 1);
+    assert(strcmp(session.candidates[0].insertionText, "setValue") == 0);
+    assert(session.candidates[0].overloadCount >= 2);
+
+    buildMemberSession("struct Window { int zeta; int alpha; int middle; };\nWindow window;\nwindow.",
+                       &session, candidates, &typeDatabase, records, documents, buckets,
+                       memberIndices, &error);
+    assert(session.active && session.candidateCount == 3);
+    assert(strcmp(session.candidates[0].insertionText, "alpha") == 0);
+
+    const char truncatedText[] =
+        "struct Window { int zeta; int alpha; int middle; int omega; };\n"
+        "Window window;\nwindow.";
+    static Document truncatedDocument = {};
+    prepareDocument(&truncatedDocument, "src/member.cpp", truncatedText);
+    setCaret(&truncatedDocument, truncatedDocument.buffer.length);
+    buildTypeIndex(truncatedDocument, truncatedText, &typeDatabase, records, documents, buckets,
+                   memberIndices, 2);
+    CompletionSessionInit(&session, candidates, 128);
+    assert(CompletionBuildSession(&session, truncatedDocument, CompletionProjectId("demo"), 8,
+                                  nullptr, nullptr, true, &typeDatabase, &error));
+    assert(session.active && session.truncated && session.candidateCount == 2);
 }
 
 static void testSharedKeywords() {
@@ -179,6 +390,11 @@ int main() {
     testContextExtraction();
     testSymbolsWordsAndQualifiedCompletion();
     testDocumentWordFilteringAndStaleState();
+    testTypeAwareDirectMembers();
+    testTypeAwarePointerReferenceAndParameter();
+    testTypeAwareAliasesAutoAndShadowing();
+    testTypeAwareSafetyAndFiltering();
+    testTypeAwareOverloadsAndTruncation();
     printf("Developer Studio completion model PASS\n");
     return 0;
 }

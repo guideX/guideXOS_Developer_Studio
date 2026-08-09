@@ -24,6 +24,7 @@ static const uint32_t kTypeMaxHoverRows = 8u;
 static const uint32_t kTypeMaxHoverTextBytes = 1024u;
 static const uint32_t kTypeMaxRecords = 4096u;
 static const uint32_t kTypeMaxDocuments = 2048u;
+static const uint32_t kTypeMaxMemberBuckets = 512u;
 
 enum class TypeBaseKind {
     Unknown = 0,
@@ -144,6 +145,12 @@ struct TypeDocument {
     char absolutePath[kMaxPathBytes];
 };
 
+struct TypeMemberBucket {
+    char ownerName[kTypeMaxQualifiedNameBytes + 1];
+    uint32_t firstIndex;
+    uint32_t memberCount;
+};
+
 struct TypeDatabase {
     TypeRecord* records;
     TypeDocument* documents;
@@ -151,6 +158,12 @@ struct TypeDatabase {
     uint32_t documentCapacity;
     uint32_t recordCount;
     uint32_t documentCount;
+    TypeMemberBucket* memberBuckets;
+    uint32_t* memberIndices;
+    uint32_t memberBucketCapacity;
+    uint32_t memberIndexCapacity;
+    uint32_t memberBucketCount;
+    uint32_t memberIndexCount;
     uint32_t droppedRecords;
     uint32_t droppedDocuments;
     uint64_t projectGeneration;
@@ -159,6 +172,7 @@ struct TypeDatabase {
     char rootPath[kMaxPathBytes];
     bool current;
     bool truncated;
+    bool memberIndexTruncated;
 };
 
 struct TypeInspection {
@@ -181,6 +195,10 @@ const char* TypeReferenceKindName(TypeReferenceKind kind);
 
 void TypeDatabaseInit(TypeDatabase* database, TypeRecord* recordStorage, uint32_t recordCapacity,
                       TypeDocument* documentStorage, uint32_t documentCapacity);
+void TypeDatabaseInit(TypeDatabase* database, TypeRecord* recordStorage, uint32_t recordCapacity,
+                      TypeDocument* documentStorage, uint32_t documentCapacity,
+                      TypeMemberBucket* memberBucketStorage, uint32_t memberBucketCapacity,
+                      uint32_t* memberIndexStorage, uint32_t memberIndexCapacity);
 void TypeDatabaseClear(TypeDatabase* database);
 bool TypeDatabaseIndexDocument(TypeDatabase* database, const char* rootPath, const char* path,
                                uint64_t documentId, uint32_t documentGeneration,
@@ -194,6 +212,8 @@ bool TypeDatabaseIsCurrent(const TypeDatabase* database, uint64_t projectGenerat
 bool TypeDatabaseIsTruncated(const TypeDatabase* database);
 uint32_t TypeDatabaseRecordCount(const TypeDatabase* database);
 const TypeRecord* TypeDatabaseRecordAt(const TypeDatabase* database, uint32_t index);
+uint32_t TypeDatabaseLookupDirectMembers(const TypeDatabase* database, const char* ownerName,
+                                         uint32_t* indices, uint32_t capacity, bool* truncated);
 
 bool TypeDatabaseInspectAt(const TypeDatabase* database, const Document& document,
                            uint64_t projectGeneration, uint32_t caretOffset,

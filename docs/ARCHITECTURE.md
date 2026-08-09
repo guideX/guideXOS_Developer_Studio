@@ -187,32 +187,45 @@ The pre-existing ABI only provides uncolored text and rectangle drawing, so the
 renderer uses centralized token background colors and does not require a Server
 ABI change.
 
-## Lightweight Code Completion
+## Code Completion and Type-Aware Member Completion
 
-Code Completion is a source-editor-only, manually invoked `Ctrl+Space` feature.
-It is implemented by `developer_studio_completion.*` as a UI-independent,
-generation-bound lexical session. The session consumes the shared syntax-cache
-keyword/type list, the active document's lexical context and bounded document
-word cache, and the existing project `SymbolDatabase`. It does not introduce a
-second project index, background worker, Server ABI slot, compiler front end,
-language-server client, or semantic type resolver.
+Code Completion is a source-editor-only, generation-bound session implemented
+by `developer_studio_completion.*`. Generic completion consumes the shared
+syntax-cache keyword list, active-document word cache, and existing project
+`SymbolDatabase`. Type-Aware Member Completion adds the existing
+`developer_studio_types.*` provider as a second source without making generic
+completion depend on successful type inference. It does not introduce a
+background worker, Server ABI slot, compiler front end, language-server client,
+or separate semantic parser.
 
 The model extracts identifier, qualifier, member-like, comment/string,
 preprocessor, inactive-branch, replacement-range, and lexical-scope context.
-It collects keywords, current-scope/document/project symbols, and filtered
-document words, then applies deterministic match tiers, source/kind scoring,
-deduplication, overload collapsing, and stable tie-breaks. The model has fixed
-candidate, text, scan, and visible-result bounds; document-word indexing keeps a
-bounded conditional stack and scans each line once.
+For a member-like context it extracts one bounded identifier receiver, asks
+Lightweight Type Intelligence to resolve it, checks `.` versus `->`, resolves
+the named owner, and queries the Type Intelligence direct-member bucket. The
+bucket contains copied TypeRecord indices for fields and functions, built while
+documents are indexed; completion scans only the bounded owner bucket. It
+stores copied owner/name/kind/type/signature/location/generation data, never
+raw semantic pointers. Generic contexts retain their existing keyword,
+symbol, word, match-tier, source/kind scoring, deduplication, overload
+collapsing, and stable tie-break behavior. All candidate, receiver, member
+scan, display, and generation bounds remain explicit.
 
-`main.cpp` owns popup placement and input routing. The popup clamps to the
-editor viewport, accepts with `Enter` or `Tab`, supports bounded keyboard/mouse
-selection, and dismisses on incompatible edits or focus/document changes.
+`main.cpp` owns popup placement and input routing. Typing `.` or completing `->`
+opens the same popup automatically; `Ctrl+Space` remains the manual trigger.
+The popup clamps to the editor viewport, accepts with `Enter` or `Tab`, supports
+bounded keyboard/mouse selection, and dismisses on incompatible edits or
+focus/document changes.
 Acceptance validates document/project generations, caret, replacement range, and
 expected text before reusing the existing text-buffer, syntax, symbol, word,
 and dirty-state paths. One bounded completion snapshot is available through the
 existing `Ctrl+Z` path. See [CODE_COMPLETION.md](CODE_COMPLETION.md) for the
 context grammar, sources, ranking, limits, markers, and deferred semantic work.
+
+Unknown, ambiguous, stale, wrong-operator, unsupported-pointer-depth, and
+chained receivers do not fall back to unrelated global symbols. Signature Help
+continues to own callable signature display after an inserted method call, and
+Quick Type Info continues to use the shared Type Intelligence inspection path.
 
 ## Lightweight Signature Help
 
