@@ -5,6 +5,7 @@ namespace developer_studio {
 namespace {
 
 static const char kBuildSystem[] = "guidexos-native-build-script-v1";
+static const char kNativeGuiProjectKind[] = "native-gui-application";
 static const char kBuildScript[] = "build.ps1";
 static const char kBuildConfiguration[] = "Debug";
 
@@ -171,7 +172,7 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
     }
     if (!copyText(request->projectRoot, sizeof(request->projectRoot), project.rootPath) ||
         !copyText(request->projectId, sizeof(request->projectId), project.projectId) ||
-        !copyText(request->projectKind, sizeof(request->projectKind), ToString(project.kind)) ||
+        !copyText(request->projectKind, sizeof(request->projectKind), kNativeGuiProjectKind) ||
         !copyText(request->targetProfile, sizeof(request->targetProfile), project.targetProfileId) ||
         !copyText(request->buildSystem, sizeof(request->buildSystem), kBuildSystem) ||
         !copyText(request->buildScript, sizeof(request->buildScript), kBuildScript) ||

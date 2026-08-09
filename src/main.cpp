@@ -16,6 +16,8 @@
 #include "developer_studio_relationships.h"
 #include "developer_studio_ownership.h"
 #include "developer_studio_types.h"
+#include "developer_studio_debugger.h"
+#include "developer_studio_debugger_hosted.h"
 
 namespace {
 
@@ -461,6 +463,41 @@ using guidexos::developer_studio::TypeSourceName;
 using guidexos::developer_studio::kTypeMaxHoverTextBytes;
 using guidexos::developer_studio::kTypeMaxRecords;
 using guidexos::developer_studio::kTypeMaxMemberBuckets;
+using guidexos::developer_studio::DebugBackend;
+using guidexos::developer_studio::DebugBreakpoint;
+using guidexos::developer_studio::DebugBreakpointState;
+using guidexos::developer_studio::DebugController;
+using guidexos::developer_studio::DebugControllerBreakpointAt;
+using guidexos::developer_studio::DebugControllerCanContinue;
+using guidexos::developer_studio::DebugControllerCanPause;
+using guidexos::developer_studio::DebugControllerCanStart;
+using guidexos::developer_studio::DebugControllerCanStop;
+using guidexos::developer_studio::DebugControllerClearBreakpoints;
+using guidexos::developer_studio::DebugControllerContinue;
+using guidexos::developer_studio::DebugControllerDeleteBreakpoint;
+using guidexos::developer_studio::DebugControllerInit;
+using guidexos::developer_studio::DebugControllerIsActive;
+using guidexos::developer_studio::DebugControllerMarkProjectGeneration;
+using guidexos::developer_studio::DebugControllerMarkSourceGeneration;
+using guidexos::developer_studio::DebugControllerPause;
+using guidexos::developer_studio::DebugControllerPoll;
+using guidexos::developer_studio::DebugControllerRequestStop;
+using guidexos::developer_studio::DebugControllerSetBreakpointEnabled;
+using guidexos::developer_studio::DebugControllerSetProjectContext;
+using guidexos::developer_studio::DebugControllerStart;
+using guidexos::developer_studio::DebugControllerToggleBreakpoint;
+using guidexos::developer_studio::DebugErrorCode;
+using guidexos::developer_studio::DebugErrorName;
+using guidexos::developer_studio::DebugRelativeSourcePath;
+using guidexos::developer_studio::DebugSessionState;
+using guidexos::developer_studio::DebugSessionStateName;
+using guidexos::developer_studio::DebugTarget;
+using guidexos::developer_studio::DebugTargetFromBuild;
+using guidexos::developer_studio::HostedDebugBackend;
+using guidexos::developer_studio::HostedDebugBackendCreate;
+using guidexos::developer_studio::HostedDebugBackendInit;
+using guidexos::developer_studio::PathsEqual;
+using guidexos::developer_studio::kMaxProjectPathBytes;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -525,6 +562,9 @@ static const int kIncludeGraphPanelResultsTop = 190;
 static const int kIncludeGraphPanelRowHeight = 24;
 static const int kIncludeGraphPanelMaxRows = 17;
 static const int kIncludeGraphPanelModeWidth = 138;
+static const int kDebugPanelTop = 56;
+static const int kDebugPanelRowHeight = 22;
+static const int kDebugPanelMaxRows = 20;
 
 enum class InputMode {
     Normal = 0,
@@ -536,7 +576,9 @@ enum class InputMode {
     ConfirmApplication,
     ConfirmBuild,
     ConfirmRun,
-    ConfirmRunClose
+    ConfirmRunClose,
+    ConfirmDebug,
+    ConfirmDebugClose
 };
 
 struct NativeFileSystemContext {
@@ -621,6 +663,10 @@ static InputMode g_inputMode = InputMode::Normal;
 static bool g_editorFocused = false;
 static bool g_fileMenuOpen = false;
 static bool g_buildMenuOpen = false;
+static bool g_debugMenuOpen = false;
+static bool g_debugPanelOpen = false;
+static uint32_t g_debugPanelTab = 0;
+static uint32_t g_debugSelectedBreakpoint = 0;
 static bool g_requestExit = false;
 static bool g_workspaceSwitchPending = false;
 static uint32_t g_pendingDocument = kMaxOpenDocuments;
@@ -648,6 +694,11 @@ static RunController g_runController = {};
 static bool g_runWaitingForBuild = false;
 static RunState g_lastRunState = RunState::Idle;
 static bool g_runTerminalReported = false;
+static DebugController g_debugController = {};
+static HostedDebugBackend g_hostedDebugBackend = {};
+static DebugBackend g_debugBackend = {};
+static bool g_debugWaitingForBuild = false;
+static bool g_debugTerminalReported = false;
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
@@ -849,6 +900,16 @@ static bool switchHeaderSource(gx_app_context* ctx);
 static bool handleOwnershipKey(gx_app_context* ctx, int keyCode, int action);
 static void drawOwnershipPanel(gx_app_context* ctx);
 static bool activateOwnershipCandidate(gx_app_context* ctx, uint32_t index);
+static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision);
+static bool beginDebugSession(gx_app_context* ctx);
+static void pollDebug(gx_app_context* ctx);
+static void requestDebug(gx_app_context* ctx);
+static void requestDebugStop(gx_app_context* ctx);
+static bool toggleBreakpointAtCaret(gx_app_context* ctx);
+static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y);
+static void drawDebugPanel(gx_app_context* ctx);
+static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action);
+static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
 static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
 
@@ -3126,11 +3187,26 @@ static void pollBuild(gx_app_context* ctx) {
                 completeRunWithoutDeployment("Build failed; deployment skipped");
             }
         }
+        if (g_debugWaitingForBuild) {
+            g_debugWaitingForBuild = false;
+            if (g_buildController.result.state == BuildState::Succeeded) {
+                writeStudioOutput("Debug: build completed");
+                if (!beginDebugSession(ctx)) writeStudioOutput("Debug: deployment skipped");
+            } else {
+                copyText(g_textScratch, sizeof(g_textScratch), "Debug: build failed | ");
+                appendText(g_textScratch, sizeof(g_textScratch), BuildErrorName(g_buildController.result.error));
+                reportDebugMessage(ctx, g_textScratch);
+            }
+        }
     }
 }
 
 static void requestBuild(gx_app_context* ctx) {
     dismissSignatureHelp(ctx, "build", false);
+    if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+        writeOutput("Debug session in progress; build blocked");
+        return;
+    }
     if (RunControllerIsActive(&g_runController)) {
         writeOutput("Run in progress; build blocked");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(BuildErrorCode::AlreadyRunning));
@@ -3154,6 +3230,10 @@ static void requestBuild(gx_app_context* ctx) {
 static void requestRun(gx_app_context* ctx) {
     dismissCompletion(ctx, "run", false);
     dismissSignatureHelp(ctx, "run", false);
+    if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+        writeOutput("Debug session in progress; run blocked");
+        return;
+    }
     if (RunControllerIsActive(&g_runController) || g_runWaitingForBuild) {
         writeOutput("Run already active");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_precondition=FAIL", RunErrorName(RunErrorCode::AlreadyActive));
@@ -3208,6 +3288,159 @@ static void pollRun(gx_app_context* ctx) {
     if (!RunControllerIsActive(&g_runController) && (result.state == RunState::Completed || result.state == RunState::Failed)) reportRunTerminal(ctx);
 }
 
+static void reportDebugMessage(gx_app_context* ctx, const char* message) {
+    if (!message) return;
+    writeStudioOutput(message);
+    logMarker(ctx, message);
+}
+
+static bool beginDebugSession(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        writeStudioOutput("Debug requires an open project");
+        return false;
+    }
+    DebugTarget target = {};
+    DebugErrorCode error = DebugErrorCode::None;
+    if (!DebugTargetFromBuild(g_controller.model.project, g_buildController.result,
+                              g_controller.model.projectGeneration, &target, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug target unavailable: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        return false;
+    }
+    DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
+    if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        return false;
+    }
+    g_debugTerminalReported = false;
+    copyText(g_textScratch, sizeof(g_textScratch), "Debug: launching ");
+    appendText(g_textScratch, sizeof(g_textScratch), target.projectId);
+    reportDebugMessage(ctx, g_textScratch);
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS");
+    return true;
+}
+
+static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        writeStudioOutput("Debug requires an open project");
+        return false;
+    }
+    if (BuildControllerIsActive(&g_buildController) || RunControllerIsActive(&g_runController) ||
+        DebugControllerIsActive(&g_debugController)) {
+        writeStudioOutput("Debug start blocked by an active operation");
+        return false;
+    }
+    g_debugWaitingForBuild = true;
+    g_debugTerminalReported = false;
+    if (!beginBuild(ctx, dirtyDecision)) {
+        g_debugWaitingForBuild = false;
+        writeStudioOutput("Debug build could not start");
+        return false;
+    }
+    writeStudioOutput("Debug: build started");
+    return true;
+}
+
+static void requestDebug(gx_app_context* ctx) {
+    dismissCompletion(ctx, "debug", false);
+    dismissSignatureHelp(ctx, "debug", false);
+    if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+        writeStudioOutput("Debug session already active");
+        return;
+    }
+    if (RunControllerIsActive(&g_runController)) {
+        writeStudioOutput("Run in progress; debug start blocked");
+        return;
+    }
+    if (BuildControllerIsActive(&g_buildController)) {
+        writeStudioOutput("Build in progress; debug start blocked");
+        return;
+    }
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        writeStudioOutput("Debug requires an open project");
+        return;
+    }
+    if (g_controller.model.project.kind != ProjectKind::NativeGuiApplication) {
+        writeStudioOutput("Hosted Native ELF debugging supports Native GUI Application projects only");
+        return;
+    }
+    if (guidexos::developer_studio::WorkspaceControllerHasDirtyProjectDocuments(&g_controller)) {
+        g_inputMode = InputMode::ConfirmDebug;
+        g_fileMenuOpen = false;
+        g_buildMenuOpen = false;
+        g_debugMenuOpen = false;
+        writeStudioOutput("Save All or Cancel debug start");
+        return;
+    }
+    beginDebugBuild(ctx, BuildDirtyDecision::SaveAll);
+}
+
+static void requestDebugStop(gx_app_context* ctx) {
+    if (!DebugControllerIsActive(&g_debugController)) {
+        writeStudioOutput("No active debug session");
+        return;
+    }
+    DebugErrorCode error = DebugErrorCode::None;
+    if (!DebugControllerRequestStop(&g_debugController, g_debugBackend, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug stop unavailable: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        return;
+    }
+    reportDebugMessage(ctx, "Debug: stop requested");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested");
+}
+
+static void pollDebug(gx_app_context* ctx) {
+    if (!DebugControllerIsActive(&g_debugController)) return;
+    if (!g_controller.model.hasProject || !PathsEqual(g_controller.model.project.projectId, g_debugController.projectId)) {
+        if (g_debugController.state != DebugSessionState::Stopping) requestDebugStop(ctx);
+        return;
+    }
+    DebugControllerMarkProjectGeneration(&g_debugController, g_controller.model.projectGeneration);
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        const Document& document = g_controller.model.documents[i];
+        if (!document.used) continue;
+        char relative[kMaxProjectPathBytes] = {};
+        if (DebugRelativeSourcePath(g_controller.model.project.rootPath, document.path,
+                                    relative, sizeof(relative))) {
+            DebugControllerMarkSourceGeneration(&g_debugController, g_controller.model.project.projectId,
+                                                relative, document.buffer.generation);
+        }
+    }
+    const DebugSessionState previous = g_debugController.state;
+    if (!DebugControllerPoll(&g_debugController, g_debugBackend)) {
+        if (!g_debugTerminalReported) {
+            copyText(g_textScratch, sizeof(g_textScratch), "Debug: backend poll failed | ");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(g_debugController.error));
+            reportDebugMessage(ctx, g_textScratch);
+            g_debugTerminalReported = true;
+        }
+        return;
+    }
+    if (g_debugController.state != previous) {
+        if (g_debugController.state == DebugSessionState::Running) {
+            reportDebugMessage(ctx, "Debug: process running");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING");
+        } else if (g_debugController.state == DebugSessionState::Stopping) {
+            reportDebugMessage(ctx, "Debug: stopping target");
+        } else if (g_debugController.state == DebugSessionState::Exited) {
+            reportDebugMessage(ctx, "Debug: process exited");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED");
+        } else if (g_debugController.state == DebugSessionState::Failed) {
+            copyText(g_textScratch, sizeof(g_textScratch), "Debug: session failed | ");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
+            reportDebugMessage(ctx, g_textScratch);
+            g_debugTerminalReported = true;
+        }
+    }
+    if (!DebugControllerIsActive(&g_debugController) && g_debugController.state == DebugSessionState::Exited)
+        g_debugTerminalReported = true;
+}
+
 static void requestRunClose(gx_app_context* ctx) {
     if (!RunControllerIsActive(&g_runController)) {
         writeOutput("No running project application");
@@ -3224,6 +3457,7 @@ static void requestRunClose(gx_app_context* ctx) {
 static void showWorkspacePrompt() {
     if (BuildControllerIsActive(&g_buildController)) { writeOutput("Build in progress"); return; }
     if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress"); return; }
+    if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) { writeStudioOutput("Debug in progress"); return; }
     g_inputMode = InputMode::WorkspacePath;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
@@ -3235,6 +3469,7 @@ static void showWorkspacePrompt() {
 static void showOpenProjectPrompt() {
     if (BuildControllerIsActive(&g_buildController)) { writeOutput("Build in progress"); return; }
     if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress"); return; }
+    if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) { writeStudioOutput("Debug in progress"); return; }
     g_inputMode = InputMode::ProjectPath;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
@@ -3245,6 +3480,7 @@ static void showOpenProjectPrompt() {
 static void showNewProjectPrompt(gx_app_context* ctx) {
     if (BuildControllerIsActive(&g_buildController)) { writeOutput("Build in progress"); return; }
     if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress"); return; }
+    if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) { writeStudioOutput("Debug in progress"); return; }
     if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
         writeOutput("Save or close the current workspace first");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=FAIL", "unsaved_changes");
@@ -3307,6 +3543,8 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
         reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL", g_controller.lastProjectError);
         return false;
     }
+    DebugControllerClearBreakpoints(&g_debugController);
+    g_debugPanelOpen = false;
     writeOutput("Project created");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
@@ -3355,6 +3593,8 @@ static void commitProjectOpen(gx_app_context* ctx) {
     g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
+        DebugControllerClearBreakpoints(&g_debugController);
+        g_debugPanelOpen = false;
         writeOutput("Project opened");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
@@ -3377,6 +3617,10 @@ static bool commitWorkspaceOpen(gx_app_context* ctx) {
     g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
+    if (success) {
+        DebugControllerClearBreakpoints(&g_debugController);
+        g_debugPanelOpen = false;
+    }
     reportWorkspaceOpen(ctx, success);
     g_inputMode = InputMode::Normal;
     return success;
@@ -3421,6 +3665,15 @@ static void finishApplicationClose(gx_app_context* ctx, bool success) {
     if (RunControllerIsActive(&g_runController)) {
         g_inputMode = InputMode::ConfirmRunClose;
         writeOutput("Project application is running: Close it first or keep Studio open");
+        return;
+    }
+    if (g_debugWaitingForBuild) {
+        writeStudioOutput("Debug build in progress: close blocked");
+        return;
+    }
+    if (DebugControllerIsActive(&g_debugController)) {
+        g_inputMode = InputMode::ConfirmDebugClose;
+        writeStudioOutput("Debug session is active: Stop it before closing Studio");
         return;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
@@ -5617,6 +5870,197 @@ static void drawEditorTextRun(gx_app_context* ctx, const TextBuffer& buffer, uin
     drawText(ctx, x, rowY, g_lineScratch);
 }
 
+static int debugBreakpointIndexForDocumentLine(const Document& document, uint32_t line) {
+    if (!g_controller.model.hasProject) return -1;
+    char relative[kMaxProjectPathBytes] = {};
+    if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document.path,
+                                 relative, sizeof(relative))) return -1;
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
+        if (breakpoint && breakpoint->location.line == line + 1 &&
+            PathsEqual(breakpoint->location.relativePath, relative) &&
+            PathsEqual(breakpoint->projectId, g_controller.model.project.projectId)) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+static uint32_t debugBreakpointColor(DebugBreakpointState state) {
+    switch (state) {
+    case DebugBreakpointState::Verified: return 0x56C596u;
+    case DebugBreakpointState::Rejected: return 0xD05A5Au;
+    case DebugBreakpointState::Disabled: return 0x6F7888u;
+    case DebugBreakpointState::Stale: return 0xD59B49u;
+    case DebugBreakpointState::Pending: return 0xD8C15Au;
+    }
+    return 0xD8C15Au;
+}
+
+static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || !g_controller.model.hasProject) {
+        writeStudioOutput("Breakpoint requires an active project document");
+        return false;
+    }
+    const uint32_t line = activeLine(document->buffer) + 1;
+    char relative[kMaxProjectPathBytes] = {};
+    if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path,
+                                 relative, sizeof(relative))) {
+        writeStudioOutput("Breakpoint path is outside the active project");
+        return false;
+    }
+    uint64_t breakpointId = 0;
+    DebugErrorCode error = DebugErrorCode::None;
+    if (!DebugControllerToggleBreakpoint(&g_debugController, g_controller.model.project.projectId,
+                                         g_controller.model.project.rootPath, g_controller.model.projectGeneration,
+                                         relative, line, activeColumn(document->buffer, line - 1),
+                                         document->buffer.generation, &breakpointId, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint change failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        writeStudioOutput(g_textScratch);
+        return false;
+    }
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
+        if (breakpoint && breakpoint->id == breakpointId) g_debugSelectedBreakpoint = i;
+    }
+    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
+    copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint ");
+    appendText(g_textScratch, sizeof(g_textScratch), breakpoint ? DebugBreakpointStateName(breakpoint->state) : "updated");
+    appendText(g_textScratch, sizeof(g_textScratch), ": ");
+    appendText(g_textScratch, sizeof(g_textScratch), relative);
+    appendText(g_textScratch, sizeof(g_textScratch), ":");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), line);
+    writeStudioOutput(g_textScratch);
+    if (breakpoint && breakpoint->state == DebugBreakpointState::Pending)
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=PENDING");
+    return true;
+}
+
+static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y) {
+    if (x < kEditorRect.x || x >= kEditorTextX || y < kEditorTop ||
+        y >= kEditorRect.y + kEditorRect.height) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    int row = (y - kEditorTop + 12) / kEditorLineHeight;
+    if (row < 0) row = 0;
+    const uint32_t line = g_editorScrollLine + static_cast<uint32_t>(row);
+    if (line >= TextBufferLineCount(&document->buffer)) return false;
+    const uint32_t oldCaret = document->buffer.caret;
+    const uint32_t start = TextBufferLineStart(&document->buffer, line);
+    const uint32_t end = TextBufferLineEnd(&document->buffer, line);
+    document->buffer.caret = start;
+    const bool toggled = toggleBreakpointAtCaret(ctx);
+    document->buffer.caret = oldCaret <= document->buffer.length ? oldCaret : document->buffer.length;
+    (void)end;
+    return toggled;
+}
+
+static bool navigateSelectedBreakpoint(gx_app_context* ctx) {
+    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
+    if (!breakpoint || !g_controller.model.hasProject) return false;
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, breakpoint->projectId,
+                                                   breakpoint->location.relativePath, breakpoint->location.line,
+                                                   breakpoint->location.column, &documentIndex, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint navigation failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), OutputErrorName(error));
+        writeStudioOutput(g_textScratch);
+        return false;
+    }
+    g_editorFocused = true;
+    g_debugPanelOpen = false;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_navigation=PASS");
+    return true;
+}
+
+static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
+    if (keyCode == 9) { g_debugPanelTab = g_debugPanelTab == 0 ? 1 : 0; g_debugSelectedBreakpoint = 0; return true; }
+    if (g_debugPanelTab != 0) return true;
+    if (keyCode == GX_KEY_UP) {
+        if (g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN) {
+        if (g_debugSelectedBreakpoint + 1 < g_debugController.breakpointCount) ++g_debugSelectedBreakpoint;
+        return true;
+    }
+    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
+    if (keyCode == 13) { navigateSelectedBreakpoint(ctx); return true; }
+    if (keyCode == 32 && breakpoint) {
+        DebugErrorCode error = DebugErrorCode::None;
+        DebugControllerSetBreakpointEnabled(&g_debugController, breakpoint->id, !breakpoint->enabled, &error);
+        return true;
+    }
+    if (keyCode == 46 && breakpoint) {
+        DebugErrorCode error = DebugErrorCode::None;
+        DebugControllerDeleteBreakpoint(&g_debugController, breakpoint->id, &error);
+        if (g_debugSelectedBreakpoint >= g_debugController.breakpointCount && g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
+        return true;
+    }
+    return true;
+}
+
+static void drawDebugPanel(gx_app_context* ctx) {
+    if (!g_debugPanelOpen) return;
+    drawPanel(ctx, { 72, kDebugPanelTop, 816, 552 }, 0x263650u);
+    drawText(ctx, 92, 82, "DEBUGGER FOUNDATION");
+    drawText(ctx, 112, 108, "Breakpoints");
+    drawText(ctx, 260, 108, "Debug Session");
+    drawPanel(ctx, { g_debugPanelTab == 0 ? 96 : 244, 116, 136, 2 }, 0xD6E4FFu);
+    if (g_debugPanelTab == 0) {
+        if (g_debugController.breakpointCount == 0) drawText(ctx, 100, 150, "No source breakpoints. F9 toggles the current line.");
+        const uint32_t rows = g_debugController.breakpointCount < kDebugPanelMaxRows ? g_debugController.breakpointCount : kDebugPanelMaxRows;
+        for (uint32_t row = 0; row < rows; ++row) {
+            const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, row);
+            if (!breakpoint) continue;
+            const int y = 148 + static_cast<int>(row) * kDebugPanelRowHeight;
+            if (row == g_debugSelectedBreakpoint) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+            copyText(g_textScratch, sizeof(g_textScratch), breakpoint->enabled ? "[on] " : "[off] ");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugBreakpointStateName(breakpoint->state));
+            appendText(g_textScratch, sizeof(g_textScratch), " ");
+            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->location.relativePath);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->location.line);
+            appendText(g_textScratch, sizeof(g_textScratch), " | ");
+            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->message);
+            drawText(ctx, 100, y, g_textScratch);
+        }
+        drawText(ctx, 100, 584, "Up/Down Select   Enter Navigate   Space Enable   Delete Remove   Tab Session   Esc Close");
+    } else {
+        drawText(ctx, 100, 148, "Backend:");
+        drawText(ctx, 220, 148, g_debugController.backendName[0] ? g_debugController.backendName : "(none)");
+        drawText(ctx, 100, 172, "State:");
+        drawText(ctx, 220, 172, DebugSessionStateName(g_debugController.state));
+        drawText(ctx, 100, 196, "Target:");
+        drawText(ctx, 220, 196, g_debugController.target.applicationId[0] ? g_debugController.target.applicationId : "(none)");
+        drawText(ctx, 100, 220, "Architecture:");
+        drawText(ctx, 220, 220, g_debugController.target.architecture[0] ? g_debugController.target.architecture : "(none)");
+        drawText(ctx, 100, 244, "Process ID:");
+        if (g_debugController.processId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.processId)); drawText(ctx, 220, 244, g_textScratch); }
+        else drawText(ctx, 220, 244, "(not assigned)");
+        drawText(ctx, 100, 268, "Native runtime ID:");
+        if (g_debugController.nativeRuntimeId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.nativeRuntimeId)); drawText(ctx, 220, 268, g_textScratch); }
+        else drawText(ctx, 220, 268, "(not assigned)");
+        drawText(ctx, 100, 304, "Capabilities:");
+        drawText(ctx, 220, 304, g_debugController.capabilities.canLaunch ? "Launch" : "Launch unavailable");
+        drawText(ctx, 220, 328, g_debugController.capabilities.canStop ? "Stop" : "Stop unavailable");
+        drawText(ctx, 220, 352, g_debugController.capabilities.canPause ? "Pause" : "Pause unavailable");
+        drawText(ctx, 220, 376, g_debugController.capabilities.canContinue ? "Continue" : "Continue unavailable");
+        drawText(ctx, 220, 400, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
+        drawText(ctx, 100, 436, "Last event:");
+        if (g_debugController.eventCount > 0) {
+            const guidexos::developer_studio::DebugEvent* event = guidexos::developer_studio::DebugControllerEventAt(&g_debugController, g_debugController.eventCount - 1);
+            drawText(ctx, 220, 436, event ? guidexos::developer_studio::DebugEventKindName(event->kind) : "(none)");
+        } else drawText(ctx, 220, 436, "(none)");
+        drawText(ctx, 100, 460, "Last status:");
+        drawText(ctx, 220, 460, g_debugController.lastMessage[0] ? g_debugController.lastMessage : "(none)");
+        drawText(ctx, 100, 584, "Tab Breakpoints   Esc Close");
+    }
+}
+
 static void drawEditor(gx_app_context* ctx) {
     drawTabs(ctx);
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
@@ -5656,6 +6100,11 @@ static void drawEditor(gx_app_context* ctx) {
         compose(g_textScratch, sizeof(g_textScratch), "", "", "");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), line + 1);
         appendText(g_textScratch, sizeof(g_textScratch), " ");
+        const int breakpointIndex = debugBreakpointIndexForDocumentLine(*document, line);
+        if (breakpointIndex >= 0) {
+            const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, static_cast<uint32_t>(breakpointIndex));
+            if (breakpoint) drawPanel(ctx, { 272, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 }, debugBreakpointColor(breakpoint->state));
+        }
         drawText(ctx, kEditorLineNumberX, kEditorTop + static_cast<int>(row) * kEditorLineHeight, g_textScratch);
         uint32_t spanCount = 0;
         const SyntaxTokenSpan* spans = SyntaxCacheLineSpans(&document->syntax, line, &spanCount);
@@ -5837,6 +6286,19 @@ static void drawModal(gx_app_context* ctx) {
         drawText(ctx, 230, 292, "[C] Close Project Application     [K] Keep Studio Open");
         return;
     }
+    if (g_inputMode == InputMode::ConfirmDebug) {
+        drawText(ctx, 210, 220, "Start Debugging");
+        drawText(ctx, 210, 246, "Project documents have unsaved changes.");
+        drawText(ctx, 210, 270, "Save All before building the debug target?");
+        drawText(ctx, 230, 316, "[S] Save All and Start     [C] Cancel");
+        return;
+    }
+    if (g_inputMode == InputMode::ConfirmDebugClose) {
+        drawText(ctx, 210, 220, "Debug Session is active");
+        drawText(ctx, 210, 246, "Stop the hosted target before closing Studio?");
+        drawText(ctx, 230, 292, "[S] Stop Debugging     [K] Keep Studio Open");
+        return;
+    }
     drawText(ctx, 210, 220, "Unsaved changes");
     if (g_inputMode == InputMode::ConfirmDocument) drawText(ctx, 210, 246, "Save changes before closing this document?");
     else if (g_inputMode == InputMode::ConfirmWorkspace) drawText(ctx, 210, 246, "Save changes before opening another workspace?");
@@ -5857,11 +6319,12 @@ static void drawShell(gx_app_context* ctx) {
     drawPanel(ctx, kStatusRect, 0x243451u);
     drawText(ctx, 16, 30, "guideXOS Developer Studio");
     drawText(ctx, 290, 30, "File");
+    drawText(ctx, 610, 30, "Debug");
     drawText(ctx, 700, 30, "Build");
     drawText(ctx, 340, 30, "Save");
     drawText(ctx, 400, 30, "Save All");
     drawText(ctx, 490, 30, "Refresh");
-    drawText(ctx, 575, 30, "Ctrl+N New Project");
+    drawText(ctx, 545, 30, "Ctrl+N");
     drawExplorer(ctx);
     drawOutline(ctx);
     drawEditor(ctx);
@@ -5879,6 +6342,7 @@ static void drawShell(gx_app_context* ctx) {
     drawIncludeGraphPanel(ctx);
     drawIncludeTargetPicker(ctx);
     drawOwnershipPanel(ctx);
+    drawDebugPanel(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 8, 42, 270, 202 }, 0x34496Au);
         drawText(ctx, 20, 64, "New Project");
@@ -5895,6 +6359,16 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 312, 68, "Build Project");
         drawText(ctx, 312, 92, "Run Project (F5)");
         drawText(ctx, 312, 116, "Request Project Close");
+    }
+    if (g_debugMenuOpen) {
+        drawPanel(ctx, { 580, 42, 360, 176 }, 0x34496Au);
+        drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
+        drawText(ctx, 592, 86, g_debugController.capabilities.canContinue ? "Continue" : "Continue (unavailable)");
+        drawText(ctx, 592, 108, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
+        drawText(ctx, 592, 130, "Stop Debugging");
+        drawText(ctx, 592, 152, "Toggle Breakpoint (F9)");
+        drawText(ctx, 592, 174, "Breakpoints");
+        drawText(ctx, 592, 196, "Debug Session");
     }
     drawModal(ctx);
 }
@@ -6062,6 +6536,18 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         }
         return;
     }
+    if (g_inputMode == InputMode::ConfirmDebug) {
+        if (keyCode == 27 || keyCode == 67 || keyCode == 99) {
+            g_inputMode = InputMode::Normal;
+            writeStudioOutput("Debug start canceled");
+            return;
+        }
+        if (keyCode == 83 || keyCode == 115) {
+            g_inputMode = InputMode::Normal;
+            beginDebugBuild(ctx, BuildDirtyDecision::SaveAll);
+        }
+        return;
+    }
     if (g_inputMode == InputMode::ConfirmRunClose) {
         if (keyCode == 67 || keyCode == 99) {
             g_inputMode = InputMode::Normal;
@@ -6070,6 +6556,16 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
             g_inputMode = InputMode::Normal;
             writeOutput("Studio remains open");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_close=CANCEL");
+        }
+        return;
+    }
+    if (g_inputMode == InputMode::ConfirmDebugClose) {
+        if (keyCode == 83 || keyCode == 115) {
+            g_inputMode = InputMode::Normal;
+            requestDebugStop(ctx);
+        } else if (keyCode == 75 || keyCode == 107 || keyCode == 27) {
+            g_inputMode = InputMode::Normal;
+            writeStudioOutput("Studio remains open");
         }
         return;
     }
@@ -6095,7 +6591,10 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         dismissTypeInfo(ctx, "workspace_changed", false);
         if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
         g_ownershipPanelOpen = false;
-        WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
+        if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
+            DebugControllerClearBreakpoints(&g_debugController);
+            g_debugPanelOpen = false;
+        }
         TypeDatabaseClear(&g_typeDatabase);
         if (g_workspaceSwitchPending) commitWorkspaceOpen(ctx);
         else {
@@ -6514,6 +7013,19 @@ static bool handleRenameKey(gx_app_context* ctx, int keyCode, int action, int mo
 
 static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int modifiers, bool& running) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    // Debugging is a global command: output/panel focus must not consume the
+    // established Ctrl+F5 shortcut before it reaches the session controller.
+    if (keyCode == 116 && modifiers == GX_KEY_MOD_CTRL) {
+        requestDebug(ctx);
+        return;
+    }
+    if (g_debugPanelOpen && handleDebugPanelKey(ctx, keyCode, action)) return;
+    // F9 is unused by the existing editor shortcuts and follows the standard
+    // debugger convention without changing the established F5 Run command.
+    if (keyCode == 120 && modifiers == 0) {
+        toggleBreakpointAtCaret(ctx);
+        return;
+    }
     if (g_typePopupOpen && handleTypeInfoKey(ctx, keyCode, action, modifiers)) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_ALT) &&
         (keyCode == 84 || keyCode == 116)) {
@@ -6676,6 +7188,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     }
     if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 87 || keyCode == 119)) {
         if (RunControllerIsActive(&g_runController)) { writeOutput("Run in progress; close the project application first"); return; }
+        if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) { writeStudioOutput("Debug in progress; stop the debug session first"); return; }
         if (g_controller.model.activeDocument < kMaxOpenDocuments) {
             g_pendingDocument = g_controller.model.activeDocument;
             if (g_controller.model.documents[g_pendingDocument].buffer.dirty) g_inputMode = InputMode::ConfirmDocument;
@@ -6756,6 +7269,23 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 g_ownershipSelectedCandidate = row;
                 if (action == GX_MOUSE_ACTION_DOUBLE_CLICK && g_ownershipResolution.candidateCount > row)
                     activateOwnershipCandidate(ctx, g_ownershipCandidateIndices[row]);
+            }
+        }
+        return;
+    }
+    if (g_debugPanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) return;
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (y >= 94 && y < 122 && x >= 90 && x < 390) {
+                g_debugPanelTab = x < 230 ? 0 : 1;
+                g_debugSelectedBreakpoint = 0;
+            } else if (g_debugPanelTab == 0 && y >= 130 && y < 580 && x >= 88 && x < 872) {
+                const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
+                if (row < g_debugController.breakpointCount) {
+                    g_debugSelectedBreakpoint = row;
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSelectedBreakpoint(ctx);
+                }
             }
         }
         return;
@@ -7174,12 +7704,31 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 70 && x < 130) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
     if (y < 48 && x >= 130 && x < 220) { saveAll(ctx); drawShell(ctx); return; }
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
-    if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; drawShell(ctx); return; }
+    if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
+    if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
+    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 218) {
+        const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
+        if (row == 0) requestDebug(ctx);
+        else if (row == 1) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (!DebugControllerContinue(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Continue unavailable: backend capability is false");
+        } else if (row == 2) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Pause unavailable: backend capability is false");
+        } else if (row == 3) requestDebugStop(ctx);
+        else if (row == 4) toggleBreakpointAtCaret(ctx);
+        else if (row == 5) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 6) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
+        g_debugMenuOpen = false;
+        drawShell(ctx);
+        return;
+    }
     if (g_buildMenuOpen && x >= 300 && x < 560 && y >= 42 && y < 134) {
         if (y < 66) requestBuild(ctx);
         else if (y < 90) requestRun(ctx);
         else requestRunClose(ctx);
         g_buildMenuOpen = false;
+        g_debugMenuOpen = false;
         drawShell(ctx);
         return;
     }
@@ -7195,6 +7744,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             g_workspaceSwitchPending = false;
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress");
             else if (RunControllerIsActive(&g_runController)) writeOutput("Run in progress");
+            else if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) writeStudioOutput("Debug in progress");
             else if (g_controller.model.open && guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmWorkspace;
             else {
                 stopProjectSearch(ctx);
@@ -7205,7 +7755,10 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 g_includeGraphPanelOpen = false;
                 g_includeTargetPickerOpen = false;
                 g_ownershipPanelOpen = false;
-                WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard);
+                if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
+                    DebugControllerClearBreakpoints(&g_debugController);
+                    g_debugPanelOpen = false;
+                }
                 TypeDatabaseClear(&g_typeDatabase);
             }
         } else if (y < 188) {
@@ -7215,6 +7768,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         } else {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
             else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
+            else if (g_debugWaitingForBuild) writeStudioOutput("Debug build in progress; close blocked");
+            else if (DebugControllerIsActive(&g_debugController)) { g_inputMode = InputMode::ConfirmDebugClose; writeStudioOutput("Debug session is active: Stop it before closing Studio"); }
             else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
             else { logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS"); logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS"); g_requestExit = true; }
         }
@@ -7243,6 +7798,10 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     }
     if (x >= kEditorRect.x && y >= kEditorTop && y < kEditorRect.y + kEditorRect.height) {
         g_editorFocused = true;
+        if (x < kEditorTextX && (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (toggleBreakpointAtMouse(ctx, x, y)) drawShell(ctx);
+            return;
+        }
         placeCaretFromMouse(WorkspaceControllerActiveDocument(&g_controller), x, y);
         drawShell(ctx);
     }
@@ -7442,6 +8001,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_runWaitingForBuild = false;
     g_lastRunState = RunState::Idle;
     g_runTerminalReported = false;
+    DebugControllerInit(&g_debugController);
+    HostedDebugBackendInit(&g_hostedDebugBackend, developmentRunService());
+    g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);
+    g_debugWaitingForBuild = false;
+    g_debugTerminalReported = false;
+    g_debugMenuOpen = false;
+    g_debugPanelOpen = false;
+    g_debugPanelTab = 0;
+    g_debugSelectedBreakpoint = 0;
     writeOutput("Ready");
 
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS");
@@ -7471,6 +8039,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             pollReferences(ctx);
             pollBuild(ctx);
             pollRun(ctx);
+            pollDebug(ctx);
             gx_event event;
             clear_event(&event);
             gx_result result = ctx->host->poll_event(ctx, &event,
@@ -7485,6 +8054,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     } else if (RunControllerIsActive(&g_runController)) {
                         g_inputMode = InputMode::ConfirmRunClose;
                         writeOutput("Project application is running: Close it first or keep Studio open");
+                    } else if (g_debugWaitingForBuild) {
+                        writeStudioOutput("Debug build in progress; close blocked");
+                    } else if (DebugControllerIsActive(&g_debugController)) {
+                        g_inputMode = InputMode::ConfirmDebugClose;
+                        writeStudioOutput("Debug session is active: Stop it before closing Studio");
                     } else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
                         g_inputMode = InputMode::ConfirmApplication;
                         writeOutput("Unsaved changes: Save, Discard, or Cancel");
@@ -7498,9 +8072,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
-                             !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen) {
+                             !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen && !g_debugPanelOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
                         else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }
+                        else if (g_debugWaitingForBuild) writeStudioOutput("Debug build in progress; close blocked");
+                        else if (DebugControllerIsActive(&g_debugController)) { g_inputMode = InputMode::ConfirmDebugClose; writeStudioOutput("Debug session is active: Stop it before closing Studio"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
                         else { logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS"); logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS"); running = false; }
                     } else handleNormalKey(ctx, event.param1, event.param2, event.param3, running);
@@ -7514,6 +8090,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 pollOwnership(ctx);
                 pollBuild(ctx);
                 pollRun(ctx);
+                pollDebug(ctx);
                 pollProjectSearch(ctx);
                 pollReferences(ctx);
                 drawShell(ctx);

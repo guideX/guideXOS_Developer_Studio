@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, project-local Header / Source Ownership, and generation-aware Lightweight Type Intelligence / Quick Type Info
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, Debugger Foundation Phase 1 / Level A hosted Native ELF session supervision, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, project-local Header / Source Ownership, and generation-aware Lightweight Type Intelligence / Quick Type Info. See [DEBUGGER_FOUNDATION.md](DEBUGGER_FOUNDATION.md).
 
 ## Integration
 
@@ -49,6 +49,16 @@ Hosted Server build worker and artifact validator
 ```
 
 `main.cpp` owns painting and input routing only. `developer_studio_workspace.*` owns workspace/document commands and the filesystem adapter. `developer_studio_models.*` owns normalized paths, bounds, document state, text-buffer mutation, ordering, and error codes. File I/O is supplied through a small callback interface backed by the Native ABI.
+
+## Debugger Foundation layering
+
+The debugger adds a bounded UI-independent `DebugController` over a
+capability-publishing `DebugBackend`. The hosted adapter reuses the existing
+Build/Run and owner-bound Development Run interfaces. It does not expose
+Windows host assumptions in the general model and does not claim pause,
+stepping, trap handling, registers, memory, or source-line mapping. See
+[DEBUGGER_FOUNDATION.md](DEBUGGER_FOUNDATION.md) for the runtime audit and
+Level A boundary.
 
 ## Native ABI audit and decisions
 

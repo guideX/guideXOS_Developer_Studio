@@ -16,7 +16,7 @@ The current bounded phase proves the first useful source workflow:
 - Type-Aware Member Completion uses that shared type layer for bounded direct members after `.` and `->`; see [docs/CODE_COMPLETION.md](docs/CODE_COMPLETION.md).
 - deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, bounded lexical Go To Definition (`F12`/`Alt+Left`), project-local Declaration–Definition Relationships (`F12`/`Ctrl+F12`/`Alt+F12`), bounded project-local Find All References (`Shift+F12`), manually invoked lightweight lexical Code Completion (`Ctrl+Space`), bounded lexical Signature Help (`Ctrl+Shift+Space`), and a project-local bounded Include Graph (`Ctrl+Shift+I`).
 
-Debug/Debugging, additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
+The Debugger Foundation provides generation-safe hosted Native ELF session supervision, F9 source-breakpoint storage and markers, capability-gated Debug commands, and Breakpoints/Debug Session inspection; see [docs/DEBUGGER_FOUNDATION.md](docs/DEBUGGER_FOUNDATION.md). Instruction-level breakpoints, pause/continue, stepping, source-to-address mapping, and value inspection remain deferred. Additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
 ## Workspace versus project
 

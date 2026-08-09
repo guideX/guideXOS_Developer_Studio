@@ -58,6 +58,7 @@ int main() {
     BuildRequest request = {};
     BuildErrorCode error = BuildErrorCode::None;
     assert(BuildRequestFromProject(project, &request, &error));
+    assert(std::strcmp(request.projectKind, "native-gui-application") == 0);
     assert(std::strcmp(request.buildSystem, "guidexos-native-build-script-v1") == 0);
     assert(std::strcmp(request.buildScript, "build.ps1") == 0);
     assert(std::strcmp(request.expectedArtifact, "build/bin/amd64/hello-guidexos.elf") == 0);

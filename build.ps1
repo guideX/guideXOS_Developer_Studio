@@ -29,6 +29,7 @@ $IncludeGraphTest = Join-Path $ServerRoot "tmp\developer-studio-include-graph-te
 $RelationshipTest = Join-Path $ServerRoot "tmp\developer-studio-relationship-test.exe"
 $OwnershipTest = Join-Path $ServerRoot "tmp\developer-studio-ownership-test.exe"
 $TypesTest = Join-Path $ServerRoot "tmp\developer-studio-types-test.exe"
+$DebuggerTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -191,6 +192,14 @@ try {
     & $TypesTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio type intelligence model test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debugger.cpp", "tests\debugger_test.cpp",
+        "-o", $DebuggerTest
+    )
+    & $DebuggerTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio debugger foundation model test failed with exit code $LASTEXITCODE" }
+
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
@@ -216,6 +225,8 @@ try {
     $relationshipObject = Join-Path $ObjectRoot "developer_studio_relationships.o"
     $ownershipObject = Join-Path $ObjectRoot "developer_studio_ownership.o"
     $typesObject = Join-Path $ObjectRoot "developer_studio_types.o"
+    $debuggerObject = Join-Path $ObjectRoot "developer_studio_debugger.o"
+    $debuggerHostedObject = Join-Path $ObjectRoot "developer_studio_debugger_hosted.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
@@ -237,11 +248,13 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_relationships.cpp"), "-o", $relationshipObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_ownership.cpp"), "-o", $ownershipObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_types.cpp"), "-o", $typesObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger.cpp"), "-o", $debuggerObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger_hosted.cpp"), "-o", $debuggerHostedObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -273,5 +286,6 @@ try {
     if (Test-Path -LiteralPath $RelationshipTest) { Remove-Item -LiteralPath $RelationshipTest -Force }
     if (Test-Path -LiteralPath $OwnershipTest) { Remove-Item -LiteralPath $OwnershipTest -Force }
     if (Test-Path -LiteralPath $TypesTest) { Remove-Item -LiteralPath $TypesTest -Force }
+    if (Test-Path -LiteralPath $DebuggerTest) { Remove-Item -LiteralPath $DebuggerTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

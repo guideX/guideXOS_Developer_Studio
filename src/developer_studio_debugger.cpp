@@ -1,0 +1,636 @@
+#include "developer_studio_debugger.h"
+
+namespace guidexos {
+namespace developer_studio {
+namespace {
+
+static uint32_t textLength(const char* value, uint32_t capacity) {
+    if (!value) return 0;
+    uint32_t length = 0;
+    while (length < capacity && value[length] != '\0') ++length;
+    return length;
+}
+
+static bool copyText(char* output, uint32_t outputSize, const char* input) {
+    if (!output || outputSize == 0) return false;
+    if (!input) { output[0] = '\0'; return false; }
+    const uint32_t length = textLength(input, outputSize);
+    const uint32_t copyLength = length < outputSize ? length : outputSize - 1;
+    for (uint32_t i = 0; i < copyLength; ++i) output[i] = input[i];
+    output[copyLength] = '\0';
+    return length < outputSize;
+}
+
+static bool equalText(const char* left, const char* right, bool caseInsensitive) {
+    if (!left || !right) return false;
+    uint32_t index = 0;
+    while (left[index] != '\0' || right[index] != '\0') {
+        char a = left[index];
+        char b = right[index];
+        if (caseInsensitive) {
+            if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
+            if (b >= 'A' && b <= 'Z') b = static_cast<char>(b + ('a' - 'A'));
+        }
+        if (a != b) return false;
+        ++index;
+    }
+    return true;
+}
+
+static bool isSlash(char value) { return value == '/' || value == static_cast<char>(92); }
+
+static void clearSnapshot(DebugBackendSnapshot* snapshot) {
+    if (!snapshot) return;
+    *snapshot = DebugBackendSnapshot();
+    snapshot->state = DebugSessionState::Idle;
+    snapshot->stopReason = DebugStopReason::None;
+}
+
+static bool validTransition(DebugSessionState from, DebugSessionState to) {
+    if (from == to) return true;
+    switch (from) {
+    case DebugSessionState::Idle: return to == DebugSessionState::Launching;
+    case DebugSessionState::Launching: return to == DebugSessionState::Running || to == DebugSessionState::Failed || to == DebugSessionState::Exited;
+    case DebugSessionState::Running: return to == DebugSessionState::Paused || to == DebugSessionState::Stopping || to == DebugSessionState::Exited || to == DebugSessionState::Failed;
+    case DebugSessionState::Paused: return to == DebugSessionState::Running || to == DebugSessionState::Stopping || to == DebugSessionState::Exited || to == DebugSessionState::Failed;
+    case DebugSessionState::Stopping: return to == DebugSessionState::Exited || to == DebugSessionState::Failed;
+    case DebugSessionState::Exited: return to == DebugSessionState::Launching;
+    case DebugSessionState::Failed: return to == DebugSessionState::Launching;
+    }
+    return false;
+}
+
+static void appendEvent(DebugController* controller, DebugEventKind kind, DebugSessionState state,
+                        DebugStopReason reason, const char* message) {
+    if (!controller) return;
+    if (controller->eventCount == kDebugMaxEvents) {
+        for (uint32_t i = 1; i < kDebugMaxEvents; ++i) controller->events[i - 1] = controller->events[i];
+        controller->eventCount = kDebugMaxEvents - 1;
+    }
+    DebugEvent& event = controller->events[controller->eventCount++];
+    event = DebugEvent();
+    event.sessionGeneration = controller->sessionGeneration;
+    event.kind = kind;
+    event.state = state;
+    event.stopReason = reason;
+    event.processId = controller->processId;
+    event.nativeRuntimeId = controller->nativeRuntimeId;
+    event.exitCode = controller->exitCode;
+    copyText(event.message, sizeof(event.message), message ? message : "");
+}
+
+static void setMessage(DebugController* controller, const char* message) {
+    if (!controller) return;
+    copyText(controller->lastMessage, sizeof(controller->lastMessage), message ? message : "");
+}
+
+static int findBreakpoint(const DebugController* controller, uint64_t breakpointId) {
+    if (!controller || breakpointId == 0) return -1;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i)
+        if (controller->breakpoints[i].id == breakpointId) return static_cast<int>(i);
+    return -1;
+}
+
+static bool validRelativeSourcePath(const char* projectRoot, const char* sourcePath,
+                                    char* normalized, uint32_t normalizedSize) {
+    if (!projectRoot || !sourcePath || !normalized || sourcePath[0] == '\0' ||
+        isSlash(sourcePath[0]) || sourcePath[1] == ':' || PathContainsTraversal(sourcePath)) return false;
+    if (!NormalizePath(sourcePath, normalized, normalizedSize) || normalized[0] == '\0' ||
+        equalText(normalized, ".", false) || isSlash(normalized[0]) || normalized[1] == ':') return false;
+    char absolute[kMaxPathBytes] = {};
+    return JoinWorkspacePath(projectRoot, normalized, absolute, sizeof(absolute));
+}
+
+static void setBreakpointMessage(DebugBreakpoint& breakpoint, const char* message) {
+    copyText(breakpoint.message, sizeof(breakpoint.message), message ? message : "");
+}
+
+static void initializeBreakpoint(DebugBreakpoint* breakpoint, uint64_t id, const char* projectId,
+                                 const char* relativePath, uint64_t projectGeneration,
+                                 uint32_t line, uint32_t column, uint32_t sourceGeneration) {
+    *breakpoint = DebugBreakpoint();
+    breakpoint->id = id;
+    copyText(breakpoint->projectId, sizeof(breakpoint->projectId), projectId);
+    copyText(breakpoint->location.relativePath, sizeof(breakpoint->location.relativePath), relativePath);
+    breakpoint->location.line = line;
+    breakpoint->location.column = column;
+    breakpoint->location.projectGeneration = projectGeneration;
+    breakpoint->location.sourceGeneration = sourceGeneration;
+    breakpoint->location.mapping = DebugMappingState::Unavailable;
+    breakpoint->enabled = true;
+    breakpoint->state = DebugBreakpointState::Pending;
+    breakpoint->sessionGeneration = 0;
+    setBreakpointMessage(*breakpoint, "Pending: source mapping unavailable");
+}
+
+static void applySnapshotUnchecked(DebugController* controller, const DebugBackendSnapshot& snapshot) {
+    const DebugSessionState previous = controller->state;
+    controller->processId = snapshot.processId;
+    controller->nativeRuntimeId = snapshot.nativeRuntimeId;
+    controller->exitCode = snapshot.exitCode;
+    controller->stopReason = snapshot.stopReason;
+    if (snapshot.backendName[0]) copyText(controller->backendName, sizeof(controller->backendName), snapshot.backendName);
+    if (snapshot.errorMessage[0]) setMessage(controller, snapshot.errorMessage);
+    if (snapshot.state != previous && !validTransition(previous, snapshot.state)) {
+        controller->error = DebugErrorCode::InvalidTransition;
+        setMessage(controller, "Invalid debugger session transition");
+        return;
+    }
+    controller->state = snapshot.state;
+    controller->active = snapshot.state == DebugSessionState::Launching ||
+        snapshot.state == DebugSessionState::Running || snapshot.state == DebugSessionState::Paused ||
+        snapshot.state == DebugSessionState::Stopping;
+    if (snapshot.state == DebugSessionState::Running && previous != DebugSessionState::Running)
+        appendEvent(controller, DebugEventKind::Running, snapshot.state, DebugStopReason::None, "Hosted Native ELF target running");
+    else if (snapshot.state == DebugSessionState::Paused && previous != DebugSessionState::Paused)
+        appendEvent(controller, DebugEventKind::Paused, snapshot.state, snapshot.stopReason, snapshot.errorMessage);
+    else if (snapshot.state == DebugSessionState::Stopping && previous != DebugSessionState::Stopping)
+        appendEvent(controller, DebugEventKind::Stopped, snapshot.state, DebugStopReason::UserRequested, "Debug stop requested");
+    else if (snapshot.state == DebugSessionState::Exited && previous != DebugSessionState::Exited) {
+        appendEvent(controller, DebugEventKind::Exited, snapshot.state, DebugStopReason::Exited, "Hosted Native ELF target exited");
+        controller->active = false;
+    } else if (snapshot.state == DebugSessionState::Failed && previous != DebugSessionState::Failed) {
+        appendEvent(controller, DebugEventKind::Failed, snapshot.state, snapshot.stopReason, snapshot.errorMessage);
+        controller->active = false;
+    }
+}
+
+} // namespace
+
+const char* DebugSessionStateName(DebugSessionState state) {
+    switch (state) {
+    case DebugSessionState::Idle: return "Idle";
+    case DebugSessionState::Launching: return "Launching";
+    case DebugSessionState::Running: return "Running";
+    case DebugSessionState::Paused: return "Paused";
+    case DebugSessionState::Stopping: return "Stopping";
+    case DebugSessionState::Exited: return "Exited";
+    case DebugSessionState::Failed: return "Failed";
+    }
+    return "Unknown";
+}
+
+const char* DebugErrorName(DebugErrorCode error) {
+    switch (error) {
+    case DebugErrorCode::None: return "none";
+    case DebugErrorCode::InvalidRequest: return "invalid_request";
+    case DebugErrorCode::InvalidTransition: return "invalid_transition";
+    case DebugErrorCode::NoProject: return "no_project";
+    case DebugErrorCode::NoRunnableTarget: return "no_runnable_target";
+    case DebugErrorCode::BackendUnavailable: return "backend_unavailable";
+    case DebugErrorCode::CapabilityUnavailable: return "capability_unavailable";
+    case DebugErrorCode::LaunchFailed: return "launch_failed";
+    case DebugErrorCode::StopFailed: return "stop_failed";
+    case DebugErrorCode::PollFailed: return "poll_failed";
+    case DebugErrorCode::StaleSession: return "stale_session";
+    case DebugErrorCode::OutsideProject: return "outside_project";
+    case DebugErrorCode::InvalidSourcePath: return "invalid_source_path";
+    case DebugErrorCode::InvalidLine: return "invalid_line";
+    case DebugErrorCode::DuplicateBreakpoint: return "duplicate_breakpoint";
+    case DebugErrorCode::BreakpointNotFound: return "breakpoint_not_found";
+    case DebugErrorCode::BreakpointRejected: return "breakpoint_rejected";
+    case DebugErrorCode::SourceMappingUnavailable: return "source_mapping_unavailable";
+    case DebugErrorCode::ProjectGenerationMismatch: return "project_generation_mismatch";
+    case DebugErrorCode::BackendError: return "backend_error";
+    }
+    return "unknown";
+}
+
+const char* DebugBreakpointStateName(DebugBreakpointState state) {
+    switch (state) {
+    case DebugBreakpointState::Pending: return "Pending";
+    case DebugBreakpointState::Verified: return "Verified";
+    case DebugBreakpointState::Rejected: return "Rejected";
+    case DebugBreakpointState::Disabled: return "Disabled";
+    case DebugBreakpointState::Stale: return "Stale";
+    }
+    return "Unknown";
+}
+
+const char* DebugStopReasonName(DebugStopReason reason) {
+    switch (reason) {
+    case DebugStopReason::None: return "None";
+    case DebugStopReason::Breakpoint: return "Breakpoint";
+    case DebugStopReason::UserRequested: return "User requested";
+    case DebugStopReason::Exited: return "Exited";
+    case DebugStopReason::Exception: return "Exception";
+    case DebugStopReason::Signal: return "Signal";
+    case DebugStopReason::EntryPoint: return "Entry point";
+    case DebugStopReason::Unknown: return "Unknown";
+    }
+    return "Unknown";
+}
+
+const char* DebugEventKindName(DebugEventKind kind) {
+    switch (kind) {
+    case DebugEventKind::None: return "None";
+    case DebugEventKind::Launched: return "Launched";
+    case DebugEventKind::Running: return "Running";
+    case DebugEventKind::Paused: return "Paused";
+    case DebugEventKind::BreakpointBound: return "Breakpoint bound";
+    case DebugEventKind::BreakpointRejected: return "Breakpoint rejected";
+    case DebugEventKind::Stopped: return "Stopped";
+    case DebugEventKind::Exited: return "Exited";
+    case DebugEventKind::Failed: return "Failed";
+    }
+    return "Unknown";
+}
+
+bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabilities& right) {
+    return left.canLaunch == right.canLaunch && left.canStop == right.canStop &&
+        left.canPause == right.canPause && left.canContinue == right.canContinue &&
+        left.canSetInstructionBreakpoint == right.canSetInstructionBreakpoint &&
+        left.canSetSourceBreakpoint == right.canSetSourceBreakpoint && left.canStepInto == right.canStepInto &&
+        left.canStepOver == right.canStepOver && left.canStepOut == right.canStepOut &&
+        left.canReadRegisters == right.canReadRegisters && left.canReadMemory == right.canReadMemory &&
+        left.canWriteMemory == right.canWriteMemory && left.canEnumerateThreads == right.canEnumerateThreads &&
+        left.canReadCallStack == right.canReadCallStack && left.canResolveSourceLocations == right.canResolveSourceLocations &&
+        left.canEvaluateExpressions == right.canEvaluateExpressions;
+}
+
+bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities) { return capabilities.canPause; }
+bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities) { return capabilities.canContinue; }
+
+bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
+                          uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!target) { if (error) *error = DebugErrorCode::InvalidRequest; return false; }
+    *target = DebugTarget();
+    RunRequest request = {};
+    RunErrorCode runError = RunErrorCode::None;
+    if (!RunRequestFromBuild(project, build, &request, &runError)) {
+        if (error) *error = runError == RunErrorCode::BuildRequired ? DebugErrorCode::NoRunnableTarget : DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    if (!copyText(target->projectId, sizeof(target->projectId), project.projectId) ||
+        !copyText(target->projectRoot, sizeof(target->projectRoot), project.rootPath) ||
+        !copyText(target->targetProfile, sizeof(target->targetProfile), project.targetProfileId) ||
+        !copyText(target->architecture, sizeof(target->architecture), project.architecture[0] ? project.architecture : "amd64") ||
+        !copyText(target->abi, sizeof(target->abi), project.abi[0] ? project.abi : "guidexos-c-abi-v1") ||
+        !copyText(target->applicationId, sizeof(target->applicationId), project.projectId) ||
+        !copyText(target->manifestPath, sizeof(target->manifestPath), request.manifestPath) ||
+        !copyText(target->executablePath, sizeof(target->executablePath), request.artifactPath) ||
+        !copyText(target->artifactSha256, sizeof(target->artifactSha256), request.artifactSha256) ||
+        !copyText(target->workingDirectory, sizeof(target->workingDirectory), project.rootPath)) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    target->projectGeneration = projectGeneration;
+    return true;
+}
+
+bool DebugRelativeSourcePath(const char* projectRoot, const char* absolutePath,
+                             char* relativePath, uint32_t relativePathSize) {
+    if (!projectRoot || !absolutePath || !relativePath || relativePathSize == 0) return false;
+    char root[kMaxPathBytes] = {};
+    char absolute[kMaxPathBytes] = {};
+    if (!NormalizePath(projectRoot, root, sizeof(root)) || !NormalizePath(absolutePath, absolute, sizeof(absolute))) return false;
+    const uint32_t rootLength = textLength(root, sizeof(root));
+    const uint32_t absoluteLength = textLength(absolute, sizeof(absolute));
+    if (absoluteLength <= rootLength || absolute[rootLength] != '/') return false;
+    // The prefix check is case-insensitive and path-boundary aware. This
+    // keeps D:/workspace/app2 outside D:/workspace/app.
+    for (uint32_t i = 0; i < rootLength; ++i) {
+        char left = root[i];
+        char right = absolute[i];
+        if (left >= 'A' && left <= 'Z') left = static_cast<char>(left + ('a' - 'A'));
+        if (right >= 'A' && right <= 'Z') right = static_cast<char>(right + ('a' - 'A'));
+        if (left != right) return false;
+    }
+    const char* value = absolute + rootLength + 1;
+    return copyText(relativePath, relativePathSize, value) && !PathContainsTraversal(relativePath);
+}
+
+bool DebugControllerInit(DebugController* controller) {
+    if (!controller) return false;
+    // Do not value-initialize this large bounded controller through a stack
+    // temporary: Native ELF application stacks are intentionally small.
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(controller);
+    for (uint32_t i = 0; i < sizeof(DebugController); ++i) bytes[i] = 0;
+    controller->state = DebugSessionState::Idle;
+    controller->error = DebugErrorCode::None;
+    controller->nextBreakpointId = 1;
+    return true;
+}
+
+bool DebugControllerSetProjectContext(DebugController* controller, const char* projectId,
+                                      const char* projectRoot, uint64_t projectGeneration) {
+    if (!controller || !projectId || !projectRoot || projectId[0] == '\0' || projectRoot[0] == '\0') return false;
+    if (!copyText(controller->projectId, sizeof(controller->projectId), projectId) ||
+        !copyText(controller->projectRoot, sizeof(controller->projectRoot), projectRoot)) return false;
+    controller->projectGeneration = projectGeneration;
+    return true;
+}
+
+void DebugControllerClearBreakpoints(DebugController* controller) {
+    if (!controller) return;
+    controller->breakpointCount = 0;
+}
+
+bool DebugControllerStart(DebugController* controller, const DebugBackend& backend,
+                          const DebugTarget& target, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !backend.launch || !backend.capabilities.canLaunch || target.projectId[0] == '\0' ||
+        target.executablePath[0] == '\0') {
+        if (error) *error = !backend.launch || !backend.capabilities.canLaunch ? DebugErrorCode::CapabilityUnavailable : DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    if (controller->active || (controller->state != DebugSessionState::Idle &&
+        controller->state != DebugSessionState::Exited && controller->state != DebugSessionState::Failed)) {
+        if (error) *error = DebugErrorCode::InvalidTransition;
+        return false;
+    }
+    if (controller->sessionGeneration == UINT64_MAX) controller->sessionGeneration = 1;
+    else ++controller->sessionGeneration;
+    if (controller->sessionGeneration == 0) controller->sessionGeneration = 1;
+    controller->target = target;
+    controller->projectGeneration = target.projectGeneration;
+    copyText(controller->projectId, sizeof(controller->projectId), target.projectId);
+    copyText(controller->projectRoot, sizeof(controller->projectRoot), target.projectRoot);
+    controller->capabilities = backend.capabilities;
+    copyText(controller->backendName, sizeof(controller->backendName), backend.name);
+    controller->state = DebugSessionState::Launching;
+    controller->active = true;
+    controller->error = DebugErrorCode::None;
+    controller->processId = 0;
+    controller->nativeRuntimeId = 0;
+    controller->exitCode = 0;
+    controller->stopReason = DebugStopReason::None;
+    setMessage(controller, "Launching debug target");
+    appendEvent(controller, DebugEventKind::Launched, DebugSessionState::Launching, DebugStopReason::None, "Debug target launch requested");
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        breakpoint.sessionGeneration = controller->sessionGeneration;
+        if (!breakpoint.enabled) breakpoint.state = DebugBreakpointState::Disabled;
+        else if (breakpoint.location.projectGeneration != target.projectGeneration) {
+            breakpoint.state = DebugBreakpointState::Stale;
+            setBreakpointMessage(breakpoint, "Stale: built project generation differs");
+        } else if (!backend.capabilities.canSetSourceBreakpoint) {
+            breakpoint.state = DebugBreakpointState::Pending;
+            setBreakpointMessage(breakpoint, "Pending: source mapping unavailable");
+        }
+    }
+    DebugBackendSnapshot snapshot;
+    clearSnapshot(&snapshot);
+    snapshot.sessionGeneration = controller->sessionGeneration;
+    if (!backend.launch(backend.userData, target, controller->sessionGeneration, &snapshot)) {
+        controller->state = DebugSessionState::Failed;
+        controller->active = false;
+        controller->error = DebugErrorCode::LaunchFailed;
+        setMessage(controller, snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend launch failed");
+        appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
+        if (error) *error = controller->error;
+        return false;
+    }
+    if (snapshot.sessionGeneration == 0) snapshot.sessionGeneration = controller->sessionGeneration;
+    if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot)) {
+        if (error) *error = controller->error;
+        return false;
+    }
+    return true;
+}
+
+bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionGeneration,
+                                  const DebugBackendSnapshot& snapshot) {
+    if (!controller || sessionGeneration == 0 || sessionGeneration != controller->sessionGeneration ||
+        (snapshot.sessionGeneration != 0 && snapshot.sessionGeneration != sessionGeneration)) {
+        if (controller) controller->error = DebugErrorCode::StaleSession;
+        return false;
+    }
+    controller->error = DebugErrorCode::None;
+    applySnapshotUnchecked(controller, snapshot);
+    return controller->error != DebugErrorCode::InvalidTransition;
+}
+
+bool DebugControllerPoll(DebugController* controller, const DebugBackend& backend) {
+    if (!controller || !controller->active || !backend.poll) return false;
+    DebugBackendSnapshot snapshot;
+    clearSnapshot(&snapshot);
+    snapshot.sessionGeneration = controller->sessionGeneration;
+    if (!backend.poll(backend.userData, controller->sessionGeneration, &snapshot)) {
+        controller->error = DebugErrorCode::PollFailed;
+        controller->state = DebugSessionState::Failed;
+        controller->active = false;
+        setMessage(controller, snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend poll failed");
+        appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
+        return false;
+    }
+    return DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot);
+}
+
+bool DebugControllerRequestStop(DebugController* controller, const DebugBackend& backend,
+                                DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->active || !backend.stop || !backend.capabilities.canStop ||
+        (controller->state != DebugSessionState::Running && controller->state != DebugSessionState::Paused &&
+         controller->state != DebugSessionState::Launching)) {
+        if (error) *error = !backend.stop || !backend.capabilities.canStop ? DebugErrorCode::CapabilityUnavailable : DebugErrorCode::InvalidTransition;
+        return false;
+    }
+    if (!backend.stop(backend.userData, controller->sessionGeneration)) {
+        controller->error = DebugErrorCode::StopFailed;
+        if (error) *error = controller->error;
+        setMessage(controller, "Debugger backend stop request failed");
+        return false;
+    }
+    controller->state = DebugSessionState::Stopping;
+    controller->stopReason = DebugStopReason::UserRequested;
+    setMessage(controller, "Stop requested");
+    appendEvent(controller, DebugEventKind::Stopped, controller->state, DebugStopReason::UserRequested, controller->lastMessage);
+    return true;
+}
+
+bool DebugControllerPause(DebugController* controller, const DebugBackend& backend,
+                          DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->active || controller->state != DebugSessionState::Running ||
+        !backend.pause || !backend.capabilities.canPause) {
+        if (error) *error = DebugErrorCode::CapabilityUnavailable;
+        return false;
+    }
+    if (!backend.pause(backend.userData, controller->sessionGeneration)) {
+        if (error) *error = DebugErrorCode::BackendError;
+        return false;
+    }
+    return true;
+}
+
+bool DebugControllerContinue(DebugController* controller, const DebugBackend& backend,
+                             DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->active || controller->state != DebugSessionState::Paused ||
+        !backend.continueExecution || !backend.capabilities.canContinue) {
+        if (error) *error = DebugErrorCode::CapabilityUnavailable;
+        return false;
+    }
+    if (!backend.continueExecution(backend.userData, controller->sessionGeneration)) {
+        if (error) *error = DebugErrorCode::BackendError;
+        return false;
+    }
+    return true;
+}
+
+bool DebugControllerIsActive(const DebugController* controller) { return controller && controller->active; }
+bool DebugControllerCanStart(const DebugController* controller) { return controller && !controller->active; }
+bool DebugControllerCanStop(const DebugController* controller) { return controller && controller->active && controller->capabilities.canStop; }
+bool DebugControllerCanPause(const DebugController* controller) { return controller && controller->active && controller->state == DebugSessionState::Running && controller->capabilities.canPause; }
+bool DebugControllerCanContinue(const DebugController* controller) { return controller && controller->active && controller->state == DebugSessionState::Paused && controller->capabilities.canContinue; }
+
+bool DebugControllerAddBreakpoint(DebugController* controller, const char* projectId,
+                                   const char* projectRoot, uint64_t projectGeneration,
+                                   const char* sourcePath, uint32_t line, uint32_t column,
+                                   uint32_t sourceGeneration, uint64_t* outBreakpointId,
+                                   DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (outBreakpointId) *outBreakpointId = 0;
+    if (!controller || !projectId || !projectRoot || projectId[0] == '\0' ||
+        controller->breakpointCount >= kDebugMaxBreakpoints) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    if (!DebugControllerSetProjectContext(controller, projectId, projectRoot, projectGeneration)) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    if (line == 0) { if (error) *error = DebugErrorCode::InvalidLine; return false; }
+    char relative[kMaxProjectPathBytes] = {};
+    if (!validRelativeSourcePath(projectRoot, sourcePath, relative, sizeof(relative))) {
+        if (error) *error = DebugErrorCode::OutsideProject;
+        return false;
+    }
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        const DebugBreakpoint& existing = controller->breakpoints[i];
+        if (equalText(existing.projectId, projectId, true) && existing.location.line == line &&
+            PathsEqual(existing.location.relativePath, relative)) {
+            if (error) *error = DebugErrorCode::DuplicateBreakpoint;
+            if (outBreakpointId) *outBreakpointId = existing.id;
+            return false;
+        }
+    }
+    const uint64_t id = controller->nextBreakpointId == 0 ? 1 : controller->nextBreakpointId++;
+    initializeBreakpoint(&controller->breakpoints[controller->breakpointCount++], id, projectId, relative,
+                         projectGeneration, line, column, sourceGeneration);
+    if (outBreakpointId) *outBreakpointId = id;
+    return true;
+}
+
+bool DebugControllerToggleBreakpoint(DebugController* controller, const char* projectId,
+                                     const char* projectRoot, uint64_t projectGeneration,
+                                     const char* sourcePath, uint32_t line, uint32_t column,
+                                     uint32_t sourceGeneration, uint64_t* outBreakpointId,
+                                     DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (outBreakpointId) *outBreakpointId = 0;
+    char relative[kMaxProjectPathBytes] = {};
+    if (!validRelativeSourcePath(projectRoot, sourcePath, relative, sizeof(relative))) {
+        if (error) *error = DebugErrorCode::OutsideProject;
+        return false;
+    }
+    if (!controller || !projectId || line == 0) { if (error) *error = DebugErrorCode::InvalidRequest; return false; }
+    if (!DebugControllerSetProjectContext(controller, projectId, projectRoot, projectGeneration)) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!equalText(breakpoint.projectId, projectId, true) || breakpoint.location.line != line ||
+            !PathsEqual(breakpoint.location.relativePath, relative)) continue;
+        breakpoint.enabled = !breakpoint.enabled;
+        breakpoint.state = breakpoint.enabled ? DebugBreakpointState::Pending : DebugBreakpointState::Disabled;
+        breakpoint.location.projectGeneration = projectGeneration;
+        breakpoint.location.sourceGeneration = sourceGeneration;
+        setBreakpointMessage(breakpoint, breakpoint.enabled ? "Pending: source mapping unavailable" : "Disabled by user");
+        if (outBreakpointId) *outBreakpointId = breakpoint.id;
+        return true;
+    }
+    return DebugControllerAddBreakpoint(controller, projectId, projectRoot, projectGeneration, relative,
+                                        line, column, sourceGeneration, outBreakpointId, error);
+}
+
+bool DebugControllerDeleteBreakpoint(DebugController* controller, uint64_t breakpointId,
+                                     DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    const int index = findBreakpoint(controller, breakpointId);
+    if (index < 0) { if (error) *error = DebugErrorCode::BreakpointNotFound; return false; }
+    for (uint32_t i = static_cast<uint32_t>(index) + 1; i < controller->breakpointCount; ++i)
+        controller->breakpoints[i - 1] = controller->breakpoints[i];
+    --controller->breakpointCount;
+    return true;
+}
+
+bool DebugControllerSetBreakpointEnabled(DebugController* controller, uint64_t breakpointId,
+                                         bool enabled, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    const int index = findBreakpoint(controller, breakpointId);
+    if (index < 0) { if (error) *error = DebugErrorCode::BreakpointNotFound; return false; }
+    DebugBreakpoint& breakpoint = controller->breakpoints[index];
+    breakpoint.enabled = enabled;
+    breakpoint.state = enabled ? DebugBreakpointState::Pending : DebugBreakpointState::Disabled;
+    setBreakpointMessage(breakpoint, enabled ? "Pending: source mapping unavailable" : "Disabled by user");
+    return true;
+}
+
+bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t sessionGeneration,
+                                            uint64_t breakpointId, bool accepted,
+                                            uint64_t backendBindingId, DebugAddress address,
+                                            const char* message, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || sessionGeneration != controller->sessionGeneration) {
+        if (error) *error = DebugErrorCode::StaleSession;
+        return false;
+    }
+    const int index = findBreakpoint(controller, breakpointId);
+    if (index < 0) { if (error) *error = DebugErrorCode::BreakpointNotFound; return false; }
+    DebugBreakpoint& breakpoint = controller->breakpoints[index];
+    if (!breakpoint.enabled) { breakpoint.state = DebugBreakpointState::Disabled; return true; }
+    breakpoint.backendBindingId = accepted ? backendBindingId : 0;
+    breakpoint.location.instructionAddress = address;
+    breakpoint.location.mapping = accepted ? DebugMappingState::Mapped : DebugMappingState::Rejected;
+    breakpoint.state = accepted ? DebugBreakpointState::Verified : DebugBreakpointState::Rejected;
+    setBreakpointMessage(breakpoint, message ? message : (accepted ? "Verified" : "Rejected by backend"));
+    appendEvent(controller, accepted ? DebugEventKind::BreakpointBound : DebugEventKind::BreakpointRejected,
+                controller->state, accepted ? DebugStopReason::None : DebugStopReason::Unknown,
+                breakpoint.message);
+    if (!accepted && error) *error = DebugErrorCode::BreakpointRejected;
+    return accepted;
+}
+
+void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t projectGeneration) {
+    if (!controller) return;
+    controller->projectGeneration = projectGeneration;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (breakpoint.location.projectGeneration == projectGeneration || breakpoint.state == DebugBreakpointState::Disabled) continue;
+        breakpoint.state = DebugBreakpointState::Stale;
+        setBreakpointMessage(breakpoint, "Stale: built project generation differs");
+    }
+}
+
+void DebugControllerMarkSourceGeneration(DebugController* controller, const char* projectId,
+                                         const char* sourcePath, uint32_t sourceGeneration) {
+    if (!controller || !projectId || !sourcePath) return;
+    char relative[kMaxProjectPathBytes] = {};
+    const bool absolute = sourcePath[0] != '\0' &&
+        (isSlash(sourcePath[0]) || sourcePath[1] == ':');
+    if (absolute &&
+        !DebugRelativeSourcePath(controller->projectRoot, sourcePath, relative, sizeof(relative))) return;
+    if (relative[0] == '\0') copyText(relative, sizeof(relative), sourcePath);
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!equalText(breakpoint.projectId, projectId, true) || !PathsEqual(breakpoint.location.relativePath, relative) ||
+            breakpoint.location.sourceGeneration == sourceGeneration || breakpoint.state == DebugBreakpointState::Disabled) continue;
+        breakpoint.state = DebugBreakpointState::Stale;
+        setBreakpointMessage(breakpoint, "Stale: source generation differs from built artifact");
+    }
+}
+
+const DebugBreakpoint* DebugControllerBreakpointAt(const DebugController* controller, uint32_t index) {
+    return controller && index < controller->breakpointCount ? &controller->breakpoints[index] : nullptr;
+}
+
+const DebugEvent* DebugControllerEventAt(const DebugController* controller, uint32_t index) {
+    return controller && index < controller->eventCount ? &controller->events[index] : nullptr;
+}
+
+} // namespace developer_studio
+} // namespace guidexos
