@@ -1,0 +1,27 @@
+developer_studio_model_test 0 0
+developer_studio_project_test 0 0
+developer_studio_build_test 1 0.0163119
+developer_studio_run_test 1 0.0173482
+developer_studio_output_test 1 0.0155368
+developer_studio_navigation_test 0 0
+developer_studio_syntax_test 1 0.0148898
+developer_studio_find_test 1 0.0147939
+developer_studio_project_search_test 1 0.023482
+developer_studio_symbol_test 0 0
+developer_studio_navigation_definition_test 1 0.0152182
+developer_studio_reference_test 1 0.0180768
+developer_studio_rename_test 1 0.0337745
+developer_studio_completion_test 1 0.0353546
+developer_studio_signature_test 1 0.0167841
+developer_studio_include_graph_test 1 0.0721002
+developer_studio_relationship_test 0 0
+developer_studio_ownership_test 1 0.0148319
+developer_studio_types_test 1 0.0213137
+developer_studio_debug_symbols_test 1 0.0258143
+developer_studio_debugger_test 1 0.0229481
+---
+developer_studio_model_test
+developer_studio_project_test
+developer_studio_navigation_test
+developer_studio_symbol_test
+developer_studio_relationship_test

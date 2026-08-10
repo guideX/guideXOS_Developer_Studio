@@ -11,11 +11,12 @@ for this bounded source-breakpoint path; it is not a claim of general-purpose
 debugger support.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
-hosted backend is intentionally a supervision backend: it launches the
-existing temporary Native ELF development deployment, records its runtime
-identity, observes running/exit state, and requests an owned-window stop.
-The supervision-only subset is Level A. Phase 3B adds a separately bounded Level B
-path for verified software breakpoints and owned breakpoint pauses.
+hosted backend launches the existing temporary Native ELF development
+deployment, records its runtime identity, observes running/exit state, requests
+an owned-window stop, and performs the separately bounded AMD64 breakpoint
+continuation path. The supervision-only subset is Level A. Phase 3B adds a
+separately bounded Level B path for verified software breakpoints and owned
+breakpoint pauses; Phase 4 adds Level B + Continue.
 
 ## Scope and proven level
 
@@ -84,8 +85,11 @@ The package retains a valid ELF symbol table when the toolchain emits one, but
 the existing symbol index still stores names and source locations rather than
 instruction addresses.
 
-These facts make source-to-address guessing and INT3 patching unsafe in this
-phase. No Server ABI change was required.
+These facts made source-to-address guessing and INT3 patching unsafe in the
+original foundation. Phase 2 source mapping did not require an ABI change;
+Phase 4 adds only append-only debug request/snapshot fields for the bounded
+AMD64 register context and continuation command, preserving the existing
+numeric identities and offsets.
 
 ## Architecture
 
@@ -187,6 +191,14 @@ The same smoke requests Stop Debugging through the product close confirmation,
 restores the binding, exits the target, and closes Developer Studio cleanly. The
 Server's active host callback context is thread-local so the Studio and debugged
 Native ELF workers can remain live concurrently.
+
+The Phase 4 UI variant of this smoke adds `-ContinueBreakpoint`: after the
+paused marker it sends F5 and requires the hosted `Running` marker together
+with the Server's real `EXCEPTION_SINGLE_STEP` and `rebound=true` diagnostics.
+The direct runtime harness remains the authoritative repeated-hit and exact
+instruction-semantics proof; the UI variant uses the checked-in fixture's
+window loop so the post-Continue Running state can be observed without
+depending on target exit timing.
 
 Deferred work includes additional instruction-breakpoint workflows, user-visible
 source stepping, DWARF expressions, locals, stack unwinding, watches,

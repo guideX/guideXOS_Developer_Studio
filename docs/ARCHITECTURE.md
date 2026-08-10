@@ -1,6 +1,6 @@
 # guideXOS Developer Studio Bounded Run Project Phase Architecture
 
-Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, Debugger Foundation Phase 1 / Level A hosted Native ELF session supervision, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, project-local Header / Source Ownership, and generation-aware Lightweight Type Intelligence / Quick Type Info. See [DEBUGGER_FOUNDATION.md](DEBUGGER_FOUNDATION.md).
+Status: minimal workspace, source editor, version 1 project creation/loading, hosted Build Project, temporary hosted Run Project, Debugger Phase 4 / Level B + Continue hosted AMD64 software-breakpoint control, bounded C/C++ lexical syntax highlighting, active-document Find/Replace, bounded project-scoped Find in Files, bounded lexical Document Outline/Project Symbol Index, bounded lexical Go To Definition, manually invoked lightweight lexical Code Completion, manually invoked lightweight lexical Signature Help, project-local Include Graph, project-local Header / Source Ownership, and generation-aware Lightweight Type Intelligence / Quick Type Info. See [DEBUGGER_FOUNDATION.md](DEBUGGER_FOUNDATION.md).
 
 ## Integration
 

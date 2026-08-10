@@ -1,0 +1,24 @@
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj: \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger.cpp \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_run.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_build.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_workspace.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_projects.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_models.h \
+ C:/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include/stdint.h \
+ C:/mingw64/x86_64-w64-mingw32/include/stdint.h \
+ C:/mingw64/x86_64-w64-mingw32/include/crtdefs.h \
+ C:/mingw64/x86_64-w64-mingw32/include/corecrt.h \
+ C:/mingw64/x86_64-w64-mingw32/include/_mingw.h \
+ C:/mingw64/x86_64-w64-mingw32/include/_mingw_mac.h \
+ C:/mingw64/x86_64-w64-mingw32/include/_mingw_secapi.h \
+ C:/mingw64/x86_64-w64-mingw32/include/vadefs.h \
+ C:/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0/include/stddef.h \
+ C:/mingw64/x86_64-w64-mingw32/include/stddef.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_find.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_syntax.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_output.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_symbols.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_debug_symbols.h \
+ D:\dev\guideXOS_Developer_Studio\src\developer_studio_types.h

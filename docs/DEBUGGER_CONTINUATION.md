@@ -4,6 +4,11 @@ Phase 4 implements real continuation from a hosted AMD64 software breakpoint.
 The supported target remains the Windows-hosted, fixed-address ELF64 `ET_EXEC`
 runtime used by Developer Studio.
 
+The Server ABI extension is append-only. Existing command/status values and
+request/snapshot offsets remain unchanged; Phase 4 appends the Continue command,
+pending status, thread/stop-generation identity, register context, and
+RFLAGS audit fields. The ABI layout test covers the resulting fixed sizes.
+
 ## Stop context ownership
 
 At a real `EXCEPTION_BREAKPOINT`, the Server owns the borrowed Windows
