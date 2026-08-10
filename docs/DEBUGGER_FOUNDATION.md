@@ -6,14 +6,16 @@ Hosted Native ELF software-breakpoint plumbing is implemented for the current
 AMD64 fixed-address runtime: debug-controlled launch gating, exact process/runtime
 identity, bounded `INT3` binding, original-byte restoration, vectored breakpoint trap
 routing, and real Paused-state model integration. Continue, stepping, registers,
-memory inspection, and call stacks remain disabled. The implementation is pending the
-separate fixture-based runtime proof required before claiming Level B.
+memory inspection, and call stacks remain disabled. The Phase 3B fixture proof
+establishes Level B for this bounded source-breakpoint path; it is not a claim of
+general-purpose debugger support.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend is intentionally a supervision backend: it launches the
 existing temporary Native ELF development deployment, records its runtime
 identity, observes running/exit state, and requests an owned-window stop.
-This is Level A — Session supervision only. It is not a full debugger.
+The supervision-only subset is Level A. Phase 3B adds a separately bounded Level B
+path for verified software breakpoints and owned breakpoint pauses.
 
 ## Scope and proven level
 
@@ -30,8 +32,9 @@ The hosted Native ELF backend publishes these capabilities:
 - Stop: supported through the owner-bound `development_run_request_close`
   path and subsequent normal polling/cleanup.
 - Pause, Continue, Step Into, Step Over, Step Out: unavailable.
-- Source and instruction breakpoints: unavailable in the backend; editor
-  breakpoints remain `Pending`.
+- Source and instruction breakpoints: source breakpoints are supported through
+  DWARF mapping and the hosted software-breakpoint binder; instruction-level
+  editing remains outside the UI contract.
 - Registers, memory, threads, call stack, expressions, and source-location
   resolution: unavailable.
 
@@ -155,14 +158,32 @@ and exposes forward and reverse line/address lookup. The detailed contract,
 limits, error states, and validation evidence are in
 `docs/DEBUGGER_SOURCE_MAPPING.md`.
 
-This evidence does not change the Phase 1 runtime capability level: the
-hosted backend still supports launch and owner-bound stop only. A later
-software-breakpoint/trap milestone must first add and validate a Server runtime
-debugger ABI. Pause/register support cannot be claimed from the current
-runtime audit.
+Phase 3 extends this foundation with the separately documented hosted software
+breakpoint and trap path. It does not add general process suspension, Continue,
+stepping, register access, or call-stack inspection.
 
-Deferred work includes instruction breakpoints, trap delivery, Continue after a
-real stop, stepping, DWARF expressions, locals, stack unwinding, watches,
+## Phase 3B end-to-end proof
+
+The authoritative UI smoke uses the checked-in fixture at
+`tests/fixtures/debugger-phase3b`. Developer Studio opens the fixture through its
+real project dialog, moves the editor caret to `src/main.cpp:20`, arms F9, builds
+with debug symbols, starts Ctrl+F5, and consumes the hosted trap. The fixture's
+line 20 maps to `0x20001218` in the fixed `0x20000000` image.
+
+The proof recorded the exact deployment handle, guideXOS process ID, Native App
+runtime ID, and closed execution gate before binding. The Server validated the
+artifact identity, installed `0xCC` over original byte `0xC7`, released the gate,
+and delivered a real `EXCEPTION_BREAKPOINT`. Developer Studio accepted only the
+owned binding, reverse-mapped the stop, opened the existing source document, and
+published both the paused-breakpoint and editor execution-marker results.
+
+The same smoke requests Stop Debugging through the product close confirmation,
+restores the binding, exits the target, and closes Developer Studio cleanly. The
+Server's active host callback context is thread-local so the Studio and debugged
+Native ELF workers can remain live concurrently.
+
+Deferred work includes additional instruction-breakpoint workflows, Continue after
+a real stop, stepping, DWARF expressions, locals, stack unwinding, watches,
 memory/register editing, conditional/data breakpoints, attach/remote/multiple
 process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
 bare-metal trap implementation.

@@ -80,7 +80,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
         HostedDebugResult debugResult = {};
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
                                               generation, outSnapshot->processId, outSnapshot->nativeRuntimeId,
-                                              0, 0, nullptr, &debugResult)) {
+                                              0, 0, backend->runController.request.artifactSha256, &debugResult)) {
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "com.example.debuggerphase3b",
+  "displayName": "Debugger Phase 3B Fixture",
+  "version": "0.1.0",
+  "publisher": "guideXOS Developer Studio tests",
+  "description": "Hosted source-breakpoint integration fixture.",
+  "category": "Development",
+  "kind": "NativeElf",
+  "icon": "",
+  "minGuideXOSVersion": "0.5.0",
+  "supportedArchitectures": ["amd64"],
+  "entries": [{
+    "architecture": "amd64",
+    "path": "bin/amd64/debugger-phase3b.elf",
+    "entryPoint": "gx_main",
+    "abi": "guidexos-c-abi-v1",
+    "runtime": "native-elf"
+  }],
+  "permissions": ["log", "window", "draw"],
+  "fileAssociations": [],
+  "defaultWindow": {"width": 640, "height": 360, "resizable": true}
+}

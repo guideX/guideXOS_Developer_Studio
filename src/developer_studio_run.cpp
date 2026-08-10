@@ -146,6 +146,8 @@ void RunControllerAttachOutput(RunController* controller, OutputService* output,
 bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunService& service, const RunRequest& request, RunErrorCode* error) {
     if (error) *error = RunErrorCode::None;
     if (!controller || controller->active || !service.prepare) {
+        if (controller && !controller->active && !service.prepare)
+            copyText(controller->result.errorMessage, sizeof(controller->result.errorMessage), "development run prepare service is unavailable");
         if (error) *error = controller && controller->active ? RunErrorCode::AlreadyActive : RunErrorCode::ServiceUnavailable;
         return false;
     }
@@ -159,8 +161,14 @@ bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunS
     controller->request = request;
     RunResult result = {};
     uint64_t handle = 0;
-    if (!service.prepare(service.userData, request, &handle, &result) || handle == 0 || result.state == RunState::Failed) {
+    const bool prepared = service.prepare(service.userData, request, &handle, &result);
+    if (!prepared || handle == 0 || result.state == RunState::Failed) {
         RunErrorCode local = result.error == RunErrorCode::None ? RunErrorCode::ServiceUnavailable : result.error;
+        if (result.errorMessage[0] == '\0') {
+            if (!prepared) copyText(result.errorMessage, sizeof(result.errorMessage), "development run prepare callback returned an error");
+            else if (handle == 0) copyText(result.errorMessage, sizeof(result.errorMessage), "development run prepare returned a zero handle");
+            else if (result.state == RunState::Failed) copyText(result.errorMessage, sizeof(result.errorMessage), "development run prepare returned Failed");
+        }
         controller->result = result;
         if (handle != 0 && service.release) service.release(service.userData, handle);
         setFailure(controller, RunState::Failed, local);
@@ -179,6 +187,11 @@ bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunS
 bool RunControllerStart(RunController* controller, const HostedDevelopmentRunService& service, RunErrorCode* error) {
     if (error) *error = RunErrorCode::None;
     if (!controller || !controller->active || controller->handle == 0 || !service.start) {
+        if (controller) {
+            if (!controller->active) copyText(controller->result.errorMessage, sizeof(controller->result.errorMessage), "run controller is not active");
+            else if (controller->handle == 0) copyText(controller->result.errorMessage, sizeof(controller->result.errorMessage), "run controller handle is zero");
+            else if (!service.start) copyText(controller->result.errorMessage, sizeof(controller->result.errorMessage), "development run start service is unavailable");
+        }
         if (error) *error = RunErrorCode::ServiceUnavailable;
         return false;
     }

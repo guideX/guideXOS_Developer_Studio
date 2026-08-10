@@ -178,12 +178,17 @@ struct DebugBreakpoint {
 struct DebugDwarfMapper;
 
 struct DebugEvent {
+    uint64_t sequence;
     uint64_t sessionGeneration;
     DebugEventKind kind;
     DebugSessionState state;
     DebugStopReason stopReason;
     uint64_t processId;
     uint64_t nativeRuntimeId;
+    uint64_t breakpointId;
+    uint64_t targetAddress;
+    uint64_t threadId;
+    uint64_t projectGeneration;
     int32_t exitCode;
     DebugSourceLocation location;
     char message[kDebugMaxMessageBytes];
@@ -276,6 +281,7 @@ struct DebugController {
     DebugStopReason stopReason;
     char lastMessage[kDebugMaxMessageBytes];
     bool targetExecutionReleased;
+    uint64_t nextEventSequence;
     DebugAddress currentInstructionAddress;
     DebugSourceLocation currentLocation;
     uint64_t currentThreadId;

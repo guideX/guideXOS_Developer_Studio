@@ -115,6 +115,12 @@ struct DebugDwarfMapper {
 const char* DebugDwarfMapperStateName(DebugDwarfMapperState state);
 const char* DebugDwarfErrorName(DebugDwarfError error);
 
+// Computes the artifact identity from the exact bytes captured by the host.
+// The debugger uses this before mapping so a rebuild or replacement between
+// build completion and symbol loading cannot silently reuse the old identity.
+bool DebugDwarfComputeSha256(const unsigned char* bytes, uint64_t size,
+                             char* output, uint32_t outputSize);
+
 void DebugDwarfMapperReset(DebugDwarfMapper* mapper);
 bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
                           const char* projectId, const char* targetProfile,

@@ -9,6 +9,12 @@ target address to the Phase 2 reverse mapper; only then does the debugger show t
 current source location and transition to Paused. Mapping alone remains Mapped, never
 Verified or Hit.
 
+The Phase 3B fixture proof exercises this contract through the Developer Studio UI:
+`tests/fixtures/debugger-phase3b/src/main.cpp:20` resolves to the primary linked
+address `0x20001218` for the fixed-base image at `0x20000000`. The stop address is
+validated against the owned binding before reverse mapping and source navigation;
+the UI does not infer a stop from a source-line marker.
+
 Phase 2 adds truthful source-line evidence to the Phase 1 debugger foundation.
 It maps a project-relative source file and line to one or more linked
 instruction addresses, and maps an address back to a source location. It does
@@ -124,10 +130,19 @@ The current packaged Developer Studio ELF was also parsed directly: DWARF 5,
 sequences. Five initial line/address pairs matched `readelf` decoded-line
 output, and reverse lookup returned the original normalized source location.
 
+## Phase 3B integration evidence
+
+The real hosted path captures and validates the exact artifact SHA-256 before symbol
+loading and before every debugger command. It preserves project-relative source
+identity, project/source generations, target address validity, and the loaded artifact
+identity across the launch. The proof reached `debug_state=PAUSED_BREAKPOINT`,
+`debug_source_navigation=PASS`, and `debug_execution_marker=PASS` after the native
+trap was observed.
+
 ## Deferred work
 
-Runtime software breakpoints, trap/exception delivery, pause/continue after a
-real stop, instruction-pointer correction, stepping, call stacks, registers,
-memory, expressions, locals, watches, conditional/data breakpoints, and
-attach/remote debugging remain future milestones. They require a Server
-debugger ABI and runtime evidence that Phase 1/2 do not provide.
+Continue after a real stop, instruction-pointer correction for safe single-step
+continuation, stepping, call stacks, registers, memory, expressions, locals,
+watches, conditional/data breakpoints, and attach/remote debugging remain future
+milestones. The current proof covers only the bounded source-to-primary-address
+mapping and owned trap path.

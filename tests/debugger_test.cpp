@@ -42,6 +42,7 @@ struct FakeBackend {
     bool launchFails = false;
     bool pauseCalled = false;
     bool trapOnSecondPoll = false;
+    bool delayRuntimePublication = false;
     uint32_t failBindAt = 0;
     DebugSessionState nextState = DebugSessionState::Running;
     uint64_t sharedBindingId = 9001;
@@ -57,7 +58,7 @@ static bool launch(void* userData, const DebugTarget&, uint64_t generation, Debu
     snapshot->sessionGeneration = generation;
     snapshot->state = fake->launchFails ? DebugSessionState::Failed : DebugSessionState::Launching;
     snapshot->processId = 12;
-    snapshot->nativeRuntimeId = 77;
+    snapshot->nativeRuntimeId = fake->delayRuntimePublication ? 0 : 77;
     std::strcpy(snapshot->backendName, "Test Backend");
     if (fake->launchFails) std::strcpy(snapshot->errorMessage, "test launch failed");
     return !fake->launchFails;
@@ -68,8 +69,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
     snapshot->processId = 12;
-    snapshot->nativeRuntimeId = 77;
     const uint32_t pollIndex = fake->polls++;
+    snapshot->nativeRuntimeId = fake->delayRuntimePublication && pollIndex == 0 ? 0 : 77;
     if (fake->trapOnSecondPoll && pollIndex == 1) {
         snapshot->state = DebugSessionState::Paused;
         snapshot->stopReason = DebugStopReason::Breakpoint;
@@ -81,7 +82,10 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
         snapshot->breakpointBindingId = fake->sharedBindingId;
         return true;
     }
-    snapshot->state = pollIndex == 0 ? fake->nextState : DebugSessionState::Exited;
+    snapshot->state = fake->delayRuntimePublication ?
+        (pollIndex == 0 ? DebugSessionState::Launching :
+         (pollIndex == 1 ? fake->nextState : DebugSessionState::Exited)) :
+        (pollIndex == 0 ? fake->nextState : DebugSessionState::Exited);
     snapshot->stopReason = snapshot->state == DebugSessionState::Exited ? DebugStopReason::Exited : DebugStopReason::None;
     snapshot->exitCode = 0;
     snapshot->cleanupComplete = snapshot->state == DebugSessionState::Exited;
@@ -336,6 +340,54 @@ int main() {
     assert(partialFake.restoreCommands == 1 && partialFake.debugCommands == 1);
     assert(partial.breakpoints[0].backendBindingId == 0 && partial.breakpoints[0].state == DebugBreakpointState::Mapped);
 
+    FakeBackend delayedFake;
+    delayedFake.delayRuntimePublication = true;
+    DebugBackend delayedBackend = makeBreakpointBackend(&delayedFake);
+    DebugController delayed = {};
+    assert(DebugControllerInit(&delayed));
+    assert(DebugControllerSetProjectContext(&delayed, project.projectId, project.rootPath, 9));
+    uint64_t delayedBreakpointId = 0;
+    assert(DebugControllerToggleBreakpoint(&delayed, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 85, 0, 3, &delayedBreakpointId, &error));
+    prepareMappedBreakpoint(&delayed, delayedBreakpointId);
+    assert(DebugControllerStart(&delayed, delayedBackend, target, &error));
+    assert(DebugControllerPoll(&delayed, delayedBackend));
+    assert(delayed.state == DebugSessionState::Launching && !delayed.targetExecutionReleased);
+    assert(delayedFake.bindCalls == 0 && delayedFake.debugCommands == 0);
+    assert(DebugControllerPoll(&delayed, delayedBackend));
+    assert(delayed.state == DebugSessionState::Running && delayed.targetExecutionReleased);
+    assert(delayedFake.bindCalls == 1 && delayedFake.debugCommands == 1);
+    bool sawTargetCreated = false;
+    uint64_t previousEventSequence = 0;
+    for (uint32_t i = 0; i < delayed.eventCount; ++i) {
+        const DebugEvent& event = delayed.events[i];
+        assert(event.sequence > previousEventSequence);
+        previousEventSequence = event.sequence;
+        if (event.kind == DebugEventKind::TargetCreated) {
+            sawTargetCreated = true;
+            assert(event.processId == 12 && event.nativeRuntimeId == 77);
+        }
+    }
+    assert(sawTargetCreated);
+    assert(DebugControllerPoll(&delayed, delayedBackend));
+    assert(delayed.state == DebugSessionState::Exited && !delayed.active);
+
+    FakeBackend firstRejectFake;
+    firstRejectFake.failBindAt = 1;
+    DebugBackend firstRejectBackend = makeBreakpointBackend(&firstRejectFake);
+    DebugController firstReject = {};
+    assert(DebugControllerInit(&firstReject));
+    assert(DebugControllerSetProjectContext(&firstReject, project.projectId, project.rootPath, 9));
+    uint64_t firstRejectId = 0;
+    assert(DebugControllerToggleBreakpoint(&firstReject, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 86, 0, 3, &firstRejectId, &error));
+    prepareMappedBreakpoint(&firstReject, firstRejectId);
+    assert(DebugControllerStart(&firstReject, firstRejectBackend, target, &error));
+    assert(!DebugControllerPoll(&firstReject, firstRejectBackend));
+    assert(firstReject.state == DebugSessionState::Failed && !firstReject.active);
+    assert(!firstReject.targetExecutionReleased && firstRejectFake.restoreCommands == 1);
+    assert(firstReject.breakpoints[0].state == DebugBreakpointState::Rejected);
+
     FakeBackend unexpectedFake;
     DebugBackend unexpectedBackend = makeBreakpointBackend(&unexpectedFake);
     DebugController unexpected = {};
@@ -361,6 +413,14 @@ int main() {
     wrongTrap.processId = 12;
     wrongTrap.targetAddress.value = 0x401011;
     assert(!DebugControllerApplySnapshot(&unexpected, unexpected.sessionGeneration, wrongTrap));
+    assert(unexpected.error == DebugErrorCode::BackendError && unexpected.state == DebugSessionState::Running);
+    DebugBackendSnapshot missingTrap = {};
+    missingTrap.sessionGeneration = unexpected.sessionGeneration;
+    missingTrap.state = DebugSessionState::Paused;
+    missingTrap.stopReason = DebugStopReason::Breakpoint;
+    missingTrap.processId = 12;
+    missingTrap.nativeRuntimeId = 77;
+    assert(!DebugControllerApplySnapshot(&unexpected, unexpected.sessionGeneration, missingTrap));
     assert(unexpected.error == DebugErrorCode::BackendError && unexpected.state == DebugSessionState::Running);
     assert(DebugControllerPoll(&unexpected, unexpectedBackend));
     assert(unexpected.state == DebugSessionState::Exited);

@@ -134,6 +134,11 @@ static std::vector<unsigned char> fixtureElf() {
 }
 
 int main() {
+    const unsigned char shaInput[] = {'a', 'b', 'c'};
+    char shaOutput[65] = {};
+    assert(DebugDwarfComputeSha256(shaInput, sizeof(shaInput), shaOutput, sizeof(shaOutput)));
+    assert(std::strcmp(shaOutput, "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD") == 0);
+
     std::vector<unsigned char> fixture = fixtureElf();
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
@@ -184,6 +189,18 @@ int main() {
     assert(mapped && mapped->state == DebugBreakpointState::Mapped);
     assert(mapped->location.mapping == DebugMappingState::Mapped && mapped->mappedAddressCount == 3);
     assert(mapped->location.instructionAddress.valid && mapped->location.instructionAddress.value == 0x401000);
+    controller.state = DebugSessionState::Paused;
+    controller.stopReason = DebugStopReason::Breakpoint;
+    controller.currentInstructionAddress.valid = true;
+    controller.currentInstructionAddress.value = 0x401000;
+    controller.lastBreakpointId = breakpointId;
+    controller.breakpoints[0].location.line = 43;
+    assert(!DebugControllerResolveCurrentStop(&controller, &mapper, &controllerError));
+    assert(controllerError == DebugErrorCode::BackendError);
+    controller.breakpoints[0].location.line = 42;
+    assert(DebugControllerResolveCurrentStop(&controller, &mapper, &controllerError));
+    assert(std::strcmp(controller.currentLocation.relativePath, "src/main.cpp") == 0 &&
+           controller.currentLocation.line == 42);
     DebugControllerMarkArtifactStale(&controller, "test stale");
     mapped = DebugControllerBreakpointAt(&controller, 0);
     assert(mapped && mapped->state == DebugBreakpointState::Stale);

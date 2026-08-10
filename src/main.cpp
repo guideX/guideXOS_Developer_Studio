@@ -967,8 +967,8 @@ static void appendText(char* output, uint32_t outputSize, const char* text) {
     output[offset] = '\0';
 }
 
-static void appendUnsigned(char* output, uint32_t outputSize, uint32_t value) {
-    char digits[12];
+static void appendUnsigned(char* output, uint32_t outputSize, uint64_t value) {
+    char digits[24];
     uint32_t count = 0;
     if (value == 0) digits[count++] = '0';
     while (value > 0 && count < sizeof(digits)) { digits[count++] = static_cast<char>('0' + (value % 10)); value /= 10; }
@@ -2919,11 +2919,15 @@ static bool hostRunPoll(void* userData, uint64_t handle, RunResult* outResult);
 
 static bool hostRunStart(void* userData, uint64_t handle, RunResult* outResult) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !context->app->host->development_run_start || !outResult || handle == 0) return false;
+    if (!context || !context->app || !context->app->host || !context->app->host->development_run_start || !outResult || handle == 0) {
+        if (outResult) copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "development_run_start host callback unavailable");
+        return false;
+    }
     const gx_result result = context->app->host->development_run_start(context->app, handle);
     if (result != GX_OK) {
         outResult->error = result == GX_ERROR_BUSY ? RunErrorCode::AlreadyActive : RunErrorCode::LaunchFailed;
         outResult->state = RunState::Failed;
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "development_run_start returned an error");
         return false;
     }
     outResult->state = RunState::Launching;
@@ -2932,7 +2936,12 @@ static bool hostRunStart(void* userData, uint64_t handle, RunResult* outResult) 
     // but the old adapter discarded that start-time snapshot. Poll once here
     // so the debugger receives the exact target PID before binding memory.
     RunResult launched = *outResult;
-    if (!hostRunPoll(userData, handle, &launched)) return false;
+    if (!hostRunPoll(userData, handle, &launched)) {
+        if (launched.errorMessage[0] == '\0')
+            copyText(launched.errorMessage, sizeof(launched.errorMessage), "development_run_poll failed immediately after launch");
+        *outResult = launched;
+        return false;
+    }
     *outResult = launched;
     return true;
 }
@@ -2947,6 +2956,7 @@ static bool hostRunPoll(void* userData, uint64_t handle, RunResult* outResult) {
     if (result != GX_OK) {
         outResult->error = RunErrorCode::ServiceUnavailable;
         outResult->state = RunState::Failed;
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "development_run_poll returned an error");
         return false;
     }
     copyRunSnapshot(snapshot, outResult);
@@ -2988,7 +2998,9 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     snapshot.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
     const gx_result result = context->app->host->development_debug(context->app, &request, &snapshot);
     if (result != GX_OK) {
-        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage);
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage[0] ? snapshot.errorMessage : "development_debug returned an error");
+        appendText(outResult->errorMessage, sizeof(outResult->errorMessage), " code=");
+        appendUnsigned(outResult->errorMessage, sizeof(outResult->errorMessage), static_cast<int32_t>(result));
         return false;
     }
     outResult->status = snapshot.status;
@@ -3409,6 +3421,15 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         return false;
     }
     target->artifactSize = info.size;
+    char actualSha256[65] = {};
+    if (!guidexos::developer_studio::DebugDwarfComputeSha256(g_debugArtifactBytes, bytesRead, actualSha256, sizeof(actualSha256)) ||
+        !PathsEqual(actualSha256, target->artifactSha256)) {
+        DebugDwarfMapperReset(&g_debugMapper);
+        g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
+        g_debugMapper.error = DebugDwarfError::ArtifactChanged;
+        reportDebugMessage(ctx, "Debug info: captured executable identity does not match the build result");
+        return false;
+    }
     DebugDwarfError error = DebugDwarfError::None;
     const bool loaded = DebugDwarfMapperLoad(&g_debugMapper, target->projectRoot, target->projectId,
         target->targetProfile, target->architecture, target->executablePath, info.size,
@@ -3447,14 +3468,33 @@ static bool beginDebugSession(gx_app_context* ctx) {
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
-    loadDebugSymbolsForTarget(ctx, &target);
+    if (!loadDebugSymbolsForTarget(ctx, &target)) {
+        reportDebugMessage(ctx, "Debug launch skipped: debug artifact is unavailable or changed");
+        return false;
+    }
     DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
     g_debugController.target = target;
     DebugErrorCode mappingError = DebugErrorCode::None;
-    DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError);
+    if (!DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug launch skipped: source breakpoint mapping failed | ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(mappingError));
+        reportDebugMessage(ctx, g_textScratch);
+        return false;
+    }
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint& breakpoint = g_debugController.breakpoints[i];
+        if (breakpoint.enabled && breakpoint.state != DebugBreakpointState::Mapped) {
+            reportDebugMessage(ctx, "Debug launch skipped: one or more source breakpoints are not mapped");
+            return false;
+        }
+    }
     if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        if (g_debugController.lastMessage[0]) {
+            appendText(g_textScratch, sizeof(g_textScratch), " | ");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
+        }
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
@@ -3537,6 +3577,33 @@ static void requestDebugStop(gx_app_context* ctx) {
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested");
 }
 
+static bool navigateDebugStop(gx_app_context* ctx) {
+    const guidexos::developer_studio::DebugSourceLocation& location = g_debugController.currentLocation;
+    if (!location.relativePath[0] || location.line == 0) return false;
+    Document* origin = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation originLocation = {};
+    const bool haveOrigin = origin && captureNavigationLocation(*origin, &originLocation);
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   location.relativePath, location.line, location.column,
+                                                   &documentIndex, &error)) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=FAIL", OutputErrorName(error));
+        reportDebugMessage(ctx, "Debug: stopped source document could not be opened");
+        return false;
+    }
+    if (haveOrigin) NavigationHistoryPush(&g_navigationHistory, originLocation);
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) return false;
+    g_editorFocused = true;
+    g_outputFocused = false;
+    g_debugPanelOpen = false;
+    keepCaretVisible(document);
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_execution_marker=PASS");
+    return true;
+}
+
 static void pollDebug(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) return;
     if (!g_controller.model.hasProject || !PathsEqual(g_controller.model.project.projectId, g_debugController.projectId)) {
@@ -3559,6 +3626,10 @@ static void pollDebug(gx_app_context* ctx) {
         if (!g_debugTerminalReported) {
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: backend poll failed | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(g_debugController.error));
+            if (g_debugController.lastMessage[0]) {
+                appendText(g_textScratch, sizeof(g_textScratch), " | ");
+                appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
+            }
             reportDebugMessage(ctx, g_textScratch);
             g_debugTerminalReported = true;
         }
@@ -3571,18 +3642,24 @@ static void pollDebug(gx_app_context* ctx) {
         } else if (g_debugController.state == DebugSessionState::Stopping) {
             reportDebugMessage(ctx, "Debug: stopping target");
         } else if (g_debugController.state == DebugSessionState::Paused) {
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_trap_backend=PASS");
             DebugErrorCode stopMappingError = DebugErrorCode::None;
-            DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
+            const bool resolved = DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
-            if (g_debugController.currentLocation.relativePath[0]) {
+            if (resolved && g_debugController.currentLocation.relativePath[0]) {
                 appendText(g_textScratch, sizeof(g_textScratch), " | ");
                 appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath);
                 appendText(g_textScratch, sizeof(g_textScratch), ":");
                 appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+                reportDebugMessage(ctx, g_textScratch);
+                if (navigateDebugStop(ctx)) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT");
+            } else {
+                appendText(g_textScratch, sizeof(g_textScratch), " | source mapping failed | ");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(stopMappingError));
+                reportDebugMessage(ctx, g_textScratch);
+                markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=FAIL", DebugErrorName(stopMappingError));
             }
-            reportDebugMessage(ctx, g_textScratch);
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT");
         } else if (g_debugController.state == DebugSessionState::Exited) {
             reportDebugMessage(ctx, "Debug: process exited");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED");
@@ -3755,7 +3832,12 @@ static void commitProjectOpen(gx_app_context* ctx) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.amd64.hosted.native");
-        if (!WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) reportDocumentOpen(ctx, false, false);
+        if (!WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) {
+            reportDocumentOpen(ctx, false, false);
+        } else {
+            g_editorFocused = true;
+            g_outputFocused = false;
+        }
     } else {
         reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL", g_controller.lastProjectError);
     }
@@ -6056,6 +6138,7 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!document || !g_controller.model.hasProject) {
         writeStudioOutput("Breakpoint requires an active project document");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", "no_active_document");
         return false;
     }
     const uint32_t line = activeLine(document->buffer) + 1;
@@ -6063,6 +6146,7 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
     if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path,
                                  relative, sizeof(relative))) {
         writeStudioOutput("Breakpoint path is outside the active project");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", "path_outside_project");
         return false;
     }
     uint64_t breakpointId = 0;
@@ -6074,6 +6158,7 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
         copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint change failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         writeStudioOutput(g_textScratch);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", DebugErrorName(error));
         return false;
     }
     for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
@@ -6089,6 +6174,7 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
     appendText(g_textScratch, sizeof(g_textScratch), ":");
     appendUnsigned(g_textScratch, sizeof(g_textScratch), line);
     writeStudioOutput(g_textScratch);
+    if (breakpoint) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
     if (breakpoint && breakpoint->state == DebugBreakpointState::Pending)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=PENDING");
     else if (breakpoint && breakpoint->state == DebugBreakpointState::Mapped)
@@ -6187,6 +6273,8 @@ static void drawDebugPanel(gx_app_context* ctx) {
             appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->location.line);
             appendText(g_textScratch, sizeof(g_textScratch), " | ");
             appendText(g_textScratch, sizeof(g_textScratch), breakpoint->message);
+            appendText(g_textScratch, sizeof(g_textScratch), " | last=");
+            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->lastHit ? "Hit" : "not hit");
             if (breakpoint->location.instructionAddress.valid) {
                 appendText(g_textScratch, sizeof(g_textScratch), " @ ");
                 char addressText[32] = {};
@@ -6206,11 +6294,14 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 100, 220, "Architecture:");
         drawText(ctx, 220, 220, g_debugController.target.architecture[0] ? g_debugController.target.architecture : "(none)");
         drawText(ctx, 100, 244, "Process ID:");
-        if (g_debugController.processId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.processId)); drawText(ctx, 220, 244, g_textScratch); }
+        if (g_debugController.processId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.processId); drawText(ctx, 220, 244, g_textScratch); }
         else drawText(ctx, 220, 244, "(not assigned)");
         drawText(ctx, 100, 268, "Native runtime ID:");
-        if (g_debugController.nativeRuntimeId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.nativeRuntimeId)); drawText(ctx, 220, 268, g_textScratch); }
+        if (g_debugController.nativeRuntimeId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.nativeRuntimeId); drawText(ctx, 220, 268, g_textScratch); }
         else drawText(ctx, 220, 268, "(not assigned)");
+        drawText(ctx, 480, 268, "Thread ID:");
+        if (g_debugController.currentThreadId != 0) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentThreadId); drawText(ctx, 560, 268, g_textScratch); }
+        else drawText(ctx, 560, 268, "(none)");
         drawText(ctx, 100, 304, "Capabilities:");
         drawText(ctx, 220, 304, g_debugController.capabilities.canLaunch ? "Launch" : "Launch unavailable");
         drawText(ctx, 220, 328, g_debugController.capabilities.canStop ? "Stop" : "Stop unavailable");
@@ -6240,10 +6331,16 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 220, 548, g_debugController.lastMessage[0] ? g_debugController.lastMessage : "(none)");
         drawText(ctx, 100, 572, "Last stop:");
         drawText(ctx, 220, 572, DebugStopReasonName(g_debugController.stopReason));
-        drawText(ctx, 100, 596, "Address:");
-        if (g_debugController.currentInstructionAddress.valid) {
+        drawText(ctx, 100, 596, "Stop location:");
+        if (g_debugController.currentLocation.relativePath[0]) {
             copyText(g_textScratch, sizeof(g_textScratch), "");
-            appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.currentInstructionAddress.value);
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+            if (g_debugController.currentInstructionAddress.valid) {
+                appendText(g_textScratch, sizeof(g_textScratch), " @ ");
+                appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.currentInstructionAddress.value);
+            }
             drawText(ctx, 220, 596, g_textScratch);
         } else drawText(ctx, 220, 596, "(none)");
         drawText(ctx, 100, 620, "Tab Breakpoints   Esc Close");
@@ -7213,6 +7310,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     // Debugging is a global command: output/panel focus must not consume the
     // established Ctrl+F5 shortcut before it reaches the session controller.
     if (keyCode == 116 && modifiers == GX_KEY_MOD_CTRL) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_shortcut=PASS");
         requestDebug(ctx);
         return;
     }
@@ -7220,6 +7318,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     // F9 is unused by the existing editor shortcuts and follows the standard
     // debugger convention without changing the established F5 Run command.
     if (keyCode == 120 && modifiers == 0) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_key=PASS");
         toggleBreakpointAtCaret(ctx);
         return;
     }

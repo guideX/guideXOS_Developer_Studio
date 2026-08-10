@@ -79,7 +79,7 @@ still exists, then release the blocked target thread. Restoration is verified th
 the same protected write/cache-flush path. Restore failures are reported as bounded
 backend errors; an old artifact is never patched after a rebuild or stale-map event.
 
-The current Phase 3 runtime does not implement Continue. Correct continuation requires
+The current Phase 3B runtime does not implement Continue. Correct continuation requires
 restoring the byte, executing the original instruction exactly once, single-stepping,
 reinstalling `0xCC`, and routing the internal single-step trap. Pause, Step Into, Step
 Over, and Step Out remain disabled. Stop Debugging remains supported through the hosted
@@ -93,8 +93,15 @@ read/write, register inspection, call stacks, and user-visible stepping are defe
 
 The model tests cover binding state transitions, retained/installed-byte metadata,
 duplicate logical ownership, partial-bind rollback, stale/incorrect trap routing,
-RIP-versus-target normalization, no-fake-stop behavior, and natural exit. A full
-hosted Level B claim requires the separate fixture proof to record the actual artifact,
-original byte, `0xCC`, process/runtime/thread identity, real exception, reverse mapping,
-and post-stop restored byte; those fields must come from the running hosted target,
-not from a fake backend or a predetermined callback.
+RIP-versus-target normalization, no-fake-stop behavior, and natural exit. The
+authoritative fixture proof establishes the bounded hosted Level B source-breakpoint
+path: it records the actual artifact identity, original byte `0xC7`, installed `0xCC`,
+exact process/runtime identity, a real `EXCEPTION_BREAKPOINT`, reverse mapping to
+`src/main.cpp:20`, UI source navigation, execution marking, and clean stop/restore
+teardown. These fields come from the running hosted target and the real Developer
+Studio UI path, not from a fake backend or predetermined callback.
+
+The evidence boundary remains narrow: the target is the current Windows-hosted
+AMD64 little-endian ELF64 fixed-address `ET_EXEC` runtime with load bias zero;
+Continue, stepping, register/context inspection, memory access, call stacks, and
+multi-process/attach workflows remain unsupported.
