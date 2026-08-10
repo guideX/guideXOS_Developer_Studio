@@ -115,8 +115,9 @@ struct BuildController {
 const char* BuildStateName(BuildState state);
 const char* BuildErrorName(BuildErrorCode error);
 bool BuildRequestFromProject(const Project& project, BuildRequest* request, BuildErrorCode* error);
+bool BuildRequestEnableDebugInfo(BuildRequest* request);
 bool BuildControllerInit(BuildController* controller);
-bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output = nullptr);
+bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output = nullptr, bool debugInfo = false);
 bool BuildControllerPoll(BuildController* controller, const HostedBuildService& service);
 bool BuildControllerIsActive(const BuildController* controller);
 bool WorkspaceControllerHasDirtyProjectDocuments(const WorkspaceController* controller);

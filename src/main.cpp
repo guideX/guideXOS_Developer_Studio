@@ -17,6 +17,7 @@
 #include "developer_studio_ownership.h"
 #include "developer_studio_types.h"
 #include "developer_studio_debugger.h"
+#include "developer_studio_debug_symbols.h"
 #include "developer_studio_debugger_hosted.h"
 
 namespace {
@@ -493,6 +494,16 @@ using guidexos::developer_studio::DebugSessionState;
 using guidexos::developer_studio::DebugSessionStateName;
 using guidexos::developer_studio::DebugTarget;
 using guidexos::developer_studio::DebugTargetFromBuild;
+using guidexos::developer_studio::BuildRequestEnableDebugInfo;
+using guidexos::developer_studio::DebugDwarfError;
+using guidexos::developer_studio::DebugDwarfMapper;
+using guidexos::developer_studio::DebugDwarfMapperLoad;
+using guidexos::developer_studio::DebugDwarfMapperReset;
+using guidexos::developer_studio::DebugDwarfMapperStateName;
+using guidexos::developer_studio::DebugDwarfErrorName;
+using guidexos::developer_studio::DebugDwarfMapperIsReady;
+using guidexos::developer_studio::DebugControllerMapBreakpoints;
+using guidexos::developer_studio::DebugControllerMarkArtifactStale;
 using guidexos::developer_studio::HostedDebugBackend;
 using guidexos::developer_studio::HostedDebugBackendCreate;
 using guidexos::developer_studio::HostedDebugBackendInit;
@@ -695,6 +706,8 @@ static bool g_runWaitingForBuild = false;
 static RunState g_lastRunState = RunState::Idle;
 static bool g_runTerminalReported = false;
 static DebugController g_debugController = {};
+static DebugDwarfMapper g_debugMapper = {};
+static unsigned char g_debugArtifactBytes[guidexos::developer_studio::kDebugMapperMaxElfBytes] = {};
 static HostedDebugBackend g_hostedDebugBackend = {};
 static DebugBackend g_debugBackend = {};
 static bool g_debugWaitingForBuild = false;
@@ -912,6 +925,12 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action);
 static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
 static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
+
+static void refreshDebugMappings() {
+    if (!DebugDwarfMapperIsReady(&g_debugMapper)) return;
+    DebugErrorCode error = DebugErrorCode::None;
+    DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &error);
+}
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -3075,7 +3094,7 @@ static void reportBuildResult(gx_app_context* ctx) {
     g_buildTerminalReported = true;
 }
 
-static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
+static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision, bool debugInfo = false) {
     dismissCompletion(ctx, "build", false);
     dismissSignatureHelp(ctx, "build", false);
     if (BuildControllerIsActive(&g_buildController)) {
@@ -3086,7 +3105,7 @@ static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
     BuildErrorCode error = BuildErrorCode::None;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_request=PASS");
     g_buildTerminalReported = false;
-    if (!BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error, &g_outputService)) {
+    if (!BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error, &g_outputService, debugInfo)) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(error));
         if (g_buildController.result.state == BuildState::Failed || g_buildController.result.state == BuildState::Cancelled) reportBuildResult(ctx);
         return false;
@@ -3196,6 +3215,8 @@ static void pollBuild(gx_app_context* ctx) {
                 copyText(g_textScratch, sizeof(g_textScratch), "Debug: build failed | ");
                 appendText(g_textScratch, sizeof(g_textScratch), BuildErrorName(g_buildController.result.error));
                 reportDebugMessage(ctx, g_textScratch);
+                DebugDwarfMapperReset(&g_debugMapper);
+                DebugControllerMarkArtifactStale(&g_debugController, "Stale: executable rebuild failed");
             }
         }
     }
@@ -3294,6 +3315,60 @@ static void reportDebugMessage(gx_app_context* ctx, const char* message) {
     logMarker(ctx, message);
 }
 
+static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) {
+    if (!target) return false;
+    char absolutePath[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(target->projectRoot, target->executablePath, absolutePath, sizeof(absolutePath))) {
+        DebugDwarfMapperReset(&g_debugMapper);
+        g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
+        g_debugMapper.error = DebugDwarfError::ArtifactChanged;
+        reportDebugMessage(ctx, "Debug info: artifact path rejected");
+        return false;
+    }
+    FileInfo info = {};
+    if (!fsStat(&g_fileSystemContext, absolutePath, &info) || info.kind != FileInfoKind::RegularFile ||
+        info.size == 0 || info.size > guidexos::developer_studio::kDebugMapperMaxElfBytes) {
+        DebugDwarfMapperReset(&g_debugMapper);
+        g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
+        g_debugMapper.error = info.size > guidexos::developer_studio::kDebugMapperMaxElfBytes ?
+            DebugDwarfError::LimitExceeded : DebugDwarfError::ArtifactChanged;
+        reportDebugMessage(ctx, "Debug info: executable could not be read");
+        return false;
+    }
+    uint32_t bytesRead = 0;
+    if (!fsRead(&g_fileSystemContext, absolutePath, reinterpret_cast<char*>(g_debugArtifactBytes),
+                static_cast<uint32_t>(info.size), &bytesRead) || bytesRead != info.size) {
+        DebugDwarfMapperReset(&g_debugMapper);
+        g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
+        g_debugMapper.error = DebugDwarfError::ArtifactChanged;
+        reportDebugMessage(ctx, "Debug info: executable read was incomplete");
+        return false;
+    }
+    target->artifactSize = info.size;
+    DebugDwarfError error = DebugDwarfError::None;
+    const bool loaded = DebugDwarfMapperLoad(&g_debugMapper, target->projectRoot, target->projectId,
+        target->targetProfile, target->architecture, target->executablePath, info.size,
+        target->artifactSha256, target->projectGeneration, g_debugArtifactBytes, bytesRead,
+        static_cast<uint32_t>(target->projectGeneration), &error);
+    if (!loaded) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug info: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "Debug info: ");
+    appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfMapperStateName(g_debugMapper.state));
+    appendText(g_textScratch, sizeof(g_textScratch), " | DWARF ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.dwarfVersion);
+    appendText(g_textScratch, sizeof(g_textScratch), " | files=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.sourceFileCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " | rows=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.lineRowCount);
+    if (g_debugMapper.truncated) appendText(g_textScratch, sizeof(g_textScratch), " | truncated");
+    reportDebugMessage(ctx, g_textScratch);
+    return true;
+}
+
 static bool beginDebugSession(gx_app_context* ctx) {
     if (!g_controller.model.open || !g_controller.model.hasProject) {
         writeStudioOutput("Debug requires an open project");
@@ -3308,7 +3383,11 @@ static bool beginDebugSession(gx_app_context* ctx) {
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
+    loadDebugSymbolsForTarget(ctx, &target);
     DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
+    g_debugController.target = target;
+    DebugErrorCode mappingError = DebugErrorCode::None;
+    DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError);
     if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
@@ -3335,7 +3414,7 @@ static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecisio
     }
     g_debugWaitingForBuild = true;
     g_debugTerminalReported = false;
-    if (!beginBuild(ctx, dirtyDecision)) {
+    if (!beginBuild(ctx, dirtyDecision, true)) {
         g_debugWaitingForBuild = false;
         writeStudioOutput("Debug build could not start");
         return false;
@@ -5886,6 +5965,7 @@ static int debugBreakpointIndexForDocumentLine(const Document& document, uint32_
 
 static uint32_t debugBreakpointColor(DebugBreakpointState state) {
     switch (state) {
+    case DebugBreakpointState::Mapped: return 0x78B7E8u;
     case DebugBreakpointState::Verified: return 0x56C596u;
     case DebugBreakpointState::Rejected: return 0xD05A5Au;
     case DebugBreakpointState::Disabled: return 0x6F7888u;
@@ -5923,6 +6003,7 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
         const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
         if (breakpoint && breakpoint->id == breakpointId) g_debugSelectedBreakpoint = i;
     }
+    refreshDebugMappings();
     const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
     copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint ");
     appendText(g_textScratch, sizeof(g_textScratch), breakpoint ? DebugBreakpointStateName(breakpoint->state) : "updated");
@@ -5933,6 +6014,8 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
     writeStudioOutput(g_textScratch);
     if (breakpoint && breakpoint->state == DebugBreakpointState::Pending)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=PENDING");
+    else if (breakpoint && breakpoint->state == DebugBreakpointState::Mapped)
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=MAPPED");
     return true;
 }
 
@@ -5992,6 +6075,7 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (keyCode == 32 && breakpoint) {
         DebugErrorCode error = DebugErrorCode::None;
         DebugControllerSetBreakpointEnabled(&g_debugController, breakpoint->id, !breakpoint->enabled, &error);
+        refreshDebugMappings();
         return true;
     }
     if (keyCode == 46 && breakpoint) {
@@ -6050,13 +6134,27 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 220, 352, g_debugController.capabilities.canPause ? "Pause" : "Pause unavailable");
         drawText(ctx, 220, 376, g_debugController.capabilities.canContinue ? "Continue" : "Continue unavailable");
         drawText(ctx, 220, 400, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
-        drawText(ctx, 100, 436, "Last event:");
+        drawText(ctx, 100, 428, "Debug info:");
+        copyText(g_textScratch, sizeof(g_textScratch), g_debugMapper.state == guidexos::developer_studio::DebugDwarfMapperState::Empty ? "(none)" : DebugDwarfMapperStateName(g_debugMapper.state));
+        if (g_debugMapper.truncated) appendText(g_textScratch, sizeof(g_textScratch), " (truncated)");
+        drawText(ctx, 220, 428, g_textScratch);
+        drawText(ctx, 100, 452, "Source files:");
+        copyText(g_textScratch, sizeof(g_textScratch), "");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.sourceFileCount);
+        drawText(ctx, 220, 452, g_textScratch);
+        drawText(ctx, 100, 476, "Line rows:");
+        copyText(g_textScratch, sizeof(g_textScratch), "");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.lineRowCount);
+        drawText(ctx, 220, 476, g_textScratch);
+        drawText(ctx, 100, 500, "Artifact:");
+        drawText(ctx, 220, 500, g_debugController.target.executablePath[0] ? g_debugController.target.executablePath : "(none)");
+        drawText(ctx, 100, 524, "Last event:");
         if (g_debugController.eventCount > 0) {
             const guidexos::developer_studio::DebugEvent* event = guidexos::developer_studio::DebugControllerEventAt(&g_debugController, g_debugController.eventCount - 1);
-            drawText(ctx, 220, 436, event ? guidexos::developer_studio::DebugEventKindName(event->kind) : "(none)");
-        } else drawText(ctx, 220, 436, "(none)");
-        drawText(ctx, 100, 460, "Last status:");
-        drawText(ctx, 220, 460, g_debugController.lastMessage[0] ? g_debugController.lastMessage : "(none)");
+            drawText(ctx, 220, 524, event ? guidexos::developer_studio::DebugEventKindName(event->kind) : "(none)");
+        } else drawText(ctx, 220, 524, "(none)");
+        drawText(ctx, 100, 548, "Last status:");
+        drawText(ctx, 220, 548, g_debugController.lastMessage[0] ? g_debugController.lastMessage : "(none)");
         drawText(ctx, 100, 584, "Tab Breakpoints   Esc Close");
     }
 }
@@ -6593,6 +6691,7 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         g_ownershipPanelOpen = false;
         if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
             DebugControllerClearBreakpoints(&g_debugController);
+            DebugDwarfMapperReset(&g_debugMapper);
             g_debugPanelOpen = false;
         }
         TypeDatabaseClear(&g_typeDatabase);
@@ -7757,6 +7856,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 g_ownershipPanelOpen = false;
                 if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
                     DebugControllerClearBreakpoints(&g_debugController);
+                    DebugDwarfMapperReset(&g_debugMapper);
                     g_debugPanelOpen = false;
                 }
                 TypeDatabaseClear(&g_typeDatabase);
@@ -8002,6 +8102,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_lastRunState = RunState::Idle;
     g_runTerminalReported = false;
     DebugControllerInit(&g_debugController);
+    DebugDwarfMapperReset(&g_debugMapper);
     HostedDebugBackendInit(&g_hostedDebugBackend, developmentRunService());
     g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);
     g_debugWaitingForBuild = false;

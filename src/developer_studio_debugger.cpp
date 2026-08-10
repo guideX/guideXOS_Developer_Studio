@@ -1,4 +1,5 @@
 #include "developer_studio_debugger.h"
+#include "developer_studio_debug_symbols.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -105,6 +106,70 @@ static void setBreakpointMessage(DebugBreakpoint& breakpoint, const char* messag
     copyText(breakpoint.message, sizeof(breakpoint.message), message ? message : "");
 }
 
+static void appendText(char* output, uint32_t outputSize, const char* input) {
+    if (!output || outputSize == 0 || !input) return;
+    uint32_t offset = textLength(output, outputSize);
+    for (uint32_t inputOffset = 0; offset + 1 < outputSize && input[inputOffset] != '\0'; ++inputOffset)
+        output[offset++] = input[inputOffset];
+    output[offset] = '\0';
+}
+
+static void appendHexAddress(char* output, uint32_t outputSize, uint64_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    if (!output || outputSize == 0) return;
+    uint32_t offset = textLength(output, outputSize);
+    const char prefix[] = "0x";
+    for (uint32_t i = 0; i < 2 && offset + 1 < outputSize; ++i) output[offset++] = prefix[i];
+    for (int32_t shift = 60; shift >= 0 && offset + 1 < outputSize; shift -= 4)
+        output[offset++] = digits[(value >> shift) & 0xfu];
+    output[offset] = '\0';
+}
+
+static void clearBreakpointMapping(DebugBreakpoint& breakpoint) {
+    breakpoint.location.instructionAddress = DebugAddress();
+    breakpoint.mappedAddressCount = 0;
+    for (uint32_t i = 0; i < kDebugMaxMappedAddresses; ++i) breakpoint.mappedAddresses[i] = DebugAddress();
+}
+
+static DebugErrorCode mapDwarfError(DebugDwarfError error) {
+    switch (error) {
+    case DebugDwarfError::None: return DebugErrorCode::None;
+    case DebugDwarfError::NoDebugInfo: return DebugErrorCode::NoDebugInfo;
+    case DebugDwarfError::MissingLineSection: return DebugErrorCode::MissingLineSection;
+    case DebugDwarfError::MalformedElf: return DebugErrorCode::MalformedElf;
+    case DebugDwarfError::MalformedDwarf: return DebugErrorCode::MalformedDwarf;
+    case DebugDwarfError::UnsupportedDwarfVersion: return DebugErrorCode::UnsupportedDwarfVersion;
+    case DebugDwarfError::UnsupportedForm: return DebugErrorCode::UnsupportedForm;
+    case DebugDwarfError::UnsupportedArchitecture: return DebugErrorCode::UnsupportedArchitecture;
+    case DebugDwarfError::ArtifactChanged: return DebugErrorCode::ArtifactChanged;
+    case DebugDwarfError::SourceNotFound: return DebugErrorCode::SourceNotFound;
+    case DebugDwarfError::LineNotMapped: return DebugErrorCode::LineNotMapped;
+    case DebugDwarfError::Truncated: return DebugErrorCode::Truncated;
+    case DebugDwarfError::LimitExceeded: return DebugErrorCode::MappingLimitExceeded;
+    case DebugDwarfError::UnsupportedOpcode: return DebugErrorCode::UnsupportedOpcode;
+    }
+    return DebugErrorCode::BackendError;
+}
+
+static void setMappingMessage(DebugBreakpoint& breakpoint, uint32_t addressCount, uint64_t primary, bool truncated) {
+    char message[kDebugMaxMessageBytes] = {};
+    copyText(message, sizeof(message), "Mapped -> ");
+    appendHexAddress(message, sizeof(message), primary);
+    if (addressCount > 1) {
+        char count[24] = {};
+        uint32_t value = addressCount;
+        uint32_t countLength = 0;
+        do { count[countLength++] = static_cast<char>('0' + (value % 10)); value /= 10; } while (value != 0 && countLength < sizeof(count));
+        appendText(message, sizeof(message), " | ");
+        uint32_t offset = textLength(message, sizeof(message));
+        while (countLength > 0 && offset + 1 < sizeof(message)) message[offset++] = count[--countLength];
+        message[offset] = '\0';
+        appendText(message, sizeof(message), " addresses");
+    }
+    if (truncated) appendText(message, sizeof(message), " | truncated");
+    setBreakpointMessage(breakpoint, message);
+}
+
 static void initializeBreakpoint(DebugBreakpoint* breakpoint, uint64_t id, const char* projectId,
                                  const char* relativePath, uint64_t projectGeneration,
                                  uint32_t line, uint32_t column, uint32_t sourceGeneration) {
@@ -117,6 +182,8 @@ static void initializeBreakpoint(DebugBreakpoint* breakpoint, uint64_t id, const
     breakpoint->location.projectGeneration = projectGeneration;
     breakpoint->location.sourceGeneration = sourceGeneration;
     breakpoint->location.mapping = DebugMappingState::Unavailable;
+    breakpoint->mappingError = DebugErrorCode::SourceMappingUnavailable;
+    clearBreakpointMapping(*breakpoint);
     breakpoint->enabled = true;
     breakpoint->state = DebugBreakpointState::Pending;
     breakpoint->sessionGeneration = 0;
@@ -192,6 +259,19 @@ const char* DebugErrorName(DebugErrorCode error) {
     case DebugErrorCode::SourceMappingUnavailable: return "source_mapping_unavailable";
     case DebugErrorCode::ProjectGenerationMismatch: return "project_generation_mismatch";
     case DebugErrorCode::BackendError: return "backend_error";
+    case DebugErrorCode::NoDebugInfo: return "no_debug_info";
+    case DebugErrorCode::MissingLineSection: return "missing_line_section";
+    case DebugErrorCode::MalformedElf: return "malformed_elf";
+    case DebugErrorCode::MalformedDwarf: return "malformed_dwarf";
+    case DebugErrorCode::UnsupportedDwarfVersion: return "unsupported_dwarf_version";
+    case DebugErrorCode::UnsupportedForm: return "unsupported_form";
+    case DebugErrorCode::UnsupportedArchitecture: return "unsupported_architecture";
+    case DebugErrorCode::ArtifactChanged: return "artifact_changed";
+    case DebugErrorCode::SourceNotFound: return "source_not_found";
+    case DebugErrorCode::LineNotMapped: return "line_not_mapped";
+    case DebugErrorCode::Truncated: return "truncated";
+    case DebugErrorCode::MappingLimitExceeded: return "mapping_limit_exceeded";
+    case DebugErrorCode::UnsupportedOpcode: return "unsupported_opcode";
     }
     return "unknown";
 }
@@ -199,6 +279,7 @@ const char* DebugErrorName(DebugErrorCode error) {
 const char* DebugBreakpointStateName(DebugBreakpointState state) {
     switch (state) {
     case DebugBreakpointState::Pending: return "Pending";
+    case DebugBreakpointState::Mapped: return "Mapped";
     case DebugBreakpointState::Verified: return "Verified";
     case DebugBreakpointState::Rejected: return "Rejected";
     case DebugBreakpointState::Disabled: return "Disabled";
@@ -275,6 +356,7 @@ bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
         if (error) *error = DebugErrorCode::InvalidRequest;
         return false;
     }
+    target->artifactSize = build.artifactSize;
     target->projectGeneration = projectGeneration;
     return true;
 }
@@ -365,6 +447,8 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
         else if (breakpoint.location.projectGeneration != target.projectGeneration) {
             breakpoint.state = DebugBreakpointState::Stale;
             setBreakpointMessage(breakpoint, "Stale: built project generation differs");
+        } else if (breakpoint.state == DebugBreakpointState::Mapped && breakpoint.mappedAddressCount > 0) {
+            breakpoint.location.mapping = DebugMappingState::Mapped;
         } else if (!backend.capabilities.canSetSourceBreakpoint) {
             breakpoint.state = DebugBreakpointState::Pending;
             setBreakpointMessage(breakpoint, "Pending: source mapping unavailable");
@@ -537,6 +621,9 @@ bool DebugControllerToggleBreakpoint(DebugController* controller, const char* pr
             !PathsEqual(breakpoint.location.relativePath, relative)) continue;
         breakpoint.enabled = !breakpoint.enabled;
         breakpoint.state = breakpoint.enabled ? DebugBreakpointState::Pending : DebugBreakpointState::Disabled;
+        breakpoint.location.mapping = breakpoint.enabled ? DebugMappingState::Pending : DebugMappingState::Unavailable;
+        breakpoint.mappingError = breakpoint.enabled ? DebugErrorCode::SourceMappingUnavailable : DebugErrorCode::None;
+        clearBreakpointMapping(breakpoint);
         breakpoint.location.projectGeneration = projectGeneration;
         breakpoint.location.sourceGeneration = sourceGeneration;
         setBreakpointMessage(breakpoint, breakpoint.enabled ? "Pending: source mapping unavailable" : "Disabled by user");
@@ -566,6 +653,9 @@ bool DebugControllerSetBreakpointEnabled(DebugController* controller, uint64_t b
     DebugBreakpoint& breakpoint = controller->breakpoints[index];
     breakpoint.enabled = enabled;
     breakpoint.state = enabled ? DebugBreakpointState::Pending : DebugBreakpointState::Disabled;
+    breakpoint.location.mapping = enabled ? DebugMappingState::Pending : DebugMappingState::Unavailable;
+    breakpoint.mappingError = enabled ? DebugErrorCode::SourceMappingUnavailable : DebugErrorCode::None;
+    clearBreakpointMapping(breakpoint);
     setBreakpointMessage(breakpoint, enabled ? "Pending: source mapping unavailable" : "Disabled by user");
     return true;
 }
@@ -587,6 +677,9 @@ bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t
     breakpoint.location.instructionAddress = address;
     breakpoint.location.mapping = accepted ? DebugMappingState::Mapped : DebugMappingState::Rejected;
     breakpoint.state = accepted ? DebugBreakpointState::Verified : DebugBreakpointState::Rejected;
+    breakpoint.mappingError = accepted ? DebugErrorCode::None : DebugErrorCode::BreakpointRejected;
+    breakpoint.mappedAddressCount = accepted && address.valid ? 1 : 0;
+    if (accepted && address.valid) breakpoint.mappedAddresses[0] = address;
     setBreakpointMessage(breakpoint, message ? message : (accepted ? "Verified" : "Rejected by backend"));
     appendEvent(controller, accepted ? DebugEventKind::BreakpointBound : DebugEventKind::BreakpointRejected,
                 controller->state, accepted ? DebugStopReason::None : DebugStopReason::Unknown,
@@ -606,6 +699,100 @@ void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t 
     }
 }
 
+void DebugControllerMarkArtifactStale(DebugController* controller, const char* message) {
+    if (!controller) return;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!breakpoint.enabled) continue;
+        breakpoint.state = DebugBreakpointState::Stale;
+        breakpoint.location.mapping = DebugMappingState::Unavailable;
+        breakpoint.mappingError = DebugErrorCode::ArtifactChanged;
+        clearBreakpointMapping(breakpoint);
+        setBreakpointMessage(breakpoint, message ? message : "Stale: executable changed");
+    }
+}
+
+bool DebugControllerMapBreakpoints(DebugController* controller, const DebugDwarfMapper* mapper,
+                                   DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !mapper) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    if (!DebugDwarfMapperIsReady(mapper)) {
+        DebugDwarfError mapperError = mapper->error == DebugDwarfError::None ? DebugDwarfError::NoDebugInfo : mapper->error;
+        const DebugErrorCode mappedError = mapDwarfError(mapperError);
+        controller->error = mappedError;
+        for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+            DebugBreakpoint& breakpoint = controller->breakpoints[i];
+            if (!breakpoint.enabled) continue;
+            breakpoint.state = DebugBreakpointState::Pending;
+            breakpoint.location.mapping = DebugMappingState::Unavailable;
+            breakpoint.mappingError = mappedError;
+            clearBreakpointMapping(breakpoint);
+            char message[kDebugMaxMessageBytes] = {};
+            copyText(message, sizeof(message), "Pending: ");
+            appendText(message, sizeof(message), DebugDwarfErrorName(mapperError));
+            setBreakpointMessage(breakpoint, message);
+        }
+        if (error) *error = mappedError;
+        return false;
+    }
+    if (!DebugDwarfMapperMatchesArtifact(mapper, controller->target.projectRoot,
+                                         controller->target.projectId, controller->target.targetProfile,
+                                         controller->target.architecture, controller->target.executablePath,
+                                         controller->target.artifactSize, controller->target.artifactSha256,
+                                         controller->target.projectGeneration)) {
+        DebugControllerMarkArtifactStale(controller, "Stale: executable changed");
+        controller->error = DebugErrorCode::ArtifactChanged;
+        if (error) *error = controller->error;
+        return false;
+    }
+    bool allMapped = true;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!breakpoint.enabled) continue;
+        if (breakpoint.location.projectGeneration != controller->target.projectGeneration) {
+            breakpoint.state = DebugBreakpointState::Stale;
+            breakpoint.mappingError = DebugErrorCode::ProjectGenerationMismatch;
+            setBreakpointMessage(breakpoint, "Stale: built project generation differs");
+            allMapped = false;
+            continue;
+        }
+        uint64_t addresses[kDebugMaxMappedAddresses] = {};
+        uint32_t addressCount = 0;
+        uint64_t primary = 0;
+        DebugDwarfError mapperError = DebugDwarfError::None;
+        const bool mapped = DebugDwarfMapperMapSourceToAddresses(mapper, breakpoint.location.relativePath,
+            breakpoint.location.line, addresses, kDebugMaxMappedAddresses, &addressCount, &primary, &mapperError);
+        if (!mapped || addressCount == 0) {
+            breakpoint.state = DebugBreakpointState::Pending;
+            breakpoint.location.mapping = DebugMappingState::Pending;
+            breakpoint.mappingError = mapDwarfError(mapperError == DebugDwarfError::None ? DebugDwarfError::LineNotMapped : mapperError);
+            clearBreakpointMapping(breakpoint);
+            if (mapperError == DebugDwarfError::SourceNotFound)
+                setBreakpointMessage(breakpoint, "Pending: source file not in debug line table");
+            else
+                setBreakpointMessage(breakpoint, "Pending: no executable mapping for this line");
+            allMapped = false;
+            continue;
+        }
+        breakpoint.state = DebugBreakpointState::Mapped;
+        breakpoint.location.mapping = DebugMappingState::Mapped;
+        breakpoint.mappingError = DebugErrorCode::None;
+        breakpoint.mappedAddressCount = addressCount;
+        for (uint32_t address = 0; address < addressCount; ++address) {
+            breakpoint.mappedAddresses[address].valid = true;
+            breakpoint.mappedAddresses[address].value = addresses[address];
+        }
+        breakpoint.location.instructionAddress.valid = true;
+        breakpoint.location.instructionAddress.value = primary;
+        setMappingMessage(breakpoint, addressCount, primary, mapper->truncated);
+    }
+    if (error) *error = allMapped ? DebugErrorCode::None : DebugErrorCode::LineNotMapped;
+    return allMapped;
+}
+
 void DebugControllerMarkSourceGeneration(DebugController* controller, const char* projectId,
                                          const char* sourcePath, uint32_t sourceGeneration) {
     if (!controller || !projectId || !sourcePath) return;
@@ -620,6 +807,8 @@ void DebugControllerMarkSourceGeneration(DebugController* controller, const char
         if (!equalText(breakpoint.projectId, projectId, true) || !PathsEqual(breakpoint.location.relativePath, relative) ||
             breakpoint.location.sourceGeneration == sourceGeneration || breakpoint.state == DebugBreakpointState::Disabled) continue;
         breakpoint.state = DebugBreakpointState::Stale;
+        breakpoint.location.mapping = DebugMappingState::Unavailable;
+        breakpoint.mappingError = DebugErrorCode::ProjectGenerationMismatch;
         setBreakpointMessage(breakpoint, "Stale: source generation differs from built artifact");
     }
 }

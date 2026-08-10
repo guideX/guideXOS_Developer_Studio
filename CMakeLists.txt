@@ -29,6 +29,7 @@ add_library(developer_studio_models STATIC
     src/developer_studio_ownership.cpp
     src/developer_studio_types.cpp
     src/developer_studio_debugger.cpp
+    src/developer_studio_debug_symbols.cpp
     src/developer_studio_debugger_hosted.cpp
 )
 target_include_directories(developer_studio_models PUBLIC src)
@@ -176,6 +177,13 @@ add_executable(developer_studio_debugger_test
 )
 target_link_libraries(developer_studio_debugger_test PRIVATE developer_studio_models)
 set_target_properties(developer_studio_debugger_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
+add_executable(developer_studio_debug_symbols_test
+    tests/debug_symbols_test.cpp
+)
+target_link_libraries(developer_studio_debug_symbols_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_debug_symbols_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_debug_symbols_test COMMAND developer_studio_debug_symbols_test)
 add_test(NAME developer_studio_debugger_test COMMAND developer_studio_debugger_test)
 
 # The production Native ELF link is intentionally driven by build.ps1. That
@@ -210,6 +218,7 @@ add_executable(developerstudio.elf
         src/developer_studio_ownership.cpp
         src/developer_studio_types.cpp
         src/developer_studio_debugger.cpp
+        src/developer_studio_debug_symbols.cpp
         src/developer_studio_debugger_hosted.cpp
         src/freestanding_memory.cpp
         src/main.cpp

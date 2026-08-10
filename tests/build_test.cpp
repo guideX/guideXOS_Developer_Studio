@@ -62,6 +62,9 @@ int main() {
     assert(std::strcmp(request.buildSystem, "guidexos-native-build-script-v1") == 0);
     assert(std::strcmp(request.buildScript, "build.ps1") == 0);
     assert(std::strcmp(request.expectedArtifact, "build/bin/amd64/hello-guidexos.elf") == 0);
+    assert(std::strcmp(request.configuration, "Debug") == 0);
+    assert(BuildRequestEnableDebugInfo(&request));
+    assert(std::strcmp(request.configuration, "DebugSymbols") == 0);
     project.kind = ProjectKind::ConsoleApplication;
     assert(!BuildRequestFromProject(project, &request, &error) && error == BuildErrorCode::InvalidRequest);
 

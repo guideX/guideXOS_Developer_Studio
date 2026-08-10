@@ -184,6 +184,11 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
     return true;
 }
 
+bool BuildRequestEnableDebugInfo(BuildRequest* request) {
+    if (!request) return false;
+    return copyText(request->configuration, sizeof(request->configuration), "DebugSymbols");
+}
+
 bool BuildControllerInit(BuildController* controller) {
     if (!controller) return false;
     *controller = BuildController();
@@ -193,7 +198,7 @@ bool BuildControllerInit(BuildController* controller) {
     return true;
 }
 
-bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output) {
+bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output, bool debugInfo) {
     if (error) *error = BuildErrorCode::None;
     if (!controller || !workspace) { if (error) *error = BuildErrorCode::InvalidRequest; return false; }
     if (controller->active) { if (error) *error = BuildErrorCode::AlreadyRunning; return false; }
@@ -210,6 +215,8 @@ bool BuildControllerStart(BuildController* controller, WorkspaceController* work
     if (local == BuildErrorCode::None && !BuildRequestFromProject(workspace->model.project, &controller->request, &local)) {
         if (local == BuildErrorCode::None) local = BuildErrorCode::InvalidRequest;
     }
+    if (local == BuildErrorCode::None && debugInfo && !BuildRequestEnableDebugInfo(&controller->request))
+        local = BuildErrorCode::InvalidRequest;
     if (local != BuildErrorCode::None) {
         setResultFailure(controller, local == BuildErrorCode::UserCancelled ? BuildState::Cancelled : BuildState::Failed, local);
         if (error) *error = local;

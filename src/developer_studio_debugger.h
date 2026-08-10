@@ -12,6 +12,7 @@ static const uint32_t kDebugMaxBackendNameBytes = 64;
 static const uint32_t kDebugMaxAbiBytes = 64;
 static const uint32_t kDebugMaxArchitectureBytes = 32;
 static const uint32_t kDebugMaxArgumentsBytes = 256;
+static const uint32_t kDebugMaxMappedAddresses = 8;
 
 enum class DebugSessionState {
     Idle = 0,
@@ -43,11 +44,25 @@ enum class DebugErrorCode {
     BreakpointRejected,
     SourceMappingUnavailable,
     ProjectGenerationMismatch,
-    BackendError
+    BackendError,
+    NoDebugInfo,
+    MissingLineSection,
+    MalformedElf,
+    MalformedDwarf,
+    UnsupportedDwarfVersion,
+    UnsupportedForm,
+    UnsupportedArchitecture,
+    ArtifactChanged,
+    SourceNotFound,
+    LineNotMapped,
+    Truncated,
+    MappingLimitExceeded,
+    UnsupportedOpcode
 };
 
 enum class DebugBreakpointState {
     Pending = 0,
+    Mapped,
     Verified,
     Rejected,
     Disabled,
@@ -128,6 +143,7 @@ struct DebugTarget {
     char applicationId[kMaxRunApplicationIdBytes];
     char manifestPath[kMaxProjectPathBytes];
     char executablePath[kMaxProjectPathBytes];
+    uint64_t artifactSize;
     char artifactSha256[kMaxRunArtifactSha256Bytes];
     char workingDirectory[kMaxPathBytes];
     char arguments[kDebugMaxArgumentsBytes];
@@ -139,10 +155,15 @@ struct DebugBreakpoint {
     DebugSourceLocation location;
     bool enabled;
     DebugBreakpointState state;
+    DebugErrorCode mappingError;
+    uint32_t mappedAddressCount;
+    DebugAddress mappedAddresses[kDebugMaxMappedAddresses];
     uint64_t backendBindingId;
     uint64_t sessionGeneration;
     char message[kDebugMaxMessageBytes];
 };
+
+struct DebugDwarfMapper;
 
 struct DebugEvent {
     uint64_t sessionGeneration;
@@ -271,6 +292,9 @@ bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t
                                             uint64_t backendBindingId, DebugAddress address,
                                             const char* message, DebugErrorCode* error);
 void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t projectGeneration);
+void DebugControllerMarkArtifactStale(DebugController* controller, const char* message);
+bool DebugControllerMapBreakpoints(DebugController* controller, const DebugDwarfMapper* mapper,
+                                   DebugErrorCode* error);
 void DebugControllerMarkSourceGeneration(DebugController* controller, const char* projectId,
                                          const char* sourcePath, uint32_t sourceGeneration);
 const DebugBreakpoint* DebugControllerBreakpointAt(const DebugController* controller, uint32_t index);

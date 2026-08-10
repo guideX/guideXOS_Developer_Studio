@@ -61,13 +61,13 @@ does provide status and termination internals, but the Debugger Foundation
 uses only the existing owner-bound Development Run close contract.
 
 The ELF loader maps validated `PT_LOAD` segments into the existing Native ELF
-runtime image. The current Developer Studio build is freestanding C++11,
-static `ld.lld`, `x86_64-unknown-elf`, `ET_EXEC`, entry point `gx_main`, with
-no debug-information or DWARF-preservation flags. The package retains a valid
-ELF symbol table when the toolchain emits one, but the Developer Studio build
-does not currently produce a source-line mapping artifact, linker map, or
-DWARF consumer. The existing symbol index stores names and source locations;
-it does not contain instruction addresses and is not used as one.
+runtime image. Ordinary Developer Studio builds remain freestanding C++11,
+static `ld.lld`, `x86_64-unknown-elf`, `ET_EXEC`, entry point `gx_main`. Debug
+sessions now request a separate `DebugSymbols` build configuration that adds
+Clang DWARF line information at `-O0`, with repository-prefix normalization.
+The package retains a valid ELF symbol table when the toolchain emits one, but
+the existing symbol index still stores names and source locations rather than
+instruction addresses.
 
 These facts make source-to-address guessing and INT3 patching unsafe in this
 phase. No Server ABI change was required.
@@ -101,13 +101,15 @@ the editor gutter use the same model. F9 toggling disables an existing entry
 and re-enables it on the next toggle; the Breakpoints panel also supports
 explicit deletion.
 
-The visible states are `Pending`, `Verified`, `Rejected`, `Disabled`, and
-`Stale`. A click never makes a breakpoint Verified. Hosted source breakpoints
-show `Pending — source mapping unavailable`. The `Verified` state is reserved
-for a backend binding result. A breakpoint becomes Stale when its built
-project generation or source document generation no longer matches the
-recorded generation. Unsaved edits remain dirty and are never silently
-rebound to an active artifact.
+The visible states are `Pending`, `Mapped`, `Verified`, `Rejected`, `Disabled`,
+and `Stale`. A click never makes a breakpoint Verified. With a debug artifact,
+`Mapped` means the source line resolved to linked addresses; it does not mean
+the hosted backend installed a runtime breakpoint. Hosted source breakpoints
+remain `Pending` when mapping is unavailable. The `Verified` state is reserved
+for a backend binding result. A breakpoint becomes Stale when its built project
+generation, source document generation, or artifact identity no longer
+matches the recorded generation. Unsaved edits remain dirty and are never
+silently rebound to an active artifact.
 
 The Breakpoints panel supports selection, source navigation through the
 existing `WorkspaceControllerOpenDocumentAtLocation` path, enable/disable,
@@ -134,14 +136,20 @@ is active is blocked behind the bounded Stop Debugging confirmation. Closing a
 document does not erase breakpoint storage. A project/source-generation
 mismatch is surfaced as Stale rather than silently rebound.
 
-## Source mapping and next milestone
+## Phase 2 source mapping and next milestone
 
-`DebugSourceMapper` is the narrow extension point for source-line to address,
-address to source-line, and symbol to address providers. The next technical
-milestone should be **DWARF/source-line mapping**: first preserve a deliberate
-debug build artifact and implement a bounded line-table provider, then use
-that evidence to decide whether a later hosted software-breakpoint/trap
-milestone is safe. Pause/register support cannot be claimed from the current
+Phase 2 implements bounded DWARF/source-line mapping in
+`src/developer_studio_debug_symbols.*`. It reads the exact hashed ELF artifact
+through the existing filesystem API, supports the DWARF 4/5 line-table forms
+emitted by the current Clang build, normalizes paths under the project root,
+and exposes forward and reverse line/address lookup. The detailed contract,
+limits, error states, and validation evidence are in
+`docs/DEBUGGER_SOURCE_MAPPING.md`.
+
+This evidence does not change the Phase 1 runtime capability level: the
+hosted backend still supports launch and owner-bound stop only. A later
+software-breakpoint/trap milestone must first add and validate a Server runtime
+debugger ABI. Pause/register support cannot be claimed from the current
 runtime audit.
 
 Deferred work includes instruction breakpoints, trap delivery, Continue after a

@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$ServerRoot = "",
+    [string]$SdkInclude = "",
+    [string]$ToolchainRoot = "",
+    [ValidateSet("Debug", "DebugSymbols")]
+    [string]$Configuration = "Debug",
     [switch]$SkipModelTest,
     [switch]$SkipProjectTest
 )
@@ -10,7 +14,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $ServerRoot) { $ServerRoot = $env:GUIDEXOS_SERVER_ROOT }
 if (-not $ServerRoot) { throw "Pass -ServerRoot or set GUIDEXOS_SERVER_ROOT." }
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
-$SdkInclude = Join-Path $ServerRoot "sdk\include"
+if (-not $SdkInclude) { $SdkInclude = Join-Path $ServerRoot "sdk\include" }
 $PackageRoot = Join-Path $ServerRoot "Apps\DeveloperStudio"
 $PackageBin = Join-Path $PackageRoot "bin\amd64"
 $Manifest = Join-Path $RepoRoot "app\app.json"
@@ -59,8 +63,10 @@ if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) {
     throw "Developer Studio manifest was not found: $Manifest"
 }
 
-$clang = Find-Tool @("clang++.exe", "clang++") @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
-$lld = Find-Tool @("ld.lld.exe", "ld.lld") @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
+$toolRoots = @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
+if ($ToolchainRoot) { $toolRoots = @($ToolchainRoot) + $toolRoots }
+$clang = Find-Tool @("clang++.exe", "clang++") $toolRoots
+$lld = Find-Tool @("ld.lld.exe", "ld.lld") $toolRoots
 $readElf = Find-Tool @("llvm-readelf.exe", "llvm-readelf", "readelf.exe", "readelf") @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
 if (-not $clang) { throw "clang++ was not found. Install LLVM or add clang++ to PATH." }
 if (-not $lld) { throw "ld.lld was not found. Install LLVM or add ld.lld to PATH." }
@@ -194,7 +200,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debugger.cpp", "tests\debugger_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debugger.cpp", "tests\debugger_test.cpp",
         "-o", $DebuggerTest
     )
     & $DebuggerTest
@@ -206,6 +212,10 @@ try {
         "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
         "-I$SdkInclude", "-Isrc"
     )
+    if ($Configuration -eq "DebugSymbols") {
+        $compileFlags += @("-g", "-O0", "-fdebug-compilation-dir=$RepoRoot", "-fdebug-prefix-map=$RepoRoot=.")
+        Write-Host "Native debug line information: enabled"
+    }
     $modelObject = Join-Path $ObjectRoot "developer_studio_models.o"
     $findObject = Join-Path $ObjectRoot "developer_studio_find.o"
     $syntaxObject = Join-Path $ObjectRoot "developer_studio_syntax.o"
@@ -226,6 +236,7 @@ try {
     $ownershipObject = Join-Path $ObjectRoot "developer_studio_ownership.o"
     $typesObject = Join-Path $ObjectRoot "developer_studio_types.o"
     $debuggerObject = Join-Path $ObjectRoot "developer_studio_debugger.o"
+    $debugSymbolsObject = Join-Path $ObjectRoot "developer_studio_debug_symbols.o"
     $debuggerHostedObject = Join-Path $ObjectRoot "developer_studio_debugger_hosted.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
@@ -249,12 +260,13 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_ownership.cpp"), "-o", $ownershipObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_types.cpp"), "-o", $typesObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger.cpp"), "-o", $debuggerObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_symbols.cpp"), "-o", $debugSymbolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger_hosted.cpp"), "-o", $debuggerHostedObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debugSymbolsObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
