@@ -489,6 +489,8 @@ using guidexos::developer_studio::DebugControllerStart;
 using guidexos::developer_studio::DebugControllerToggleBreakpoint;
 using guidexos::developer_studio::DebugErrorCode;
 using guidexos::developer_studio::DebugErrorName;
+using guidexos::developer_studio::DebugBackendExecutionState;
+using guidexos::developer_studio::DebugRegisterContextIsValid;
 using guidexos::developer_studio::DebugRelativeSourcePath;
 using guidexos::developer_studio::DebugSessionState;
 using guidexos::developer_studio::DebugSessionStateName;
@@ -2978,6 +2980,7 @@ static bool hostRunRelease(void* userData, uint64_t handle) {
 static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_t handle,
                              uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                              uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
+                             uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
                              HostedDebugResult* outResult) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     if (outResult) *outResult = HostedDebugResult();
@@ -2993,6 +2996,9 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     request.breakpointId = breakpointId;
     request.targetAddress = targetAddress;
     request.artifactSha256 = artifactSha256;
+    request.flags = reinstallBreakpoint ? GX_DEVELOPMENT_DEBUG_FLAG_REINSTALL_BREAKPOINT : 0;
+    request.threadId = threadId;
+    request.stopGeneration = stopGeneration;
     gx_development_debug_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
@@ -3016,6 +3022,38 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->originalByteValid = snapshot.originalByteValid != 0;
     outResult->bindingInstalled = snapshot.bindingInstalled != 0;
     outResult->bindingCount = snapshot.bindingCount;
+    outResult->stopGeneration = snapshot.context.stopGeneration;
+    outResult->rflagsBeforeStep = snapshot.rflagsBeforeStep;
+    outResult->rflagsWithTrapFlag = snapshot.rflagsWithTrapFlag;
+    outResult->rflagsAfterTrapFlagClear = snapshot.rflagsAfterTrapFlagClear;
+    outResult->executionState = snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_SINGLE_STEP_PENDING ?
+        static_cast<uint32_t>(DebugBackendExecutionState::SingleStepPending) :
+        static_cast<uint32_t>(DebugBackendExecutionState::None);
+    outResult->registerContext.valid = snapshot.context.valid != 0;
+    outResult->registerContext.architecture = snapshot.context.architecture;
+    outResult->registerContext.processId = snapshot.context.processId;
+    outResult->registerContext.nativeRuntimeId = snapshot.context.nativeRuntimeId;
+    outResult->registerContext.threadId = snapshot.context.threadId;
+    outResult->registerContext.sessionGeneration = snapshot.context.sessionGeneration;
+    outResult->registerContext.stopGeneration = snapshot.context.stopGeneration;
+    outResult->registerContext.rip = snapshot.context.rip;
+    outResult->registerContext.rflags = snapshot.context.rflags;
+    outResult->registerContext.rsp = snapshot.context.rsp;
+    outResult->registerContext.rbp = snapshot.context.rbp;
+    outResult->registerContext.rax = snapshot.context.rax;
+    outResult->registerContext.rbx = snapshot.context.rbx;
+    outResult->registerContext.rcx = snapshot.context.rcx;
+    outResult->registerContext.rdx = snapshot.context.rdx;
+    outResult->registerContext.rsi = snapshot.context.rsi;
+    outResult->registerContext.rdi = snapshot.context.rdi;
+    outResult->registerContext.r8 = snapshot.context.r8;
+    outResult->registerContext.r9 = snapshot.context.r9;
+    outResult->registerContext.r10 = snapshot.context.r10;
+    outResult->registerContext.r11 = snapshot.context.r11;
+    outResult->registerContext.r12 = snapshot.context.r12;
+    outResult->registerContext.r13 = snapshot.context.r13;
+    outResult->registerContext.r14 = snapshot.context.r14;
+    outResult->registerContext.r15 = snapshot.context.r15;
     copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage);
     return true;
 }
@@ -6252,7 +6290,7 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
 
 static void drawDebugPanel(gx_app_context* ctx) {
     if (!g_debugPanelOpen) return;
-    drawPanel(ctx, { 72, kDebugPanelTop, 816, 552 }, 0x263650u);
+    drawPanel(ctx, { 72, kDebugPanelTop, 816, 592 }, 0x263650u);
     drawText(ctx, 92, 82, "DEBUGGER FOUNDATION");
     drawText(ctx, 112, 108, "Breakpoints");
     drawText(ctx, 260, 108, "Debug Session");
@@ -6306,7 +6344,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 220, 304, g_debugController.capabilities.canLaunch ? "Launch" : "Launch unavailable");
         drawText(ctx, 220, 328, g_debugController.capabilities.canStop ? "Stop" : "Stop unavailable");
         drawText(ctx, 220, 352, g_debugController.capabilities.canPause ? "Pause" : "Pause unavailable");
-        drawText(ctx, 220, 376, g_debugController.capabilities.canContinue ? "Continue" : "Continue unavailable");
+        drawText(ctx, 220, 376, DebugControllerCanContinue(&g_debugController) ? "Continue" : "Continue unavailable");
         drawText(ctx, 220, 400, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
         drawText(ctx, 100, 428, "Debug info:");
         copyText(g_textScratch, sizeof(g_textScratch), g_debugMapper.state == guidexos::developer_studio::DebugDwarfMapperState::Empty ? "(none)" : DebugDwarfMapperStateName(g_debugMapper.state));
@@ -6343,7 +6381,19 @@ static void drawDebugPanel(gx_app_context* ctx) {
             }
             drawText(ctx, 220, 596, g_textScratch);
         } else drawText(ctx, 220, 596, "(none)");
-        drawText(ctx, 100, 620, "Tab Breakpoints   Esc Close");
+        drawText(ctx, 100, 620, "Registers:");
+        if (DebugRegisterContextIsValid(g_debugController.stoppedContext)) {
+            copyText(g_textScratch, sizeof(g_textScratch), "RIP=");
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.rip);
+            appendText(g_textScratch, sizeof(g_textScratch), " RSP=");
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.rsp);
+            appendText(g_textScratch, sizeof(g_textScratch), " RBP=");
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.rbp);
+            appendText(g_textScratch, sizeof(g_textScratch), " RFLAGS=");
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.rflags);
+            drawText(ctx, 170, 620, g_textScratch);
+        } else drawText(ctx, 170, 620, "(stale while target is running)");
+        drawText(ctx, 100, 644, "Tab Breakpoints   Esc Close");
     }
 }
 
@@ -6656,7 +6706,7 @@ static void drawShell(gx_app_context* ctx) {
     if (g_debugMenuOpen) {
         drawPanel(ctx, { 580, 42, 360, 176 }, 0x34496Au);
         drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
-        drawText(ctx, 592, 86, g_debugController.capabilities.canContinue ? "Continue" : "Continue (unavailable)");
+        drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
         drawText(ctx, 592, 108, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
         drawText(ctx, 592, 130, "Stop Debugging");
         drawText(ctx, 592, 152, "Toggle Breakpoint (F9)");
@@ -7492,7 +7542,23 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         }
         return;
     }
-    if (keyCode == 116) { requestRun(ctx); return; }
+    if (keyCode == 116) {
+        if (DebugControllerCanContinue(&g_debugController)) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (!DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {
+                copyText(g_textScratch, sizeof(g_textScratch), "Debug continue failed: ");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+                reportDebugMessage(ctx, g_textScratch);
+            }
+            return;
+        }
+        if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+            writeStudioOutput("Debug target is running; Continue is unavailable");
+            return;
+        }
+        requestRun(ctx);
+        return;
+    }
     if (keyCode == 114) {
         openFindBar(false, false);
         findNavigate(WorkspaceControllerActiveDocument(&g_controller),
@@ -8007,7 +8073,12 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
             DebugErrorCode error = DebugErrorCode::None;
-            if (!DebugControllerContinue(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Continue unavailable: backend capability is false");
+            if (!DebugControllerCanContinue(&g_debugController) ||
+                !DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {
+                copyText(g_textScratch, sizeof(g_textScratch), "Continue unavailable: ");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+                writeStudioOutput(g_textScratch);
+            }
         } else if (row == 2) {
             DebugErrorCode error = DebugErrorCode::None;
             if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Pause unavailable: backend capability is false");

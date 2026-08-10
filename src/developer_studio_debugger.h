@@ -14,6 +14,13 @@ static const uint32_t kDebugMaxArchitectureBytes = 32;
 static const uint32_t kDebugMaxArgumentsBytes = 256;
 static const uint32_t kDebugMaxMappedAddresses = 8;
 
+enum class DebugArchitecture {
+    Unknown = 0,
+    Amd64,
+    Arm64,
+    RiscV64
+};
+
 enum class DebugSessionState {
     Idle = 0,
     Launching,
@@ -57,7 +64,17 @@ enum class DebugErrorCode {
     LineNotMapped,
     Truncated,
     MappingLimitExceeded,
-    UnsupportedOpcode
+    UnsupportedOpcode,
+    StaleStopContext,
+    OriginalByteRestoreFailed,
+    ContextReadFailed,
+    ContextWriteFailed,
+    RipCorrectionFailed,
+    TrapFlagSetFailed,
+    TargetResumeFailed,
+    SingleStepNotObserved,
+    BreakpointReinstallFailed,
+    TrapFlagClearFailed
 };
 
 enum class DebugBreakpointState {
@@ -87,6 +104,14 @@ enum class DebugStopReason {
     Unknown
 };
 
+enum class DebugBackendExecutionState {
+    None = 0,
+    Running,
+    PausedAtBreakpoint,
+    PreparingBreakpointResume,
+    SingleStepPending
+};
+
 enum class DebugEventKind {
     None = 0,
     Launched,
@@ -102,7 +127,10 @@ enum class DebugEventKind {
     BreakpointTrap,
     BreakpointHit,
     BreakpointRestoreFailed,
-    UnexpectedTrap
+    UnexpectedTrap,
+    ContinueRequested,
+    SingleStepComplete,
+    BreakpointRebound
 };
 
 struct DebugCapabilities {
@@ -194,6 +222,39 @@ struct DebugEvent {
     char message[kDebugMaxMessageBytes];
 };
 
+// This is the debugger-core representation of a stopped target context. It
+// intentionally contains only fixed-width values and bounded ownership
+// identity; host CONTEXT pointers and other platform types must not cross this
+// boundary.
+struct DebugRegisterContext {
+    bool valid;
+    DebugArchitecture architecture;
+    uint16_t reserved;
+    uint64_t processId;
+    uint64_t nativeRuntimeId;
+    uint64_t threadId;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    uint64_t rip;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t rbp;
+    uint64_t rax;
+    uint64_t rbx;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t r8;
+    uint64_t r9;
+    uint64_t r10;
+    uint64_t r11;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
+};
+
 struct DebugBackendSnapshot {
     uint64_t sessionGeneration;
     uint64_t debugHandle;
@@ -213,6 +274,9 @@ struct DebugBackendSnapshot {
     uint8_t originalByte;
     uint8_t installedByte;
     bool originalByteValid;
+    DebugBackendExecutionState executionState;
+    uint64_t stopGeneration;
+    DebugRegisterContext registerContext;
 };
 
 struct DebugBackendBinding {
@@ -240,7 +304,10 @@ typedef bool (*DebugBackendPollFn)(void* userData, uint64_t sessionGeneration,
                                    DebugBackendSnapshot* outSnapshot);
 typedef bool (*DebugBackendStopFn)(void* userData, uint64_t sessionGeneration);
 typedef bool (*DebugBackendPauseFn)(void* userData, uint64_t sessionGeneration);
-typedef bool (*DebugBackendContinueFn)(void* userData, uint64_t sessionGeneration);
+typedef bool (*DebugBackendContinueFn)(void* userData, uint64_t sessionGeneration,
+                                       const DebugRegisterContext& context,
+                                       uint64_t breakpointId, uint64_t bindingId,
+                                       uint64_t targetAddress, bool reinstallBreakpoint);
 
 struct DebugBackend {
     void* userData;
@@ -281,6 +348,9 @@ struct DebugController {
     DebugStopReason stopReason;
     char lastMessage[kDebugMaxMessageBytes];
     bool targetExecutionReleased;
+    DebugBackendExecutionState backendExecutionState;
+    uint64_t stopGeneration;
+    DebugRegisterContext stoppedContext;
     uint64_t nextEventSequence;
     DebugAddress currentInstructionAddress;
     DebugSourceLocation currentLocation;
@@ -301,6 +371,7 @@ const char* DebugEventKindName(DebugEventKind kind);
 bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabilities& right);
 bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities);
 bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities);
+bool DebugRegisterContextIsValid(const DebugRegisterContext& context);
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
                           uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error);

@@ -130,19 +130,22 @@ The current packaged Developer Studio ELF was also parsed directly: DWARF 5,
 sequences. Five initial line/address pairs matched `readelf` decoded-line
 output, and reverse lookup returned the original normalized source location.
 
-## Phase 3B integration evidence
+## Phase 4 integration evidence
 
 The real hosted path captures and validates the exact artifact SHA-256 before symbol
 loading and before every debugger command. It preserves project-relative source
 identity, project/source generations, target address validity, and the loaded artifact
 identity across the launch. The proof reached `debug_state=PAUSED_BREAKPOINT`,
 `debug_source_navigation=PASS`, and `debug_execution_marker=PASS` after the native
-trap was observed.
+trap was observed. A Phase 4 Continue preserves the exact normalized address and
+source identity while the hosted backend restores the original byte, rewinds RIP,
+sets AMD64 TF, resumes the trapped thread, consumes only the matching real
+`EXCEPTION_SINGLE_STEP`, and rebinds `0xCC`. The current source marker is cleared
+only after the backend publishes Running.
 
 ## Deferred work
 
-Continue after a real stop, instruction-pointer correction for safe single-step
-continuation, stepping, call stacks, registers, memory, expressions, locals,
-watches, conditional/data breakpoints, and attach/remote debugging remain future
-milestones. The current proof covers only the bounded source-to-primary-address
-mapping and owned trap path.
+User-visible stepping, call stacks, memory, expressions, locals, watches,
+conditional/data breakpoints, and attach/remote debugging remain future
+milestones. Phase 4 uses the mapping only to identify the exact physical address;
+it does not infer source-level stepping from a single machine instruction.

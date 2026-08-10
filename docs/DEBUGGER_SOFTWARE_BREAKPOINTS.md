@@ -1,4 +1,4 @@
-# Debugger Phase 3: Hosted Software Breakpoints
+# Debugger Phase 4: Hosted Software Breakpoints and Continuation
 
 Phase 3 adds the first hosted Native ELF software-breakpoint path. It is intentionally
 limited to the current AMD64/ELF64 fixed-address `ET_EXEC` runtime and is not a general
@@ -49,7 +49,9 @@ the byte. Host pointers never cross the debugger ABI.
 Multiple logical source breakpoints at one address share one physical binding. The
 binding stores bounded logical owners and one original byte. A future removal API must
 remove only the logical owner; the byte is restored only when the last owner is gone.
-Live enable/disable and safe continuation are not exposed yet.
+Phase 4 preserves duplicate ownership through continuation. The logical
+controller tells the backend whether at least one enabled owner remains; the
+physical binding is rebound only in that case.
 
 ## Trap handling
 
@@ -67,9 +69,10 @@ not report Paused while that thread continues asynchronously. Other runtime thre
 are not claimed to be paused.
 
 An owned trap produces `Running -> Paused` with stop reason `Breakpoint`, process/runtime
-identity, thread ID, normalized target address, binding ID, and the raw instruction
-pointer. The Phase 2 reverse DWARF mapper resolves the normalized address back to the
-source location for the editor execution marker and Debug Session panel.
+identity, thread ID, normalized target address, binding ID, raw instruction pointer,
+and a copied fixed-width register context. The Phase 2 reverse DWARF mapper resolves
+the normalized address back to the source location for the editor execution marker
+and Debug Session panel.
 
 ## Restoration and teardown
 
@@ -79,11 +82,30 @@ still exists, then release the blocked target thread. Restoration is verified th
 the same protected write/cache-flush path. Restore failures are reported as bounded
 backend errors; an old artifact is never patched after a rebuild or stale-map event.
 
-The current Phase 3B runtime does not implement Continue. Correct continuation requires
-restoring the byte, executing the original instruction exactly once, single-stepping,
-reinstalling `0xCC`, and routing the internal single-step trap. Pause, Step Into, Step
-Over, and Step Out remain disabled. Stop Debugging remains supported through the hosted
-development-run close path.
+## Continuation
+
+For an exact owned stop, Continue validates session generation, process/runtime ID,
+thread ID, stop generation, breakpoint ID, physical binding, target address, and
+artifact identity before changing target state. The sequence is:
+
+```text
+EXCEPTION_BREAKPOINT
+  -> restore original byte and verify it
+  -> mark the exact thread/binding/stop generation pending
+  -> set RIP to the breakpoint address and RFLAGS.TF inside the live VEH CONTEXT
+  -> resume the blocked exception callback
+  -> execute the restored instruction once
+  -> receive the matching EXCEPTION_SINGLE_STEP
+  -> clear TF while preserving all other flags
+  -> reinstall 0xCC when an enabled logical owner remains
+  -> publish Running
+```
+
+The handler never retains a `CONTEXT*`; it copies the stopped registers into
+bounded state and mutates the borrowed context only during the callback. A
+single-step from another process, thread, session, generation, or without a
+pending internal operation is left unclaimed. The internal single-step is not
+exposed as Step Into.
 
 ## Scope and evidence boundary
 
@@ -102,6 +124,7 @@ teardown. These fields come from the running hosted target and the real Develope
 Studio UI path, not from a fake backend or predetermined callback.
 
 The evidence boundary remains narrow: the target is the current Windows-hosted
-AMD64 little-endian ELF64 fixed-address `ET_EXEC` runtime with load bias zero;
-Continue, stepping, register/context inspection, memory access, call stacks, and
-multi-process/attach workflows remain unsupported.
+AMD64 little-endian ELF64 fixed-address `ET_EXEC` runtime with load bias zero.
+Pause, user-visible stepping, memory access, call stacks, and multi-process/attach
+workflows remain unsupported. A normal F5 with no active debugger remains ordinary
+Run.

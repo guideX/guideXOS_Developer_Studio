@@ -1,14 +1,14 @@
-# Debugger Foundation — Phase 1
+# Debugger Foundation — Phase 4
 
-## Phase 3 status
+## Phase 4 status
 
-Hosted Native ELF software-breakpoint plumbing is implemented for the current
-AMD64 fixed-address runtime: debug-controlled launch gating, exact process/runtime
-identity, bounded `INT3` binding, original-byte restoration, vectored breakpoint trap
-routing, and real Paused-state model integration. Continue, stepping, registers,
-memory inspection, and call stacks remain disabled. The Phase 3B fixture proof
-establishes Level B for this bounded source-breakpoint path; it is not a claim of
-general-purpose debugger support.
+Hosted Native ELF software-breakpoint plumbing is implemented for the current AMD64
+fixed-address runtime, including debug-controlled launch gating, exact
+process/runtime/thread identity, bounded `INT3` binding, real breakpoint stops,
+copied register context, and correct breakpoint continuation through a real
+processor single-step. The Phase 4 runtime proof establishes Level B + Continue
+for this bounded source-breakpoint path; it is not a claim of general-purpose
+debugger support.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend is intentionally a supervision backend: it launches the
@@ -31,12 +31,15 @@ The hosted Native ELF backend publishes these capabilities:
   Run path.
 - Stop: supported through the owner-bound `development_run_request_close`
   path and subsequent normal polling/cleanup.
-- Pause, Continue, Step Into, Step Over, Step Out: unavailable.
+- Pause: unavailable.
+- Continue: supported only from a real owned paused software-breakpoint stop.
+- Step Into, Step Over, Step Out: unavailable.
 - Source and instruction breakpoints: source breakpoints are supported through
   DWARF mapping and the hosted software-breakpoint binder; instruction-level
   editing remains outside the UI contract.
-- Registers, memory, threads, call stack, expressions, and source-location
-  resolution: unavailable.
+- Registers are captured in a bounded read-only stopped context and the session
+  panel shows `RIP`, `RSP`, `RBP`, and `RFLAGS` while paused. Memory, thread
+  enumeration, call stack, expressions, and register editing remain unavailable.
 
 The UI keeps ordinary Run on F5. F9 toggles the current editor line because it
 was not occupied by an existing Developer Studio shortcut. Debug commands are
@@ -138,9 +141,11 @@ model is `Idle -> Launching -> Running -> Exited`; a launch/build failure is
 reported as `Failed`.
 
 `Stop Debugging` requests the existing owner-bound close operation and waits
-for the backend to report normal exit/cleanup. `Pause` and `Continue` are
-disabled because the backend advertises neither capability. Step commands are
-deferred and are not advertised as implemented.
+for the backend to report normal exit/cleanup. `Continue` is enabled only when
+the exact stopped context, process/runtime/thread, session generation, stop
+generation, and physical binding are valid. F5 continues such a stop; outside
+debugging it retains ordinary Run behavior. Pause and all user-visible Step
+commands remain disabled.
 
 Ordinary Run remains a separate command and continues to use the existing
 Run controller. Closing a project or Developer Studio while a debug session
@@ -159,8 +164,9 @@ limits, error states, and validation evidence are in
 `docs/DEBUGGER_SOURCE_MAPPING.md`.
 
 Phase 3 extends this foundation with the separately documented hosted software
-breakpoint and trap path. It does not add general process suspension, Continue,
-stepping, register access, or call-stack inspection.
+breakpoint and trap path. Phase 4 adds the separately documented restore-RIP-set-TF
+single-step continuation path without exposing that internal primitive as user
+stepping.
 
 ## Phase 3B end-to-end proof
 
@@ -182,8 +188,8 @@ restores the binding, exits the target, and closes Developer Studio cleanly. The
 Server's active host callback context is thread-local so the Studio and debugged
 Native ELF workers can remain live concurrently.
 
-Deferred work includes additional instruction-breakpoint workflows, Continue after
-a real stop, stepping, DWARF expressions, locals, stack unwinding, watches,
+Deferred work includes additional instruction-breakpoint workflows, user-visible
+source stepping, DWARF expressions, locals, stack unwinding, watches,
 memory/register editing, conditional/data breakpoints, attach/remote/multiple
 process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
 bare-metal trap implementation.

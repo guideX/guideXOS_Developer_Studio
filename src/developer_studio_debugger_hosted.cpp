@@ -48,6 +48,8 @@ static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generati
     snapshot->cleanupComplete = backend.runController.result.cleanupComplete;
     snapshot->stopReason = snapshot->state == DebugSessionState::Exited ? DebugStopReason::Exited :
         (backend.runController.closeRequested ? DebugStopReason::UserRequested : DebugStopReason::None);
+    snapshot->executionState = snapshot->state == DebugSessionState::Running ?
+        DebugBackendExecutionState::Running : DebugBackendExecutionState::None;
     copyText(snapshot->backendName, sizeof(snapshot->backendName), "Hosted Native ELF");
     if (backend.runController.result.errorMessage[0]) copyText(snapshot->errorMessage, sizeof(snapshot->errorMessage), backend.runController.result.errorMessage);
     else if (backend.runController.result.error != RunErrorCode::None) copyText(snapshot->errorMessage, sizeof(snapshot->errorMessage), RunErrorName(backend.runController.result.error));
@@ -80,7 +82,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
         HostedDebugResult debugResult = {};
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
                                               generation, outSnapshot->processId, outSnapshot->nativeRuntimeId,
-                                              0, 0, backend->runController.request.artifactSha256, &debugResult)) {
+                                              0, 0, backend->runController.request.artifactSha256, 0, 0, false, &debugResult)) {
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }
@@ -96,7 +98,44 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->originalByte = debugResult.originalByte;
             outSnapshot->installedByte = debugResult.installedByte;
             outSnapshot->originalByteValid = debugResult.originalByteValid;
+            outSnapshot->stopGeneration = debugResult.stopGeneration;
+            outSnapshot->executionState = DebugBackendExecutionState::PausedAtBreakpoint;
+            outSnapshot->registerContext.valid = debugResult.registerContext.valid;
+            outSnapshot->registerContext.architecture = static_cast<DebugArchitecture>(debugResult.registerContext.architecture);
+            outSnapshot->registerContext.processId = debugResult.registerContext.processId;
+            outSnapshot->registerContext.nativeRuntimeId = debugResult.registerContext.nativeRuntimeId;
+            outSnapshot->registerContext.threadId = debugResult.registerContext.threadId;
+            outSnapshot->registerContext.sessionGeneration = debugResult.registerContext.sessionGeneration;
+            outSnapshot->registerContext.stopGeneration = debugResult.registerContext.stopGeneration;
+            outSnapshot->registerContext.rip = debugResult.registerContext.rip;
+            outSnapshot->registerContext.rflags = debugResult.registerContext.rflags;
+            outSnapshot->registerContext.rsp = debugResult.registerContext.rsp;
+            outSnapshot->registerContext.rbp = debugResult.registerContext.rbp;
+            outSnapshot->registerContext.rax = debugResult.registerContext.rax;
+            outSnapshot->registerContext.rbx = debugResult.registerContext.rbx;
+            outSnapshot->registerContext.rcx = debugResult.registerContext.rcx;
+            outSnapshot->registerContext.rdx = debugResult.registerContext.rdx;
+            outSnapshot->registerContext.rsi = debugResult.registerContext.rsi;
+            outSnapshot->registerContext.rdi = debugResult.registerContext.rdi;
+            outSnapshot->registerContext.r8 = debugResult.registerContext.r8;
+            outSnapshot->registerContext.r9 = debugResult.registerContext.r9;
+            outSnapshot->registerContext.r10 = debugResult.registerContext.r10;
+            outSnapshot->registerContext.r11 = debugResult.registerContext.r11;
+            outSnapshot->registerContext.r12 = debugResult.registerContext.r12;
+            outSnapshot->registerContext.r13 = debugResult.registerContext.r13;
+            outSnapshot->registerContext.r14 = debugResult.registerContext.r14;
+            outSnapshot->registerContext.r15 = debugResult.registerContext.r15;
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Breakpoint trap observed");
+        } else if (debugResult.status == 3 && debugResult.trapKind == 2) {
+            outSnapshot->state = DebugSessionState::Running;
+            outSnapshot->stopReason = DebugStopReason::None;
+            outSnapshot->executionState = DebugBackendExecutionState::Running;
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Internal single-step complete; breakpoint rebound");
+        } else if (debugResult.status == 6) {
+            outSnapshot->state = DebugSessionState::Paused;
+            outSnapshot->stopReason = DebugStopReason::Breakpoint;
+            outSnapshot->executionState = DebugBackendExecutionState::SingleStepPending;
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Breakpoint continuation pending internal single-step");
         }
     }
     return true;
@@ -112,7 +151,7 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::BindSoftwareBreakpoint,
                                           backend->runController.result.handle, sessionGeneration, processId,
                                           nativeRuntimeId, breakpoint.id, breakpoint.location.instructionAddress.value,
-                                          backend->runController.request.artifactSha256, &result)) {
+                                          backend->runController.request.artifactSha256, 0, 0, false, &result)) {
         copyText(outBinding->message, sizeof(outBinding->message), result.errorMessage[0] ? result.errorMessage : "software breakpoint bind failed");
         return true;
     }
@@ -125,6 +164,17 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     return true;
 }
 
+static bool debugCommandWithOptions(void* userData, HostedDebugCommand command, uint64_t handle,
+                         uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
+                         uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
+                         uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
+                         HostedDebugResult* outResult) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    return backend && backend->runService.debugCommand && backend->runService.debugCommand(
+        backend->runService.userData, command, handle, sessionGeneration, processId, nativeRuntimeId,
+        breakpointId, targetAddress, artifactSha256, threadId, stopGeneration, reinstallBreakpoint, outResult);
+}
+
 static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t handle,
                          uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
@@ -132,7 +182,22 @@ static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t ha
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     return backend && backend->runService.debugCommand && backend->runService.debugCommand(
         backend->runService.userData, command, handle, sessionGeneration, processId, nativeRuntimeId,
-        breakpointId, targetAddress, artifactSha256, outResult);
+        breakpointId, targetAddress, artifactSha256, 0, 0, false, outResult);
+}
+
+static bool continueExecution(void* userData, uint64_t sessionGeneration,
+                              const DebugRegisterContext& context, uint64_t breakpointId,
+                              uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint) {
+    (void)bindingId;
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !backend->runService.debugCommand || !context.valid) return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ContinueBreakpoint,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
+                                          backend->runController.request.artifactSha256, context.threadId,
+                                          context.stopGeneration, reinstallBreakpoint, &result)) return false;
+    return result.status == 6;
 }
 
 static bool stop(void* userData, uint64_t generation) {
@@ -157,13 +222,13 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.capabilities.canLaunch = true;
     result.capabilities.canStop = true;
     result.capabilities.canPause = false;
-    result.capabilities.canContinue = false;
+    result.capabilities.canContinue = true;
     result.capabilities.canSetInstructionBreakpoint = true;
     result.capabilities.canSetSourceBreakpoint = true;
     result.capabilities.canStepInto = false;
     result.capabilities.canStepOver = false;
     result.capabilities.canStepOut = false;
-    result.capabilities.canReadRegisters = false;
+    result.capabilities.canReadRegisters = true;
     result.capabilities.canReadMemory = false;
     result.capabilities.canWriteMemory = false;
     result.capabilities.canEnumerateThreads = false;
@@ -179,7 +244,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.poll = poll;
     result.stop = stop;
     result.pause = nullptr;
-    result.continueExecution = nullptr;
+    result.continueExecution = continueExecution;
     result.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     result.debugCommand = debugCommand;
     return result;

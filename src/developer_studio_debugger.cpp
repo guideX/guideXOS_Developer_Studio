@@ -45,6 +45,7 @@ static void clearSnapshot(DebugBackendSnapshot* snapshot) {
     *snapshot = DebugBackendSnapshot();
     snapshot->state = DebugSessionState::Idle;
     snapshot->stopReason = DebugStopReason::None;
+    snapshot->executionState = DebugBackendExecutionState::None;
 }
 
 static bool validTransition(DebugSessionState from, DebugSessionState to) {
@@ -199,11 +200,20 @@ static void initializeBreakpoint(DebugBreakpoint* breakpoint, uint64_t id, const
 
 static void applySnapshotUnchecked(DebugController* controller, const DebugBackendSnapshot& snapshot) {
     const DebugSessionState previous = controller->state;
+    const bool continuingFromBreakpoint = previous == DebugSessionState::Paused &&
+        snapshot.state == DebugSessionState::Running &&
+        controller->stopReason == DebugStopReason::Breakpoint;
     controller->processId = snapshot.processId;
     controller->nativeRuntimeId = snapshot.nativeRuntimeId;
     controller->debugHandle = snapshot.debugHandle;
     controller->exitCode = snapshot.exitCode;
-    controller->stopReason = snapshot.stopReason;
+    if (!continuingFromBreakpoint) controller->stopReason = snapshot.stopReason;
+    if (snapshot.executionState != DebugBackendExecutionState::None)
+        controller->backendExecutionState = snapshot.executionState;
+    else if (snapshot.state == DebugSessionState::Running)
+        controller->backendExecutionState = DebugBackendExecutionState::Running;
+    else if (snapshot.state == DebugSessionState::Paused && snapshot.stopReason == DebugStopReason::Breakpoint)
+        controller->backendExecutionState = DebugBackendExecutionState::PausedAtBreakpoint;
     if (snapshot.backendName[0]) copyText(controller->backendName, sizeof(controller->backendName), snapshot.backendName);
     if (snapshot.errorMessage[0]) setMessage(controller, snapshot.errorMessage);
     if (controller->processId != 0 && controller->nativeRuntimeId != 0) {
@@ -244,6 +254,9 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
         controller->currentThreadId = 0;
         controller->reportedInstructionPointer = 0;
         controller->lastBreakpointId = 0;
+        controller->backendExecutionState = DebugBackendExecutionState::None;
+        controller->stopGeneration = 0;
+        controller->stoppedContext = DebugRegisterContext();
     } else if (snapshot.state == DebugSessionState::Failed && previous != DebugSessionState::Failed) {
         appendEvent(controller, DebugEventKind::Failed, snapshot.state, snapshot.stopReason, controller->lastMessage);
         controller->active = false;
@@ -252,6 +265,23 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
         controller->currentThreadId = 0;
         controller->reportedInstructionPointer = 0;
         controller->lastBreakpointId = 0;
+        controller->backendExecutionState = DebugBackendExecutionState::None;
+        controller->stopGeneration = 0;
+        controller->stoppedContext = DebugRegisterContext();
+    }
+    if (snapshot.state == DebugSessionState::Paused && snapshot.stopReason == DebugStopReason::Breakpoint &&
+        snapshot.executionState != DebugBackendExecutionState::SingleStepPending) {
+        controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->stopGeneration + 1 : snapshot.stopGeneration;
+        if (snapshot.registerContext.valid) controller->stoppedContext = snapshot.registerContext;
+    } else if (continuingFromBreakpoint) {
+        // The stopped context is valid only for the exact paused stop. Do not
+        // let it survive the real internal single-step completion.
+        controller->currentInstructionAddress = DebugAddress();
+        controller->currentLocation = DebugSourceLocation();
+        controller->currentThreadId = 0;
+        controller->reportedInstructionPointer = 0;
+        controller->stopGeneration = 0;
+        controller->stoppedContext = DebugRegisterContext();
     }
 }
 
@@ -277,6 +307,8 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
     controller->currentInstructionAddress = snapshot.targetAddress;
     controller->currentThreadId = snapshot.threadId;
     controller->reportedInstructionPointer = snapshot.instructionPointer;
+    controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->stopGeneration + 1 : snapshot.stopGeneration;
+    if (snapshot.registerContext.valid) controller->stoppedContext = snapshot.registerContext;
     controller->lastBreakpointId = controller->breakpoints[ownerIndex].id;
     controller->stopReason = DebugStopReason::Breakpoint;
     copyText(controller->lastMessage, sizeof(controller->lastMessage), "Breakpoint trap observed");
@@ -406,6 +438,16 @@ const char* DebugErrorName(DebugErrorCode error) {
     case DebugErrorCode::Truncated: return "truncated";
     case DebugErrorCode::MappingLimitExceeded: return "mapping_limit_exceeded";
     case DebugErrorCode::UnsupportedOpcode: return "unsupported_opcode";
+    case DebugErrorCode::StaleStopContext: return "stale_stop_context";
+    case DebugErrorCode::OriginalByteRestoreFailed: return "original_byte_restore_failed";
+    case DebugErrorCode::ContextReadFailed: return "context_read_failed";
+    case DebugErrorCode::ContextWriteFailed: return "context_write_failed";
+    case DebugErrorCode::RipCorrectionFailed: return "rip_correction_failed";
+    case DebugErrorCode::TrapFlagSetFailed: return "trap_flag_set_failed";
+    case DebugErrorCode::TargetResumeFailed: return "target_resume_failed";
+    case DebugErrorCode::SingleStepNotObserved: return "single_step_not_observed";
+    case DebugErrorCode::BreakpointReinstallFailed: return "breakpoint_reinstall_failed";
+    case DebugErrorCode::TrapFlagClearFailed: return "trap_flag_clear_failed";
     }
     return "unknown";
 }
@@ -453,6 +495,9 @@ const char* DebugEventKindName(DebugEventKind kind) {
     case DebugEventKind::BreakpointHit: return "Breakpoint hit";
     case DebugEventKind::BreakpointRestoreFailed: return "Breakpoint restore failed";
     case DebugEventKind::UnexpectedTrap: return "Unexpected trap";
+    case DebugEventKind::ContinueRequested: return "Continue requested";
+    case DebugEventKind::SingleStepComplete: return "Internal single-step complete";
+    case DebugEventKind::BreakpointRebound: return "Breakpoint rebound";
     }
     return "Unknown";
 }
@@ -475,6 +520,11 @@ bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabiliti
 
 bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities) { return capabilities.canPause; }
 bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities) { return capabilities.canContinue; }
+bool DebugRegisterContextIsValid(const DebugRegisterContext& context) {
+    return context.valid && context.architecture != DebugArchitecture::Unknown &&
+        context.processId != 0 && context.nativeRuntimeId != 0 && context.threadId != 0 &&
+        context.sessionGeneration != 0 && context.stopGeneration != 0;
+}
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
                           uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error) {
@@ -585,6 +635,9 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->exitCode = 0;
     controller->stopReason = DebugStopReason::None;
     controller->targetExecutionReleased = false;
+    controller->backendExecutionState = DebugBackendExecutionState::None;
+    controller->stopGeneration = 0;
+    controller->stoppedContext = DebugRegisterContext();
     controller->currentInstructionAddress = DebugAddress();
     controller->currentLocation = DebugSourceLocation();
     controller->currentThreadId = 0;
@@ -634,12 +687,21 @@ bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionG
         return false;
     }
     const bool requiresOwnedBreakpoint = snapshot.state == DebugSessionState::Paused &&
-        snapshot.stopReason == DebugStopReason::Breakpoint;
+        snapshot.stopReason == DebugStopReason::Breakpoint &&
+        snapshot.executionState != DebugBackendExecutionState::SingleStepPending;
     if ((requiresOwnedBreakpoint || snapshot.breakpointTrap) &&
         (!snapshot.breakpointTrap || !applyOwnedBreakpointTrap(controller, snapshot))) {
         controller->error = DebugErrorCode::BackendError;
         setMessage(controller, "Rejected unowned hosted breakpoint trap");
         appendEvent(controller, DebugEventKind::UnexpectedTrap, controller->state, DebugStopReason::Unknown, controller->lastMessage);
+        return false;
+    }
+    if (snapshot.executionState == DebugBackendExecutionState::SingleStepPending &&
+        (!DebugRegisterContextIsValid(controller->stoppedContext) ||
+         controller->state != DebugSessionState::Paused ||
+         controller->stopReason != DebugStopReason::Breakpoint)) {
+        controller->error = DebugErrorCode::StaleStopContext;
+        setMessage(controller, "Rejected stale internal single-step state");
         return false;
     }
     controller->error = DebugErrorCode::None;
@@ -686,6 +748,9 @@ bool DebugControllerRequestStop(DebugController* controller, const DebugBackend&
     }
     controller->state = DebugSessionState::Stopping;
     controller->stopReason = DebugStopReason::UserRequested;
+    controller->backendExecutionState = DebugBackendExecutionState::None;
+    controller->stopGeneration = 0;
+    controller->stoppedContext = DebugRegisterContext();
     setMessage(controller, "Stop requested");
     appendEvent(controller, DebugEventKind::Stopped, controller->state, DebugStopReason::UserRequested, controller->lastMessage);
     return true;
@@ -710,14 +775,55 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
                              DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
     if (!controller || !controller->active || controller->state != DebugSessionState::Paused ||
+        controller->stopReason != DebugStopReason::Breakpoint ||
+        controller->backendExecutionState != DebugBackendExecutionState::PausedAtBreakpoint ||
+        !DebugRegisterContextIsValid(controller->stoppedContext) ||
         !backend.continueExecution || !backend.capabilities.canContinue) {
         if (error) *error = DebugErrorCode::CapabilityUnavailable;
         return false;
     }
-    if (!backend.continueExecution(backend.userData, controller->sessionGeneration)) {
-        if (error) *error = DebugErrorCode::BackendError;
+    const int breakpointIndex = findBreakpoint(controller, controller->lastBreakpointId);
+    if (breakpointIndex < 0) {
+        controller->error = DebugErrorCode::StaleStopContext;
+        if (error) *error = controller->error;
         return false;
     }
+    const DebugBreakpoint& current = controller->breakpoints[breakpointIndex];
+    if (current.sessionGeneration != controller->sessionGeneration || current.backendBindingId == 0 ||
+        !current.location.instructionAddress.valid ||
+        current.location.instructionAddress.value != controller->currentInstructionAddress.value ||
+        controller->stoppedContext.processId != controller->processId ||
+        controller->stoppedContext.nativeRuntimeId != controller->nativeRuntimeId ||
+        controller->stoppedContext.threadId != controller->currentThreadId ||
+        controller->stoppedContext.stopGeneration != controller->stopGeneration) {
+        controller->error = DebugErrorCode::StaleStopContext;
+        setMessage(controller, "Stopped debugger context is stale");
+        if (error) *error = controller->error;
+        return false;
+    }
+    bool reinstallBreakpoint = false;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        const DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!breakpoint.enabled || breakpoint.backendBindingId != current.backendBindingId ||
+            !breakpoint.location.instructionAddress.valid ||
+            breakpoint.location.instructionAddress.value != current.location.instructionAddress.value) continue;
+        reinstallBreakpoint = true;
+        break;
+    }
+    controller->backendExecutionState = DebugBackendExecutionState::PreparingBreakpointResume;
+    appendEvent(controller, DebugEventKind::ContinueRequested, controller->state,
+                DebugStopReason::Breakpoint, "Breakpoint continuation requested");
+    if (!backend.continueExecution(backend.userData, controller->sessionGeneration, controller->stoppedContext,
+                                   current.id, current.backendBindingId, current.location.instructionAddress.value,
+                                   reinstallBreakpoint)) {
+        controller->backendExecutionState = DebugBackendExecutionState::PausedAtBreakpoint;
+        controller->error = DebugErrorCode::BackendError;
+        setMessage(controller, "Breakpoint continuation was rejected; target remains paused");
+        if (error) *error = controller->error;
+        return false;
+    }
+    controller->backendExecutionState = DebugBackendExecutionState::SingleStepPending;
+    setMessage(controller, "Original breakpoint instruction restored; internal single-step pending");
     return true;
 }
 
@@ -725,7 +831,12 @@ bool DebugControllerIsActive(const DebugController* controller) { return control
 bool DebugControllerCanStart(const DebugController* controller) { return controller && !controller->active; }
 bool DebugControllerCanStop(const DebugController* controller) { return controller && controller->active && controller->capabilities.canStop; }
 bool DebugControllerCanPause(const DebugController* controller) { return controller && controller->active && controller->state == DebugSessionState::Running && controller->capabilities.canPause; }
-bool DebugControllerCanContinue(const DebugController* controller) { return controller && controller->active && controller->state == DebugSessionState::Paused && controller->capabilities.canContinue; }
+bool DebugControllerCanContinue(const DebugController* controller) {
+    return controller && controller->active && controller->state == DebugSessionState::Paused &&
+        controller->stopReason == DebugStopReason::Breakpoint &&
+        controller->backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint &&
+        DebugRegisterContextIsValid(controller->stoppedContext) && controller->capabilities.canContinue;
+}
 
 bool DebugControllerAddBreakpoint(DebugController* controller, const char* projectId,
                                    const char* projectRoot, uint64_t projectGeneration,

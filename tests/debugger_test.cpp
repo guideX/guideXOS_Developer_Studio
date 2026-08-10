@@ -49,6 +49,13 @@ struct FakeBackend {
     uint64_t lastBoundAddress = 0;
     uint8_t originalByte = 0x55;
     uint8_t installedByte = 0xCC;
+    uint32_t continueCalls = 0;
+    bool continuePending = false;
+    DebugRegisterContext lastContinueContext = {};
+    uint64_t lastContinueBreakpointId = 0;
+    uint64_t lastContinueBindingId = 0;
+    uint64_t lastContinueAddress = 0;
+    bool lastContinueReinstall = false;
 };
 
 static bool launch(void* userData, const DebugTarget&, uint64_t generation, DebugBackendSnapshot* snapshot) {
@@ -80,6 +87,25 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
         snapshot->targetAddress.valid = true;
         snapshot->targetAddress.value = 0x401010;
         snapshot->breakpointBindingId = fake->sharedBindingId;
+        snapshot->stopGeneration = 1;
+        snapshot->registerContext.valid = true;
+        snapshot->registerContext.architecture = DebugArchitecture::Amd64;
+        snapshot->registerContext.processId = 12;
+        snapshot->registerContext.nativeRuntimeId = 77;
+        snapshot->registerContext.threadId = 44;
+        snapshot->registerContext.sessionGeneration = generation;
+        snapshot->registerContext.stopGeneration = 1;
+        snapshot->registerContext.rip = snapshot->instructionPointer;
+        snapshot->registerContext.rflags = 0x202;
+        snapshot->registerContext.rsp = 0x700000;
+        snapshot->registerContext.rbp = 0x700100;
+        return true;
+    }
+    if (fake->continuePending) {
+        fake->continuePending = false;
+        snapshot->state = DebugSessionState::Running;
+        snapshot->stopReason = DebugStopReason::None;
+        snapshot->executionState = DebugBackendExecutionState::Running;
         return true;
     }
     snapshot->state = fake->delayRuntimePublication ?
@@ -99,6 +125,21 @@ static bool stop(void* userData, uint64_t) {
 
 static bool pause(void* userData, uint64_t) {
     static_cast<FakeBackend*>(userData)->pauseCalled = true;
+    return true;
+}
+
+static bool continueExecution(void* userData, uint64_t generation, const DebugRegisterContext& context,
+                              uint64_t breakpointId, uint64_t bindingId, uint64_t targetAddress,
+                              bool reinstallBreakpoint) {
+    FakeBackend* fake = static_cast<FakeBackend*>(userData);
+    if (!fake || !context.valid || context.sessionGeneration != generation) return false;
+    ++fake->continueCalls;
+    fake->lastContinueContext = context;
+    fake->lastContinueBreakpointId = breakpointId;
+    fake->lastContinueBindingId = bindingId;
+    fake->lastContinueAddress = targetAddress;
+    fake->lastContinueReinstall = reinstallBreakpoint;
+    fake->continuePending = true;
     return true;
 }
 
@@ -150,7 +191,7 @@ static DebugBackend makeBackend(FakeBackend* fake) {
     backend.capabilities.canLaunch = true;
     backend.capabilities.canStop = true;
     backend.capabilities.canPause = false;
-    backend.capabilities.canContinue = false;
+    backend.capabilities.canContinue = true;
     std::strcpy(backend.name, "Test Backend");
     backend.launch = launch;
     backend.poll = poll;
@@ -169,6 +210,7 @@ static DebugBackend makeBreakpointBackend(FakeBackend* fake) {
     backend.capabilities.canReadInstructionPointer = true;
     backend.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     backend.debugCommand = debugCommand;
+    backend.continueExecution = continueExecution;
     return backend;
 }
 
@@ -313,6 +355,25 @@ int main() {
     assert(hit.reportedInstructionPointer == 0x401011);
     assert(hit.currentThreadId == 44 && hit.lastBreakpointId == hitBreakpointId);
     assert(hit.breakpoints[0].lastHit && hit.breakpoints[0].state == DebugBreakpointState::Verified);
+    assert(DebugRegisterContextIsValid(hit.stoppedContext));
+    assert(DebugControllerCanContinue(&hit));
+    assert(DebugControllerContinue(&hit, hitBackend, &error));
+    assert(hit.state == DebugSessionState::Paused);
+    assert(hit.backendExecutionState == DebugBackendExecutionState::SingleStepPending);
+    assert(!DebugControllerCanContinue(&hit));
+    assert(!DebugControllerContinue(&hit, hitBackend, &error));
+    assert(error == DebugErrorCode::CapabilityUnavailable);
+    assert(DebugControllerPoll(&hit, hitBackend));
+    assert(hit.state == DebugSessionState::Running);
+    assert(hit.backendExecutionState == DebugBackendExecutionState::Running);
+    assert(!hit.stoppedContext.valid && !hit.currentInstructionAddress.valid && hit.currentThreadId == 0);
+    assert(hit.stopReason == DebugStopReason::Breakpoint);
+    assert(hitFake.continueCalls == 1 && hitFake.lastContinueBreakpointId == hitBreakpointId &&
+           hitFake.lastContinueBindingId == hitFake.sharedBindingId &&
+           hitFake.lastContinueAddress == 0x401010 && hitFake.lastContinueReinstall);
+    assert(hitFake.lastContinueContext.sessionGeneration == hit.sessionGeneration &&
+           hitFake.lastContinueContext.stopGeneration == 1 &&
+           hitFake.lastContinueContext.threadId == 44);
 
     FakeBackend partialFake;
     partialFake.failBindAt = 2;

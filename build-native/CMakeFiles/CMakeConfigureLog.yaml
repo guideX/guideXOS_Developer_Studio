@@ -3248,3 +3248,372 @@ events:
         - "C:/mingw64"
         - "C:/Program Files (x86)/guideXOSDeveloperStudio"
 ...
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "C:/mingw64/share/cmake-4.3/Modules/"
+    found: "C:/mingw64/share/cmake-4.3/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\guideX\\.codex\\tmp\\arg0\\codex-arg0V9UynK"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\override"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\UVtools\\"
+        - "C:\\Program Files\\TortoiseGit\\bin"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\mingw64\\bin"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\i686-elf-tools\\bin"
+        - "C:\\Users\\guideX\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin"
+        - "C:\\Users\\guideX\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\guideX\\.dotnet\\tools"
+        - "C:\\Users\\guideX\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\fallback"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\git\\cmd"
+        - "C:\\Users\\guideX\\AppData\\Local\\OpenAI\\Codex\\bin\\fda9f910656130f4"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\\app\\resources"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files (x86)/guideXOSDeveloperStudio"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" failed.
+      Compiler: C:/Program Files/LLVM/bin/clang++.exe 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      1
+      lld-link: error: could not open 'libcmt.lib': no such file or directory
+      lld-link: error: could not open 'oldnames.lib': no such file or directory
+      clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+      
+      
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "C:/mingw64/share/cmake-4.3/Modules/"
+    found: "C:/mingw64/share/cmake-4.3/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\guideX\\.codex\\tmp\\arg0\\codex-arg0V9UynK"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\override"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\UVtools\\"
+        - "C:\\Program Files\\TortoiseGit\\bin"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\mingw64\\bin"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\i686-elf-tools\\bin"
+        - "C:\\Users\\guideX\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin"
+        - "C:\\Users\\guideX\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\guideX\\.dotnet\\tools"
+        - "C:\\Users\\guideX\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\fallback"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\git\\cmd"
+        - "C:\\Users\\guideX\\AppData\\Local\\OpenAI\\Codex\\bin\\fda9f910656130f4"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\\app\\resources"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files (x86)/guideXOSDeveloperStudio"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: C:/Program Files/LLVM/bin/clang++.exe 
+      Build flags: 
+      Id flags: -c 
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.o"
+      
+      The CXX compiler identification is Clang, found in:
+        D:/dev/guideXOS_Developer_Studio/build-native/CMakeFiles/4.3.1/CompilerIdCXX/CMakeCXXCompilerId.o
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:1347 (message)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:250 (CMAKE_DETERMINE_MSVC_SHOWINCLUDES_PREFIX)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Detecting CXX compiler /showIncludes prefix:
+        
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:1347 (message)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:250 (CMAKE_DETERMINE_MSVC_SHOWINCLUDES_PREFIX)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Detecting CXX compiler /showIncludes prefix:
+        
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Clang.cmake:210 (find_program)"
+      - "C:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Clang-CXX.cmake:1 (include)"
+      - "C:/mingw64/share/cmake-4.3/Modules/CMakeCXXInformation.cmake:48 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "__RC_COMPILER_PATH"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "rc"
+    candidate_directories:
+      - "C:/Users/guideX/.codex/tmp/arg0/codex-arg0V9UynK/"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/170/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/UVtools/"
+      - "C:/Program Files/TortoiseGit/bin/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/mingw64/bin/"
+      - "C:/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit/"
+      - "C:/i686-elf-tools/bin/"
+      - "C:/Users/guideX/AppData/Local/Programs/OpenAI/Codex/bin/"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/guideX/.dotnet/tools/"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WinGet/Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/git/cmd/"
+      - "C:/Users/guideX/AppData/Local/OpenAI/Codex/bin/fda9f910656130f4/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0/app/resources/"
+      - "C:/Program Files/bin/"
+      - "C:/Program Files/sbin/"
+      - "C:/Program Files/"
+      - "C:/Program Files (x86)/bin/"
+      - "C:/Program Files (x86)/sbin/"
+      - "C:/Program Files (x86)/"
+      - "C:/mingw64/bin/"
+      - "C:/mingw64/sbin/"
+      - "C:/mingw64/"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/bin/"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/sbin/"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/"
+    searched_directories:
+      - "C:/Users/guideX/.codex/tmp/arg0/codex-arg0V9UynK/rc.com"
+      - "C:/Users/guideX/.codex/tmp/arg0/codex-arg0V9UynK/rc.exe"
+      - "C:/Users/guideX/.codex/tmp/arg0/codex-arg0V9UynK/rc"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/rc.com"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/rc.exe"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/rc"
+      - "C:/Windows/System32/rc.com"
+      - "C:/Windows/System32/rc.exe"
+      - "C:/Windows/System32/rc"
+      - "C:/Windows/rc.com"
+      - "C:/Windows/rc.exe"
+      - "C:/Windows/rc"
+      - "C:/Windows/System32/wbem/rc.com"
+      - "C:/Windows/System32/wbem/rc.exe"
+      - "C:/Windows/System32/wbem/rc"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/rc.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/rc.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/rc"
+      - "C:/Windows/System32/OpenSSH/rc.com"
+      - "C:/Windows/System32/OpenSSH/rc.exe"
+      - "C:/Windows/System32/OpenSSH/rc"
+      - "C:/Program Files/Microsoft SQL Server/170/Tools/Binn/rc.com"
+      - "C:/Program Files/Microsoft SQL Server/170/Tools/Binn/rc.exe"
+      - "C:/Program Files/Microsoft SQL Server/170/Tools/Binn/rc"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/rc.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/rc.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/rc"
+      - "C:/Program Files/dotnet/rc.com"
+      - "C:/Program Files/dotnet/rc.exe"
+      - "C:/Program Files/dotnet/rc"
+      - "C:/Program Files/UVtools/rc.com"
+      - "C:/Program Files/UVtools/rc.exe"
+      - "C:/Program Files/UVtools/rc"
+      - "C:/Program Files/TortoiseGit/bin/rc.com"
+      - "C:/Program Files/TortoiseGit/bin/rc.exe"
+      - "C:/Program Files/TortoiseGit/bin/rc"
+      - "C:/Program Files/Git/cmd/rc.com"
+      - "C:/Program Files/Git/cmd/rc.exe"
+      - "C:/Program Files/Git/cmd/rc"
+      - "C:/mingw64/bin/rc.com"
+      - "C:/mingw64/bin/rc.exe"
+      - "C:/mingw64/bin/rc"
+      - "C:/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit/rc.com"
+      - "C:/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit/rc.exe"
+      - "C:/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit/rc"
+      - "C:/i686-elf-tools/bin/rc.com"
+      - "C:/i686-elf-tools/bin/rc.exe"
+      - "C:/i686-elf-tools/bin/rc"
+      - "C:/Users/guideX/AppData/Local/Programs/OpenAI/Codex/bin/rc.com"
+      - "C:/Users/guideX/AppData/Local/Programs/OpenAI/Codex/bin/rc.exe"
+      - "C:/Users/guideX/AppData/Local/Programs/OpenAI/Codex/bin/rc"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WindowsApps/rc.com"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WindowsApps/rc.exe"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WindowsApps/rc"
+      - "C:/Users/guideX/.dotnet/tools/rc.com"
+      - "C:/Users/guideX/.dotnet/tools/rc.exe"
+      - "C:/Users/guideX/.dotnet/tools/rc"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WinGet/Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/rc.com"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WinGet/Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/rc.exe"
+      - "C:/Users/guideX/AppData/Local/Microsoft/WinGet/Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/rc"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/rc.com"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/rc.exe"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/rc"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/git/cmd/rc.com"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/git/cmd/rc.exe"
+      - "C:/Users/guideX/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/git/cmd/rc"
+      - "C:/Users/guideX/AppData/Local/OpenAI/Codex/bin/fda9f910656130f4/rc.com"
+      - "C:/Users/guideX/AppData/Local/OpenAI/Codex/bin/fda9f910656130f4/rc.exe"
+      - "C:/Users/guideX/AppData/Local/OpenAI/Codex/bin/fda9f910656130f4/rc"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0/app/resources/rc.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0/app/resources/rc.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0/app/resources/rc"
+      - "C:/Program Files/bin/rc.com"
+      - "C:/Program Files/bin/rc.exe"
+      - "C:/Program Files/bin/rc"
+      - "C:/Program Files/sbin/rc.com"
+      - "C:/Program Files/sbin/rc.exe"
+      - "C:/Program Files/sbin/rc"
+      - "C:/Program Files/rc.com"
+      - "C:/Program Files/rc.exe"
+      - "C:/Program Files/rc"
+      - "C:/Program Files (x86)/bin/rc.com"
+      - "C:/Program Files (x86)/bin/rc.exe"
+      - "C:/Program Files (x86)/bin/rc"
+      - "C:/Program Files (x86)/sbin/rc.com"
+      - "C:/Program Files (x86)/sbin/rc.exe"
+      - "C:/Program Files (x86)/sbin/rc"
+      - "C:/Program Files (x86)/rc.com"
+      - "C:/Program Files (x86)/rc.exe"
+      - "C:/Program Files (x86)/rc"
+      - "C:/mingw64/bin/rc.com"
+      - "C:/mingw64/bin/rc.exe"
+      - "C:/mingw64/bin/rc"
+      - "C:/mingw64/sbin/rc.com"
+      - "C:/mingw64/sbin/rc.exe"
+      - "C:/mingw64/sbin/rc"
+      - "C:/mingw64/rc.com"
+      - "C:/mingw64/rc.exe"
+      - "C:/mingw64/rc"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/bin/rc.com"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/bin/rc.exe"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/bin/rc"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/sbin/rc.com"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/sbin/rc.exe"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/sbin/rc"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/rc.com"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/rc.exe"
+      - "C:/Program Files (x86)/guideXOSDeveloperStudio/rc"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\guideX\\.codex\\tmp\\arg0\\codex-arg0V9UynK"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\override"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\UVtools\\"
+        - "C:\\Program Files\\TortoiseGit\\bin"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\mingw64\\bin"
+        - "C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\"
+        - "C:\\i686-elf-tools\\bin"
+        - "C:\\Users\\guideX\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin"
+        - "C:\\Users\\guideX\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\guideX\\.dotnet\\tools"
+        - "C:\\Users\\guideX\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\bin\\fallback"
+        - "C:\\Users\\guideX\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\git\\cmd"
+        - "C:\\Users\\guideX\\AppData\\Local\\OpenAI\\Codex\\bin\\fda9f910656130f4"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.5235.0_x64__2p2nqsd0c76g0\\app\\resources"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files (x86)/guideXOSDeveloperStudio"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/mingw64"
+        - "C:/Program Files (x86)/guideXOSDeveloperStudio"
+...

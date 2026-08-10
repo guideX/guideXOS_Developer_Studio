@@ -69,7 +69,36 @@ enum class HostedDebugCommand {
     ReleaseExecution = 2,
     Poll = 3,
     RestoreAll = 4,
-    CancelExecution = 5
+    CancelExecution = 5,
+    ContinueBreakpoint = 6
+};
+
+struct HostedDebugRegisterSnapshot {
+    bool valid;
+    uint32_t architecture;
+    uint64_t processId;
+    uint64_t nativeRuntimeId;
+    uint64_t threadId;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    uint64_t rip;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t rbp;
+    uint64_t rax;
+    uint64_t rbx;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t r8;
+    uint64_t r9;
+    uint64_t r10;
+    uint64_t r11;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
 };
 
 struct HostedDebugResult {
@@ -86,6 +115,12 @@ struct HostedDebugResult {
     bool originalByteValid = false;
     bool bindingInstalled = false;
     uint32_t bindingCount = 0;
+    uint64_t stopGeneration = 0;
+    uint32_t executionState = 0;
+    uint64_t rflagsBeforeStep = 0;
+    uint64_t rflagsWithTrapFlag = 0;
+    uint64_t rflagsAfterTrapFlagClear = 0;
+    HostedDebugRegisterSnapshot registerContext = {};
     char errorMessage[kMaxRunErrorBytes] = {};
 };
 
@@ -99,6 +134,7 @@ struct HostedDevelopmentRunService {
     bool (*debugCommand)(void* userData, HostedDebugCommand command, uint64_t handle,
                          uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
+                         uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
                          HostedDebugResult* outResult);
 };
 
