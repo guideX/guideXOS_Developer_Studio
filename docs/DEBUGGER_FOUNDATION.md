@@ -1,5 +1,14 @@
 # Debugger Foundation — Phase 1
 
+## Phase 3 status
+
+Hosted Native ELF software-breakpoint plumbing is implemented for the current
+AMD64 fixed-address runtime: debug-controlled launch gating, exact process/runtime
+identity, bounded `INT3` binding, original-byte restoration, vectored breakpoint trap
+routing, and real Paused-state model integration. Continue, stepping, registers,
+memory inspection, and call stacks remain disabled. The implementation is pending the
+separate fixture-based runtime proof required before claiming Level B.
+
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend is intentionally a supervision backend: it launches the
 existing temporary Native ELF development deployment, records its runtime

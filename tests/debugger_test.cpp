@@ -35,9 +35,19 @@ struct FakeBackend {
     uint32_t launches = 0;
     uint32_t polls = 0;
     uint32_t stops = 0;
+    uint32_t bindCalls = 0;
+    uint32_t physicalBinds = 0;
+    uint32_t debugCommands = 0;
+    uint32_t restoreCommands = 0;
     bool launchFails = false;
     bool pauseCalled = false;
+    bool trapOnSecondPoll = false;
+    uint32_t failBindAt = 0;
     DebugSessionState nextState = DebugSessionState::Running;
+    uint64_t sharedBindingId = 9001;
+    uint64_t lastBoundAddress = 0;
+    uint8_t originalByte = 0x55;
+    uint8_t installedByte = 0xCC;
 };
 
 static bool launch(void* userData, const DebugTarget&, uint64_t generation, DebugBackendSnapshot* snapshot) {
@@ -59,7 +69,19 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
     snapshot->sessionGeneration = generation;
     snapshot->processId = 12;
     snapshot->nativeRuntimeId = 77;
-    snapshot->state = fake->polls++ == 0 ? fake->nextState : DebugSessionState::Exited;
+    const uint32_t pollIndex = fake->polls++;
+    if (fake->trapOnSecondPoll && pollIndex == 1) {
+        snapshot->state = DebugSessionState::Paused;
+        snapshot->stopReason = DebugStopReason::Breakpoint;
+        snapshot->breakpointTrap = true;
+        snapshot->threadId = 44;
+        snapshot->instructionPointer = 0x401011;
+        snapshot->targetAddress.valid = true;
+        snapshot->targetAddress.value = 0x401010;
+        snapshot->breakpointBindingId = fake->sharedBindingId;
+        return true;
+    }
+    snapshot->state = pollIndex == 0 ? fake->nextState : DebugSessionState::Exited;
     snapshot->stopReason = snapshot->state == DebugSessionState::Exited ? DebugStopReason::Exited : DebugStopReason::None;
     snapshot->exitCode = 0;
     snapshot->cleanupComplete = snapshot->state == DebugSessionState::Exited;
@@ -76,6 +98,48 @@ static bool pause(void* userData, uint64_t) {
     return true;
 }
 
+static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t,
+                                   uint64_t, uint64_t, const DebugBreakpoint& breakpoint,
+                                   DebugBackendBinding* binding) {
+    FakeBackend* fake = static_cast<FakeBackend*>(userData);
+    if (!fake || !binding || !breakpoint.location.instructionAddress.valid) return false;
+    ++fake->bindCalls;
+    if (fake->failBindAt != 0 && fake->bindCalls == fake->failBindAt) {
+        std::strcpy(binding->message, "Rejected: test bind failure");
+        return true;
+    }
+    if (fake->lastBoundAddress != breakpoint.location.instructionAddress.value) {
+        fake->lastBoundAddress = breakpoint.location.instructionAddress.value;
+        ++fake->physicalBinds;
+    }
+    *binding = DebugBackendBinding();
+    binding->accepted = true;
+    binding->bindingId = fake->sharedBindingId;
+    binding->originalByte = fake->originalByte;
+    binding->installedByte = fake->installedByte;
+    binding->originalByteValid = true;
+    std::strcpy(binding->message, "Bound / Verified");
+    return true;
+}
+
+static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t,
+                         uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                         const char*, HostedDebugResult* result) {
+    FakeBackend* fake = static_cast<FakeBackend*>(userData);
+    if (!fake || !result) return false;
+    ++fake->debugCommands;
+    if (command == HostedDebugCommand::RestoreAll) ++fake->restoreCommands;
+    *result = HostedDebugResult();
+    result->status = command == HostedDebugCommand::ReleaseExecution ? 1 :
+        (command == HostedDebugCommand::RestoreAll ? 4 : 2);
+    result->bindingId = fake->sharedBindingId;
+    result->originalByte = fake->originalByte;
+    result->installedByte = fake->installedByte;
+    result->originalByteValid = true;
+    result->bindingInstalled = command == HostedDebugCommand::BindSoftwareBreakpoint;
+    return true;
+}
+
 static DebugBackend makeBackend(FakeBackend* fake) {
     DebugBackend backend = {};
     backend.userData = fake;
@@ -89,6 +153,31 @@ static DebugBackend makeBackend(FakeBackend* fake) {
     backend.stop = stop;
     backend.pause = pause;
     return backend;
+}
+
+static DebugBackend makeBreakpointBackend(FakeBackend* fake) {
+    DebugBackend backend = makeBackend(fake);
+    backend.capabilities.canSetInstructionBreakpoint = true;
+    backend.capabilities.canSetSourceBreakpoint = true;
+    backend.capabilities.canBindSoftwareBreakpoint = true;
+    backend.capabilities.canObserveBreakpointTrap = true;
+    backend.capabilities.canRestoreBreakpoint = true;
+    backend.capabilities.canReadInstructionPointer = true;
+    backend.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
+    backend.debugCommand = debugCommand;
+    return backend;
+}
+
+static void prepareMappedBreakpoint(DebugController* controller, uint64_t breakpointId) {
+    assert(controller && controller->breakpointCount == 1);
+    DebugBreakpoint& breakpoint = controller->breakpoints[0];
+    assert(breakpoint.id == breakpointId);
+    breakpoint.state = DebugBreakpointState::Mapped;
+    breakpoint.location.mapping = DebugMappingState::Mapped;
+    breakpoint.location.instructionAddress.valid = true;
+    breakpoint.location.instructionAddress.value = 0x401010;
+    breakpoint.mappedAddressCount = 1;
+    breakpoint.mappedAddresses[0] = breakpoint.location.instructionAddress;
 }
 
 int main() {
@@ -153,6 +242,128 @@ int main() {
     assert(DebugControllerPoll(&controller, backend));
     assert(DebugControllerPoll(&controller, backend));
     assert(controller.state == DebugSessionState::Exited);
+
+    FakeBackend breakpointFake;
+    DebugBackend breakpointBackend = makeBreakpointBackend(&breakpointFake);
+    DebugController bound = {};
+    assert(DebugControllerInit(&bound));
+    assert(DebugControllerSetProjectContext(&bound, project.projectId, project.rootPath, 9));
+    uint64_t boundBreakpointId = 0;
+    assert(DebugControllerToggleBreakpoint(&bound, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 50, 0, 3, &boundBreakpointId, &error));
+    prepareMappedBreakpoint(&bound, boundBreakpointId);
+    assert(DebugControllerStart(&bound, breakpointBackend, target, &error));
+    assert(DebugControllerPoll(&bound, breakpointBackend));
+    assert(bound.state == DebugSessionState::Running);
+    assert(bound.targetExecutionReleased);
+    assert(bound.breakpoints[0].state == DebugBreakpointState::Verified);
+    assert(bound.breakpoints[0].backendBindingId == breakpointFake.sharedBindingId);
+    assert(breakpointFake.bindCalls == 1 && breakpointFake.physicalBinds == 1);
+    assert(breakpointFake.originalByte == 0x55 && breakpointFake.installedByte == 0xCC);
+    assert(breakpointFake.debugCommands == 1);
+    assert(bound.state != DebugSessionState::Paused);
+
+    FakeBackend duplicateFake;
+    DebugBackend duplicateBackend = makeBreakpointBackend(&duplicateFake);
+    DebugController duplicates = {};
+    assert(DebugControllerInit(&duplicates));
+    assert(DebugControllerSetProjectContext(&duplicates, project.projectId, project.rootPath, 9));
+    uint64_t firstDuplicateId = 0;
+    uint64_t secondDuplicateId = 0;
+    assert(DebugControllerToggleBreakpoint(&duplicates, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 60, 0, 3, &firstDuplicateId, &error));
+    assert(DebugControllerToggleBreakpoint(&duplicates, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 61, 0, 3, &secondDuplicateId, &error));
+    for (uint32_t i = 0; i < duplicates.breakpointCount; ++i) {
+        duplicates.breakpoints[i].state = DebugBreakpointState::Mapped;
+        duplicates.breakpoints[i].location.mapping = DebugMappingState::Mapped;
+        duplicates.breakpoints[i].location.instructionAddress.valid = true;
+        duplicates.breakpoints[i].location.instructionAddress.value = 0x401010;
+        duplicates.breakpoints[i].mappedAddressCount = 1;
+        duplicates.breakpoints[i].mappedAddresses[0] = duplicates.breakpoints[i].location.instructionAddress;
+    }
+    assert(DebugControllerStart(&duplicates, duplicateBackend, target, &error));
+    assert(DebugControllerPoll(&duplicates, duplicateBackend));
+    assert(duplicates.breakpoints[0].state == DebugBreakpointState::Verified);
+    assert(duplicates.breakpoints[1].state == DebugBreakpointState::Verified);
+    assert(duplicates.breakpoints[0].backendBindingId == duplicates.breakpoints[1].backendBindingId);
+    assert(duplicateFake.bindCalls == 2 && duplicateFake.physicalBinds == 1);
+
+    FakeBackend hitFake;
+    hitFake.trapOnSecondPoll = true;
+    DebugBackend hitBackend = makeBreakpointBackend(&hitFake);
+    DebugController hit = {};
+    assert(DebugControllerInit(&hit));
+    assert(DebugControllerSetProjectContext(&hit, project.projectId, project.rootPath, 9));
+    uint64_t hitBreakpointId = 0;
+    assert(DebugControllerToggleBreakpoint(&hit, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 70, 0, 3, &hitBreakpointId, &error));
+    prepareMappedBreakpoint(&hit, hitBreakpointId);
+    assert(DebugControllerStart(&hit, hitBackend, target, &error));
+    assert(DebugControllerPoll(&hit, hitBackend));
+    assert(hit.state == DebugSessionState::Running);
+    assert(DebugControllerPoll(&hit, hitBackend));
+    assert(hit.state == DebugSessionState::Paused);
+    assert(hit.stopReason == DebugStopReason::Breakpoint);
+    assert(hit.currentInstructionAddress.valid && hit.currentInstructionAddress.value == 0x401010);
+    assert(hit.reportedInstructionPointer == 0x401011);
+    assert(hit.currentThreadId == 44 && hit.lastBreakpointId == hitBreakpointId);
+    assert(hit.breakpoints[0].lastHit && hit.breakpoints[0].state == DebugBreakpointState::Verified);
+
+    FakeBackend partialFake;
+    partialFake.failBindAt = 2;
+    DebugBackend partialBackend = makeBreakpointBackend(&partialFake);
+    DebugController partial = {};
+    assert(DebugControllerInit(&partial));
+    assert(DebugControllerSetProjectContext(&partial, project.projectId, project.rootPath, 9));
+    uint64_t partialFirstId = 0;
+    uint64_t partialSecondId = 0;
+    assert(DebugControllerToggleBreakpoint(&partial, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 80, 0, 3, &partialFirstId, &error));
+    assert(DebugControllerToggleBreakpoint(&partial, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 81, 0, 3, &partialSecondId, &error));
+    for (uint32_t i = 0; i < partial.breakpointCount; ++i) {
+        partial.breakpoints[i].state = DebugBreakpointState::Mapped;
+        partial.breakpoints[i].location.mapping = DebugMappingState::Mapped;
+        partial.breakpoints[i].location.instructionAddress.valid = true;
+        partial.breakpoints[i].location.instructionAddress.value = 0x401010 + i * 4;
+        partial.breakpoints[i].mappedAddressCount = 1;
+        partial.breakpoints[i].mappedAddresses[0] = partial.breakpoints[i].location.instructionAddress;
+    }
+    assert(DebugControllerStart(&partial, partialBackend, target, &error));
+    assert(!DebugControllerPoll(&partial, partialBackend));
+    assert(partial.state == DebugSessionState::Failed && !partial.active);
+    assert(partialFake.restoreCommands == 1 && partialFake.debugCommands == 1);
+    assert(partial.breakpoints[0].backendBindingId == 0 && partial.breakpoints[0].state == DebugBreakpointState::Mapped);
+
+    FakeBackend unexpectedFake;
+    DebugBackend unexpectedBackend = makeBreakpointBackend(&unexpectedFake);
+    DebugController unexpected = {};
+    assert(DebugControllerInit(&unexpected));
+    assert(DebugControllerSetProjectContext(&unexpected, project.projectId, project.rootPath, 9));
+    uint64_t unexpectedBreakpointId = 0;
+    assert(DebugControllerToggleBreakpoint(&unexpected, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 90, 0, 3, &unexpectedBreakpointId, &error));
+    prepareMappedBreakpoint(&unexpected, unexpectedBreakpointId);
+    assert(DebugControllerStart(&unexpected, unexpectedBackend, target, &error));
+    assert(DebugControllerPoll(&unexpected, unexpectedBackend));
+    DebugBackendSnapshot wrongTrap = {};
+    wrongTrap.sessionGeneration = unexpected.sessionGeneration;
+    wrongTrap.state = DebugSessionState::Paused;
+    wrongTrap.processId = 999;
+    wrongTrap.nativeRuntimeId = 77;
+    wrongTrap.breakpointTrap = true;
+    wrongTrap.targetAddress.valid = true;
+    wrongTrap.targetAddress.value = 0x401010;
+    wrongTrap.breakpointBindingId = unexpectedFake.sharedBindingId;
+    assert(!DebugControllerApplySnapshot(&unexpected, unexpected.sessionGeneration, wrongTrap));
+    assert(unexpected.error == DebugErrorCode::BackendError && unexpected.state == DebugSessionState::Running);
+    wrongTrap.processId = 12;
+    wrongTrap.targetAddress.value = 0x401011;
+    assert(!DebugControllerApplySnapshot(&unexpected, unexpected.sessionGeneration, wrongTrap));
+    assert(unexpected.error == DebugErrorCode::BackendError && unexpected.state == DebugSessionState::Running);
+    assert(DebugControllerPoll(&unexpected, unexpectedBackend));
+    assert(unexpected.state == DebugSessionState::Exited);
 
     DebugControllerMarkSourceGeneration(&controller, project.projectId, "src/main.cpp", 4);
     assert(controller.breakpoints[0].state == DebugBreakpointState::Stale);

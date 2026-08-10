@@ -1,5 +1,14 @@
 # Debugger Phase 2 — DWARF / Source-Line Mapping
 
+## Phase 3 integration
+
+Phase 2 source-to-address mappings now feed the hosted software-breakpoint binder. A
+mapped row retains every bounded executable address, while the hosted backend patches
+only the deterministic primary address. A real owned trap supplies the normalized
+target address to the Phase 2 reverse mapper; only then does the debugger show the
+current source location and transition to Paused. Mapping alone remains Mapped, never
+Verified or Hit.
+
 Phase 2 adds truthful source-line evidence to the Phase 1 debugger foundation.
 It maps a project-relative source file and line to one or more linked
 instruction addresses, and maps an address back to a source location. It does

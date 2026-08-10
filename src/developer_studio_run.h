@@ -45,6 +45,7 @@ struct RunRequest {
     char manifestPath[kMaxPathBytes];
     char artifactPath[kMaxProjectPathBytes];
     char artifactSha256[kMaxRunArtifactSha256Bytes];
+    bool debugControlled;
 };
 
 struct RunResult {
@@ -63,6 +64,31 @@ struct RunResult {
     char errorMessage[kMaxRunErrorBytes];
 };
 
+enum class HostedDebugCommand {
+    BindSoftwareBreakpoint = 1,
+    ReleaseExecution = 2,
+    Poll = 3,
+    RestoreAll = 4,
+    CancelExecution = 5
+};
+
+struct HostedDebugResult {
+    uint32_t status = 0;
+    uint32_t trapKind = 0;
+    uint64_t bindingId = 0;
+    uint64_t processId = 0;
+    uint64_t nativeRuntimeId = 0;
+    uint64_t threadId = 0;
+    uint64_t instructionPointer = 0;
+    uint64_t targetAddress = 0;
+    uint8_t originalByte = 0;
+    uint8_t installedByte = 0;
+    bool originalByteValid = false;
+    bool bindingInstalled = false;
+    uint32_t bindingCount = 0;
+    char errorMessage[kMaxRunErrorBytes] = {};
+};
+
 struct HostedDevelopmentRunService {
     void* userData;
     bool (*prepare)(void* userData, const RunRequest& request, uint64_t* outHandle, RunResult* outResult);
@@ -70,6 +96,10 @@ struct HostedDevelopmentRunService {
     bool (*poll)(void* userData, uint64_t handle, RunResult* outResult);
     bool (*requestClose)(void* userData, uint64_t handle);
     bool (*release)(void* userData, uint64_t handle);
+    bool (*debugCommand)(void* userData, HostedDebugCommand command, uint64_t handle,
+                         uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
+                         uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
+                         HostedDebugResult* outResult);
 };
 
 struct RunController {

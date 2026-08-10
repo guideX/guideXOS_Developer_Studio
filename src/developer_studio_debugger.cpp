@@ -194,6 +194,7 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     const DebugSessionState previous = controller->state;
     controller->processId = snapshot.processId;
     controller->nativeRuntimeId = snapshot.nativeRuntimeId;
+    controller->debugHandle = snapshot.debugHandle;
     controller->exitCode = snapshot.exitCode;
     controller->stopReason = snapshot.stopReason;
     if (snapshot.backendName[0]) copyText(controller->backendName, sizeof(controller->backendName), snapshot.backendName);
@@ -210,7 +211,8 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     if (snapshot.state == DebugSessionState::Running && previous != DebugSessionState::Running)
         appendEvent(controller, DebugEventKind::Running, snapshot.state, DebugStopReason::None, "Hosted Native ELF target running");
     else if (snapshot.state == DebugSessionState::Paused && previous != DebugSessionState::Paused)
-        appendEvent(controller, DebugEventKind::Paused, snapshot.state, snapshot.stopReason, snapshot.errorMessage);
+        appendEvent(controller, DebugEventKind::Paused, snapshot.state, snapshot.stopReason,
+                    snapshot.errorMessage[0] ? snapshot.errorMessage : controller->lastMessage);
     else if (snapshot.state == DebugSessionState::Stopping && previous != DebugSessionState::Stopping)
         appendEvent(controller, DebugEventKind::Stopped, snapshot.state, DebugStopReason::UserRequested, "Debug stop requested");
     else if (snapshot.state == DebugSessionState::Exited && previous != DebugSessionState::Exited) {
@@ -220,6 +222,109 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
         appendEvent(controller, DebugEventKind::Failed, snapshot.state, snapshot.stopReason, snapshot.errorMessage);
         controller->active = false;
     }
+}
+
+static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBackendSnapshot& snapshot) {
+    if (!controller || !snapshot.breakpointTrap || !snapshot.targetAddress.valid ||
+        snapshot.processId != controller->processId || snapshot.nativeRuntimeId != controller->nativeRuntimeId ||
+        snapshot.breakpointBindingId == 0) return false;
+    int ownerIndex = -1;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        const DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        bool ownsAddress = breakpoint.location.instructionAddress.valid &&
+            breakpoint.location.instructionAddress.value == snapshot.targetAddress.value;
+        for (uint32_t addressIndex = 0; !ownsAddress && addressIndex < breakpoint.mappedAddressCount; ++addressIndex) {
+            ownsAddress = breakpoint.mappedAddresses[addressIndex].valid &&
+                breakpoint.mappedAddresses[addressIndex].value == snapshot.targetAddress.value;
+        }
+        if (breakpoint.enabled && breakpoint.backendBindingId == snapshot.breakpointBindingId && ownsAddress) {
+            ownerIndex = static_cast<int>(i);
+            break;
+        }
+    }
+    if (ownerIndex < 0) return false;
+    controller->currentInstructionAddress = snapshot.targetAddress;
+    controller->currentThreadId = snapshot.threadId;
+    controller->reportedInstructionPointer = snapshot.instructionPointer;
+    controller->lastBreakpointId = controller->breakpoints[ownerIndex].id;
+    controller->stopReason = DebugStopReason::Breakpoint;
+    copyText(controller->lastMessage, sizeof(controller->lastMessage), "Breakpoint trap observed");
+    appendEvent(controller, DebugEventKind::BreakpointTrap, controller->state, DebugStopReason::Breakpoint, controller->lastMessage);
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        bool ownsAddress = breakpoint.location.instructionAddress.valid &&
+            breakpoint.location.instructionAddress.value == snapshot.targetAddress.value;
+        for (uint32_t addressIndex = 0; !ownsAddress && addressIndex < breakpoint.mappedAddressCount; ++addressIndex) {
+            ownsAddress = breakpoint.mappedAddresses[addressIndex].valid &&
+                breakpoint.mappedAddresses[addressIndex].value == snapshot.targetAddress.value;
+        }
+        if (breakpoint.enabled && breakpoint.backendBindingId == snapshot.breakpointBindingId && ownsAddress) {
+            breakpoint.lastHit = true;
+            breakpoint.lastHitSessionGeneration = controller->sessionGeneration;
+            setBreakpointMessage(breakpoint, "Hit");
+        }
+    }
+    appendEvent(controller, DebugEventKind::BreakpointHit, controller->state, DebugStopReason::Breakpoint, "Owned breakpoint hit");
+    return true;
+}
+
+static bool bindAndReleaseIfReady(DebugController* controller, const DebugBackend& backend,
+                                  DebugBackendSnapshot* snapshot) {
+    if (!controller || !snapshot || controller->targetExecutionReleased || snapshot->nativeRuntimeId == 0 ||
+        !backend.capabilities.canBindSoftwareBreakpoint || !backend.debugCommand) return true;
+    uint32_t acceptedBindings = 0;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!breakpoint.enabled || breakpoint.state != DebugBreakpointState::Mapped ||
+            breakpoint.backendBindingId != 0 || !breakpoint.location.instructionAddress.valid) continue;
+        DebugBackendBinding binding = {};
+        const bool called = backend.bindSoftwareBreakpoint(backend.userData, controller->target,
+            controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId, breakpoint, &binding);
+        if (!called || !binding.accepted) {
+            breakpoint.state = DebugBreakpointState::Rejected;
+            breakpoint.mappingError = DebugErrorCode::BreakpointRejected;
+            setBreakpointMessage(breakpoint, binding.message[0] ? binding.message : "Rejected: software breakpoint bind failed");
+            appendEvent(controller, DebugEventKind::BreakpointRejected, controller->state, DebugStopReason::Unknown, breakpoint.message);
+            if (acceptedBindings != 0) {
+                HostedDebugResult restored = {};
+                const bool restoredSuccessfully = backend.debugCommand(backend.userData, HostedDebugCommand::RestoreAll,
+                    controller->debugHandle, controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId,
+                    0, 0, controller->target.artifactSha256, &restored);
+                for (uint32_t rollbackIndex = 0; rollbackIndex < controller->breakpointCount; ++rollbackIndex) {
+                    DebugBreakpoint& rollback = controller->breakpoints[rollbackIndex];
+                    if (rollback.backendBindingId == 0) continue;
+                    rollback.backendBindingId = 0;
+                    rollback.state = DebugBreakpointState::Mapped;
+                    rollback.location.mapping = DebugMappingState::Mapped;
+                    rollback.lastHit = false;
+                    rollback.lastHitSessionGeneration = 0;
+                    setBreakpointMessage(rollback, "Mapped: bind rolled back");
+                }
+                controller->error = restoredSuccessfully ? DebugErrorCode::BreakpointRejected : DebugErrorCode::BackendError;
+                setMessage(controller, restoredSuccessfully ? "Hosted breakpoint bind rolled back after partial failure" :
+                    (restored.errorMessage[0] ? restored.errorMessage : "Hosted breakpoint restore failed after partial bind"));
+                return false;
+            }
+            continue;
+        }
+        DebugAddress address = breakpoint.location.instructionAddress;
+        DebugErrorCode error = DebugErrorCode::None;
+        if (!DebugControllerApplyBreakpointBinding(controller, controller->sessionGeneration, breakpoint.id, true,
+                                                   binding.bindingId, address, binding.message[0] ? binding.message : "Bound / Verified", &error)) return false;
+        ++acceptedBindings;
+    }
+    HostedDebugResult released = {};
+    if (!backend.debugCommand(backend.userData, HostedDebugCommand::ReleaseExecution, controller->debugHandle,
+                              controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId,
+                              0, 0, controller->target.artifactSha256, &released)) {
+        controller->error = DebugErrorCode::BackendError;
+        setMessage(controller, released.errorMessage[0] ? released.errorMessage : "Hosted debugger could not release the launch gate");
+        return false;
+    }
+    controller->targetExecutionReleased = true;
+    snapshot->state = DebugSessionState::Running;
+    snapshot->stopReason = DebugStopReason::None;
+    return true;
 }
 
 } // namespace
@@ -313,6 +418,12 @@ const char* DebugEventKindName(DebugEventKind kind) {
     case DebugEventKind::Stopped: return "Stopped";
     case DebugEventKind::Exited: return "Exited";
     case DebugEventKind::Failed: return "Failed";
+    case DebugEventKind::TargetCreated: return "Target created";
+    case DebugEventKind::BreakpointUnbound: return "Breakpoint unbound";
+    case DebugEventKind::BreakpointTrap: return "Breakpoint trap";
+    case DebugEventKind::BreakpointHit: return "Breakpoint hit";
+    case DebugEventKind::BreakpointRestoreFailed: return "Breakpoint restore failed";
+    case DebugEventKind::UnexpectedTrap: return "Unexpected trap";
     }
     return "Unknown";
 }
@@ -326,7 +437,11 @@ bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabiliti
         left.canReadRegisters == right.canReadRegisters && left.canReadMemory == right.canReadMemory &&
         left.canWriteMemory == right.canWriteMemory && left.canEnumerateThreads == right.canEnumerateThreads &&
         left.canReadCallStack == right.canReadCallStack && left.canResolveSourceLocations == right.canResolveSourceLocations &&
-        left.canEvaluateExpressions == right.canEvaluateExpressions;
+        left.canEvaluateExpressions == right.canEvaluateExpressions &&
+        left.canBindSoftwareBreakpoint == right.canBindSoftwareBreakpoint &&
+        left.canObserveBreakpointTrap == right.canObserveBreakpointTrap &&
+        left.canRestoreBreakpoint == right.canRestoreBreakpoint &&
+        left.canReadInstructionPointer == right.canReadInstructionPointer;
 }
 
 bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities) { return capabilities.canPause; }
@@ -436,8 +551,15 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->error = DebugErrorCode::None;
     controller->processId = 0;
     controller->nativeRuntimeId = 0;
+    controller->debugHandle = 0;
     controller->exitCode = 0;
     controller->stopReason = DebugStopReason::None;
+    controller->targetExecutionReleased = false;
+    controller->currentInstructionAddress = DebugAddress();
+    controller->currentLocation = DebugSourceLocation();
+    controller->currentThreadId = 0;
+    controller->reportedInstructionPointer = 0;
+    controller->lastBreakpointId = 0;
     setMessage(controller, "Launching debug target");
     appendEvent(controller, DebugEventKind::Launched, DebugSessionState::Launching, DebugStopReason::None, "Debug target launch requested");
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
@@ -481,6 +603,12 @@ bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionG
         if (controller) controller->error = DebugErrorCode::StaleSession;
         return false;
     }
+    if (snapshot.breakpointTrap && !applyOwnedBreakpointTrap(controller, snapshot)) {
+        controller->error = DebugErrorCode::BackendError;
+        setMessage(controller, "Rejected unowned hosted breakpoint trap");
+        appendEvent(controller, DebugEventKind::UnexpectedTrap, controller->state, DebugStopReason::Unknown, controller->lastMessage);
+        return false;
+    }
     controller->error = DebugErrorCode::None;
     applySnapshotUnchecked(controller, snapshot);
     return controller->error != DebugErrorCode::InvalidTransition;
@@ -496,6 +624,12 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         controller->state = DebugSessionState::Failed;
         controller->active = false;
         setMessage(controller, snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend poll failed");
+        appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
+        return false;
+    }
+    if (!bindAndReleaseIfReady(controller, backend, &snapshot)) {
+        controller->state = DebugSessionState::Failed;
+        controller->active = false;
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
     }
@@ -678,8 +812,12 @@ bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t
     breakpoint.location.mapping = accepted ? DebugMappingState::Mapped : DebugMappingState::Rejected;
     breakpoint.state = accepted ? DebugBreakpointState::Verified : DebugBreakpointState::Rejected;
     breakpoint.mappingError = accepted ? DebugErrorCode::None : DebugErrorCode::BreakpointRejected;
-    breakpoint.mappedAddressCount = accepted && address.valid ? 1 : 0;
-    if (accepted && address.valid) breakpoint.mappedAddresses[0] = address;
+    if (accepted && address.valid) {
+        if (breakpoint.mappedAddressCount == 0) breakpoint.mappedAddressCount = 1;
+        breakpoint.mappedAddresses[0] = address;
+    }
+    breakpoint.lastHit = false;
+    breakpoint.lastHitSessionGeneration = 0;
     setBreakpointMessage(breakpoint, message ? message : (accepted ? "Verified" : "Rejected by backend"));
     appendEvent(controller, accepted ? DebugEventKind::BreakpointBound : DebugEventKind::BreakpointRejected,
                 controller->state, accepted ? DebugStopReason::None : DebugStopReason::Unknown,
@@ -811,6 +949,29 @@ void DebugControllerMarkSourceGeneration(DebugController* controller, const char
         breakpoint.mappingError = DebugErrorCode::ProjectGenerationMismatch;
         setBreakpointMessage(breakpoint, "Stale: source generation differs from built artifact");
     }
+}
+
+bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugDwarfMapper* mapper,
+                                       DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !mapper || controller->state != DebugSessionState::Paused ||
+        !controller->currentInstructionAddress.valid || !DebugDwarfMapperIsReady(mapper)) {
+        if (error) *error = DebugErrorCode::SourceMappingUnavailable;
+        return false;
+    }
+    DebugSourceLocation location = {};
+    location.instructionAddress = controller->currentInstructionAddress;
+    location.projectGeneration = controller->target.projectGeneration;
+    location.mapping = DebugMappingState::Mapped;
+    DebugDwarfError mappingError = DebugDwarfError::None;
+    if (!DebugDwarfMapperMapAddressToSource(mapper, controller->currentInstructionAddress.value,
+                                            location.relativePath, sizeof(location.relativePath),
+                                            &location.line, &location.column, &mappingError)) {
+        if (error) *error = mapDwarfError(mappingError);
+        return false;
+    }
+    controller->currentLocation = location;
+    return true;
 }
 
 const DebugBreakpoint* DebugControllerBreakpointAt(const DebugController* controller, uint32_t index) {

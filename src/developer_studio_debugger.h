@@ -96,7 +96,13 @@ enum class DebugEventKind {
     BreakpointRejected,
     Stopped,
     Exited,
-    Failed
+    Failed,
+    TargetCreated,
+    BreakpointUnbound,
+    BreakpointTrap,
+    BreakpointHit,
+    BreakpointRestoreFailed,
+    UnexpectedTrap
 };
 
 struct DebugCapabilities {
@@ -116,6 +122,10 @@ struct DebugCapabilities {
     bool canReadCallStack;
     bool canResolveSourceLocations;
     bool canEvaluateExpressions;
+    bool canBindSoftwareBreakpoint;
+    bool canObserveBreakpointTrap;
+    bool canRestoreBreakpoint;
+    bool canReadInstructionPointer;
 };
 
 struct DebugAddress {
@@ -160,6 +170,8 @@ struct DebugBreakpoint {
     DebugAddress mappedAddresses[kDebugMaxMappedAddresses];
     uint64_t backendBindingId;
     uint64_t sessionGeneration;
+    bool lastHit;
+    uint64_t lastHitSessionGeneration;
     char message[kDebugMaxMessageBytes];
 };
 
@@ -179,6 +191,7 @@ struct DebugEvent {
 
 struct DebugBackendSnapshot {
     uint64_t sessionGeneration;
+    uint64_t debugHandle;
     DebugSessionState state;
     uint64_t processId;
     uint64_t nativeRuntimeId;
@@ -187,7 +200,34 @@ struct DebugBackendSnapshot {
     DebugStopReason stopReason;
     char backendName[kDebugMaxBackendNameBytes];
     char errorMessage[kDebugMaxMessageBytes];
+    bool breakpointTrap;
+    uint64_t threadId;
+    uint64_t instructionPointer;
+    DebugAddress targetAddress;
+    uint64_t breakpointBindingId;
+    uint8_t originalByte;
+    uint8_t installedByte;
+    bool originalByteValid;
 };
+
+struct DebugBackendBinding {
+    bool accepted;
+    uint64_t bindingId;
+    uint8_t originalByte;
+    uint8_t installedByte;
+    bool originalByteValid;
+    char message[kDebugMaxMessageBytes];
+};
+
+typedef bool (*DebugBackendBindFn)(void* userData, const DebugTarget& target,
+                                   uint64_t sessionGeneration, uint64_t processId,
+                                   uint64_t nativeRuntimeId, const DebugBreakpoint& breakpoint,
+                                   DebugBackendBinding* outBinding);
+typedef bool (*DebugBackendCommandFn)(void* userData, HostedDebugCommand command,
+                                      uint64_t handle, uint64_t sessionGeneration,
+                                      uint64_t processId, uint64_t nativeRuntimeId,
+                                      uint64_t breakpointId, uint64_t targetAddress,
+                                      const char* artifactSha256, HostedDebugResult* outResult);
 
 typedef bool (*DebugBackendLaunchFn)(void* userData, const DebugTarget& target,
                                      uint64_t sessionGeneration, DebugBackendSnapshot* outSnapshot);
@@ -206,6 +246,8 @@ struct DebugBackend {
     DebugBackendStopFn stop;
     DebugBackendPauseFn pause;
     DebugBackendContinueFn continueExecution;
+    DebugBackendBindFn bindSoftwareBreakpoint;
+    DebugBackendCommandFn debugCommand;
 };
 
 struct DebugSourceMapper {
@@ -229,9 +271,16 @@ struct DebugController {
     char backendName[kDebugMaxBackendNameBytes];
     uint64_t processId;
     uint64_t nativeRuntimeId;
+    uint64_t debugHandle;
     int32_t exitCode;
     DebugStopReason stopReason;
     char lastMessage[kDebugMaxMessageBytes];
+    bool targetExecutionReleased;
+    DebugAddress currentInstructionAddress;
+    DebugSourceLocation currentLocation;
+    uint64_t currentThreadId;
+    uint64_t reportedInstructionPointer;
+    uint64_t lastBreakpointId;
     DebugBreakpoint breakpoints[kDebugMaxBreakpoints];
     uint32_t breakpointCount;
     DebugEvent events[kDebugMaxEvents];
@@ -272,6 +321,8 @@ bool DebugControllerCanPause(const DebugController* controller);
 bool DebugControllerCanContinue(const DebugController* controller);
 bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionGeneration,
                                   const DebugBackendSnapshot& snapshot);
+bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugDwarfMapper* mapper,
+                                       DebugErrorCode* error);
 
 bool DebugControllerToggleBreakpoint(DebugController* controller, const char* projectId,
                                      const char* projectRoot, uint64_t projectGeneration,

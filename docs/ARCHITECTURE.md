@@ -453,8 +453,10 @@ permission set is the only accepted set for the temporary app.
 
 The append-only ABI slots are `development_run_prepare`,
 `development_run_start`, `development_run_poll`,
-`development_run_request_close`, and `development_run_release` at offsets
-192, 200, 208, 216, and 224, with a 232-byte host table. See
+`development_run_request_close`, `development_run_release`, and
+`development_debug` at offsets 192, 200, 208, 216, 224, and 232, with a
+240-byte host table. The debug-controlled run request appends flags/reserved
+at offsets 64/68 and is 72 bytes. See
 [RUN_PROJECT.md](RUN_PROJECT.md) for the state/error contract and validation
 procedure.
 

@@ -507,6 +507,8 @@ using guidexos::developer_studio::DebugControllerMarkArtifactStale;
 using guidexos::developer_studio::HostedDebugBackend;
 using guidexos::developer_studio::HostedDebugBackendCreate;
 using guidexos::developer_studio::HostedDebugBackendInit;
+using guidexos::developer_studio::HostedDebugCommand;
+using guidexos::developer_studio::HostedDebugResult;
 using guidexos::developer_studio::PathsEqual;
 using guidexos::developer_studio::kMaxProjectPathBytes;
 
@@ -975,6 +977,15 @@ static void appendUnsigned(char* output, uint32_t outputSize, uint32_t value) {
         uint32_t offset = lengthOf(output, outputSize);
         output[offset] = digit;
         output[offset + 1] = '\0';
+    }
+}
+
+static void appendHexAddress(char* output, uint32_t outputSize, uint64_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    appendText(output, outputSize, "0x");
+    for (int32_t shift = 60; shift >= 0 && lengthOf(output, outputSize) + 1 < outputSize; shift -= 4) {
+        char digit[2] = { digits[(value >> shift) & 0xfu], '\0' };
+        appendText(output, outputSize, digit);
     }
 }
 
@@ -2890,6 +2901,7 @@ static bool hostRunPrepare(void* userData, const guidexos::developer_studio::Run
     nativeRequest.manifestPath = request.manifestPath;
     nativeRequest.artifactPath = request.artifactPath;
     nativeRequest.artifactSha256 = request.artifactSha256;
+    nativeRequest.flags = request.debugControlled ? GX_DEVELOPMENT_RUN_FLAG_DEBUG_CONTROLLED : 0u;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
@@ -2903,6 +2915,8 @@ static bool hostRunPrepare(void* userData, const guidexos::developer_studio::Run
     return true;
 }
 
+static bool hostRunPoll(void* userData, uint64_t handle, RunResult* outResult);
+
 static bool hostRunStart(void* userData, uint64_t handle, RunResult* outResult) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     if (!context || !context->app || !context->app->host || !context->app->host->development_run_start || !outResult || handle == 0) return false;
@@ -2914,6 +2928,12 @@ static bool hostRunStart(void* userData, uint64_t handle, RunResult* outResult) 
     }
     outResult->state = RunState::Launching;
     outResult->handle = handle;
+    // Start publishes the process-table identity synchronously on the Server,
+    // but the old adapter discarded that start-time snapshot. Poll once here
+    // so the debugger receives the exact target PID before binding memory.
+    RunResult launched = *outResult;
+    if (!hostRunPoll(userData, handle, &launched)) return false;
+    *outResult = launched;
     return true;
 }
 
@@ -2945,6 +2965,49 @@ static bool hostRunRelease(void* userData, uint64_t handle) {
         context->app->host->development_run_release(context->app, handle) == GX_OK;
 }
 
+static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_t handle,
+                             uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
+                             uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
+                             HostedDebugResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (outResult) *outResult = HostedDebugResult();
+    if (!context || !context->app || !context->app->host || !context->app->host->development_debug || !outResult) return false;
+    gx_development_debug_request request = {};
+    request.size = sizeof(request);
+    request.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    request.command = static_cast<uint32_t>(command);
+    request.handle = handle;
+    request.sessionGeneration = sessionGeneration;
+    request.processId = processId;
+    request.nativeRuntimeId = nativeRuntimeId;
+    request.breakpointId = breakpointId;
+    request.targetAddress = targetAddress;
+    request.artifactSha256 = artifactSha256;
+    gx_development_debug_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    const gx_result result = context->app->host->development_debug(context->app, &request, &snapshot);
+    if (result != GX_OK) {
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage);
+        return false;
+    }
+    outResult->status = snapshot.status;
+    outResult->trapKind = snapshot.trapKind;
+    outResult->bindingId = snapshot.bindingId;
+    outResult->processId = snapshot.processId;
+    outResult->nativeRuntimeId = snapshot.nativeRuntimeId;
+    outResult->threadId = snapshot.threadId;
+    outResult->instructionPointer = snapshot.instructionPointer;
+    outResult->targetAddress = snapshot.targetAddress;
+    outResult->originalByte = snapshot.originalByte;
+    outResult->installedByte = snapshot.installedByte;
+    outResult->originalByteValid = snapshot.originalByteValid != 0;
+    outResult->bindingInstalled = snapshot.bindingInstalled != 0;
+    outResult->bindingCount = snapshot.bindingCount;
+    copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage);
+    return true;
+}
+
 static HostedDevelopmentRunService developmentRunService() {
     HostedDevelopmentRunService service = {};
     service.userData = &g_fileSystemContext;
@@ -2953,6 +3016,7 @@ static HostedDevelopmentRunService developmentRunService() {
     service.poll = hostRunPoll;
     service.requestClose = hostRunRequestClose;
     service.release = hostRunRelease;
+    service.debugCommand = hostDebugCommand;
     return service;
 }
 
@@ -3506,6 +3570,19 @@ static void pollDebug(gx_app_context* ctx) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING");
         } else if (g_debugController.state == DebugSessionState::Stopping) {
             reportDebugMessage(ctx, "Debug: stopping target");
+        } else if (g_debugController.state == DebugSessionState::Paused) {
+            DebugErrorCode stopMappingError = DebugErrorCode::None;
+            DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
+            copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
+            if (g_debugController.currentLocation.relativePath[0]) {
+                appendText(g_textScratch, sizeof(g_textScratch), " | ");
+                appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+            }
+            reportDebugMessage(ctx, g_textScratch);
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT");
         } else if (g_debugController.state == DebugSessionState::Exited) {
             reportDebugMessage(ctx, "Debug: process exited");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED");
@@ -6110,6 +6187,12 @@ static void drawDebugPanel(gx_app_context* ctx) {
             appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->location.line);
             appendText(g_textScratch, sizeof(g_textScratch), " | ");
             appendText(g_textScratch, sizeof(g_textScratch), breakpoint->message);
+            if (breakpoint->location.instructionAddress.valid) {
+                appendText(g_textScratch, sizeof(g_textScratch), " @ ");
+                char addressText[32] = {};
+                appendHexAddress(addressText, sizeof(addressText), breakpoint->location.instructionAddress.value);
+                appendText(g_textScratch, sizeof(g_textScratch), addressText);
+            }
             drawText(ctx, 100, y, g_textScratch);
         }
         drawText(ctx, 100, 584, "Up/Down Select   Enter Navigate   Space Enable   Delete Remove   Tab Session   Esc Close");
@@ -6155,7 +6238,15 @@ static void drawDebugPanel(gx_app_context* ctx) {
         } else drawText(ctx, 220, 524, "(none)");
         drawText(ctx, 100, 548, "Last status:");
         drawText(ctx, 220, 548, g_debugController.lastMessage[0] ? g_debugController.lastMessage : "(none)");
-        drawText(ctx, 100, 584, "Tab Breakpoints   Esc Close");
+        drawText(ctx, 100, 572, "Last stop:");
+        drawText(ctx, 220, 572, DebugStopReasonName(g_debugController.stopReason));
+        drawText(ctx, 100, 596, "Address:");
+        if (g_debugController.currentInstructionAddress.valid) {
+            copyText(g_textScratch, sizeof(g_textScratch), "");
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.currentInstructionAddress.value);
+            drawText(ctx, 220, 596, g_textScratch);
+        } else drawText(ctx, 220, 596, "(none)");
+        drawText(ctx, 100, 620, "Tab Breakpoints   Esc Close");
     }
 }
 
@@ -6202,6 +6293,13 @@ static void drawEditor(gx_app_context* ctx) {
         if (breakpointIndex >= 0) {
             const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, static_cast<uint32_t>(breakpointIndex));
             if (breakpoint) drawPanel(ctx, { 272, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 }, debugBreakpointColor(breakpoint->state));
+        }
+        if (g_debugController.state == DebugSessionState::Paused &&
+            g_debugController.currentLocation.line == line + 1) {
+            char relative[kMaxProjectPathBytes] = {};
+            if (DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path, relative, sizeof(relative)) &&
+                PathsEqual(relative, g_debugController.currentLocation.relativePath))
+                drawPanel(ctx, { 262, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 }, 0xFFD166u);
         }
         drawText(ctx, kEditorLineNumberX, kEditorTop + static_cast<int>(row) * kEditorLineHeight, g_textScratch);
         uint32_t spanCount = 0;

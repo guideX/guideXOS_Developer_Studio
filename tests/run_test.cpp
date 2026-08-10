@@ -77,7 +77,7 @@ int main() {
     assert(std::strcmp(request.artifactPath, "build/bin/amd64/run.elf") == 0);
 
     FakeRun fake;
-    HostedDevelopmentRunService service = { &fake, prepareRun, startRun, pollRun, closeRun, releaseRun };
+    HostedDevelopmentRunService service = { &fake, prepareRun, startRun, pollRun, closeRun, releaseRun, nullptr };
     RunController controller = {};
     assert(RunControllerInit(&controller));
     static OutputService output;
