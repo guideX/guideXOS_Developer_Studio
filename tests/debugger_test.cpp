@@ -169,7 +169,8 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t,
 
 static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t,
                          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                         const char*, HostedDebugResult* result) {
+                         const char*, uint64_t, uint64_t, bool, uint64_t, uint32_t,
+                         HostedDebugResult* result) {
     FakeBackend* fake = static_cast<FakeBackend*>(userData);
     if (!fake || !result) return false;
     ++fake->debugCommands;

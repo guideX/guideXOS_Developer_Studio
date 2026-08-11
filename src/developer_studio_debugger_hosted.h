@@ -9,6 +9,7 @@ struct HostedDebugBackend {
     HostedDevelopmentRunService runService;
     RunController runController;
     bool userStepStopPending;
+    bool internalTrapStopPending;
     DebugBackendSnapshot userStepStopSnapshot;
 };
 

@@ -95,3 +95,14 @@
 906	1248	8080758052917905	developer_studio_types_test.exe	3f60f795a0c0b9a3
 955	1262	8080758053414977	developer_studio_debugger_step_test.exe	96ac7b226454694b
 944	1268	8080758053290249	developer_studio_debug_symbols_test.exe	6229696ed396c04c
+10	1462	8081251727481091	CMakeFiles/developer_studio_models.dir/src/developer_studio_run.cpp.obj	38edfb48c6a8f535
+84	5639	8081251728227615	CMakeFiles/developer_studio_debugger_test.dir/tests/debugger_test.cpp.obj	82295ea92e13d0f0
+13	164	8081255209615830	CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj	3a7eff63dba86ec2
+23	468	8081255209715058	CMakeFiles/developer_studio_debugger_step_test.dir/tests/debugger_step_test.cpp.obj	2dada705d1e5fb05
+8	554	8081255209560472	CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj	e9beea859753f537
+8	230	8081255324963849	libdeveloper_studio_models.a	dacb0dea6e3253f7
+17	758	8081255325043878	CMakeFiles/developer_studio_debugger_test.dir/tests/debugger_test.cpp.obj	82295ea92e13d0f0
+758	985	8081255332457898	developer_studio_debugger_test.exe	87ae12d6bc64ce6b
+230	985	8081255327177420	developer_studio_debugger_step_test.exe	96ac7b226454694b
+8	485	8081256403393067	CMakeFiles/developer_studio_debugger_step_test.dir/tests/debugger_step_test.cpp.obj	2dada705d1e5fb05
+485	658	8081256408163768	developer_studio_debugger_step_test.exe	96ac7b226454694b

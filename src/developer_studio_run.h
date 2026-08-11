@@ -72,7 +72,12 @@ enum class HostedDebugCommand {
     CancelExecution = 5,
     ContinueBreakpoint = 6,
     StepInstruction = 7,
-    ResumeStep = 8
+    ResumeStep = 8,
+    ReadMemory = 9,
+    RemoveSoftwareBreakpointOwner = 10,
+    StepOverCall = 11,
+    ResumeInternalTrap = 12,
+    StepInternalTrap = 13
 };
 
 enum class HostedDebugSingleStepKind {
@@ -130,6 +135,10 @@ struct HostedDebugResult {
     uint64_t rflagsWithTrapFlag = 0;
     uint64_t rflagsAfterTrapFlagClear = 0;
     HostedDebugRegisterSnapshot registerContext = {};
+    bool internalBreakpointTrap = false;
+    uint64_t internalBreakpointId = 0;
+    uint32_t byteCount = 0;
+    uint8_t bytes[16] = {};
     char errorMessage[kMaxRunErrorBytes] = {};
 };
 
@@ -144,6 +153,7 @@ struct HostedDevelopmentRunService {
                          uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
                          uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
+                         uint64_t auxiliaryAddress, uint32_t readByteCount,
                          HostedDebugResult* outResult);
 };
 

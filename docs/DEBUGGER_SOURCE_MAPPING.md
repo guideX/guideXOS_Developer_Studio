@@ -1,5 +1,15 @@
 # Debugger Phase 2 — DWARF / Source-Line Mapping
 
+## Phase 6 Step Over lookup
+
+Step Over uses the same sequence-aware reverse mapper as Step Into. The
+controller records the exact return address of a decoded call, validates that
+address against the executable image, and resolves the real internal return
+trap back to a source location. A source line is never inferred from the
+called function's line number or by adding one to the current line. Same-line
+return stops are suppressed through bounded real execution; a user breakpoint
+at the return address takes precedence.
+
 ## Phase 5 source-step lookup
 
 Source-level Step Into compares canonical project-relative source paths and
@@ -154,7 +164,9 @@ only after the backend publishes Running.
 
 ## Deferred work
 
-User-visible stepping, call stacks, memory, expressions, locals, watches,
+Call-aware Step Over is documented in [DEBUGGER_STEP_OVER.md](DEBUGGER_STEP_OVER.md)
+and reuses this mapper for the post-return source stop. User-visible Step Out,
+call stacks, memory, expressions, locals, watches,
 conditional/data breakpoints, and attach/remote debugging remain future
 milestones. Phase 4 uses the mapping only to identify the exact physical address;
 it does not infer source-level stepping from a single machine instruction.

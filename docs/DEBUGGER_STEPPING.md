@@ -20,6 +20,26 @@ Each operation records session and stop generations, process/thread identity,
 starting and last addresses/source locations, and a bounded instruction count.
 The current bound is `kDebugMaxSourceStepInstructions` (1024 instructions).
 
+## F10 Step Over
+
+F10 is accepted only at a valid paused stop. The controller reads the original
+instruction bytes through the hosted debug ABI, including the original byte
+under an `INT3` overlay, and uses a bounded AMD64 decoder. Direct `E8 rel32`
+and indirect `FF /2` near calls are recognized; unsupported or malformed
+encodings are never guessed.
+
+For a recognized call, F10 computes the real return address from the decoded
+instruction length, binds a temporary high-range internal owner there, and
+executes the call normally. A real return `INT3` completes the operation after
+the temporary owner is removed and the next source location is reverse-mapped.
+If a user breakpoint shares that address, it remains installed and wins the
+visible stop. Non-call instructions fall back to the real source-step engine.
+
+F10 is bounded to 1,024 source-step instructions and 32 detected calls. It
+cleans up temporary owners on completion, interruption, stale identity,
+failure, process exit, Stop Debugging, and teardown. The full ownership and
+failure contract is in [DEBUGGER_STEP_OVER.md](DEBUGGER_STEP_OVER.md).
+
 ## Internal and user-visible single steps
 
 Phase 4 breakpoint continuation remains a private
@@ -60,7 +80,7 @@ the target controlled and reports a bounded failure/limit reason.
 
 The current implementation is single-thread focused: one operation stays on
 one process and target thread. Inline-function semantics, optimized Native ELF
-debugging, Step Over, and Step Out remain future work.
+debugging, and Step Out remain future work.
 
 The source-step model test covers capability gating, same-line suppression,
 different-line completion, register refresh, repeated stepping, generation
@@ -68,6 +88,5 @@ identity, and wrong-thread rejection. The native runtime harness proves real
 AMD64 TF-driven `EXCEPTION_SINGLE_STEP` events from an INT3 stop and a source
 step stop, including breakpoint rebinding and step resume.
 
-The next milestone is **Debugger Phase 6 — Step Over**, building on this
-single-step engine to execute an entire called function and stop at the next
-source location in the current frame.
+The next milestone is frame-aware stepping and Step Out; Phase 6 deliberately
+does not claim call-stack or inline-frame semantics.

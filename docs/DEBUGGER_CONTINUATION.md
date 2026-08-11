@@ -9,13 +9,17 @@ request/snapshot offsets remain unchanged; Phase 4 appends the Continue command,
 pending status, thread/stop-generation identity, register context, and
 RFLAGS audit fields. The ABI layout test covers the resulting fixed sizes.
 
-## Phase 5 source stepping
+## Phase 5 source stepping and Phase 6 Step Over
 
 Phase 5 adds a separate user source-step command and pending mode. The private
 breakpoint continuation step remains internal and is never reported as F11
 completion. F11 uses real processor TF single stepping, DWARF-based same-line
 suppression, and returns to `Paused / Step`; F5 can resume the stopped
-source-step context. Step Over and Step Out remain future milestones.
+source-step context. Phase 6 adds F10 using a separate bounded operation: it
+decodes the current AMD64 instruction, binds a temporary logical owner at a
+real call return address, executes the call without TF, and consumes the
+matching internal return trap. Non-call instructions use the existing
+source-step engine. Step Out remains unavailable.
 
 ## Stop context ownership
 
@@ -84,6 +88,8 @@ Supported commands:
 * Stop Debugging — hosted-runtime proven.
 * Pause — disabled.
 * Step Into/F11 — hosted-runtime proven through the separate user source-step path.
-* Step Over, Step Out — disabled.
+* Step Over/F10 — hosted-runtime proven through the bounded call-aware path.
+* Step Out — disabled.
 
-The next milestone is **Debugger Phase 6 — Step Over and frame-aware stepping**.
+The next milestone is frame-aware stepping and Step Out; those are not part of
+Phase 6.

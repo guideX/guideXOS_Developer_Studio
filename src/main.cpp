@@ -471,6 +471,7 @@ using guidexos::developer_studio::DebugController;
 using guidexos::developer_studio::DebugControllerBreakpointAt;
 using guidexos::developer_studio::DebugControllerCanContinue;
 using guidexos::developer_studio::DebugControllerCanStepInto;
+using guidexos::developer_studio::DebugControllerCanStepOver;
 using guidexos::developer_studio::DebugControllerCanPause;
 using guidexos::developer_studio::DebugControllerCanStart;
 using guidexos::developer_studio::DebugControllerCanStop;
@@ -488,6 +489,7 @@ using guidexos::developer_studio::DebugControllerSetBreakpointEnabled;
 using guidexos::developer_studio::DebugControllerSetProjectContext;
 using guidexos::developer_studio::DebugControllerStart;
 using guidexos::developer_studio::DebugControllerStepInto;
+using guidexos::developer_studio::DebugControllerStepOver;
 using guidexos::developer_studio::DebugControllerToggleBreakpoint;
 using guidexos::developer_studio::DebugErrorCode;
 using guidexos::developer_studio::DebugErrorName;
@@ -925,6 +927,7 @@ static bool beginDebugSession(gx_app_context* ctx);
 static void pollDebug(gx_app_context* ctx);
 static void requestDebug(gx_app_context* ctx);
 static void requestDebugStepInto(gx_app_context* ctx);
+static void requestDebugStepOver(gx_app_context* ctx);
 static void requestDebugStop(gx_app_context* ctx);
 static bool toggleBreakpointAtCaret(gx_app_context* ctx);
 static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y);
@@ -2985,6 +2988,7 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
                              uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                              uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
                              uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
+                             uint64_t auxiliaryAddress, uint32_t readByteCount,
                              HostedDebugResult* outResult) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     if (outResult) *outResult = HostedDebugResult();
@@ -3003,6 +3007,8 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     request.flags = reinstallBreakpoint ? GX_DEVELOPMENT_DEBUG_FLAG_REINSTALL_BREAKPOINT : 0;
     request.threadId = threadId;
     request.stopGeneration = stopGeneration;
+    request.auxiliaryAddress = auxiliaryAddress;
+    request.readByteCount = readByteCount;
     gx_development_debug_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
@@ -3031,6 +3037,11 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->rflagsWithTrapFlag = snapshot.rflagsWithTrapFlag;
     outResult->rflagsAfterTrapFlagClear = snapshot.rflagsAfterTrapFlagClear;
     outResult->singleStepKind = snapshot.singleStepKind;
+    outResult->internalBreakpointTrap = snapshot.internalBreakpointTrap != 0;
+    outResult->internalBreakpointId = snapshot.internalBreakpointId;
+    outResult->byteCount = snapshot.byteCount;
+    for (uint32_t i = 0; i < outResult->byteCount && i < sizeof(outResult->bytes); ++i)
+        outResult->bytes[i] = snapshot.bytes[i];
     outResult->executionState = snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_SINGLE_STEP_PENDING ?
         static_cast<uint32_t>(DebugBackendExecutionState::SingleStepPending) :
         static_cast<uint32_t>(DebugBackendExecutionState::None);
@@ -3617,6 +3628,22 @@ static void requestDebugStepInto(gx_app_context* ctx) {
         return;
     }
     reportDebugMessage(ctx, "Debug: step into");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
+}
+
+static void requestDebugStepOver(gx_app_context* ctx) {
+    if (!DebugControllerCanStepOver(&g_debugController)) {
+        if (DebugControllerIsActive(&g_debugController)) writeStudioOutput("Debug: Step Over unavailable");
+        return;
+    }
+    DebugErrorCode error = DebugErrorCode::None;
+    if (!DebugControllerStepOver(&g_debugController, g_debugBackend, &g_debugMapper, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug step over failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        return;
+    }
+    reportDebugMessage(ctx, "Debug: step over");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
 }
 
@@ -6372,11 +6399,12 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 220, 352, g_debugController.capabilities.canPause ? "Pause" : "Pause unavailable");
         drawText(ctx, 220, 376, DebugControllerCanContinue(&g_debugController) ? "Continue" : "Continue unavailable");
         drawText(ctx, 220, 400, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into unavailable");
-        drawText(ctx, 220, 424, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
+        drawText(ctx, 220, 424, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over unavailable");
+        drawText(ctx, 220, 448, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
         drawText(ctx, 100, 428, "Debug info:");
         copyText(g_textScratch, sizeof(g_textScratch), g_debugMapper.state == guidexos::developer_studio::DebugDwarfMapperState::Empty ? "(none)" : DebugDwarfMapperStateName(g_debugMapper.state));
         if (g_debugMapper.truncated) appendText(g_textScratch, sizeof(g_textScratch), " (truncated)");
-        drawText(ctx, 220, 444, g_textScratch);
+        drawText(ctx, 220, 468, g_textScratch);
         drawText(ctx, 100, 464, "Source files:");
         copyText(g_textScratch, sizeof(g_textScratch), "");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.sourceFileCount);
@@ -6731,15 +6759,16 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 312, 116, "Request Project Close");
     }
     if (g_debugMenuOpen) {
-        drawPanel(ctx, { 580, 42, 360, 198 }, 0x34496Au);
+        drawPanel(ctx, { 580, 42, 360, 220 }, 0x34496Au);
         drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
         drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
         drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
-        drawText(ctx, 592, 130, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
-        drawText(ctx, 592, 152, "Stop Debugging");
-        drawText(ctx, 592, 174, "Toggle Breakpoint (F9)");
-        drawText(ctx, 592, 196, "Breakpoints");
-        drawText(ctx, 592, 218, "Debug Session");
+        drawText(ctx, 592, 130, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over (unavailable)");
+        drawText(ctx, 592, 152, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
+        drawText(ctx, 592, 174, "Stop Debugging");
+        drawText(ctx, 592, 196, "Toggle Breakpoint (F9)");
+        drawText(ctx, 592, 218, "Breakpoints");
+        drawText(ctx, 592, 240, "Debug Session");
     }
     drawModal(ctx);
 }
@@ -7570,6 +7599,10 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         }
         return;
     }
+    if (keyCode == 121) {
+        requestDebugStepOver(ctx);
+        return;
+    }
     if (keyCode == 122) {
         requestDebugStepInto(ctx);
         return;
@@ -8100,7 +8133,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
-    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 242) {
+    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 264) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
@@ -8112,13 +8145,14 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 writeStudioOutput(g_textScratch);
             }
         } else if (row == 2) requestDebugStepInto(ctx);
-        else if (row == 3) {
+        else if (row == 3) requestDebugStepOver(ctx);
+        else if (row == 4) {
             DebugErrorCode error = DebugErrorCode::None;
             if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Pause unavailable: backend capability is false");
-        } else if (row == 4) requestDebugStop(ctx);
-        else if (row == 5) toggleBreakpointAtCaret(ctx);
-        else if (row == 6) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
-        else if (row == 7) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
+        } else if (row == 5) requestDebugStop(ctx);
+        else if (row == 6) toggleBreakpointAtCaret(ctx);
+        else if (row == 7) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 8) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
         g_debugMenuOpen = false;
         drawShell(ctx);
         return;

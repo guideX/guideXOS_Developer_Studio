@@ -107,6 +107,16 @@ static void clearSourceStep(DebugController* controller, DebugSourceStepStatus s
     if (reason) copyText(controller->sourceStep.reason, sizeof(controller->sourceStep.reason), reason);
 }
 
+static void clearStepOver(DebugController* controller, DebugStepOverStatus status,
+                          const char* reason) {
+    if (!controller) return;
+    controller->stepOver.active = false;
+    controller->stepOver.status = status;
+    controller->stepOver.mode = DebugStepOverMode::None;
+    controller->stepOver.temporaryInstalled = false;
+    if (reason) copyText(controller->stepOver.reason, sizeof(controller->stepOver.reason), reason);
+}
+
 static void clearStoppedContext(DebugController* controller) {
     if (!controller) return;
     controller->currentInstructionAddress = DebugAddress();
@@ -121,6 +131,21 @@ static int findBreakpoint(const DebugController* controller, uint64_t breakpoint
     if (!controller || breakpointId == 0) return -1;
     for (uint32_t i = 0; i < controller->breakpointCount; ++i)
         if (controller->breakpoints[i].id == breakpointId) return static_cast<int>(i);
+    return -1;
+}
+
+static int findBreakpointAtAddress(const DebugController* controller, uint64_t address,
+                                   uint64_t bindingId) {
+    if (!controller || address == 0) return -1;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
+        const DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        if (!breakpoint.enabled || (bindingId != 0 && breakpoint.backendBindingId != bindingId)) continue;
+        bool ownsAddress = breakpoint.location.instructionAddress.valid &&
+            breakpoint.location.instructionAddress.value == address;
+        for (uint32_t j = 0; !ownsAddress && j < breakpoint.mappedAddressCount; ++j)
+            ownsAddress = breakpoint.mappedAddresses[j].valid && breakpoint.mappedAddresses[j].value == address;
+        if (ownsAddress) return static_cast<int>(i);
+    }
     return -1;
 }
 
@@ -242,7 +267,8 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     else if (snapshot.state == DebugSessionState::Paused && snapshot.stopReason == DebugStopReason::Breakpoint)
         controller->backendExecutionState = DebugBackendExecutionState::PausedAtBreakpoint;
     else if (snapshot.state == DebugSessionState::Paused && snapshot.stopReason == DebugStopReason::Step)
-        controller->backendExecutionState = DebugBackendExecutionState::PausedAtSourceStep;
+        controller->backendExecutionState = snapshot.executionState == DebugBackendExecutionState::PausedAtStepOver ?
+            DebugBackendExecutionState::PausedAtStepOver : DebugBackendExecutionState::PausedAtSourceStep;
     if (snapshot.backendName[0]) copyText(controller->backendName, sizeof(controller->backendName), snapshot.backendName);
     if (snapshot.errorMessage[0]) setMessage(controller, snapshot.errorMessage);
     if (controller->processId != 0 && controller->nativeRuntimeId != 0) {
@@ -282,6 +308,7 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
         controller->lastBreakpointId = 0;
         controller->backendExecutionState = DebugBackendExecutionState::None;
         clearSourceStep(controller, DebugSourceStepStatus::Cancelled, "Source step ended because the target exited");
+        clearStepOver(controller, DebugStepOverStatus::Cancelled, "Step over ended because the target exited");
     } else if (snapshot.state == DebugSessionState::Failed && previous != DebugSessionState::Failed) {
         appendEvent(controller, DebugEventKind::Failed, snapshot.state, snapshot.stopReason, controller->lastMessage);
         controller->active = false;
@@ -289,6 +316,7 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
         controller->lastBreakpointId = 0;
         controller->backendExecutionState = DebugBackendExecutionState::None;
         clearSourceStep(controller, DebugSourceStepStatus::Failed, "Source step ended because the session failed");
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Step over ended because the session failed");
     }
     if (snapshot.state == DebugSessionState::Paused && snapshot.stopReason == DebugStopReason::Breakpoint &&
         snapshot.executionState != DebugBackendExecutionState::SingleStepPending) {
@@ -369,7 +397,7 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
             HostedDebugResult restored = {};
             const bool restoredSuccessfully = backend.debugCommand(backend.userData, HostedDebugCommand::RestoreAll,
                 controller->debugHandle, controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId,
-                0, 0, controller->target.artifactSha256, &restored);
+                0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, &restored);
             for (uint32_t rollbackIndex = 0; rollbackIndex < controller->breakpointCount; ++rollbackIndex) {
                 DebugBreakpoint& rollback = controller->breakpoints[rollbackIndex];
                 if (rollback.backendBindingId == 0) continue;
@@ -396,7 +424,7 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
     HostedDebugResult released = {};
     if (!backend.debugCommand(backend.userData, HostedDebugCommand::ReleaseExecution, controller->debugHandle,
                               controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId,
-                              0, 0, controller->target.artifactSha256, &released)) {
+                               0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, &released)) {
         controller->error = DebugErrorCode::BackendError;
         setMessage(controller, released.errorMessage[0] ? released.errorMessage : "Hosted debugger could not release the launch gate");
         return false;
@@ -504,7 +532,341 @@ static bool processSourceStepTrap(DebugController* controller, const DebugBacken
     return true;
 }
 
+static bool readStepOverInstruction(const DebugController* controller, const DebugBackend& backend,
+                                    uint64_t address, uint8_t* bytes, uint32_t* byteCount,
+                                    DebugAmd64Instruction* instruction, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !backend.readMemory || !bytes || !byteCount || !instruction || address == 0) {
+        if (error) *error = DebugErrorCode::InstructionReadFailed;
+        return false;
+    }
+    uint32_t returned = 0;
+    if (!backend.readMemory(backend.userData, controller->sessionGeneration, controller->processId,
+                            controller->nativeRuntimeId, address, bytes, kDebugMaxInstructionBytes, &returned) ||
+        returned == 0) {
+        if (error) *error = DebugErrorCode::InstructionReadFailed;
+        return false;
+    }
+    if (byteCount) *byteCount = returned;
+    if (!DebugDecodeAmd64Instruction(bytes, returned, address, 0, instruction)) {
+        if (error) *error = DebugErrorCode::UnsupportedCallEncoding;
+        return false;
+    }
+    return true;
+}
+
+static bool removeStepOverBreakpoint(DebugController* controller, const DebugBackend& backend,
+                                     const DebugStepOverOperation& operation) {
+    if (!controller || !backend.debugCommand || operation.temporaryBreakpointId == 0) return false;
+    HostedDebugResult result = {};
+    return backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
+        controller->debugHandle, controller->sessionGeneration, controller->processId,
+        controller->nativeRuntimeId, operation.temporaryBreakpointId, operation.returnAddress,
+        controller->target.artifactSha256, 0, 0, false, 0, 0, &result);
+}
+
+static bool startStepOverCall(DebugController* controller, const DebugBackend& backend,
+                              DebugStepOverOperation* operation, const DebugRegisterContext& context,
+                              uint64_t callAddress, uint64_t returnAddress, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !operation || !backend.bindSoftwareBreakpoint || !backend.stepOverCall ||
+        !backend.debugCommand || operation->callCount >= operation->maxCallCount) {
+        if (error) *error = DebugErrorCode::StepOverLimitExceeded;
+        return false;
+    }
+    uint64_t temporaryId = controller->nextTemporaryBreakpointId++;
+    if (temporaryId == 0 || temporaryId < 0x8000000000000001ull)
+        temporaryId = controller->nextTemporaryBreakpointId++;
+    DebugBreakpoint temporary = {};
+    temporary.id = temporaryId;
+    temporary.enabled = true;
+    temporary.state = DebugBreakpointState::Mapped;
+    temporary.sessionGeneration = controller->sessionGeneration;
+    temporary.location.instructionAddress.valid = true;
+    temporary.location.instructionAddress.value = returnAddress;
+    DebugBackendBinding binding = {};
+    if (!backend.bindSoftwareBreakpoint(backend.userData, controller->target, controller->sessionGeneration,
+                                        controller->processId, controller->nativeRuntimeId, temporary, &binding) ||
+        !binding.accepted) {
+        if (error) *error = DebugErrorCode::UnsupportedCallEncoding;
+        setMessage(controller, binding.message[0] ? binding.message : "Step over temporary breakpoint bind failed");
+        return false;
+    }
+    operation->mode = DebugStepOverMode::TemporaryReturnBreakpoint;
+    operation->callAddress = callAddress;
+    operation->returnAddress = returnAddress;
+    operation->temporaryBreakpointId = temporaryId;
+    operation->temporaryBindingId = binding.bindingId;
+    operation->originalByte = binding.originalByte;
+    operation->installedByte = binding.installedByte;
+    operation->originalByteValid = binding.originalByteValid;
+    operation->temporaryInstalled = true;
+    ++operation->callCount;
+    appendEvent(controller, DebugEventKind::StepOverCallDetected, DebugSessionState::Stepping,
+                DebugStopReason::Step, "Step over call detected");
+    appendEvent(controller, DebugEventKind::StepOverTemporaryBreakpointBound, DebugSessionState::Stepping,
+                DebugStopReason::Step, "Step over temporary return breakpoint bound");
+    if (!backend.stepOverCall(backend.userData, controller->sessionGeneration, context,
+                              callAddress, returnAddress, temporaryId)) {
+        removeStepOverBreakpoint(controller, backend, *operation);
+        operation->temporaryInstalled = false;
+        if (error) *error = DebugErrorCode::StepOverFailed;
+        setMessage(controller, "Step over call resume was rejected");
+        return false;
+    }
+    controller->state = DebugSessionState::Stepping;
+    controller->stopReason = DebugStopReason::None;
+    controller->backendExecutionState = DebugBackendExecutionState::StepOverPending;
+    clearStoppedContext(controller);
+    setMessage(controller, "Step over call running to its return address");
+    return true;
+}
+
+static bool startStepOverSourceInstruction(DebugController* controller, const DebugBackend& backend,
+                                           DebugStepOverOperation* operation,
+                                           const DebugRegisterContext& context, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !operation || !backend.stepInstruction) {
+        if (error) *error = DebugErrorCode::StepOverFailed;
+        return false;
+    }
+    const bool fromBreakpoint = controller->stopReason == DebugStopReason::Breakpoint &&
+        controller->backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint;
+    uint64_t breakpointId = 0;
+    uint64_t bindingId = 0;
+    uint64_t address = 0;
+    bool reinstall = false;
+    if (fromBreakpoint) {
+        const int breakpointIndex = findBreakpoint(controller, controller->lastBreakpointId);
+        if (breakpointIndex < 0) {
+            if (error) *error = DebugErrorCode::StaleStopContext;
+            return false;
+        }
+        const DebugBreakpoint& breakpoint = controller->breakpoints[breakpointIndex];
+        breakpointId = breakpoint.id;
+        bindingId = breakpoint.backendBindingId;
+        address = breakpoint.location.instructionAddress.value;
+        reinstall = breakpoint.enabled;
+        operation->breakpointId = breakpointId;
+        operation->bindingId = bindingId;
+        operation->breakpointAddress = address;
+        operation->reinstallBreakpoint = reinstall;
+    }
+    if (!backend.stepInstruction(backend.userData, controller->sessionGeneration, context,
+                                breakpointId, bindingId, address, fromBreakpoint && reinstall)) {
+        if (error) *error = DebugErrorCode::StepOverFailed;
+        setMessage(controller, "Step over source instruction request was rejected");
+        return false;
+    }
+    operation->mode = DebugStepOverMode::SourceSingleStep;
+    controller->state = DebugSessionState::Stepping;
+    controller->stopReason = DebugStopReason::None;
+    controller->backendExecutionState = DebugBackendExecutionState::StepOverPending;
+    clearStoppedContext(controller);
+    setMessage(controller, "Step over source instruction pending");
+    return true;
+}
+
+static void publishStepOverStop(DebugController* controller, const DebugBackendSnapshot& snapshot,
+                                const DebugSourceLocation& location, DebugStepOverStatus status,
+                                const char* message) {
+    if (!controller) return;
+    controller->state = DebugSessionState::Paused;
+    controller->active = true;
+    controller->stopReason = DebugStopReason::Step;
+    controller->backendExecutionState = DebugBackendExecutionState::PausedAtStepOver;
+    controller->currentInstructionAddress = snapshot.targetAddress;
+    if (!controller->currentInstructionAddress.valid) {
+        controller->currentInstructionAddress.valid = true;
+        controller->currentInstructionAddress.value = snapshot.registerContext.rip;
+    }
+    controller->reportedInstructionPointer = snapshot.instructionPointer == 0 ?
+        snapshot.registerContext.rip : snapshot.instructionPointer;
+    controller->currentThreadId = snapshot.threadId;
+    controller->stopGeneration = snapshot.stopGeneration != 0 ? snapshot.stopGeneration :
+        (controller->stopGeneration == UINT64_MAX ? 1 : controller->stopGeneration + 1);
+    controller->stoppedContext = snapshot.registerContext;
+    controller->stoppedContext.stopGeneration = controller->stopGeneration;
+    controller->currentLocation = location;
+    controller->currentLocation.instructionAddress = controller->currentInstructionAddress;
+    controller->stepOver.lastAddress = controller->currentInstructionAddress.value;
+    controller->stepOver.lastSourceLocation = location;
+    clearStepOver(controller, status, message);
+    setMessage(controller, message);
+    appendEvent(controller, status == DebugStepOverStatus::LimitExceeded ?
+        DebugEventKind::StepOverLimitExceeded : DebugEventKind::StepOverCompleted,
+        controller->state, DebugStopReason::Step, message);
+}
+
+static bool processStepOverSourceTrap(DebugController* controller, const DebugBackend& backend,
+                                      const DebugDwarfMapper* mapper, const DebugBackendSnapshot& snapshot) {
+    if (!controller || !controller->stepOver.active || !snapshot.singleStepTrap ||
+        snapshot.singleStepKind != static_cast<uint32_t>(HostedDebugSingleStepKind::UserSource)) return false;
+    DebugStepOverOperation& operation = controller->stepOver;
+    if (snapshot.sessionGeneration != 0 && snapshot.sessionGeneration != operation.sessionGeneration) return false;
+    if (snapshot.processId != operation.processId || snapshot.nativeRuntimeId != operation.nativeRuntimeId ||
+        snapshot.threadId != operation.threadId || !DebugRegisterContextIsValid(snapshot.registerContext)) return false;
+    ++operation.instructionCount;
+    operation.lastAddress = snapshot.registerContext.rip;
+    DebugSourceLocation location = {};
+    const bool mapped = mapSourceStepLocation(controller, mapper, snapshot.registerContext.rip, &location);
+    operation.lastSourceLocation = location;
+    if (mapped && !sameSourceStepLocation(operation.startingSourceLocation, location)) {
+        publishStepOverStop(controller, snapshot, location, DebugStepOverStatus::Completed,
+                             "Step over completed at a new source location");
+        return true;
+    }
+    if (operation.instructionCount >= operation.maxInstructionCount) {
+        controller->error = DebugErrorCode::StepOverLimitExceeded;
+        publishStepOverStop(controller, snapshot, mapped ? location : DebugSourceLocation(),
+                            DebugStepOverStatus::LimitExceeded,
+                            "StepOverLimitExceeded: bounded instruction-step limit reached");
+        return true;
+    }
+    uint8_t bytes[kDebugMaxInstructionBytes] = {};
+    uint32_t byteCount = 0;
+    DebugAmd64Instruction instruction = {};
+    DebugErrorCode readError = DebugErrorCode::None;
+    if (!readStepOverInstruction(controller, backend, snapshot.registerContext.rip, bytes, &byteCount,
+                                 &instruction, &readError)) {
+        controller->error = readError;
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Step over instruction inspection failed");
+        setMessage(controller, controller->stepOver.reason);
+        return false;
+    }
+    (void)byteCount;
+    if (instruction.kind == DebugAmd64InstructionKind::Call) {
+        return startStepOverCall(controller, backend, &operation, snapshot.registerContext,
+                                 snapshot.registerContext.rip, instruction.returnAddress, &controller->error);
+    }
+    return startStepOverSourceInstruction(controller, backend, &operation, snapshot.registerContext,
+                                          &controller->error);
+}
+
+static bool processStepOverInternalTrap(DebugController* controller, const DebugBackend& backend,
+                                        const DebugDwarfMapper* mapper, const DebugBackendSnapshot& snapshot) {
+    if (!controller || !controller->stepOver.active || !snapshot.breakpointTrap ||
+        !snapshot.internalBreakpointTrap || !snapshot.targetAddress.valid) return false;
+    DebugStepOverOperation& operation = controller->stepOver;
+    if ((snapshot.sessionGeneration != 0 && snapshot.sessionGeneration != operation.sessionGeneration) ||
+        snapshot.processId != operation.processId || snapshot.nativeRuntimeId != operation.nativeRuntimeId ||
+        snapshot.threadId != operation.threadId || snapshot.targetAddress.value != operation.returnAddress ||
+        snapshot.breakpointBindingId != operation.temporaryBindingId) {
+        controller->error = DebugErrorCode::StaleStepOver;
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Rejected stale Step Over return trap");
+        return false;
+    }
+    appendEvent(controller, DebugEventKind::StepOverReturnReached, DebugSessionState::Stepping,
+                DebugStopReason::Step, "Step over return breakpoint reached");
+    if (!removeStepOverBreakpoint(controller, backend, operation)) {
+        controller->error = DebugErrorCode::StepOverFailed;
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Step over temporary breakpoint cleanup failed");
+        return false;
+    }
+    operation.temporaryInstalled = false;
+    const int userBreakpointIndex = findBreakpointAtAddress(controller, snapshot.targetAddress.value,
+                                                             snapshot.breakpointBindingId);
+    if (userBreakpointIndex >= 0) {
+        DebugBackendSnapshot userSnapshot = snapshot;
+        userSnapshot.internalBreakpointTrap = false;
+        userSnapshot.stopReason = DebugStopReason::Breakpoint;
+        userSnapshot.executionState = DebugBackendExecutionState::PausedAtBreakpoint;
+        controller->state = DebugSessionState::Paused;
+        if (!applyOwnedBreakpointTrap(controller, userSnapshot)) return false;
+        clearStepOver(controller, DebugStepOverStatus::Cancelled,
+                      "Step over interrupted by a user breakpoint at the return address");
+        return true;
+    }
+    DebugSourceLocation location = {};
+    const bool mapped = mapSourceStepLocation(controller, mapper, snapshot.targetAddress.value, &location);
+    operation.lastAddress = snapshot.targetAddress.value;
+    operation.lastSourceLocation = location;
+    if (mapped && !sameSourceStepLocation(operation.startingSourceLocation, location)) {
+        publishStepOverStop(controller, snapshot, location, DebugStepOverStatus::Completed,
+                            "Step over completed after the call returned");
+        return true;
+    }
+    if (operation.instructionCount >= operation.maxInstructionCount) {
+        controller->error = DebugErrorCode::StepOverLimitExceeded;
+        publishStepOverStop(controller, snapshot, mapped ? location : DebugSourceLocation(),
+                            DebugStepOverStatus::LimitExceeded,
+                            "StepOverLimitExceeded: bounded instruction-step limit reached");
+        return true;
+    }
+    uint8_t bytes[kDebugMaxInstructionBytes] = {};
+    uint32_t byteCount = 0;
+    DebugAmd64Instruction instruction = {};
+    if (!readStepOverInstruction(controller, backend, snapshot.targetAddress.value, bytes, &byteCount,
+                                 &instruction, &controller->error)) {
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Step over return instruction inspection failed");
+        return false;
+    }
+    (void)byteCount;
+    if (instruction.kind == DebugAmd64InstructionKind::Call)
+        return startStepOverCall(controller, backend, &operation, snapshot.registerContext,
+                                 snapshot.targetAddress.value, instruction.returnAddress, &controller->error);
+    return startStepOverSourceInstruction(controller, backend, &operation, snapshot.registerContext,
+                                          &controller->error);
+}
+
 } // namespace
+
+bool DebugDecodeAmd64Instruction(const uint8_t* bytes, uint32_t byteCount,
+                                 uint64_t address, uint64_t executableEnd,
+                                 DebugAmd64Instruction* instruction) {
+    if (!instruction) return false;
+    *instruction = DebugAmd64Instruction();
+    instruction->kind = DebugAmd64InstructionKind::Invalid;
+    if (!bytes || byteCount == 0 || address == 0) return false;
+
+    uint32_t offset = 0;
+    while (offset < byteCount) {
+        const uint8_t value = bytes[offset];
+        const bool prefix = value == 0x66 || value == 0x67 || value == 0xF0 ||
+            value == 0xF2 || value == 0xF3 || (value >= 0x40 && value <= 0x4F);
+        if (!prefix) break;
+        if (++offset > 15) return false;
+    }
+    if (offset >= byteCount) return false;
+    const uint8_t opcode = bytes[offset];
+    uint32_t length = 0;
+    if (opcode == 0xE8) {
+        length = offset + 5;
+        if (byteCount < length) return false;
+        instruction->kind = DebugAmd64InstructionKind::Call;
+    } else if (opcode == 0xFF) {
+        if (byteCount <= offset + 1) return false;
+        const uint8_t modrm = bytes[offset + 1];
+        if (((modrm >> 3) & 7u) != 2u) {
+            instruction->kind = DebugAmd64InstructionKind::Unsupported;
+            return true;
+        }
+        const uint8_t mod = static_cast<uint8_t>(modrm >> 6);
+        const uint8_t rm = static_cast<uint8_t>(modrm & 7u);
+        length = offset + 2;
+        if (mod != 3 && rm == 4) {
+            if (byteCount <= length) return false;
+            const uint8_t sib = bytes[length++];
+            const uint8_t base = static_cast<uint8_t>(sib & 7u);
+            if (mod == 0 && base == 5) length += 4;
+        } else if (mod == 0 && rm == 5) {
+            length += 4;
+        }
+        if (mod == 1) length += 1;
+        else if (mod == 2) length += 4;
+        if (length > byteCount) return false;
+        instruction->kind = DebugAmd64InstructionKind::Call;
+    } else {
+        instruction->kind = DebugAmd64InstructionKind::NonCall;
+        return true;
+    }
+    if (length == 0 || address > UINT64_MAX - length) return false;
+    const uint64_t returnAddress = address + length;
+    if (executableEnd != 0 && returnAddress > executableEnd) return false;
+    instruction->instructionLength = length;
+    instruction->returnAddress = returnAddress;
+    return true;
+}
 
 const char* DebugSessionStateName(DebugSessionState state) {
     switch (state) {
@@ -571,6 +933,11 @@ const char* DebugErrorName(DebugErrorCode error) {
     case DebugErrorCode::StaleSourceStep: return "stale_source_step";
     case DebugErrorCode::WrongStepThread: return "wrong_step_thread";
     case DebugErrorCode::StepNotObserved: return "step_not_observed";
+    case DebugErrorCode::InstructionReadFailed: return "instruction_read_failed";
+    case DebugErrorCode::UnsupportedCallEncoding: return "unsupported_call_encoding";
+    case DebugErrorCode::StepOverLimitExceeded: return "step_over_limit_exceeded";
+    case DebugErrorCode::StepOverFailed: return "step_over_failed";
+    case DebugErrorCode::StaleStepOver: return "stale_step_over";
     }
     return "unknown";
 }
@@ -625,6 +992,13 @@ const char* DebugEventKindName(DebugEventKind kind) {
     case DebugEventKind::StepRequested: return "Step requested";
     case DebugEventKind::StepComplete: return "Step complete";
     case DebugEventKind::SourceStepLimitExceeded: return "Source-step limit exceeded";
+    case DebugEventKind::StepOverStarted: return "Step over started";
+    case DebugEventKind::StepOverCallDetected: return "Step over call detected";
+    case DebugEventKind::StepOverTemporaryBreakpointBound: return "Step over temporary breakpoint bound";
+    case DebugEventKind::StepOverReturnReached: return "Step over return reached";
+    case DebugEventKind::StepOverCompleted: return "Step over completed";
+    case DebugEventKind::StepOverInterrupted: return "Step over interrupted";
+    case DebugEventKind::StepOverLimitExceeded: return "Step over limit exceeded";
     }
     return "Unknown";
 }
@@ -713,6 +1087,7 @@ bool DebugControllerInit(DebugController* controller) {
     controller->state = DebugSessionState::Idle;
     controller->error = DebugErrorCode::None;
     controller->nextBreakpointId = 1;
+    controller->nextTemporaryBreakpointId = 0x8000000000000001ull;
     controller->nextEventSequence = 1;
     return true;
 }
@@ -770,7 +1145,10 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->currentThreadId = 0;
     controller->reportedInstructionPointer = 0;
     controller->lastBreakpointId = 0;
+    if (controller->nextTemporaryBreakpointId < 0x8000000000000001ull)
+        controller->nextTemporaryBreakpointId = 0x8000000000000001ull;
     controller->sourceStep = DebugSourceStepOperation();
+    controller->stepOver = DebugStepOverOperation();
     setMessage(controller, "Launching debug target");
     appendEvent(controller, DebugEventKind::Launched, DebugSessionState::Launching, DebugStopReason::None, "Debug target launch requested");
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
@@ -864,8 +1242,46 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
     }
+    if (snapshot.breakpointTrap && snapshot.internalBreakpointTrap) {
+        if (controller->stepOver.active) {
+            if (!processStepOverInternalTrap(controller, backend, mapper, snapshot)) {
+                if (controller->error == DebugErrorCode::None) controller->error = DebugErrorCode::StaleStepOver;
+                return false;
+            }
+            return true;
+        }
+        // The physical trap remains held while an internal Step Over stop is
+        // presented to the user. Do not re-publish it on every UI poll.
+        if (controller->state == DebugSessionState::Paused &&
+            (controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver ||
+             controller->stopReason == DebugStopReason::Breakpoint)) return true;
+        controller->error = DebugErrorCode::StaleStepOver;
+        setMessage(controller, "Rejected stale internal Step Over trap");
+        return false;
+    }
+    if (snapshot.breakpointTrap && controller->stepOver.active) {
+        if (controller->stepOver.temporaryInstalled &&
+            !removeStepOverBreakpoint(controller, backend, controller->stepOver)) {
+            controller->error = DebugErrorCode::StepOverFailed;
+            clearStepOver(controller, DebugStepOverStatus::Failed,
+                          "Step over cleanup failed after a user breakpoint");
+            return false;
+        }
+        controller->stepOver.temporaryInstalled = false;
+        appendEvent(controller, DebugEventKind::StepOverInterrupted, DebugSessionState::Paused,
+                    DebugStopReason::Breakpoint, "Step over interrupted by a user breakpoint");
+        clearStepOver(controller, DebugStepOverStatus::Cancelled,
+                      "Step over interrupted by a user breakpoint");
+    }
     if (snapshot.singleStepTrap &&
         snapshot.singleStepKind == static_cast<uint32_t>(HostedDebugSingleStepKind::UserSource)) {
+        if (controller->stepOver.active) {
+            if (!processStepOverSourceTrap(controller, backend, mapper, snapshot)) {
+                if (controller->error == DebugErrorCode::None) controller->error = DebugErrorCode::StepOverFailed;
+                return false;
+            }
+            return true;
+        }
         if (!processSourceStepTrap(controller, backend, mapper, snapshot)) {
             controller->error = DebugErrorCode::StaleSourceStep;
             setMessage(controller, "Unexpected user source-step event");
@@ -905,6 +1321,7 @@ bool DebugControllerRequestStop(DebugController* controller, const DebugBackend&
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
     clearSourceStep(controller, DebugSourceStepStatus::Cancelled, "Source step cancelled by stop request");
+    clearStepOver(controller, DebugStepOverStatus::Cancelled, "Step over cancelled by stop request");
     setMessage(controller, "Stop requested");
     appendEvent(controller, DebugEventKind::Stopped, controller->state, DebugStopReason::UserRequested, controller->lastMessage);
     return true;
@@ -1013,7 +1430,8 @@ bool DebugControllerCanContinue(const DebugController* controller) {
     if (!controller || !controller->active || controller->state != DebugSessionState::Paused ||
         !DebugRegisterContextIsValid(controller->stoppedContext) || !controller->capabilities.canContinue) return false;
     if (controller->stopReason == DebugStopReason::Step)
-        return controller->backendExecutionState == DebugBackendExecutionState::PausedAtSourceStep &&
+        return (controller->backendExecutionState == DebugBackendExecutionState::PausedAtSourceStep ||
+                controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver) &&
             controller->capabilities.canContinue;
     return controller->stopReason == DebugStopReason::Breakpoint &&
         controller->backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint;
@@ -1027,7 +1445,21 @@ bool DebugControllerCanStepInto(const DebugController* controller) {
     return (controller->stopReason == DebugStopReason::Breakpoint &&
             controller->backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint) ||
         (controller->stopReason == DebugStopReason::Step &&
-         controller->backendExecutionState == DebugBackendExecutionState::PausedAtSourceStep);
+         (controller->backendExecutionState == DebugBackendExecutionState::PausedAtSourceStep ||
+          controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver));
+}
+
+bool DebugControllerCanStepOver(const DebugController* controller) {
+    if (!controller || !controller->active || controller->state != DebugSessionState::Paused ||
+        !controller->capabilities.canStepOver || !DebugRegisterContextIsValid(controller->stoppedContext) ||
+        !controller->currentInstructionAddress.valid || !controller->currentLocation.relativePath[0] ||
+        controller->currentLocation.line == 0 || controller->sourceStep.active || controller->stepOver.active)
+        return false;
+    return (controller->stopReason == DebugStopReason::Breakpoint &&
+            controller->backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint) ||
+        (controller->stopReason == DebugStopReason::Step &&
+         (controller->backendExecutionState == DebugBackendExecutionState::PausedAtSourceStep ||
+          controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver));
 }
 
 bool DebugControllerStepInto(DebugController* controller, const DebugBackend& backend,
@@ -1094,6 +1526,86 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
     controller->backendExecutionState = DebugBackendExecutionState::UserSourceStepPending;
     clearStoppedContext(controller);
     setMessage(controller, "Source step instruction pending");
+    return true;
+}
+
+bool DebugControllerStepOver(DebugController* controller, const DebugBackend& backend,
+                             const DebugDwarfMapper* mapper, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !mapper || !DebugControllerCanStepOver(controller) ||
+        !DebugDwarfMapperIsReady(mapper) || !backend.readMemory || !backend.bindSoftwareBreakpoint ||
+        !backend.stepOverCall || !backend.debugCommand) {
+        if (error) *error = DebugErrorCode::CapabilityUnavailable;
+        return false;
+    }
+    if (controller->stoppedContext.sessionGeneration != controller->sessionGeneration ||
+        controller->stoppedContext.processId != controller->processId ||
+        controller->stoppedContext.nativeRuntimeId != controller->nativeRuntimeId ||
+        controller->stoppedContext.threadId != controller->currentThreadId ||
+        controller->stoppedContext.stopGeneration != controller->stopGeneration) {
+        controller->error = DebugErrorCode::StaleStopContext;
+        if (error) *error = controller->error;
+        return false;
+    }
+    DebugStepOverOperation operation = DebugStepOverOperation();
+    operation.active = true;
+    operation.status = DebugStepOverStatus::Active;
+    operation.mode = DebugStepOverMode::SourceSingleStep;
+    operation.sessionGeneration = controller->sessionGeneration;
+    operation.stopGeneration = controller->stopGeneration;
+    operation.processId = controller->processId;
+    operation.nativeRuntimeId = controller->nativeRuntimeId;
+    operation.threadId = controller->currentThreadId;
+    operation.startingAddress = controller->currentInstructionAddress.value;
+    operation.startingSourceLocation = controller->currentLocation;
+    operation.startingRsp = controller->stoppedContext.rsp;
+    operation.startingRbp = controller->stoppedContext.rbp;
+    operation.lastAddress = operation.startingAddress;
+    operation.lastSourceLocation = operation.startingSourceLocation;
+    operation.maxInstructionCount = kDebugMaxSourceStepInstructions;
+    operation.maxCallCount = kDebugMaxStepOverCalls;
+    const bool fromBreakpoint = controller->stopReason == DebugStopReason::Breakpoint;
+    if (fromBreakpoint) {
+        const int breakpointIndex = findBreakpoint(controller, controller->lastBreakpointId);
+        if (breakpointIndex < 0) {
+            if (error) *error = DebugErrorCode::StaleStopContext;
+            return false;
+        }
+        const DebugBreakpoint& breakpoint = controller->breakpoints[breakpointIndex];
+        operation.breakpointId = breakpoint.id;
+        operation.bindingId = breakpoint.backendBindingId;
+        operation.breakpointAddress = breakpoint.location.instructionAddress.value;
+        operation.reinstallBreakpoint = breakpoint.enabled;
+    }
+    controller->stepOver = operation;
+    appendEvent(controller, DebugEventKind::StepOverStarted, DebugSessionState::Stepping,
+                DebugStopReason::Step, "User step over requested");
+    uint8_t bytes[kDebugMaxInstructionBytes] = {};
+    uint32_t byteCount = 0;
+    DebugAmd64Instruction instruction = {};
+    if (!readStepOverInstruction(controller, backend, operation.startingAddress, bytes, &byteCount,
+                                 &instruction, error)) {
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Step over could not inspect the current instruction");
+        return false;
+    }
+    (void)byteCount;
+    if (instruction.kind == DebugAmd64InstructionKind::Call) {
+        if (!startStepOverCall(controller, backend, &controller->stepOver, controller->stoppedContext,
+                               operation.startingAddress, instruction.returnAddress, error)) {
+            clearStepOver(controller, DebugStepOverStatus::Failed, controller->lastMessage);
+            return false;
+        }
+        return true;
+    }
+    // Unsupported/unknown non-call encodings use the proven bounded source
+    // stepping engine. The call path is selected only after a safe decoder
+    // result, so F10 never invents a return address.
+    if (!startStepOverSourceInstruction(controller, backend, &controller->stepOver,
+                                        controller->stoppedContext, error)) {
+        clearStepOver(controller, DebugStepOverStatus::Failed, controller->lastMessage);
+        return false;
+    }
+    controller->error = DebugErrorCode::None;
     return true;
 }
 

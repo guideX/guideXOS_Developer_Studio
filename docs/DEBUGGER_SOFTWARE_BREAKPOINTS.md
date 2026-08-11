@@ -13,6 +13,22 @@ reinstalling the INT3 before deciding whether the next real single-step reaches
 a new DWARF source location. The breakpoint remains bound while stepping and a
 later real breakpoint still wins over Step Into.
 
+## Phase 6 internal return owners
+
+Step Over reuses this physical binding manager rather than introducing a second
+`INT3` subsystem. A temporary return breakpoint is a distinct high-range
+logical owner, while a user breakpoint remains a normal user owner. If both
+owners target the same address, one physical binding retains one original byte
+and both logical owners are reported. Removing the temporary owner leaves the
+user owner and `0xCC` installed; removing the final owner restores the original
+instruction.
+
+The internal owner is removed on a real return trap, user-breakpoint
+interruption, stale/failing command, process exit, Stop Debugging, and runtime
+teardown. Internal return traps are accepted only for the exact active
+Step-Over session, process, runtime, thread, stop generation, binding, and
+return address.
+
 ## Hosted execution model
 
 The Server loads the validated Native ELF image into an `ExecutableMemoryBlock` at its

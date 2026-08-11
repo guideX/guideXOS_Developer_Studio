@@ -82,13 +82,13 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
         HostedDebugResult debugResult = {};
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
                                               generation, outSnapshot->processId, outSnapshot->nativeRuntimeId,
-                                              0, 0, backend->runController.request.artifactSha256, 0, 0, false, &debugResult)) {
+                                              0, 0, backend->runController.request.artifactSha256, 0, 0, false, 0, 0, &debugResult)) {
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }
         if (debugResult.status == 3 && debugResult.trapKind == 1) {
             outSnapshot->state = DebugSessionState::Paused;
-            outSnapshot->stopReason = DebugStopReason::Breakpoint;
+            outSnapshot->stopReason = debugResult.internalBreakpointTrap ? DebugStopReason::Step : DebugStopReason::Breakpoint;
             outSnapshot->breakpointTrap = true;
             outSnapshot->threadId = debugResult.threadId;
             outSnapshot->instructionPointer = debugResult.instructionPointer;
@@ -99,7 +99,10 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->installedByte = debugResult.installedByte;
             outSnapshot->originalByteValid = debugResult.originalByteValid;
             outSnapshot->stopGeneration = debugResult.stopGeneration;
-            outSnapshot->executionState = DebugBackendExecutionState::PausedAtBreakpoint;
+            outSnapshot->executionState = debugResult.internalBreakpointTrap ?
+                DebugBackendExecutionState::PausedAtStepOver : DebugBackendExecutionState::PausedAtBreakpoint;
+            outSnapshot->internalBreakpointTrap = debugResult.internalBreakpointTrap;
+            outSnapshot->internalBreakpointId = debugResult.internalBreakpointId;
             outSnapshot->registerContext.valid = debugResult.registerContext.valid;
             outSnapshot->registerContext.architecture = static_cast<DebugArchitecture>(debugResult.registerContext.architecture);
             outSnapshot->registerContext.processId = debugResult.registerContext.processId;
@@ -125,7 +128,9 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.r13 = debugResult.registerContext.r13;
             outSnapshot->registerContext.r14 = debugResult.registerContext.r14;
             outSnapshot->registerContext.r15 = debugResult.registerContext.r15;
-            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Breakpoint trap observed");
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage),
+                      debugResult.internalBreakpointTrap ? "Step over return breakpoint observed" : "Breakpoint trap observed");
+            backend->internalTrapStopPending = debugResult.internalBreakpointTrap;
         } else if (debugResult.status == 3 && debugResult.trapKind == 2 &&
                    debugResult.singleStepKind == 2) {
             outSnapshot->state = DebugSessionState::Stepping;
@@ -209,7 +214,7 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::BindSoftwareBreakpoint,
                                           backend->runController.result.handle, sessionGeneration, processId,
                                           nativeRuntimeId, breakpoint.id, breakpoint.location.instructionAddress.value,
-                                          backend->runController.request.artifactSha256, 0, 0, false, &result)) {
+                                          backend->runController.request.artifactSha256, 0, 0, false, 0, 0, &result)) {
         copyText(outBinding->message, sizeof(outBinding->message), result.errorMessage[0] ? result.errorMessage : "software breakpoint bind failed");
         return true;
     }
@@ -222,25 +227,17 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     return true;
 }
 
-static bool debugCommandWithOptions(void* userData, HostedDebugCommand command, uint64_t handle,
-                         uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
-                         uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
-                         uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
-                         HostedDebugResult* outResult) {
-    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
-    return backend && backend->runService.debugCommand && backend->runService.debugCommand(
-        backend->runService.userData, command, handle, sessionGeneration, processId, nativeRuntimeId,
-        breakpointId, targetAddress, artifactSha256, threadId, stopGeneration, reinstallBreakpoint, outResult);
-}
-
 static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t handle,
                          uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
+                         uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
+                         uint64_t auxiliaryAddress, uint32_t readByteCount,
                          HostedDebugResult* outResult) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     return backend && backend->runService.debugCommand && backend->runService.debugCommand(
         backend->runService.userData, command, handle, sessionGeneration, processId, nativeRuntimeId,
-        breakpointId, targetAddress, artifactSha256, 0, 0, false, outResult);
+        breakpointId, targetAddress, artifactSha256, threadId, stopGeneration, reinstallBreakpoint,
+        auxiliaryAddress, readByteCount, outResult);
 }
 
 static bool continueExecution(void* userData, uint64_t sessionGeneration,
@@ -254,7 +251,7 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, reinstallBreakpoint, &result)) return false;
+                                          context.stopGeneration, reinstallBreakpoint, 0, 0, &result)) return false;
     return result.status == 6;
 }
 
@@ -265,13 +262,19 @@ static bool stepInstruction(void* userData, uint64_t sessionGeneration,
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
     HostedDebugResult result = {};
-    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepInstruction,
+    const HostedDebugCommand command = backend->internalTrapStopPending ?
+        HostedDebugCommand::StepInternalTrap : HostedDebugCommand::StepInstruction;
+    if (!backend->runService.debugCommand(backend->runService.userData, command,
                                           backend->runController.result.handle, sessionGeneration,
-                                          context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
+                                          context.processId, context.nativeRuntimeId,
+                                          backend->internalTrapStopPending ? 0 : breakpointId,
+                                          backend->internalTrapStopPending ? 0 : targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, reinstallBreakpoint, &result)) return false;
+                                          context.stopGeneration, backend->internalTrapStopPending ? false : reinstallBreakpoint,
+                                          0, 0, &result)) return false;
     if (result.status != 6 || result.singleStepKind != 2) return false;
     backend->userStepStopPending = false;
+    backend->internalTrapStopPending = false;
     return true;
 }
 
@@ -280,13 +283,51 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
     HostedDebugResult result = {};
-    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ResumeStep,
+    const HostedDebugCommand command = backend->internalTrapStopPending ?
+        HostedDebugCommand::ResumeInternalTrap : HostedDebugCommand::ResumeStep;
+    if (!backend->runService.debugCommand(backend->runService.userData, command,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, 0, 0,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, false, &result)) return false;
+                                          context.stopGeneration, false, context.rip, 0, &result)) return false;
     if (result.status != 1) return false;
     backend->userStepStopPending = false;
+    backend->internalTrapStopPending = false;
+    return true;
+}
+
+static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t processId,
+                       uint64_t nativeRuntimeId, uint64_t address, uint8_t* bytes,
+                       uint32_t requested, uint32_t* returned) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (returned) *returned = 0;
+    if (!backend || !backend->runService.debugCommand || !bytes || requested == 0 || requested > kDebugMaxInstructionBytes)
+        return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ReadMemory,
+                                          backend->runController.result.handle, sessionGeneration, processId,
+                                          nativeRuntimeId, 0, address, backend->runController.request.artifactSha256,
+                                          0, 0, false, 0, requested, &result) || result.status != 1 ||
+        result.byteCount == 0 || result.byteCount > requested) return false;
+    for (uint32_t i = 0; i < result.byteCount; ++i) bytes[i] = result.bytes[i];
+    if (returned) *returned = result.byteCount;
+    return true;
+}
+
+static bool stepOverCall(void* userData, uint64_t sessionGeneration,
+                         const DebugRegisterContext& context, uint64_t callAddress,
+                         uint64_t returnAddress, uint64_t temporaryBreakpointId) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !backend->runService.debugCommand || !context.valid) return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepOverCall,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          context.processId, context.nativeRuntimeId, temporaryBreakpointId,
+                                          callAddress, backend->runController.request.artifactSha256,
+                                          context.threadId, context.stopGeneration, false, returnAddress, 0, &result)) return false;
+    if (result.status != 1) return false;
+    backend->userStepStopPending = false;
+    backend->internalTrapStopPending = false;
     return true;
 }
 
@@ -316,10 +357,10 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.capabilities.canSetInstructionBreakpoint = true;
     result.capabilities.canSetSourceBreakpoint = true;
     result.capabilities.canStepInto = true;
-    result.capabilities.canStepOver = false;
+    result.capabilities.canStepOver = true;
     result.capabilities.canStepOut = false;
     result.capabilities.canReadRegisters = true;
-    result.capabilities.canReadMemory = false;
+    result.capabilities.canReadMemory = true;
     result.capabilities.canWriteMemory = false;
     result.capabilities.canEnumerateThreads = false;
     result.capabilities.canReadCallStack = false;
@@ -339,6 +380,8 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.resumeExecution = resumeExecution;
     result.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     result.debugCommand = debugCommand;
+    result.readMemory = readMemory;
+    result.stepOverCall = stepOverCall;
     return result;
 }
 

@@ -8,7 +8,8 @@ process/runtime/thread identity, bounded `INT3` binding, real breakpoint stops,
 copied register context, and correct breakpoint continuation through a real
 processor single-step. The Phase 4 runtime proof established Level B + Continue
 for this bounded source-breakpoint path; Phase 5 adds Level B + Step Into. This
-is not a claim of general-purpose debugger support.
+is not a claim of general-purpose debugger support. Phase 6 adds Level B Step
+Over through real call-aware execution and temporary return breakpoints.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend launches the existing temporary Native ELF development
@@ -37,7 +38,9 @@ The hosted Native ELF backend publishes these capabilities:
 - Continue: supported from a real owned paused software-breakpoint stop and a
   completed source-step stop.
 - Step Into: supported through real AMD64 TF single stepping and DWARF source
-  mapping. Step Over and Step Out remain unavailable.
+  mapping.
+- Step Over: supported through bounded AMD64 call decoding, real call execution,
+  and an internal return `INT3` owner. Step Out remains unavailable.
 - Source and instruction breakpoints: source breakpoints are supported through
   DWARF mapping and the hosted software-breakpoint binder; instruction-level
   editing remains outside the UI contract.
@@ -210,6 +213,14 @@ depending on target exit timing.
 The Phase 5 UI variant adds `-StepInto`: after the paused marker it sends F11
 and requires `STEPPING`, `PAUSED_STEP`, the hosted user source-step acceptance,
 and a real `EXCEPTION_SINGLE_STEP` diagnostic.
+
+Phase 6 adds F10. A recognized `E8 rel32` or `FF /2` call receives a temporary
+internal return breakpoint and executes the callee normally; the next source
+location is selected from the real return trap and DWARF reverse mapping. A
+non-call instruction falls back to the existing real source-step engine. The
+operation is bounded and cleans up its temporary logical owner on completion,
+interruption, stale identity, failure, process exit, and teardown. See
+[DEBUGGER_STEP_OVER.md](DEBUGGER_STEP_OVER.md).
 
 Deferred work includes additional instruction-breakpoint workflows, DWARF
 expressions, locals, stack unwinding, watches,
