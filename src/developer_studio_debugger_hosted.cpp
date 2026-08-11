@@ -126,11 +126,69 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.r14 = debugResult.registerContext.r14;
             outSnapshot->registerContext.r15 = debugResult.registerContext.r15;
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Breakpoint trap observed");
+        } else if (debugResult.status == 3 && debugResult.trapKind == 2 &&
+                   debugResult.singleStepKind == 2) {
+            outSnapshot->state = DebugSessionState::Stepping;
+            outSnapshot->stopReason = DebugStopReason::None;
+            outSnapshot->singleStepTrap = true;
+            outSnapshot->singleStepKind = 2;
+            outSnapshot->threadId = debugResult.threadId;
+            outSnapshot->instructionPointer = debugResult.instructionPointer;
+            outSnapshot->targetAddress.valid = debugResult.targetAddress != 0;
+            outSnapshot->targetAddress.value = debugResult.targetAddress;
+            outSnapshot->breakpointBindingId = debugResult.bindingId;
+            outSnapshot->executionState = DebugBackendExecutionState::UserSourceStepPending;
+            outSnapshot->registerContext.valid = debugResult.registerContext.valid;
+            outSnapshot->registerContext.architecture = static_cast<DebugArchitecture>(debugResult.registerContext.architecture);
+            outSnapshot->registerContext.processId = debugResult.registerContext.processId;
+            outSnapshot->registerContext.nativeRuntimeId = debugResult.registerContext.nativeRuntimeId;
+            outSnapshot->registerContext.threadId = debugResult.registerContext.threadId;
+            outSnapshot->registerContext.sessionGeneration = debugResult.registerContext.sessionGeneration;
+            outSnapshot->registerContext.stopGeneration = debugResult.registerContext.stopGeneration;
+            outSnapshot->registerContext.rip = debugResult.registerContext.rip;
+            outSnapshot->registerContext.rflags = debugResult.registerContext.rflags;
+            outSnapshot->registerContext.rsp = debugResult.registerContext.rsp;
+            outSnapshot->registerContext.rbp = debugResult.registerContext.rbp;
+            outSnapshot->registerContext.rax = debugResult.registerContext.rax;
+            outSnapshot->registerContext.rbx = debugResult.registerContext.rbx;
+            outSnapshot->registerContext.rcx = debugResult.registerContext.rcx;
+            outSnapshot->registerContext.rdx = debugResult.registerContext.rdx;
+            outSnapshot->registerContext.rsi = debugResult.registerContext.rsi;
+            outSnapshot->registerContext.rdi = debugResult.registerContext.rdi;
+            outSnapshot->registerContext.r8 = debugResult.registerContext.r8;
+            outSnapshot->registerContext.r9 = debugResult.registerContext.r9;
+            outSnapshot->registerContext.r10 = debugResult.registerContext.r10;
+            outSnapshot->registerContext.r11 = debugResult.registerContext.r11;
+            outSnapshot->registerContext.r12 = debugResult.registerContext.r12;
+            outSnapshot->registerContext.r13 = debugResult.registerContext.r13;
+            outSnapshot->registerContext.r14 = debugResult.registerContext.r14;
+            outSnapshot->registerContext.r15 = debugResult.registerContext.r15;
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "User source-step EXCEPTION_SINGLE_STEP observed");
+            backend->userStepStopPending = true;
+            backend->userStepStopSnapshot = *outSnapshot;
         } else if (debugResult.status == 3 && debugResult.trapKind == 2) {
             outSnapshot->state = DebugSessionState::Running;
             outSnapshot->stopReason = DebugStopReason::None;
             outSnapshot->executionState = DebugBackendExecutionState::Running;
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Internal single-step complete; breakpoint rebound");
+        } else if (debugResult.status == 6 && debugResult.singleStepKind == 2 && backend->userStepStopPending) {
+            *outSnapshot = backend->userStepStopSnapshot;
+            outSnapshot->sessionGeneration = generation;
+            outSnapshot->state = DebugSessionState::Paused;
+            outSnapshot->stopReason = DebugStopReason::Step;
+            outSnapshot->executionState = DebugBackendExecutionState::PausedAtSourceStep;
+            outSnapshot->singleStepTrap = false;
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "User source-step stop is paused");
+        } else if (debugResult.status == 6 && debugResult.singleStepKind == 2) {
+            outSnapshot->state = DebugSessionState::Stepping;
+            outSnapshot->stopReason = DebugStopReason::None;
+            outSnapshot->executionState = DebugBackendExecutionState::UserSourceStepPending;
+            outSnapshot->singleStepKind = 2;
+            outSnapshot->threadId = debugResult.threadId;
+            outSnapshot->targetAddress.valid = debugResult.targetAddress != 0;
+            outSnapshot->targetAddress.value = debugResult.targetAddress;
+            outSnapshot->breakpointBindingId = debugResult.bindingId;
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "User source-step instruction pending");
         } else if (debugResult.status == 6) {
             outSnapshot->state = DebugSessionState::Paused;
             outSnapshot->stopReason = DebugStopReason::Breakpoint;
@@ -200,6 +258,38 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
     return result.status == 6;
 }
 
+static bool stepInstruction(void* userData, uint64_t sessionGeneration,
+                            const DebugRegisterContext& context, uint64_t breakpointId,
+                            uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint) {
+    (void)bindingId;
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !backend->runService.debugCommand || !context.valid) return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepInstruction,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
+                                          backend->runController.request.artifactSha256, context.threadId,
+                                          context.stopGeneration, reinstallBreakpoint, &result)) return false;
+    if (result.status != 6 || result.singleStepKind != 2) return false;
+    backend->userStepStopPending = false;
+    return true;
+}
+
+static bool resumeExecution(void* userData, uint64_t sessionGeneration,
+                            const DebugRegisterContext& context) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !backend->runService.debugCommand || !context.valid) return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ResumeStep,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          context.processId, context.nativeRuntimeId, 0, 0,
+                                          backend->runController.request.artifactSha256, context.threadId,
+                                          context.stopGeneration, false, &result)) return false;
+    if (result.status != 1) return false;
+    backend->userStepStopPending = false;
+    return true;
+}
+
 static bool stop(void* userData, uint64_t generation) {
     (void)generation;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
@@ -225,7 +315,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.capabilities.canContinue = true;
     result.capabilities.canSetInstructionBreakpoint = true;
     result.capabilities.canSetSourceBreakpoint = true;
-    result.capabilities.canStepInto = false;
+    result.capabilities.canStepInto = true;
     result.capabilities.canStepOver = false;
     result.capabilities.canStepOut = false;
     result.capabilities.canReadRegisters = true;
@@ -245,6 +335,8 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.stop = stop;
     result.pause = nullptr;
     result.continueExecution = continueExecution;
+    result.stepInstruction = stepInstruction;
+    result.resumeExecution = resumeExecution;
     result.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     result.debugCommand = debugCommand;
     return result;

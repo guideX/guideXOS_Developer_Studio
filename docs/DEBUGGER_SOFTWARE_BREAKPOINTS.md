@@ -4,6 +4,15 @@ Phase 3 adds the first hosted Native ELF software-breakpoint path. It is intenti
 limited to the current AMD64/ELF64 fixed-address `ET_EXEC` runtime and is not a general
 purpose process debugger.
 
+## Phase 5 interaction
+
+The Phase 4 internal breakpoint-recovery single step is distinct from the
+user-visible source-step operation. F11 may begin at a software breakpoint by
+using the same byte-restore/RIP/TF primitive for the first instruction, then
+reinstalling the INT3 before deciding whether the next real single-step reaches
+a new DWARF source location. The breakpoint remains bound while stepping and a
+later real breakpoint still wins over Step Into.
+
 ## Hosted execution model
 
 The Server loads the validated Native ELF image into an `ExecutableMemoryBlock` at its

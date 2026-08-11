@@ -70,7 +70,15 @@ enum class HostedDebugCommand {
     Poll = 3,
     RestoreAll = 4,
     CancelExecution = 5,
-    ContinueBreakpoint = 6
+    ContinueBreakpoint = 6,
+    StepInstruction = 7,
+    ResumeStep = 8
+};
+
+enum class HostedDebugSingleStepKind {
+    None = 0,
+    InternalBreakpoint = 1,
+    UserSource = 2
 };
 
 struct HostedDebugRegisterSnapshot {
@@ -117,6 +125,7 @@ struct HostedDebugResult {
     uint32_t bindingCount = 0;
     uint64_t stopGeneration = 0;
     uint32_t executionState = 0;
+    uint32_t singleStepKind = 0;
     uint64_t rflagsBeforeStep = 0;
     uint64_t rflagsWithTrapFlag = 0;
     uint64_t rflagsAfterTrapFlagClear = 0;

@@ -6,7 +6,8 @@ param(
     [int]$DebugWaitSeconds = 120,
     [int]$MaxRuntimeSeconds = 240,
     [switch]$DiagnosticOnly,
-    [switch]$ContinueBreakpoint
+    [switch]$ContinueBreakpoint,
+    [switch]$StepInto
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,6 +61,7 @@ function Get-Key([char]$Character, [int]$Modifiers) {
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in Phase 3B fixture exists"
+Assert-True (-not ($ContinueBreakpoint -and $StepInto)) "debugger smoke mode is unambiguous"
 
 $parts = New-Object 'System.Collections.Generic.List[string]'
 Add-ServerLine $parts 'gui.start'
@@ -97,6 +99,10 @@ if ($ContinueBreakpoint) {
     # the breakpointed instruction, so the smoke can observe Running without
     # relying on process exit to imply successful continuation.
     Add-Key $parts 116 0 $true
+    Add-Delay $parts 20
+} elseif ($StepInto) {
+    # F11 begins the real user source-step operation from the breakpoint stop.
+    Add-Key $parts 122 0 $true
     Add-Delay $parts 20
 }
 Add-ServerLine $parts 'nativeapp.processes'
@@ -194,6 +200,17 @@ try {
                      $text.Contains('[NativeAppDebugger] breakpoint continuation accepted') -and
                      $text.Contains('EXCEPTION_SINGLE_STEP') -and
                      $text.Contains('rebound=true')) "F5 continues through a real single-step and rebinds the breakpoint"
+    } elseif ($StepInto) {
+        $stepEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING') -and
+                        $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_STEP') -and
+                        $text.Contains('[NativeAppDebugger] user source-step accepted') -and
+                        $text.Contains('EXCEPTION_SINGLE_STEP') -and
+                        $text.Contains('Debug: step into')
+        if (-not $stepEvidence) {
+            Write-Host 'Captured hosted Step Into diagnostics:'
+            @($text -split "`r?`n" | Where-Object { $_ -match 'F11|step|Step|STEPPING|PAUSED_STEP|EXCEPTION_SINGLE_STEP|Debug:|debug_state|source_navigation|execution_marker' } | Select-Object -Last 260)
+        }
+        Assert-True $stepEvidence "F11 performs a real hosted source-level Step Into"
     }
     Assert-True ($text -match 'target-created.*processId=\d+.*nativeRuntimeId=\d+.*gate=closed') "hosted service publishes exact target identity before release"
     if (-not $DiagnosticOnly -and -not $ContinueBreakpoint) {
@@ -211,7 +228,8 @@ try {
         Write-Host "INFO: Continue teardown request was not asserted because compositor focus is not deterministic after the target creates its window."
     }
     Assert-True ($process.ExitCode -eq 0) "hosted Server exits cleanly after the debugger proof"
-    Write-Host 'Developer Studio Debugger Phase 3B end-to-end smoke PASS'
+    if ($StepInto) { Write-Host 'Developer Studio Debugger Phase 5 end-to-end smoke PASS' }
+    else { Write-Host 'Developer Studio Debugger Phase 3B end-to-end smoke PASS' }
 } finally {
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
     if ($process) { $process.Dispose() }

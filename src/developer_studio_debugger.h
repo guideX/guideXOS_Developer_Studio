@@ -13,6 +13,7 @@ static const uint32_t kDebugMaxAbiBytes = 64;
 static const uint32_t kDebugMaxArchitectureBytes = 32;
 static const uint32_t kDebugMaxArgumentsBytes = 256;
 static const uint32_t kDebugMaxMappedAddresses = 8;
+static const uint32_t kDebugMaxSourceStepInstructions = 1024;
 
 enum class DebugArchitecture {
     Unknown = 0,
@@ -28,7 +29,8 @@ enum class DebugSessionState {
     Paused,
     Stopping,
     Exited,
-    Failed
+    Failed,
+    Stepping
 };
 
 enum class DebugErrorCode {
@@ -74,7 +76,13 @@ enum class DebugErrorCode {
     TargetResumeFailed,
     SingleStepNotObserved,
     BreakpointReinstallFailed,
-    TrapFlagClearFailed
+    TrapFlagClearFailed,
+    SourceStepUnavailable,
+    SourceStepLimitExceeded,
+    SourceStepFailed,
+    StaleSourceStep,
+    WrongStepThread,
+    StepNotObserved
 };
 
 enum class DebugBreakpointState {
@@ -101,7 +109,8 @@ enum class DebugStopReason {
     Exception,
     Signal,
     EntryPoint,
-    Unknown
+    Unknown,
+    Step
 };
 
 enum class DebugBackendExecutionState {
@@ -109,7 +118,9 @@ enum class DebugBackendExecutionState {
     Running,
     PausedAtBreakpoint,
     PreparingBreakpointResume,
-    SingleStepPending
+    SingleStepPending,
+    UserSourceStepPending,
+    PausedAtSourceStep
 };
 
 enum class DebugEventKind {
@@ -130,7 +141,19 @@ enum class DebugEventKind {
     UnexpectedTrap,
     ContinueRequested,
     SingleStepComplete,
-    BreakpointRebound
+    BreakpointRebound,
+    StepRequested,
+    StepComplete,
+    SourceStepLimitExceeded
+};
+
+enum class DebugSourceStepStatus {
+    None = 0,
+    Active,
+    Completed,
+    LimitExceeded,
+    Cancelled,
+    Failed
 };
 
 struct DebugCapabilities {
@@ -169,6 +192,28 @@ struct DebugSourceLocation {
     DebugMappingState mapping;
     uint64_t projectGeneration;
     uint32_t sourceGeneration;
+};
+
+struct DebugSourceStepOperation {
+    bool active;
+    DebugSourceStepStatus status;
+    uint16_t reserved;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    uint64_t processId;
+    uint64_t threadId;
+    uint64_t startingAddress;
+    DebugSourceLocation startingSourceLocation;
+    uint32_t startingSequence;
+    uint32_t stepCount;
+    uint32_t maxStepCount;
+    uint64_t lastAddress;
+    DebugSourceLocation lastSourceLocation;
+    uint64_t breakpointId;
+    uint64_t bindingId;
+    uint64_t breakpointAddress;
+    bool reinstallBreakpoint;
+    char reason[kDebugMaxMessageBytes];
 };
 
 struct DebugTarget {
@@ -276,6 +321,8 @@ struct DebugBackendSnapshot {
     bool originalByteValid;
     DebugBackendExecutionState executionState;
     uint64_t stopGeneration;
+    bool singleStepTrap;
+    uint32_t singleStepKind;
     DebugRegisterContext registerContext;
 };
 
@@ -308,6 +355,12 @@ typedef bool (*DebugBackendContinueFn)(void* userData, uint64_t sessionGeneratio
                                        const DebugRegisterContext& context,
                                        uint64_t breakpointId, uint64_t bindingId,
                                        uint64_t targetAddress, bool reinstallBreakpoint);
+typedef bool (*DebugBackendStepFn)(void* userData, uint64_t sessionGeneration,
+                                   const DebugRegisterContext& context,
+                                   uint64_t breakpointId, uint64_t bindingId,
+                                   uint64_t targetAddress, bool reinstallBreakpoint);
+typedef bool (*DebugBackendResumeFn)(void* userData, uint64_t sessionGeneration,
+                                     const DebugRegisterContext& context);
 
 struct DebugBackend {
     void* userData;
@@ -318,6 +371,8 @@ struct DebugBackend {
     DebugBackendStopFn stop;
     DebugBackendPauseFn pause;
     DebugBackendContinueFn continueExecution;
+    DebugBackendStepFn stepInstruction;
+    DebugBackendResumeFn resumeExecution;
     DebugBackendBindFn bindSoftwareBreakpoint;
     DebugBackendCommandFn debugCommand;
 };
@@ -357,6 +412,7 @@ struct DebugController {
     uint64_t currentThreadId;
     uint64_t reportedInstructionPointer;
     uint64_t lastBreakpointId;
+    DebugSourceStepOperation sourceStep;
     DebugBreakpoint breakpoints[kDebugMaxBreakpoints];
     uint32_t breakpointCount;
     DebugEvent events[kDebugMaxEvents];
@@ -384,18 +440,22 @@ bool DebugControllerSetProjectContext(DebugController* controller, const char* p
 void DebugControllerClearBreakpoints(DebugController* controller);
 bool DebugControllerStart(DebugController* controller, const DebugBackend& backend,
                           const DebugTarget& target, DebugErrorCode* error);
-bool DebugControllerPoll(DebugController* controller, const DebugBackend& backend);
+bool DebugControllerPoll(DebugController* controller, const DebugBackend& backend,
+                         const DebugDwarfMapper* mapper = nullptr);
 bool DebugControllerRequestStop(DebugController* controller, const DebugBackend& backend,
                                 DebugErrorCode* error);
 bool DebugControllerPause(DebugController* controller, const DebugBackend& backend,
                           DebugErrorCode* error);
 bool DebugControllerContinue(DebugController* controller, const DebugBackend& backend,
                              DebugErrorCode* error);
+bool DebugControllerStepInto(DebugController* controller, const DebugBackend& backend,
+                             const DebugDwarfMapper* mapper, DebugErrorCode* error);
 bool DebugControllerIsActive(const DebugController* controller);
 bool DebugControllerCanStart(const DebugController* controller);
 bool DebugControllerCanStop(const DebugController* controller);
 bool DebugControllerCanPause(const DebugController* controller);
 bool DebugControllerCanContinue(const DebugController* controller);
+bool DebugControllerCanStepInto(const DebugController* controller);
 bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionGeneration,
                                   const DebugBackendSnapshot& snapshot);
 bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugDwarfMapper* mapper,

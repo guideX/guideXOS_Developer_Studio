@@ -9,6 +9,14 @@ request/snapshot offsets remain unchanged; Phase 4 appends the Continue command,
 pending status, thread/stop-generation identity, register context, and
 RFLAGS audit fields. The ABI layout test covers the resulting fixed sizes.
 
+## Phase 5 source stepping
+
+Phase 5 adds a separate user source-step command and pending mode. The private
+breakpoint continuation step remains internal and is never reported as F11
+completion. F11 uses real processor TF single stepping, DWARF-based same-line
+suppression, and returns to `Paused / Step`; F5 can resume the stopped
+source-step context. Step Over and Step Out remain future milestones.
+
 ## Stop context ownership
 
 At a real `EXCEPTION_BREAKPOINT`, the Server owns the borrowed Windows
@@ -72,10 +80,10 @@ Running or when the process exits.
 Supported commands:
 
 * Start Debugging — hosted-runtime proven.
-* Continue/F5 — hosted-runtime proven from an owned breakpoint stop.
+* Continue/F5 — hosted-runtime proven from an owned breakpoint or source-step stop.
 * Stop Debugging — hosted-runtime proven.
 * Pause — disabled.
-* Step Into, Step Over, Step Out — disabled.
+* Step Into/F11 — hosted-runtime proven through the separate user source-step path.
+* Step Over, Step Out — disabled.
 
-The next milestone is **Debugger Phase 5 — user-visible Step Into and
-source-level single stepping**.
+The next milestone is **Debugger Phase 6 — Step Over and frame-aware stepping**.

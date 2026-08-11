@@ -8,6 +8,8 @@ namespace developer_studio {
 struct HostedDebugBackend {
     HostedDevelopmentRunService runService;
     RunController runController;
+    bool userStepStopPending;
+    DebugBackendSnapshot userStepStopSnapshot;
 };
 
 void HostedDebugBackendInit(HostedDebugBackend* backend,

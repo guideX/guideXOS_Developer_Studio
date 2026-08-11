@@ -34,6 +34,7 @@ $RelationshipTest = Join-Path $ServerRoot "tmp\developer-studio-relationship-tes
 $OwnershipTest = Join-Path $ServerRoot "tmp\developer-studio-ownership-test.exe"
 $TypesTest = Join-Path $ServerRoot "tmp\developer-studio-types-test.exe"
 $DebuggerTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-test.exe"
+$DebuggerStepTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-step-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -206,6 +207,14 @@ try {
     & $DebuggerTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio debugger foundation model test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_hosted.cpp", "tests\debugger_step_test.cpp",
+        "-o", $DebuggerStepTest
+    )
+    & $DebuggerStepTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio source-step model test failed with exit code $LASTEXITCODE" }
+
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
@@ -299,5 +308,6 @@ try {
     if (Test-Path -LiteralPath $OwnershipTest) { Remove-Item -LiteralPath $OwnershipTest -Force }
     if (Test-Path -LiteralPath $TypesTest) { Remove-Item -LiteralPath $TypesTest -Force }
     if (Test-Path -LiteralPath $DebuggerTest) { Remove-Item -LiteralPath $DebuggerTest -Force }
+    if (Test-Path -LiteralPath $DebuggerStepTest) { Remove-Item -LiteralPath $DebuggerStepTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

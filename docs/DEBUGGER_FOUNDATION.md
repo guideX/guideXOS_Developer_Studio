@@ -1,14 +1,14 @@
-# Debugger Foundation — Phase 4
+# Debugger Foundation — Phase 5
 
-## Phase 4 status
+## Phase 5 status
 
 Hosted Native ELF software-breakpoint plumbing is implemented for the current AMD64
 fixed-address runtime, including debug-controlled launch gating, exact
 process/runtime/thread identity, bounded `INT3` binding, real breakpoint stops,
 copied register context, and correct breakpoint continuation through a real
-processor single-step. The Phase 4 runtime proof establishes Level B + Continue
-for this bounded source-breakpoint path; it is not a claim of general-purpose
-debugger support.
+processor single-step. The Phase 4 runtime proof established Level B + Continue
+for this bounded source-breakpoint path; Phase 5 adds Level B + Step Into. This
+is not a claim of general-purpose debugger support.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend launches the existing temporary Native ELF development
@@ -16,7 +16,8 @@ deployment, records its runtime identity, observes running/exit state, requests
 an owned-window stop, and performs the separately bounded AMD64 breakpoint
 continuation path. The supervision-only subset is Level A. Phase 3B adds a
 separately bounded Level B path for verified software breakpoints and owned
-breakpoint pauses; Phase 4 adds Level B + Continue.
+breakpoint pauses; Phase 4 adds Level B + Continue; Phase 5 adds the separate
+DWARF/TF source-step operation.
 
 ## Scope and proven level
 
@@ -33,8 +34,10 @@ The hosted Native ELF backend publishes these capabilities:
 - Stop: supported through the owner-bound `development_run_request_close`
   path and subsequent normal polling/cleanup.
 - Pause: unavailable.
-- Continue: supported only from a real owned paused software-breakpoint stop.
-- Step Into, Step Over, Step Out: unavailable.
+- Continue: supported from a real owned paused software-breakpoint stop and a
+  completed source-step stop.
+- Step Into: supported through real AMD64 TF single stepping and DWARF source
+  mapping. Step Over and Step Out remain unavailable.
 - Source and instruction breakpoints: source breakpoints are supported through
   DWARF mapping and the hosted software-breakpoint binder; instruction-level
   editing remains outside the UI contract.
@@ -46,6 +49,10 @@ The UI keeps ordinary Run on F5. F9 toggles the current editor line because it
 was not occupied by an existing Developer Studio shortcut. Debug commands are
 available from the Debug menu. Unsupported commands remain visibly unavailable
 and do not create fake paused or breakpoint-hit states.
+
+Phase 5 adds `F11` Step Into. It is a bounded source-step operation driven by
+real processor TF single-step events and the existing DWARF mapper; it is not a
+line-number or editor-caret simulation. See [DEBUGGER_STEPPING.md](DEBUGGER_STEPPING.md).
 
 ## Runtime capability audit
 
@@ -200,8 +207,12 @@ instruction-semantics proof; the UI variant uses the checked-in fixture's
 window loop so the post-Continue Running state can be observed without
 depending on target exit timing.
 
-Deferred work includes additional instruction-breakpoint workflows, user-visible
-source stepping, DWARF expressions, locals, stack unwinding, watches,
+The Phase 5 UI variant adds `-StepInto`: after the paused marker it sends F11
+and requires `STEPPING`, `PAUSED_STEP`, the hosted user source-step acceptance,
+and a real `EXCEPTION_SINGLE_STEP` diagnostic.
+
+Deferred work includes additional instruction-breakpoint workflows, DWARF
+expressions, locals, stack unwinding, watches,
 memory/register editing, conditional/data breakpoints, attach/remote/multiple
 process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
 bare-metal trap implementation.

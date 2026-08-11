@@ -1,5 +1,14 @@
 # Debugger Phase 2 — DWARF / Source-Line Mapping
 
+## Phase 5 source-step lookup
+
+Source-level Step Into compares canonical project-relative source paths and
+line numbers. Columns remain metadata and do not create separate visible stops.
+Address lookup honors DWARF line-program sequence boundaries, so a row range is
+never carried across `DW_LNE_end_sequence`. Unmapped instructions are stepped
+through under the bounded source-step policy and do not receive fabricated
+source locations. See [DEBUGGER_STEPPING.md](DEBUGGER_STEPPING.md).
+
 ## Phase 3 integration
 
 Phase 2 source-to-address mappings now feed the hosted software-breakpoint binder. A
