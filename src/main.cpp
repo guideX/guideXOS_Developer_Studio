@@ -934,6 +934,7 @@ static void pollDebug(gx_app_context* ctx);
 static void requestDebug(gx_app_context* ctx);
 static void requestDebugStepInto(gx_app_context* ctx);
 static void requestDebugStepOver(gx_app_context* ctx);
+static void requestDebugStepOut(gx_app_context* ctx);
 static void requestDebugStop(gx_app_context* ctx);
 static bool toggleBreakpointAtCaret(gx_app_context* ctx);
 static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y);
@@ -3652,6 +3653,22 @@ static void requestDebugStepOver(gx_app_context* ctx) {
         return;
     }
     reportDebugMessage(ctx, "Debug: step over");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
+}
+
+static void requestDebugStepOut(gx_app_context* ctx) {
+    if (!DebugControllerCanStepOut(&g_debugController)) {
+        if (DebugControllerIsActive(&g_debugController)) writeStudioOutput("Debug: Step Out unavailable");
+        return;
+    }
+    DebugErrorCode error = DebugErrorCode::None;
+    if (!DebugControllerStepOut(&g_debugController, g_debugBackend, &g_debugMapper, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug step out failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        return;
+    }
+    reportDebugMessage(ctx, "Debug: step out");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
 }
 
@@ -6457,7 +6474,8 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 220, 376, DebugControllerCanContinue(&g_debugController) ? "Continue" : "Continue unavailable");
         drawText(ctx, 220, 400, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into unavailable");
         drawText(ctx, 220, 424, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over unavailable");
-        drawText(ctx, 220, 448, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
+        drawText(ctx, 220, 448, DebugControllerCanStepOut(&g_debugController) ? "Step Out (Shift+F11)" : "Step Out unavailable");
+        drawText(ctx, 220, 472, g_debugController.capabilities.canSetSourceBreakpoint ? "Source breakpoints" : "Source breakpoints unavailable");
         drawText(ctx, 100, 428, "Debug info:");
         copyText(g_textScratch, sizeof(g_textScratch), g_debugMapper.state == guidexos::developer_studio::DebugDwarfMapperState::Empty ? "(none)" : DebugDwarfMapperStateName(g_debugMapper.state));
         if (g_debugMapper.truncated) appendText(g_textScratch, sizeof(g_textScratch), " (truncated)");
@@ -6858,17 +6876,18 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 312, 116, "Request Project Close");
     }
     if (g_debugMenuOpen) {
-        drawPanel(ctx, { 580, 42, 360, 244 }, 0x34496Au);
+        drawPanel(ctx, { 580, 42, 360, 288 }, 0x34496Au);
         drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
         drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
         drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
         drawText(ctx, 592, 130, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over (unavailable)");
-        drawText(ctx, 592, 152, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
-        drawText(ctx, 592, 174, "Stop Debugging");
-        drawText(ctx, 592, 196, "Toggle Breakpoint (F9)");
-        drawText(ctx, 592, 218, "Breakpoints");
-        drawText(ctx, 592, 240, "Debug Session");
-        drawText(ctx, 592, 262, "Call Stack");
+        drawText(ctx, 592, 152, DebugControllerCanStepOut(&g_debugController) ? "Step Out (Shift+F11)" : "Step Out (unavailable)");
+        drawText(ctx, 592, 174, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
+        drawText(ctx, 592, 196, "Stop Debugging");
+        drawText(ctx, 592, 218, "Toggle Breakpoint (F9)");
+        drawText(ctx, 592, 240, "Breakpoints");
+        drawText(ctx, 592, 262, "Debug Session");
+        drawText(ctx, 592, 284, "Call Stack");
     }
     drawModal(ctx);
 }
@@ -7703,6 +7722,10 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         requestDebugStepOver(ctx);
         return;
     }
+    if ((modifiers & GX_KEY_MOD_SHIFT) && !(modifiers & (GX_KEY_MOD_CTRL | GX_KEY_MOD_ALT)) && keyCode == 122) {
+        requestDebugStepOut(ctx);
+        return;
+    }
     if (keyCode == 122) {
         requestDebugStepInto(ctx);
         return;
@@ -8240,7 +8263,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
-    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 286) {
+    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 330) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
@@ -8253,14 +8276,15 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             }
         } else if (row == 2) requestDebugStepInto(ctx);
         else if (row == 3) requestDebugStepOver(ctx);
-        else if (row == 4) {
+        else if (row == 4) requestDebugStepOut(ctx);
+        else if (row == 5) {
             DebugErrorCode error = DebugErrorCode::None;
             if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Pause unavailable: backend capability is false");
-        } else if (row == 5) requestDebugStop(ctx);
-        else if (row == 6) toggleBreakpointAtCaret(ctx);
-        else if (row == 7) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
-        else if (row == 8) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
-        else if (row == 9) { g_debugPanelTab = 2; g_debugPanelOpen = true; g_editorFocused = false; }
+        } else if (row == 6) requestDebugStop(ctx);
+        else if (row == 7) toggleBreakpointAtCaret(ctx);
+        else if (row == 8) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 9) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 10) { g_debugPanelTab = 2; g_debugPanelOpen = true; g_editorFocused = false; }
         g_debugMenuOpen = false;
         drawShell(ctx);
         return;

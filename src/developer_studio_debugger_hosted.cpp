@@ -105,6 +105,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
                 DebugBackendExecutionState::PausedAtStepOver : DebugBackendExecutionState::PausedAtBreakpoint;
             outSnapshot->internalBreakpointTrap = debugResult.internalBreakpointTrap;
             outSnapshot->internalBreakpointId = debugResult.internalBreakpointId;
+            outSnapshot->internalBreakpointPurpose = debugResult.internalBreakpointPurpose;
             outSnapshot->registerContext.valid = debugResult.registerContext.valid;
             outSnapshot->registerContext.architecture = static_cast<DebugArchitecture>(debugResult.registerContext.architecture);
             outSnapshot->registerContext.processId = debugResult.registerContext.processId;
@@ -133,7 +134,9 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.stackLow = debugResult.stackLow;
             outSnapshot->registerContext.stackHigh = debugResult.stackHigh;
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage),
-                      debugResult.internalBreakpointTrap ? "Step over return breakpoint observed" : "Breakpoint trap observed");
+                      debugResult.internalBreakpointPurpose == static_cast<uint32_t>(HostedDebugInternalBreakpointPurpose::StepOut) ?
+                          "Step out return breakpoint observed" :
+                          (debugResult.internalBreakpointTrap ? "Step over return breakpoint observed" : "Breakpoint trap observed"));
             backend->internalTrapStopPending = debugResult.internalBreakpointTrap;
         } else if (debugResult.status == 3 && debugResult.trapKind == 2 &&
                    debugResult.singleStepKind == 2) {
@@ -357,6 +360,27 @@ static bool stepOverCall(void* userData, uint64_t sessionGeneration,
     return true;
 }
 
+static bool stepOutReturn(void* userData, uint64_t sessionGeneration,
+                          const DebugRegisterContext& context, uint64_t breakpointId,
+                          uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint,
+                          uint64_t returnAddress, uint64_t temporaryBreakpointId) {
+    (void)bindingId;
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !backend->runService.debugCommand || !context.valid ||
+        breakpointId == 0 || targetAddress == 0 || returnAddress == 0 || temporaryBreakpointId == 0) return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepOutReturn,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          context.processId, context.nativeRuntimeId, temporaryBreakpointId,
+                                          targetAddress, backend->runController.request.artifactSha256,
+                                          context.threadId, context.stopGeneration, reinstallBreakpoint,
+                                          returnAddress, 0, &result)) return false;
+    if (result.status != 1) return false;
+    backend->userStepStopPending = false;
+    backend->internalTrapStopPending = false;
+    return true;
+}
+
 static bool stop(void* userData, uint64_t generation) {
     (void)generation;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
@@ -384,7 +408,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.capabilities.canSetSourceBreakpoint = true;
     result.capabilities.canStepInto = true;
     result.capabilities.canStepOver = true;
-    result.capabilities.canStepOut = false;
+    result.capabilities.canStepOut = true;
     result.capabilities.canReadRegisters = true;
     result.capabilities.canReadMemory = true;
     result.capabilities.canWriteMemory = false;
@@ -409,6 +433,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.readMemory = readMemory;
     result.readTargetMemory = readTargetMemory;
     result.stepOverCall = stepOverCall;
+    result.stepOutReturn = stepOutReturn;
     return result;
 }
 

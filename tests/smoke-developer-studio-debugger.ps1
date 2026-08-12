@@ -8,7 +8,8 @@ param(
     [switch]$DiagnosticOnly,
     [switch]$ContinueBreakpoint,
     [switch]$StepInto,
-    [switch]$StepOver
+    [switch]$StepOver,
+    [switch]$StepOut
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,7 +63,7 @@ function Get-Key([char]$Character, [int]$Modifiers) {
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in Phase 3B fixture exists"
-Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
+Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
 
 $parts = New-Object 'System.Collections.Generic.List[string]'
 Add-ServerLine $parts 'gui.start'
@@ -110,6 +111,12 @@ if ($ContinueBreakpoint) {
     # breakpoint stop. This checked-in fixture exercises the non-call fallback;
     # the native runtime harness proves the E8 call/return path.
     Add-Key $parts 121 0 $true
+    Add-Delay $parts 20
+} elseif ($StepOut) {
+    # Shift+F11 begins the real return-address Step Out operation from the
+    # deepest fixture frame. The controller must ignore Call Stack selection
+    # and stop at the immediate caller's raw return address.
+    Add-Key $parts 122 1 $true
     Add-Delay $parts 20
 }
 Add-ServerLine $parts 'nativeapp.processes'
@@ -207,18 +214,21 @@ try {
                      $text.Contains('[NativeAppDebugger] breakpoint continuation accepted') -and
                      $text.Contains('EXCEPTION_SINGLE_STEP') -and
                      $text.Contains('rebound=true')) "F5 continues through a real single-step and rebinds the breakpoint"
-    } elseif ($StepInto -or $StepOver) {
+    } elseif ($StepInto -or $StepOver -or $StepOut) {
         $stepEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING') -and
                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_STEP') -and
                         $text.Contains('EXCEPTION_SINGLE_STEP') -and
                         (($StepInto -and $text.Contains('[NativeAppDebugger] user source-step accepted') -and $text.Contains('Debug: step into')) -or
-                         ($StepOver -and $text.Contains('Debug: step over')))
+                         ($StepOver -and $text.Contains('Debug: step over')) -or
+                         ($StepOut -and $text.Contains('Debug: step out') -and
+                          $text.Contains('Step out return breakpoint observed')))
         if (-not $stepEvidence) {
             Write-Host 'Captured hosted stepping diagnostics:'
             @($text -split "`r?`n" | Where-Object { $_ -match 'F11|step|Step|STEPPING|PAUSED_STEP|EXCEPTION_SINGLE_STEP|Debug:|debug_state|source_navigation|execution_marker' } | Select-Object -Last 260)
         }
         if ($StepInto) { Assert-True $stepEvidence "F11 performs a real hosted source-level Step Into" }
-        else { Assert-True $stepEvidence "F10 performs a real hosted source-level Step Over fallback" }
+        elseif ($StepOver) { Assert-True $stepEvidence "F10 performs a real hosted source-level Step Over fallback" }
+        else { Assert-True $stepEvidence "Shift+F11 performs a real hosted Step Out to the caller" }
     }
     Assert-True ($text -match 'target-created.*processId=\d+.*nativeRuntimeId=\d+.*gate=closed') "hosted service publishes exact target identity before release"
     if (-not $DiagnosticOnly -and -not $ContinueBreakpoint) {
@@ -238,6 +248,7 @@ try {
     Assert-True ($process.ExitCode -eq 0) "hosted Server exits cleanly after the debugger proof"
     if ($StepInto) { Write-Host 'Developer Studio Debugger Phase 5 end-to-end smoke PASS' }
     elseif ($StepOver) { Write-Host 'Developer Studio Debugger Phase 6 end-to-end smoke PASS' }
+    elseif ($StepOut) { Write-Host 'Developer Studio Debugger Phase 8 end-to-end smoke PASS' }
     else { Write-Host 'Developer Studio Debugger Phase 3B end-to-end smoke PASS' }
 } finally {
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }

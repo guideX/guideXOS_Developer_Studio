@@ -25,6 +25,121 @@ struct StepOverFake {
     uint32_t callCalls = 0;
 };
 
+struct StepOutFake {
+    uint32_t bindCalls = 0;
+    uint32_t removeCalls = 0;
+    uint32_t stepOutCalls = 0;
+    uint64_t returnAddress = 0x201;
+    uint64_t bindingId = 600;
+    uint64_t temporaryId = 0;
+};
+
+static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapshot* snapshot) {
+    StepOutFake* fake = static_cast<StepOutFake*>(userData);
+    *snapshot = DebugBackendSnapshot();
+    snapshot->sessionGeneration = generation;
+    snapshot->state = DebugSessionState::Paused;
+    snapshot->stopReason = DebugStopReason::Step;
+    snapshot->processId = 12;
+    snapshot->nativeRuntimeId = 77;
+    snapshot->threadId = 44;
+    snapshot->breakpointTrap = true;
+    snapshot->internalBreakpointTrap = true;
+    snapshot->internalBreakpointPurpose = static_cast<uint32_t>(HostedDebugInternalBreakpointPurpose::StepOut);
+    snapshot->internalBreakpointId = fake->temporaryId;
+    snapshot->targetAddress = { true, fake->returnAddress };
+    snapshot->breakpointBindingId = fake->bindingId;
+    snapshot->instructionPointer = fake->returnAddress + 1;
+    snapshot->stopGeneration = 4;
+    snapshot->executionState = DebugBackendExecutionState::PausedAtStepOut;
+    snapshot->registerContext.valid = true;
+    snapshot->registerContext.architecture = DebugArchitecture::Amd64;
+    snapshot->registerContext.processId = 12;
+    snapshot->registerContext.nativeRuntimeId = 77;
+    snapshot->registerContext.threadId = 44;
+    snapshot->registerContext.sessionGeneration = generation;
+    snapshot->registerContext.stopGeneration = 4;
+    snapshot->registerContext.rip = fake->returnAddress + 1;
+    snapshot->registerContext.rflags = 0x202;
+    snapshot->registerContext.rsp = 0x700110;
+    snapshot->registerContext.rbp = 0x700140;
+    snapshot->registerContext.stackLow = 0x700000;
+    snapshot->registerContext.stackHigh = 0x702000;
+    return true;
+}
+
+static bool stepOutRead(void*, uint64_t, uint64_t, uint64_t, uint64_t address,
+                        uint8_t* bytes, uint32_t requested, uint32_t* returned) {
+    if (returned) *returned = 0;
+    if (address != 0x201 || !bytes || requested != 1) return false;
+    bytes[0] = 0x90;
+    if (returned) *returned = 1;
+    return true;
+}
+
+static bool stepOutReadTarget(void*, uint64_t, uint64_t processId, uint64_t runtimeId,
+                              uint64_t threadId, uint64_t, uint64_t address,
+                              uint8_t* bytes, uint32_t requested, uint32_t* returned) {
+    if (returned) *returned = 0;
+    if (processId != 12 || runtimeId != 77 || threadId != 44 || !bytes || requested != 16 ||
+        address < 0x700000 || address > 0x702000 - 16 || (address - 0x700000) % 8 != 0) return false;
+    uint64_t first = 0;
+    uint64_t second = 0;
+    if (address == 0x700140) second = 0x220;
+    for (uint32_t i = 0; i < 8; ++i) bytes[i] = static_cast<uint8_t>(first >> (i * 8));
+    for (uint32_t i = 0; i < 8; ++i) bytes[8 + i] = static_cast<uint8_t>(second >> (i * 8));
+    if (returned) *returned = 16;
+    return true;
+}
+
+static bool stepOutBind(void* userData, const DebugTarget&, uint64_t, uint64_t, uint64_t,
+                        const DebugBreakpoint& breakpoint, DebugBackendBinding* binding) {
+    StepOutFake* fake = static_cast<StepOutFake*>(userData);
+    ++fake->bindCalls;
+    fake->temporaryId = breakpoint.id;
+    *binding = DebugBackendBinding();
+    binding->accepted = true;
+    binding->bindingId = fake->bindingId;
+    binding->originalByte = 0x90;
+    binding->installedByte = 0xCC;
+    binding->originalByteValid = true;
+    return true;
+}
+
+static bool stepOutCommand(void* userData, HostedDebugCommand command, uint64_t, uint64_t,
+                           uint64_t, uint64_t, uint64_t, uint64_t, const char*, uint64_t,
+                           uint64_t, bool, uint64_t, uint32_t, HostedDebugResult* result) {
+    StepOutFake* fake = static_cast<StepOutFake*>(userData);
+    *result = HostedDebugResult();
+    if (command == HostedDebugCommand::RemoveSoftwareBreakpointOwner) ++fake->removeCalls;
+    result->status = command == HostedDebugCommand::RemoveSoftwareBreakpointOwner ? 4 : 1;
+    return true;
+}
+
+static bool stepOutReturn(void* userData, uint64_t, const DebugRegisterContext&,
+                          uint64_t, uint64_t, uint64_t, bool, uint64_t returnAddress,
+                          uint64_t temporaryBreakpointId) {
+    StepOutFake* fake = static_cast<StepOutFake*>(userData);
+    ++fake->stepOutCalls;
+    fake->returnAddress = returnAddress;
+    fake->temporaryId = temporaryBreakpointId;
+    return true;
+}
+
+static DebugBackend makeStepOutBackend(StepOutFake* fake) {
+    DebugBackend backend = {};
+    backend.userData = fake;
+    backend.capabilities.canContinue = true;
+    backend.capabilities.canStepOut = true;
+    backend.poll = stepOutPoll;
+    backend.readMemory = stepOutRead;
+    backend.readTargetMemory = stepOutReadTarget;
+    backend.bindSoftwareBreakpoint = stepOutBind;
+    backend.debugCommand = stepOutCommand;
+    backend.stepOutReturn = stepOutReturn;
+    return backend;
+}
+
 static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snapshot) {
     StepFake* fake = static_cast<StepFake*>(userData);
     *snapshot = DebugBackendSnapshot();
@@ -184,6 +299,9 @@ static void prepareMapper(DebugDwarfMapper* mapper) {
     mapper->rows[3].endAddress = 0x204;
     mapper->rows[3].sequence = 1;
     for (uint32_t i = 0; i < 4; ++i) mapper->addressOrder[i] = i;
+    mapper->executableSegmentCount = 1;
+    mapper->executableSegments[0].startAddress = 0x100;
+    mapper->executableSegments[0].endAddress = 0x300;
 }
 
 static void preparePausedController(DebugController* controller, bool canStep) {
@@ -303,6 +421,63 @@ int main() {
     assert(overController.currentLocation.line == 11 && overController.currentInstructionAddress.value == 0x108);
     assert(!overController.stepOver.active && overController.stepOver.status == DebugStepOverStatus::Completed);
     assert(overFake.removeCalls == 1);
+
+    StepOutFake outFake;
+    DebugBackend outBackend = makeStepOutBackend(&outFake);
+    DebugController outController = {};
+    preparePausedController(&outController, true);
+    outController.capabilities.canStepOut = true;
+    outController.currentInstructionAddress = { true, 0x100 };
+    outController.currentLocation.line = 10;
+    outController.stoppedContext.rip = 0x100;
+    outController.stoppedContext.rsp = 0x700080;
+    outController.stoppedContext.rbp = 0x700100;
+    outController.stoppedContext.stackLow = 0x700000;
+    outController.stoppedContext.stackHigh = 0x702000;
+    outController.callStack.valid = true;
+    outController.callStack.sessionGeneration = 9;
+    outController.callStack.processId = 12;
+    outController.callStack.nativeRuntimeId = 77;
+    outController.callStack.threadId = 44;
+    outController.callStack.stopGeneration = 3;
+    outController.callStack.result.frameCount = 3;
+    outController.callStack.result.frames[0].current = true;
+    std::strcpy(outController.callStack.result.frames[0].functionName, "level3");
+    outController.callStack.result.frames[0].sourceLine = 10;
+    outController.callStack.result.frames[1].hasReturnAddress = true;
+    outController.callStack.result.frames[1].confidence = DebugStackFrameConfidence::FramePointer;
+    outController.callStack.result.frames[1].rawReturnAddress = 0x201;
+    outController.callStack.result.frames[1].lookupAddress = 0x200;
+    outController.callStack.result.frames[1].mapping = DebugStackFrameMappingState::Mapped;
+    std::strcpy(outController.callStack.result.frames[1].functionName, "level2");
+    std::strcpy(outController.callStack.result.frames[1].sourcePath, "src/math.cpp");
+    outController.callStack.result.frames[1].sourceLine = 4;
+    outController.callStack.result.frames[2].hasReturnAddress = true;
+    outController.callStack.result.frames[2].confidence = DebugStackFrameConfidence::FramePointer;
+    outController.callStack.result.frames[2].rawReturnAddress = 0x220;
+    outController.callStack.selectedFrameIndex = 0;
+    assert(DebugControllerSelectCallStackFrame(&outController, 2, &error));
+    assert(DebugControllerCanStepOut(&outController));
+    assert(DebugControllerStepOut(&outController, outBackend, &mapper, &error));
+    assert(outController.state == DebugSessionState::Stepping && outController.stepOut.active);
+    assert(outController.stepOut.rawReturnAddress == 0x201 &&
+           outController.stepOut.callerLookupAddress == 0x200 && outFake.bindCalls == 1 &&
+           outFake.stepOutCalls == 1);
+    assert(DebugControllerPoll(&outController, outBackend, &mapper));
+    assert(outController.state == DebugSessionState::Paused && outController.stopReason == DebugStopReason::Step);
+    assert(outController.backendExecutionState == DebugBackendExecutionState::PausedAtStepOut);
+    assert(!outController.stepOut.active && outController.stepOut.status == DebugStepOutStatus::Completed);
+    assert(outController.stepOut.rawReturnAddress == 0x201 && outController.stepOut.callerLookupAddress == 0x200);
+    assert(outFake.removeCalls == 1 && outController.currentInstructionAddress.value == 0x201);
+    assert(outController.currentLocation.line == 4 && outController.stoppedContext.rflags == 0x202);
+    assert(outController.callStack.valid && outController.callStack.selectedFrameIndex == 0 &&
+           outController.callStack.result.frameCount == 2 && outController.callStack.result.frames[0].current);
+    assert(outController.callStack.result.frames[0].instructionAddress == 0x202);
+
+    outController.callStack.result.frameCount = 1;
+    assert(!DebugControllerCanStepOut(&outController));
+    assert(!DebugControllerStepOut(&outController, outBackend, &mapper, &error));
+    assert(error == DebugErrorCode::NoCallerFrame);
 
     std::cout << "Developer Studio source-step model PASS\n";
     return 0;

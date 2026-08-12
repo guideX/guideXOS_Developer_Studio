@@ -1,8 +1,8 @@
 # Debugger Phase 5 — Source-Level Step Into
 
 Phase 7 adds a Call Stack tab for paused stops. It is a bounded AMD64
-frame-pointer view and is independent of the F11/F10 stepping operation; it
-does not provide Step Out or DWARF CFI unwinding. See
+frame-pointer view and is independent of the F11/F10/Shift+F11 stepping
+operations; it does not provide DWARF CFI unwinding. See
 [DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
 
 Status: implemented in the debugger model and hosted AMD64 path. The feature
@@ -85,7 +85,8 @@ the target controlled and reports a bounded failure/limit reason.
 
 The current implementation is single-thread focused: one operation stays on
 one process and target thread. Inline-function semantics, optimized Native ELF
-debugging, and Step Out remain future work.
+debugging remain future work. Step Out is a separate return-address operation
+documented in [DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md).
 
 The source-step model test covers capability gating, same-line suppression,
 different-line completion, register refresh, repeated stepping, generation
@@ -93,5 +94,5 @@ identity, and wrong-thread rejection. The native runtime harness proves real
 AMD64 TF-driven `EXCEPTION_SINGLE_STEP` events from an INT3 stop and a source
 step stop, including breakpoint rebinding and step resume.
 
-The next milestone is frame-aware stepping and Step Out; Phase 6 deliberately
-does not claim call-stack or inline-frame semantics.
+The next milestone is bounded locals and function arguments. Phase 8 does not
+claim Pause, inline-frame semantics, or optimized-code full debugging.

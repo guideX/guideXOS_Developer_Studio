@@ -19,7 +19,7 @@ source-step context. Phase 6 adds F10 using a separate bounded operation: it
 decodes the current AMD64 instruction, binds a temporary logical owner at a
 real call return address, executes the call without TF, and consumes the
 matching internal return trap. Non-call instructions use the existing
-source-step engine. Step Out remains unavailable.
+ source-step engine. Phase 8 adds Step Out as a separate return-address operation.
 
 ## Stop context ownership
 
@@ -97,7 +97,7 @@ Supported commands:
 * Pause — disabled.
 * Step Into/F11 — hosted-runtime proven through the separate user source-step path.
 * Step Over/F10 — hosted-runtime proven through the bounded call-aware path.
-* Step Out — disabled.
+* Step Out/Shift+F11 — hosted-runtime proven when frame #0 has a validated caller.
 
-The next milestone is frame-aware stepping and Step Out; those are not part of
-Phase 6.
+Step Out is documented in [DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). The
+next milestone is bounded locals and function arguments; Pause remains disabled.

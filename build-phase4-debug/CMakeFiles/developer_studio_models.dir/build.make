@@ -371,11 +371,26 @@ CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.s: cmak
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.s"
 	C:\mingw64\bin\c++.exe $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger.cpp -o CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger.cpp.s
 
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj: CMakeFiles/developer_studio_models.dir/flags.make
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj: CMakeFiles/developer_studio_models.dir/includes_CXX.rsp
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj: D:/dev/guideXOS_Developer_Studio/src/developer_studio_debugger_stack.cpp
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj: CMakeFiles/developer_studio_models.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj"
+	C:\mingw64\bin\c++.exe $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj -MF CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_stack.cpp.obj.d -o CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_stack.cpp.obj -c D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger_stack.cpp
+
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.i"
+	C:\mingw64\bin\c++.exe $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger_stack.cpp > CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_stack.cpp.i
+
+CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.s"
+	C:\mingw64\bin\c++.exe $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger_stack.cpp -o CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_stack.cpp.s
+
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj: CMakeFiles/developer_studio_models.dir/flags.make
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj: CMakeFiles/developer_studio_models.dir/includes_CXX.rsp
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj: D:/dev/guideXOS_Developer_Studio/src/developer_studio_debug_symbols.cpp
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj: CMakeFiles/developer_studio_models.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj"
 	C:\mingw64\bin\c++.exe $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj -MF CMakeFiles\developer_studio_models.dir\src\developer_studio_debug_symbols.cpp.obj.d -o CMakeFiles\developer_studio_models.dir\src\developer_studio_debug_symbols.cpp.obj -c D:\dev\guideXOS_Developer_Studio\src\developer_studio_debug_symbols.cpp
 
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.i: cmake_force
@@ -390,7 +405,7 @@ CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj: CMakeFiles/developer_studio_models.dir/includes_CXX.rsp
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj: D:/dev/guideXOS_Developer_Studio/src/developer_studio_debugger_hosted.cpp
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj: CMakeFiles/developer_studio_models.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj"
 	C:\mingw64\bin\c++.exe $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj -MF CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_hosted.cpp.obj.d -o CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_hosted.cpp.obj -c D:\dev\guideXOS_Developer_Studio\src\developer_studio_debugger_hosted.cpp
 
 CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.i: cmake_force
@@ -423,6 +438,7 @@ developer_studio_models_OBJECTS = \
 "CMakeFiles/developer_studio_models.dir/src/developer_studio_ownership.cpp.obj" \
 "CMakeFiles/developer_studio_models.dir/src/developer_studio_types.cpp.obj" \
 "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj" \
+"CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj" \
 "CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj" \
 "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj"
 
@@ -449,11 +465,12 @@ libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/develop
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/developer_studio_ownership.cpp.obj
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/developer_studio_types.cpp.obj
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj
+libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/build.make
 libdeveloper_studio_models.a: CMakeFiles/developer_studio_models.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Linking CXX static library libdeveloper_studio_models.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=D:\dev\guideXOS_Developer_Studio\build-phase4-debug\CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Linking CXX static library libdeveloper_studio_models.a"
 	$(CMAKE_COMMAND) -P CMakeFiles\developer_studio_models.dir\cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles\developer_studio_models.dir\link.txt --verbose=$(VERBOSE)
 

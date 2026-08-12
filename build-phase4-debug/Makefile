@@ -424,6 +424,32 @@ developer_studio_debug_symbols_test/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debug_symbols_test.dir\build.make CMakeFiles/developer_studio_debug_symbols_test.dir/build
 .PHONY : developer_studio_debug_symbols_test/fast
 
+#=============================================================================
+# Target rules for targets named developer_studio_debugger_step_test
+
+# Build rule for target.
+developer_studio_debugger_step_test: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 developer_studio_debugger_step_test
+.PHONY : developer_studio_debugger_step_test
+
+# fast build rule for target.
+developer_studio_debugger_step_test/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_step_test.dir\build.make CMakeFiles/developer_studio_debugger_step_test.dir/build
+.PHONY : developer_studio_debugger_step_test/fast
+
+#=============================================================================
+# Target rules for targets named developer_studio_debugger_stack_test
+
+# Build rule for target.
+developer_studio_debugger_stack_test: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 developer_studio_debugger_stack_test
+.PHONY : developer_studio_debugger_stack_test
+
+# fast build rule for target.
+developer_studio_debugger_stack_test/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_stack_test.dir\build.make CMakeFiles/developer_studio_debugger_stack_test.dir/build
+.PHONY : developer_studio_debugger_stack_test/fast
+
 src/developer_studio_build.obj: src/developer_studio_build.cpp.obj
 .PHONY : src/developer_studio_build.obj
 
@@ -543,6 +569,30 @@ src/developer_studio_debugger_hosted.s: src/developer_studio_debugger_hosted.cpp
 src/developer_studio_debugger_hosted.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_models.dir\build.make CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.s
 .PHONY : src/developer_studio_debugger_hosted.cpp.s
+
+src/developer_studio_debugger_stack.obj: src/developer_studio_debugger_stack.cpp.obj
+.PHONY : src/developer_studio_debugger_stack.obj
+
+# target to build an object file
+src/developer_studio_debugger_stack.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_models.dir\build.make CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj
+.PHONY : src/developer_studio_debugger_stack.cpp.obj
+
+src/developer_studio_debugger_stack.i: src/developer_studio_debugger_stack.cpp.i
+.PHONY : src/developer_studio_debugger_stack.i
+
+# target to preprocess a source file
+src/developer_studio_debugger_stack.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_models.dir\build.make CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.i
+.PHONY : src/developer_studio_debugger_stack.cpp.i
+
+src/developer_studio_debugger_stack.s: src/developer_studio_debugger_stack.cpp.s
+.PHONY : src/developer_studio_debugger_stack.s
+
+# target to generate assembly for a file
+src/developer_studio_debugger_stack.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_models.dir\build.make CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.s
+.PHONY : src/developer_studio_debugger_stack.cpp.s
 
 src/developer_studio_find.obj: src/developer_studio_find.cpp.obj
 .PHONY : src/developer_studio_find.obj
@@ -1024,6 +1074,54 @@ tests/debug_symbols_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debug_symbols_test.dir\build.make CMakeFiles/developer_studio_debug_symbols_test.dir/tests/debug_symbols_test.cpp.s
 .PHONY : tests/debug_symbols_test.cpp.s
 
+tests/debugger_stack_test.obj: tests/debugger_stack_test.cpp.obj
+.PHONY : tests/debugger_stack_test.obj
+
+# target to build an object file
+tests/debugger_stack_test.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_stack_test.dir\build.make CMakeFiles/developer_studio_debugger_stack_test.dir/tests/debugger_stack_test.cpp.obj
+.PHONY : tests/debugger_stack_test.cpp.obj
+
+tests/debugger_stack_test.i: tests/debugger_stack_test.cpp.i
+.PHONY : tests/debugger_stack_test.i
+
+# target to preprocess a source file
+tests/debugger_stack_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_stack_test.dir\build.make CMakeFiles/developer_studio_debugger_stack_test.dir/tests/debugger_stack_test.cpp.i
+.PHONY : tests/debugger_stack_test.cpp.i
+
+tests/debugger_stack_test.s: tests/debugger_stack_test.cpp.s
+.PHONY : tests/debugger_stack_test.s
+
+# target to generate assembly for a file
+tests/debugger_stack_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_stack_test.dir\build.make CMakeFiles/developer_studio_debugger_stack_test.dir/tests/debugger_stack_test.cpp.s
+.PHONY : tests/debugger_stack_test.cpp.s
+
+tests/debugger_step_test.obj: tests/debugger_step_test.cpp.obj
+.PHONY : tests/debugger_step_test.obj
+
+# target to build an object file
+tests/debugger_step_test.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_step_test.dir\build.make CMakeFiles/developer_studio_debugger_step_test.dir/tests/debugger_step_test.cpp.obj
+.PHONY : tests/debugger_step_test.cpp.obj
+
+tests/debugger_step_test.i: tests/debugger_step_test.cpp.i
+.PHONY : tests/debugger_step_test.i
+
+# target to preprocess a source file
+tests/debugger_step_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_step_test.dir\build.make CMakeFiles/developer_studio_debugger_step_test.dir/tests/debugger_step_test.cpp.i
+.PHONY : tests/debugger_step_test.cpp.i
+
+tests/debugger_step_test.s: tests/debugger_step_test.cpp.s
+.PHONY : tests/debugger_step_test.s
+
+# target to generate assembly for a file
+tests/debugger_step_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\developer_studio_debugger_step_test.dir\build.make CMakeFiles/developer_studio_debugger_step_test.dir/tests/debugger_step_test.cpp.s
+.PHONY : tests/debugger_step_test.cpp.s
+
 tests/debugger_test.obj: tests/debugger_test.cpp.obj
 .PHONY : tests/debugger_test.obj
 
@@ -1492,6 +1590,8 @@ help:
 	@echo ... developer_studio_build_test
 	@echo ... developer_studio_completion_test
 	@echo ... developer_studio_debug_symbols_test
+	@echo ... developer_studio_debugger_stack_test
+	@echo ... developer_studio_debugger_step_test
 	@echo ... developer_studio_debugger_test
 	@echo ... developer_studio_find_test
 	@echo ... developer_studio_include_graph_test
@@ -1527,6 +1627,9 @@ help:
 	@echo ... src/developer_studio_debugger_hosted.obj
 	@echo ... src/developer_studio_debugger_hosted.i
 	@echo ... src/developer_studio_debugger_hosted.s
+	@echo ... src/developer_studio_debugger_stack.obj
+	@echo ... src/developer_studio_debugger_stack.i
+	@echo ... src/developer_studio_debugger_stack.s
 	@echo ... src/developer_studio_find.obj
 	@echo ... src/developer_studio_find.i
 	@echo ... src/developer_studio_find.s
@@ -1587,6 +1690,12 @@ help:
 	@echo ... tests/debug_symbols_test.obj
 	@echo ... tests/debug_symbols_test.i
 	@echo ... tests/debug_symbols_test.s
+	@echo ... tests/debugger_stack_test.obj
+	@echo ... tests/debugger_stack_test.i
+	@echo ... tests/debugger_stack_test.s
+	@echo ... tests/debugger_step_test.obj
+	@echo ... tests/debugger_step_test.i
+	@echo ... tests/debugger_step_test.s
 	@echo ... tests/debugger_test.obj
 	@echo ... tests/debugger_test.i
 	@echo ... tests/debugger_test.s

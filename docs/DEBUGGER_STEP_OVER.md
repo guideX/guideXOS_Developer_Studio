@@ -2,11 +2,12 @@
 
 Phase 7 can display the paused frame-pointer call stack after Step Over, but
 does not change F10's call-aware execution path. The stack is cleared when
-execution resumes and is not a Step Out implementation. See
+execution resumes and is not a Step Out implementation; Shift+F11 has its own
+return-address operation. See
 [DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
 
 Status: implemented for the bounded hosted AMD64 Native ELF debug path. This
-milestone adds real call-aware Step Over; it does not claim Step Out, call-stack
+milestone adds real call-aware Step Over; it does not claim call-stack
 unwinding, inline-frame semantics, optimized-code parity, or general-purpose
 debugger support.
 
@@ -86,8 +87,9 @@ runtime teardown, and failure paths.
 
 The runtime validates the exact session, process, runtime, thread, stop
 generation, binding, and return address before accepting an internal trap.
-Internal trap recovery is not presented as a user breakpoint hit. No claim is
-made for Step Out or call-stack/frame inspection.
+Internal trap recovery is not presented as a user breakpoint hit. Step Out
+uses a separate operation and internal purpose while reusing this physical
+ownership manager; it is documented in [DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md).
 
 ## Evidence
 

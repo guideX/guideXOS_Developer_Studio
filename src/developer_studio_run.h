@@ -77,13 +77,20 @@ enum class HostedDebugCommand {
     RemoveSoftwareBreakpointOwner = 10,
     StepOverCall = 11,
     ResumeInternalTrap = 12,
-    StepInternalTrap = 13
+    StepInternalTrap = 13,
+    StepOutReturn = 14
 };
 
 enum class HostedDebugSingleStepKind {
     None = 0,
     InternalBreakpoint = 1,
     UserSource = 2
+};
+
+enum class HostedDebugInternalBreakpointPurpose {
+    None = 0,
+    StepOver = 1,
+    StepOut = 2
 };
 
 struct HostedDebugRegisterSnapshot {
@@ -137,6 +144,7 @@ struct HostedDebugResult {
     HostedDebugRegisterSnapshot registerContext = {};
     bool internalBreakpointTrap = false;
     uint64_t internalBreakpointId = 0;
+    uint32_t internalBreakpointPurpose = 0;
     uint32_t byteCount = 0;
     uint8_t bytes[16] = {};
     uint64_t stackLow = 0;

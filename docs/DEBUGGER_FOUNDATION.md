@@ -11,7 +11,7 @@ for this bounded source-breakpoint path; Phase 5 adds Level B + Step Into. This
 is not a claim of general-purpose debugger support. Phase 6 adds Level B Step
 Over through real call-aware execution and temporary return breakpoints. Phase
 7 adds a bounded AMD64 frame-pointer call stack with target-owned stack reads;
-it does not add CFI unwinding or Step Out.
+it does not add CFI unwinding; Phase 8 adds the separate Step Out operation.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend launches the existing temporary Native ELF development
@@ -42,7 +42,9 @@ The hosted Native ELF backend publishes these capabilities:
 - Step Into: supported through real AMD64 TF single stepping and DWARF source
   mapping.
 - Step Over: supported through bounded AMD64 call decoding, real call execution,
-  and an internal return `INT3` owner. Step Out remains unavailable.
+  and an internal return `INT3` owner.
+- Step Out: supported through the current frame's validated raw caller return
+  address and a separate internal return `INT3` owner.
 - Call Stack: supported from a genuinely paused AMD64 stop through bounded RBP
   links, ELF function symbols, and DWARF source enrichment. The result is
   partial when the frame chain is unsafe or unavailable.
@@ -233,7 +235,17 @@ target stack through the append-only debug boundary and clears the result on
 resume or stale identity.
 
 Deferred work includes additional instruction-breakpoint workflows, DWARF
-expressions, locals, CFI/`eh_frame` unwinding, Step Out, watches,
+expressions, locals, CFI/`eh_frame` unwinding, watches,
 memory/register editing, conditional/data breakpoints, attach/remote/multiple
 process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
 bare-metal trap implementation.
+
+## Phase 8 Step Out
+
+Phase 8 adds real Step Out / Shift+F11 for the bounded hosted AMD64 path. It
+uses the current physical frame, validates the caller return address from the
+fresh Call Stack, arms a temporary internal return breakpoint, and waits for
+the real return-address `EXCEPTION_BREAKPOINT`. See
+[DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). Pause, locals, arguments,
+watches, DWARF CFI unwinding, and optimized-code full debugging remain
+unsupported.

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "com.example.debuggerphase8",
+  "displayName": "Debugger Phase 8 Fixture",
+  "version": "0.1.0",
+  "publisher": "guideXOS Developer Studio tests",
+  "description": "Hosted AMD64 Step Out nested-call fixture.",
+  "category": "Development",
+  "kind": "NativeElf",
+  "icon": "",
+  "minGuideXOSVersion": "0.5.0",
+  "supportedArchitectures": ["amd64"],
+  "entries": [{
+    "architecture": "amd64",
+    "path": "bin/amd64/debugger-phase8.elf",
+    "entryPoint": "gx_main",
+    "abi": "guidexos-c-abi-v1",
+    "runtime": "native-elf"
+  }],
+  "permissions": ["log", "window", "draw"],
+  "fileAssociations": [],
+  "defaultWindow": {"width": 640, "height": 360, "resizable": true}
+}

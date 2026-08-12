@@ -175,7 +175,9 @@ only after the backend publishes Running.
 Call-aware Step Over is documented in [DEBUGGER_STEP_OVER.md](DEBUGGER_STEP_OVER.md)
 and reuses this mapper for the post-return source stop. The bounded Phase 7
 Call Stack is documented in [DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
-User-visible Step Out, arbitrary memory, expressions, locals, watches,
+Step Out uses this mapper after a real caller return trap: the raw return
+address remains the execution position, while `returnAddress - 1` is used only
+for caller source and symbol attribution. Expressions, locals, watches,
 conditional/data breakpoints, and attach/remote debugging remain future
 milestones. Phase 4 uses the mapping only to identify the exact physical address;
 it does not infer source-level stepping from a single machine instruction.

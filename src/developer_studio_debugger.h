@@ -92,7 +92,11 @@ enum class DebugErrorCode {
     UnsupportedCallEncoding,
     StepOverLimitExceeded,
     StepOverFailed,
-    StaleStepOver
+    StaleStepOver,
+    NoCallerFrame,
+    InvalidReturnAddress,
+    StepOutFailed,
+    StaleStepOut
 };
 
 enum class DebugBreakpointState {
@@ -132,7 +136,9 @@ enum class DebugBackendExecutionState {
     UserSourceStepPending,
     PausedAtSourceStep,
     StepOverPending,
-    PausedAtStepOver
+    PausedAtStepOver,
+    StepOutPending,
+    PausedAtStepOut
 };
 
 enum class DebugEventKind {
@@ -163,7 +169,11 @@ enum class DebugEventKind {
     StepOverReturnReached,
     StepOverCompleted,
     StepOverInterrupted,
-    StepOverLimitExceeded
+    StepOverLimitExceeded,
+    StepOutStarted,
+    StepOutReturnReached,
+    StepOutCompleted,
+    StepOutInterrupted
 };
 
 enum class DebugSourceStepStatus {
@@ -285,6 +295,42 @@ struct DebugStepOverOperation {
     char reason[kDebugMaxMessageBytes];
 };
 
+enum class DebugStepOutStatus {
+    None = 0,
+    Active,
+    Completed,
+    Cancelled,
+    Failed
+};
+
+struct DebugStepOutOperation {
+    bool active;
+    DebugStepOutStatus status;
+    uint16_t reserved;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    uint64_t processId;
+    uint64_t nativeRuntimeId;
+    uint64_t threadId;
+    uint64_t startingRip;
+    uint64_t startingRsp;
+    uint64_t startingRbp;
+    DebugSourceLocation startingSource;
+    char startingFunction[kDebugMaxFunctionNameBytes];
+    uint64_t rawReturnAddress;
+    uint64_t callerLookupAddress;
+    uint64_t temporaryBreakpointId;
+    uint64_t temporaryBindingId;
+    uint64_t breakpointId;
+    uint64_t bindingId;
+    uint64_t breakpointAddress;
+    bool reinstallBreakpoint;
+    bool temporaryInstalled;
+    DebugSourceLocation callerSource;
+    char callerFunction[kDebugMaxFunctionNameBytes];
+    char reason[kDebugMaxMessageBytes];
+};
+
 struct DebugTarget {
     char projectId[kMaxProjectIdBytes];
     char projectRoot[kMaxPathBytes];
@@ -397,6 +443,7 @@ struct DebugBackendSnapshot {
     DebugRegisterContext registerContext;
     bool internalBreakpointTrap;
     uint64_t internalBreakpointId;
+    uint32_t internalBreakpointPurpose;
     uint64_t stackLow;
     uint64_t stackHigh;
 };
@@ -452,6 +499,11 @@ typedef bool (*DebugBackendStepOverCallFn)(void* userData, uint64_t sessionGener
                                            const DebugRegisterContext& context,
                                            uint64_t callAddress, uint64_t returnAddress,
                                            uint64_t temporaryBreakpointId);
+typedef bool (*DebugBackendStepOutFn)(void* userData, uint64_t sessionGeneration,
+                                      const DebugRegisterContext& context,
+                                      uint64_t breakpointId, uint64_t bindingId,
+                                      uint64_t targetAddress, bool reinstallBreakpoint,
+                                      uint64_t returnAddress, uint64_t temporaryBreakpointId);
 
 struct DebugBackend {
     void* userData;
@@ -469,6 +521,7 @@ struct DebugBackend {
     DebugBackendReadMemoryFn readMemory;
     DebugBackendReadTargetMemoryFn readTargetMemory;
     DebugBackendStepOverCallFn stepOverCall;
+    DebugBackendStepOutFn stepOutReturn;
 };
 
 struct DebugSourceMapper {
@@ -581,6 +634,7 @@ struct DebugController {
     DebugCallStack callStack;
     DebugSourceStepOperation sourceStep;
     DebugStepOverOperation stepOver;
+    DebugStepOutOperation stepOut;
     DebugBreakpoint breakpoints[kDebugMaxBreakpoints];
     uint32_t breakpointCount;
     DebugEvent events[kDebugMaxEvents];
@@ -620,6 +674,8 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
                              const DebugDwarfMapper* mapper, DebugErrorCode* error);
 bool DebugControllerStepOver(DebugController* controller, const DebugBackend& backend,
                              const DebugDwarfMapper* mapper, DebugErrorCode* error);
+bool DebugControllerStepOut(DebugController* controller, const DebugBackend& backend,
+                            const DebugDwarfMapper* mapper, DebugErrorCode* error);
 bool DebugControllerIsActive(const DebugController* controller);
 bool DebugControllerCanStart(const DebugController* controller);
 bool DebugControllerCanStop(const DebugController* controller);
@@ -627,6 +683,7 @@ bool DebugControllerCanPause(const DebugController* controller);
 bool DebugControllerCanContinue(const DebugController* controller);
 bool DebugControllerCanStepInto(const DebugController* controller);
 bool DebugControllerCanStepOver(const DebugController* controller);
+bool DebugControllerCanStepOut(const DebugController* controller);
 bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionGeneration,
                                   const DebugBackendSnapshot& snapshot);
 bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugDwarfMapper* mapper,

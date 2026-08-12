@@ -9,6 +9,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj.d"
   "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj"
   "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj.d"
+  "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj"
+  "CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj.d"
   "CMakeFiles/developer_studio_models.dir/src/developer_studio_find.cpp.obj"
   "CMakeFiles/developer_studio_models.dir/src/developer_studio_find.cpp.obj.d"
   "CMakeFiles/developer_studio_models.dir/src/developer_studio_include_graph.cpp.obj"

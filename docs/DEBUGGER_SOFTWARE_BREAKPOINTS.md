@@ -141,8 +141,8 @@ exposed as Step Into.
 
 Supported target: AMD64, little-endian ELF64, fixed-address `ET_EXEC`, load bias zero,
 Windows-hosted Native ELF execution. Bare-metal breakpoint handling and arbitrary
-memory read/write remain deferred. Phase 7 adds a bounded stopped-context call stack;
-user-visible stepping remains limited to the documented F11/F10 paths.
+memory read/write remain deferred. Phase 7 adds a bounded stopped-context call stack
+and Phase 8 adds the documented hosted F11/F10/Shift+F11 paths.
 
 The model tests cover binding state transitions, retained/installed-byte metadata,
 duplicate logical ownership, partial-bind rollback, stale/incorrect trap routing,
@@ -159,3 +159,9 @@ AMD64 little-endian ELF64 fixed-address `ET_EXEC` runtime with load bias zero.
 Pause, arbitrary memory access, and multi-process/attach workflows remain unsupported.
 The Phase 7 Call Stack is available only after an exact owned stopped context. A
 normal F5 with no active debugger remains ordinary Run.
+
+Step Out uses the same physical binding table as user breakpoints and Step Over.
+If a user breakpoint already owns the caller return address, the logical
+StepOut owner is added without a second patch. User intent wins at the combined
+trap, so the persistent breakpoint remains `Paused / Breakpoint` after the
+temporary owner is removed.

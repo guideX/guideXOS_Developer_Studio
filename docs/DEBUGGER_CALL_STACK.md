@@ -22,7 +22,8 @@ The supported evidence boundary is:
   stale identity checks; and
 - source navigation only for a mapped frame.
 
-There is no Step Out, DWARF CFI execution, `eh_frame`/`eh_frame_hdr` unwinding,
+Step Out consumes the current frame's validated raw caller return address; there
+is still no DWARF CFI execution, `eh_frame`/`eh_frame_hdr` unwinding,
 inline-frame expansion, locals, arguments, expressions, watches, attach, or
 optimized-code parity in this phase.
 
@@ -113,6 +114,9 @@ misaligned/outside-stack pointers, invalid target returns, selection, and
 stale-state rejection.
 
 The existing Windows native debugger harness remains the runtime authority for
-real VEH/trap behavior. A full hosted call-stack UI proof still requires that
-Windows runtime/compositor lane; the model, ELF, ABI, and package boundaries
-do not claim that visual proof by themselves.
+real VEH/trap behavior. Phase 8 Step Out consumes frame #0's raw caller return
+address and rebuilds this stack after the real return trap, resetting selection
+to frame #0. Selecting another row is inspection only and never changes the
+execution frame. A full hosted Call Stack UI proof still requires the Windows
+runtime/compositor lane; the model, ELF, ABI, and package boundaries do not
+claim that visual proof by themselves.
