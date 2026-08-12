@@ -512,6 +512,10 @@ using guidexos::developer_studio::DebugDwarfMapperIsReady;
 using guidexos::developer_studio::DebugControllerMapBreakpoints;
 using guidexos::developer_studio::DebugControllerMarkArtifactStale;
 using guidexos::developer_studio::DebugControllerSelectCallStackFrame;
+using guidexos::developer_studio::DebugControllerBuildVariables;
+using guidexos::developer_studio::DebugDwarfVariableKind;
+using guidexos::developer_studio::DebugDwarfVariable;
+using guidexos::developer_studio::DebugDwarfVariableView;
 using guidexos::developer_studio::DebugStackFrame;
 using guidexos::developer_studio::DebugStackFrameMappingState;
 using guidexos::developer_studio::DebugUnwindTerminationReason;
@@ -3785,6 +3789,12 @@ static void pollDebug(gx_app_context* ctx) {
                                                                    &g_debugMapper, &stackError);
             if (stackBuilt) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS");
             else logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PARTIAL");
+            DebugErrorCode variablesError = DebugErrorCode::None;
+            if (stackBuilt && DebugControllerBuildVariables(&g_debugController, g_debugBackend,
+                                                              &g_debugMapper, &variablesError))
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS");
+            else
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PARTIAL");
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
             if (resolved && g_debugController.currentLocation.relativePath[0]) {
@@ -6366,7 +6376,7 @@ static bool navigateSelectedBreakpoint(gx_app_context* ctx) {
 static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
-    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 3; g_debugSelectedBreakpoint = 0; return true; }
+    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 5; g_debugSelectedBreakpoint = 0; return true; }
     if (g_debugPanelTab == 2) {
         const uint32_t frameCount = g_debugController.callStack.valid && !g_debugController.callStack.stale ?
             g_debugController.callStack.result.frameCount : 0;
@@ -6374,12 +6384,14 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
             if (g_debugController.callStack.selectedFrameIndex > 0)
                 DebugControllerSelectCallStackFrame(&g_debugController,
                                                      g_debugController.callStack.selectedFrameIndex - 1, nullptr);
+            DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
             return true;
         }
         if (keyCode == GX_KEY_DOWN) {
             if (frameCount > 0 && g_debugController.callStack.selectedFrameIndex + 1 < frameCount)
                 DebugControllerSelectCallStackFrame(&g_debugController,
                                                      g_debugController.callStack.selectedFrameIndex + 1, nullptr);
+            DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
             return true;
         }
         if (keyCode == 13 && frameCount > 0) {
@@ -6421,7 +6433,10 @@ static void drawDebugPanel(gx_app_context* ctx) {
     drawText(ctx, 112, 108, "Breakpoints");
     drawText(ctx, 260, 108, "Debug Session");
     drawText(ctx, 430, 108, "Call Stack");
-    drawPanel(ctx, { g_debugPanelTab == 0 ? 96 : (g_debugPanelTab == 1 ? 244 : 414), 116, 136, 2 }, 0xD6E4FFu);
+    drawText(ctx, 574, 108, "Locals");
+    drawText(ctx, 704, 108, "Arguments");
+    const int tabX = g_debugPanelTab == 0 ? 96 : g_debugPanelTab == 1 ? 244 : g_debugPanelTab == 2 ? 414 : g_debugPanelTab == 3 ? 558 : 688;
+    drawPanel(ctx, { tabX, 116, 118, 2 }, 0xD6E4FFu);
     if (g_debugPanelTab == 0) {
         if (g_debugController.breakpointCount == 0) drawText(ctx, 100, 150, "No source breakpoints. F9 toggles the current line.");
         const uint32_t rows = g_debugController.breakpointCount < kDebugPanelMaxRows ? g_debugController.breakpointCount : kDebugPanelMaxRows;
@@ -6524,7 +6539,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
             drawText(ctx, 170, 604, g_textScratch);
         } else drawText(ctx, 170, 604, "(stale while target is running)");
         drawText(ctx, 100, 628, "Tab Call Stack   Esc Close");
-    } else {
+    } else if (g_debugPanelTab == 2) {
         drawText(ctx, 100, 148, "Call Stack");
         if (!g_debugController.callStack.valid || g_debugController.callStack.stale) {
             drawText(ctx, 100, 178, "Call Stack unavailable");
@@ -6565,7 +6580,36 @@ static void drawDebugPanel(gx_app_context* ctx) {
             appendText(g_textScratch, sizeof(g_textScratch), DebugUnwindTerminationReasonName(termination));
             drawText(ctx, 100, 584, g_textScratch);
         }
-        drawText(ctx, 100, 628, "Up/Down Select   Enter Navigate   Tab Breakpoints   Esc Close");
+        drawText(ctx, 100, 628, "Up/Down Select   Enter Navigate   Tab Locals   Esc Close");
+    } else {
+        const bool arguments = g_debugPanelTab == 4;
+        const DebugDwarfVariableView& view = g_debugController.variables;
+        drawText(ctx, 100, 148, arguments ? "Arguments" : "Locals");
+        if (view.valid && !view.stale) {
+            copyText(g_textScratch, sizeof(g_textScratch), "Frame #");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), view.frameIndex);
+            appendText(g_textScratch, sizeof(g_textScratch), " ");
+            appendText(g_textScratch, sizeof(g_textScratch), view.functionName[0] ? view.functionName : "<unknown>");
+            drawText(ctx, 220, 148, g_textScratch);
+            drawText(ctx, 100, 174, "Name"); drawText(ctx, 300, 174, "Type"); drawText(ctx, 550, 174, "Value");
+            uint32_t row = 0;
+            for (uint32_t i = 0; i < view.variableCount && row < kDebugPanelMaxRows; ++i) {
+                const DebugDwarfVariable& variable = view.variables[i];
+                if ((arguments && variable.kind != DebugDwarfVariableKind::Argument) ||
+                    (!arguments && variable.kind != DebugDwarfVariableKind::Local)) continue;
+                const int y = 198 + static_cast<int>(row++) * kDebugPanelRowHeight;
+                drawText(ctx, 100, y, variable.name);
+                drawText(ctx, 300, y, variable.typeDisplay);
+                drawText(ctx, 550, y, variable.valueDisplay);
+            }
+            if (row == 0) drawText(ctx, 100, 198, arguments ? "No arguments" : "No locals");
+            drawText(ctx, 100, 628, "Live stopped values | Tab Arguments/Locals   Esc Close");
+        } else {
+            drawText(ctx, 100, 184, g_debugController.state == DebugSessionState::Running ?
+                     "Variables unavailable while target is running" :
+                     (view.status[0] ? view.status : "Variables unavailable"));
+            drawText(ctx, 100, 628, "Values are rebuilt for each stopped frame/stop generation");
+        }
     }
 }
 
@@ -6888,6 +6932,8 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 592, 240, "Breakpoints");
         drawText(ctx, 592, 262, "Debug Session");
         drawText(ctx, 592, 284, "Call Stack");
+        drawText(ctx, 592, 306, "Locals");
+        drawText(ctx, 592, 328, "Arguments");
     }
     drawModal(ctx);
 }
@@ -7827,8 +7873,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         if (action == GX_MOUSE_ACTION_WHEEL) return;
         if (button == GX_MOUSE_BUTTON_LEFT &&
             (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
-            if (y >= 94 && y < 122 && x >= 90 && x < 560) {
-                g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : 2);
+            if (y >= 94 && y < 122 && x >= 90 && x < 820) {
+                g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : x < 550 ? 2 : x < 680 ? 3 : 4);
                 g_debugSelectedBreakpoint = 0;
             } else if (g_debugPanelTab == 0 && y >= 130 && y < 580 && x >= 88 && x < 872) {
                 const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
@@ -7841,6 +7887,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 if (g_debugController.callStack.valid && row < g_debugController.callStack.result.frameCount &&
                     row < static_cast<uint32_t>(kDebugCallStackPanelMaxRows)) {
                     DebugControllerSelectCallStackFrame(&g_debugController, row, nullptr);
+                    DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
                     if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateDebugStackFrame(ctx, row);
                 }
             }
@@ -8285,6 +8332,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         else if (row == 8) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 9) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 10) { g_debugPanelTab = 2; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 11) { g_debugPanelTab = 3; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 12) { g_debugPanelTab = 4; g_debugPanelOpen = true; g_editorFocused = false; }
         g_debugMenuOpen = false;
         drawShell(ctx);
         return;

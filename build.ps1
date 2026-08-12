@@ -36,6 +36,7 @@ $TypesTest = Join-Path $ServerRoot "tmp\developer-studio-types-test.exe"
 $DebuggerTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-test.exe"
 $DebuggerStepTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-step-test.exe"
 $DebuggerStackTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-stack-test.exe"
+$DebuggerVariablesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-variables-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -202,7 +203,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_test.cpp",
         "-o", $DebuggerTest
     )
     & $DebuggerTest
@@ -210,7 +211,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_debugger_hosted.cpp", "tests\debugger_step_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_debugger_hosted.cpp", "tests\debugger_step_test.cpp",
         "-o", $DebuggerStepTest
     )
     & $DebuggerStepTest
@@ -218,11 +219,19 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_stack_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_stack_test.cpp",
         "-o", $DebuggerStackTest
     )
     & $DebuggerStackTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio AMD64 stack model test failed with exit code $LASTEXITCODE" }
+
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_variables_test.cpp",
+        "-o", $DebuggerVariablesTest
+    )
+    & $DebuggerVariablesTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio DWARF locals/arguments test failed with exit code $LASTEXITCODE" }
 
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
@@ -256,6 +265,7 @@ try {
     $debuggerObject = Join-Path $ObjectRoot "developer_studio_debugger.o"
     $debuggerStackObject = Join-Path $ObjectRoot "developer_studio_debugger_stack.o"
     $debugSymbolsObject = Join-Path $ObjectRoot "developer_studio_debug_symbols.o"
+    $debugVariablesObject = Join-Path $ObjectRoot "developer_studio_debug_variables.o"
     $debuggerHostedObject = Join-Path $ObjectRoot "developer_studio_debugger_hosted.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
@@ -281,12 +291,13 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger.cpp"), "-o", $debuggerObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger_stack.cpp"), "-o", $debuggerStackObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_symbols.cpp"), "-o", $debugSymbolsObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_variables.cpp"), "-o", $debugVariablesObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger_hosted.cpp"), "-o", $debuggerHostedObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
     $elfPath = Join-Path $PackageBin "developerstudio.elf"
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $elfPath)
+    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $elfPath)
     if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
         throw "Native ELF output was not produced: $elfPath"
     }
@@ -321,5 +332,6 @@ try {
     if (Test-Path -LiteralPath $DebuggerTest) { Remove-Item -LiteralPath $DebuggerTest -Force }
     if (Test-Path -LiteralPath $DebuggerStepTest) { Remove-Item -LiteralPath $DebuggerStepTest -Force }
     if (Test-Path -LiteralPath $DebuggerStackTest) { Remove-Item -LiteralPath $DebuggerStackTest -Force }
+    if (Test-Path -LiteralPath $DebuggerVariablesTest) { Remove-Item -LiteralPath $DebuggerVariablesTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

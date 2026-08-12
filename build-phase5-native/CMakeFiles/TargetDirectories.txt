@@ -22,6 +22,8 @@ D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/developer_studio
 D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/developer_studio_debugger_test.dir
 D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/developer_studio_debug_symbols_test.dir
 D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/developer_studio_debugger_step_test.dir
+D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/developer_studio_debugger_stack_test.dir
+D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/developer_studio_debugger_variables_test.dir
 D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/test.dir
 D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/edit_cache.dir
 D:/dev/guideXOS_Developer_Studio/build-phase5-native/CMakeFiles/rebuild_cache.dir

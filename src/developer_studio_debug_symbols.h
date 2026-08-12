@@ -25,6 +25,21 @@ static const uint32_t kDebugMapperMaxArchitectureBytes = 32;
 static const uint32_t kDebugMapperMaxFunctionSymbols = 16384;
 static const uint32_t kDebugMapperMaxExecutableSegments = 32;
 static const uint32_t kDebugMapperMaxFunctionNameBytes = 128;
+static const uint32_t kDebugDwarfMaxCompilationUnits = 32;
+static const uint32_t kDebugDwarfMaxDies = 8192;
+static const uint32_t kDebugDwarfMaxAbbreviations = 256;
+static const uint32_t kDebugDwarfMaxAttributes = 32;
+static const uint32_t kDebugDwarfMaxFunctions = 512;
+static const uint32_t kDebugDwarfMaxVariables = 2048;
+static const uint32_t kDebugDwarfMaxDisplayedVariables = 32;
+static const uint32_t kDebugDwarfMaxExpressionBytes = 128;
+static const uint32_t kDebugDwarfMaxTypeDepth = 32;
+static const uint32_t kDebugDwarfMaxTypeDisplayBytes = 128;
+static const uint32_t kDebugDwarfMaxVariableNameBytes = 128;
+static const uint32_t kDebugDwarfMaxVariableValueBytes = 16;
+static const uint32_t kDebugDwarfMaxExpressionOperations = 64;
+static const uint32_t kDebugDwarfMaxExpressionStack = 16;
+static const uint32_t kDebugDwarfMaxDereferences = 4;
 
 enum class DebugDwarfMapperState {
     Empty = 0,
@@ -93,6 +108,210 @@ struct DebugDwarfFunctionSymbol {
     char name[kDebugMapperMaxFunctionNameBytes];
 };
 
+enum class DebugDwarfVariableKind {
+    Argument = 0,
+    Local
+};
+
+enum class DebugDwarfVariableState {
+    Available = 0,
+    Unavailable,
+    UnsupportedLocation,
+    OutOfScope,
+    Stale,
+    ReadFailure,
+    MalformedDebugInfo
+};
+
+enum class DebugDwarfValueKind {
+    Unavailable = 0,
+    SignedInteger,
+    UnsignedInteger,
+    Boolean,
+    Pointer,
+    FloatingPoint,
+    Address,
+    Aggregate,
+    Array,
+    Bytes
+};
+
+enum class DebugDwarfLocationKind {
+    Unavailable = 0,
+    Register,
+    MemoryAddress,
+    ImmediateValue,
+    Unsupported,
+    Malformed
+};
+
+// These values intentionally retain only the bounded DIE data needed by the
+// first locals/arguments implementation. No raw DIE pointers survive a load.
+struct DebugDwarfDieInfo {
+    uint64_t offset;
+    uint32_t unitIndex;
+    uint32_t parentIndex;
+    uint16_t tag;
+    uint16_t depth;
+    bool hasChildren;
+    bool hasName;
+    bool nameIsStringIndex;
+    uint64_t nameStringIndex;
+    char name[kDebugDwarfMaxVariableNameBytes];
+    bool hasType;
+    uint64_t typeReference;
+    bool hasLowPc;
+    bool lowPcIsAddressIndex;
+    uint64_t lowPc;
+    uint64_t lowPcIndex;
+    bool hasHighPc;
+    uint64_t highPcOffset;
+    bool highPcIsAddress;
+    bool hasRanges;
+    uint64_t rangesOffset;
+    bool hasFrameBase;
+    uint32_t frameBaseLength;
+    uint8_t frameBase[kDebugDwarfMaxExpressionBytes];
+    bool hasLocation;
+    bool locationIsList;
+    uint32_t locationLength;
+    uint8_t location[kDebugDwarfMaxExpressionBytes];
+    bool locationAddressIsIndex;
+    uint64_t locationAddressIndex;
+    uint64_t locationAddress;
+    bool hasByteSize;
+    uint64_t byteSize;
+    bool hasEncoding;
+    uint64_t encoding;
+    bool hasDeclFile;
+    uint32_t declFile;
+    bool hasDeclLine;
+    uint32_t declLine;
+    bool hasConstValue;
+    bool constValueSigned;
+    uint64_t constValue;
+    bool hasCount;
+    uint64_t count;
+    bool hasStrOffsetsBase;
+    uint32_t strOffsetsBase;
+    bool hasAddrBase;
+    uint32_t addrBase;
+    bool artificial;
+};
+
+struct DebugDwarfCompilationUnitInfo {
+    uint64_t sectionOffset;
+    uint64_t unitEnd;
+    uint32_t rootDieIndex;
+    uint32_t dieCount;
+    uint32_t abbrevOffset;
+    uint32_t strOffsetsBase;
+    uint32_t addrBase;
+    uint8_t addressSize;
+    uint16_t version;
+    uint8_t unitType;
+};
+
+struct DebugDwarfFunctionInfo {
+    uint64_t dieOffset;
+    uint32_t dieIndex;
+    uint64_t lowPc;
+    uint64_t highPc;
+    bool hasRange;
+    char name[kDebugMapperMaxFunctionNameBytes];
+    uint32_t frameBaseLength;
+    uint8_t frameBase[kDebugDwarfMaxExpressionBytes];
+};
+
+struct DebugDwarfVariableInfo {
+    uint64_t dieOffset;
+    uint32_t dieIndex;
+    uint32_t functionIndex;
+    DebugDwarfVariableKind kind;
+    uint16_t scopeDepth;
+    char name[kDebugDwarfMaxVariableNameBytes];
+    uint64_t typeDieOffset;
+    uint32_t declFile;
+    uint32_t declLine;
+    bool artificial;
+};
+
+struct DebugDwarfRegisterSet {
+    bool valid;
+    uint64_t rax;
+    uint64_t rbx;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t rbp;
+    uint64_t rsp;
+    uint64_t r8;
+    uint64_t r9;
+    uint64_t r10;
+    uint64_t r11;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
+    uint64_t rip;
+    uint64_t rflags;
+};
+
+struct DebugDwarfFrameContext {
+    uint32_t frameIndex;
+    uint64_t instructionAddress;
+    uint64_t processId;
+    uint64_t nativeRuntimeId;
+    uint64_t threadId;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    bool frameBaseKnown;
+    uint64_t frameBase;
+    DebugDwarfRegisterSet registers;
+};
+
+struct DebugDwarfVariable {
+    uint64_t dieOffset;
+    DebugDwarfVariableKind kind;
+    DebugDwarfVariableState state;
+    DebugDwarfValueKind valueKind;
+    DebugDwarfLocationKind locationKind;
+    uint64_t typeDieOffset;
+    uint64_t address;
+    uint16_t registerNumber;
+    uint16_t scopeDepth;
+    uint32_t rawByteCount;
+    uint8_t rawBytes[kDebugDwarfMaxVariableValueBytes];
+    char name[kDebugDwarfMaxVariableNameBytes];
+    char typeDisplay[kDebugDwarfMaxTypeDisplayBytes];
+    char valueDisplay[kDebugDwarfMaxTypeDisplayBytes];
+    char locationDisplay[kDebugDwarfMaxTypeDisplayBytes];
+    char status[kDebugDwarfMaxTypeDisplayBytes];
+};
+
+struct DebugDwarfVariableView {
+    bool valid;
+    bool stale;
+    uint32_t frameIndex;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    uint64_t frameInstructionAddress;
+    uint32_t functionIndex;
+    char functionName[kDebugMapperMaxFunctionNameBytes];
+    uint32_t variableCount;
+    uint32_t argumentCount;
+    uint32_t localCount;
+    char status[kDebugDwarfMaxTypeDisplayBytes];
+    DebugDwarfVariable variables[kDebugDwarfMaxDisplayedVariables];
+};
+
+typedef bool (*DebugDwarfReadMemoryFn)(void* userData, uint64_t sessionGeneration,
+                                       uint64_t processId, uint64_t nativeRuntimeId,
+                                       uint64_t threadId, uint64_t stopGeneration,
+                                       uint64_t address, uint8_t* bytes, uint32_t requested,
+                                       uint32_t* returned);
+
 struct DebugDwarfExecutableSegment {
     uint64_t startAddress;
     uint64_t endAddress;
@@ -116,6 +335,23 @@ struct DebugDwarfMapper {
     uint64_t ehFrameSectionBytes;
     uint64_t ehFrameHeaderSectionBytes;
     uint64_t debugFrameSectionBytes;
+    uint64_t debugInfoSectionBytes;
+    uint64_t debugAbbrevSectionBytes;
+    uint64_t debugStringSectionBytes;
+    uint64_t debugStringOffsetsSectionBytes;
+    uint64_t debugLineStringSectionBytes;
+    uint64_t debugAddressSectionBytes;
+    uint64_t debugLocationListsSectionBytes;
+    uint32_t debugInfoDieCount;
+    uint32_t debugInfoCompilationUnitCount;
+    uint32_t debugInfoFunctionCount;
+    uint32_t debugInfoVariableCount;
+    uint32_t debugInfoParseMilliseconds;
+    bool debugInfoReady;
+    DebugDwarfCompilationUnitInfo compilationUnits[kDebugDwarfMaxCompilationUnits];
+    DebugDwarfDieInfo dies[kDebugDwarfMaxDies];
+    DebugDwarfFunctionInfo debugFunctions[kDebugDwarfMaxFunctions];
+    DebugDwarfVariableInfo debugVariables[kDebugDwarfMaxVariables];
     bool truncated;
     char statusText[160];
     DebugDwarfSourceFile sourceFiles[kDebugMapperMaxSourceFiles];
@@ -170,6 +406,18 @@ bool DebugDwarfMapperLookupFunction(const DebugDwarfMapper* mapper, uint64_t add
                                     char* name, uint32_t nameSize, uint64_t* startAddress,
                                     uint64_t* size, DebugDwarfError* error);
 bool DebugDwarfMapperIsExecutableAddress(const DebugDwarfMapper* mapper, uint64_t address);
+bool DebugDwarfParseVariables(DebugDwarfMapper* mapper, const unsigned char* elfBytes,
+                              uint64_t elfSize);
+const char* DebugDwarfVariableKindName(DebugDwarfVariableKind kind);
+const char* DebugDwarfVariableStateName(DebugDwarfVariableState state);
+const char* DebugDwarfValueKindName(DebugDwarfValueKind kind);
+const char* DebugDwarfLocationKindName(DebugDwarfLocationKind kind);
+bool DebugDwarfMapperLookupDebugFunction(const DebugDwarfMapper* mapper, uint64_t address,
+                                         uint32_t* functionIndex, DebugDwarfError* error);
+bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
+                                const DebugDwarfFrameContext& frame,
+                                DebugDwarfReadMemoryFn readMemory, void* userData,
+                                DebugDwarfVariableView* view);
 bool DebugDwarfNormalizeSourcePath(const char* projectRoot, const char* rawPath,
                                    char* relativePath, uint32_t relativePathSize,
                                    bool* external);

@@ -9,6 +9,10 @@ request/snapshot offsets remain unchanged; Phase 4 appends the Continue command,
 pending status, thread/stop-generation identity, register context, and
 RFLAGS audit fields. The ABI layout test covers the resulting fixed sizes.
 
+## Phase 9 variable invalidation
+
+Continue invalidates the stopped Locals/Arguments generation. Values are rebuilt only after the next genuine paused stop.
+
 ## Phase 5 source stepping and Phase 6 Step Over
 
 Phase 5 adds a separate user source-step command and pending mode. The private
@@ -101,3 +105,4 @@ Supported commands:
 
 Step Out is documented in [DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). The
 next milestone is bounded locals and function arguments; Pause remains disabled.
+Continue invalidates the stopped Locals/Arguments generation. Values are rebuilt only after the next genuine paused stop.

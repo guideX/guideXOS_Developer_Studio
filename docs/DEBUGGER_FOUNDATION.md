@@ -249,3 +249,6 @@ the real return-address `EXCEPTION_BREAKPOINT`. See
 [DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). Pause, locals, arguments,
 watches, DWARF CFI unwinding, and optimized-code full debugging remain
 unsupported.
+## Phase 9 locals and arguments
+
+The debugger now has a bounded read-only DWARF variable index for simple Native ELF debug builds. Locals and formal arguments are evaluated from the exact stopped register/frame-base/target-memory state. See [DEBUGGER_LOCALS_ARGUMENTS.md](DEBUGGER_LOCALS_ARGUMENTS.md). This does not add Watch expressions, arbitrary C++ expression evaluation, or full optimized-variable debugging.

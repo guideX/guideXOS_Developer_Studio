@@ -9,6 +9,10 @@ Status: implemented in the debugger model and hosted AMD64 path. The feature
 is intended for bounded debug-build Native ELF sessions (`-g -O0`) and does not
 claim optimized-code debugging parity.
 
+## Phase 9 variable invalidation
+
+Step Into invalidates variable inspection while the target runs and rebuilds it from the new stopped context.
+
 ## User command
 
 `F11` is Step Into only when an owned session is genuinely `Paused`, the
@@ -96,3 +100,4 @@ step stop, including breakpoint rebinding and step resume.
 
 The next milestone is bounded locals and function arguments. Phase 8 does not
 claim Pause, inline-frame semantics, or optimized-code full debugging.
+Step Into invalidates variable inspection while the target runs and rebuilds it from the new stopped context.

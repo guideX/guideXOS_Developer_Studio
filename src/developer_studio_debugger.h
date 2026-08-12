@@ -1,6 +1,7 @@
 #pragma once
 
 #include "developer_studio_run.h"
+#include "developer_studio_debug_symbols.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -363,8 +364,6 @@ struct DebugBreakpoint {
     char message[kDebugMaxMessageBytes];
 };
 
-struct DebugDwarfMapper;
-
 struct DebugEvent {
     uint64_t sequence;
     uint64_t sessionGeneration;
@@ -632,6 +631,7 @@ struct DebugController {
     uint64_t lastBreakpointId;
     uint64_t nextTemporaryBreakpointId;
     DebugCallStack callStack;
+    DebugDwarfVariableView variables;
     DebugSourceStepOperation sourceStep;
     DebugStepOverOperation stepOver;
     DebugStepOutOperation stepOut;
@@ -697,6 +697,8 @@ const char* DebugStackFrameMappingStateName(DebugStackFrameMappingState state);
 const char* DebugStackFrameConfidenceName(DebugStackFrameConfidence confidence);
 const char* DebugUnwindTerminationReasonName(DebugUnwindTerminationReason reason);
 bool DebugControllerBuildCallStack(DebugController* controller, const DebugBackend& backend,
+                                   const DebugDwarfMapper* mapper, DebugErrorCode* error);
+bool DebugControllerBuildVariables(DebugController* controller, const DebugBackend& backend,
                                    const DebugDwarfMapper* mapper, DebugErrorCode* error);
 bool DebugControllerSelectCallStackFrame(DebugController* controller, uint32_t frameIndex,
                                          DebugErrorCode* error);

@@ -1,5 +1,9 @@
 # Debugger Phase 2 — DWARF / Source-Line Mapping
 
+## Phase 9 variable lookup
+
+Phase 9 reuses the exact ELF artifact identity and stopped-PC policy for DWARF variable lookup. Source mapping and variable lookup remain separate: a source line does not provide a runtime value.
+
 ## Phase 7 call-stack enrichment
 
 Callers discovered from the bounded AMD64 frame-pointer chain keep their raw
@@ -181,3 +185,4 @@ for caller source and symbol attribution. Expressions, locals, watches,
 conditional/data breakpoints, and attach/remote debugging remain future
 milestones. Phase 4 uses the mapping only to identify the exact physical address;
 it does not infer source-level stepping from a single machine instruction.
+Phase 9 reuses the exact ELF artifact identity and stopped-PC policy for DWARF variable lookup. Source mapping and variable lookup remain separate: a source line does not provide a runtime value.

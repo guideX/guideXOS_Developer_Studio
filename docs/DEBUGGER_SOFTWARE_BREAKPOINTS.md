@@ -9,6 +9,10 @@ Phase 3 adds the first hosted Native ELF software-breakpoint path. It is intenti
 limited to the current AMD64/ELF64 fixed-address `ET_EXEC` runtime and is not a general
 purpose process debugger.
 
+## Phase 9 interaction
+
+Locals/Arguments inspection is rebuilt only after a real owned breakpoint stop; breakpoint source text is never treated as a value source.
+
 ## Phase 5 interaction
 
 The Phase 4 internal breakpoint-recovery single step is distinct from the
@@ -165,3 +169,4 @@ If a user breakpoint already owns the caller return address, the logical
 StepOut owner is added without a second patch. User intent wins at the combined
 trap, so the persistent breakpoint remains `Paused / Breakpoint` after the
 temporary owner is removed.
+Locals/Arguments inspection is only rebuilt after a real owned breakpoint stop; breakpoint source text is never treated as a value source.

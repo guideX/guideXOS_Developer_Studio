@@ -4,6 +4,8 @@ Status: implemented for the hosted AMD64 Native ELF debug path. This phase
 adds a real, bounded call stack for a stopped thread. It is intentionally a
 frame-pointer unwinder, not a general-purpose unwind engine.
 
+Selecting a Call Stack frame also rebuilds the Phase 9 Locals and Arguments view. Frame #0 has real GPR context; caller frames conservatively expose only locations supported by known frame data.
+
 ## Scope and evidence boundary
 
 The supported target remains the Windows-hosted, little-endian ELF64 AMD64,
@@ -120,3 +122,4 @@ to frame #0. Selecting another row is inspection only and never changes the
 execution frame. A full hosted Call Stack UI proof still requires the Windows
 runtime/compositor lane; the model, ELF, ABI, and package boundaries do not
 claim that visual proof by themselves.
+Selecting a Call Stack frame also rebuilds the Phase 9 Locals and Arguments view. Frame #0 has real GPR context; caller frames conservatively expose only locations supported by known frame data.

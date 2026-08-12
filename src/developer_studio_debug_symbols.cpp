@@ -1135,7 +1135,11 @@ bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
     mapper->identity.projectGeneration = projectGeneration;
     mapper->identity.mapperGeneration = mapperGeneration;
     if (executableSize != 0 && executableSize != elfSize) mapper->error = DebugDwarfError::ArtifactChanged;
-    else parseElf(mapper, projectRoot, elfBytes, elfSize);
+    else if (!parseElf(mapper, projectRoot, elfBytes, elfSize)) {
+        // parseElf records the precise mapper error.
+    } else if (!DebugDwarfParseVariables(mapper, elfBytes, elfSize)) {
+        if (mapper->error == DebugDwarfError::None) mapper->error = DebugDwarfError::MalformedDwarf;
+    }
     mapper->state = mapper->error == DebugDwarfError::None && mapper->lineRowCount > 0 ?
         DebugDwarfMapperState::Ready : DebugDwarfMapperState::Failed;
     if (mapper->state == DebugDwarfMapperState::Ready) mapper->error = DebugDwarfError::None;

@@ -154,6 +154,7 @@ static void clearStoppedContext(DebugController* controller) {
     controller->reportedInstructionPointer = 0;
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
+    controller->variables = DebugDwarfVariableView();
     clearCallStack(controller);
 }
 

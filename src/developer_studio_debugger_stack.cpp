@@ -315,6 +315,65 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
     return true;
 }
 
+bool DebugControllerBuildVariables(DebugController* controller, const DebugBackend& backend,
+                                   const DebugDwarfMapper* mapper, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || controller->state != DebugSessionState::Paused ||
+        !controller->callStack.valid || controller->callStack.stale || !mapper ||
+        !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
+        !DebugRegisterContextIsValid(controller->stoppedContext)) {
+        if (error) *error = DebugErrorCode::StaleStopContext;
+        if (controller) controller->variables = DebugDwarfVariableView();
+        return false;
+    }
+    const uint32_t selected = controller->callStack.selectedFrameIndex;
+    if (selected >= controller->callStack.result.frameCount) {
+        if (error) *error = DebugErrorCode::StaleStopContext;
+        controller->variables = DebugDwarfVariableView();
+        return false;
+    }
+    const DebugStackFrame& stackFrame = controller->callStack.result.frames[selected];
+    DebugDwarfFrameContext frame = {};
+    frame.frameIndex = selected;
+    frame.instructionAddress = stackFrame.current ? controller->stoppedContext.rip : stackFrame.lookupAddress;
+    frame.processId = controller->processId;
+    frame.nativeRuntimeId = controller->nativeRuntimeId;
+    frame.threadId = controller->currentThreadId;
+    frame.sessionGeneration = controller->sessionGeneration;
+    frame.stopGeneration = controller->stopGeneration;
+    frame.frameBaseKnown = false;
+    DebugDwarfError dwarfError = DebugDwarfError::None;
+    uint32_t functionIndex = 0;
+    if (DebugDwarfMapperLookupDebugFunction(mapper, frame.instructionAddress, &functionIndex, &dwarfError)) {
+        const DebugDwarfFunctionInfo& function = mapper->debugFunctions[functionIndex];
+        // The known Clang debug-build frame-base expression is DW_OP_reg6.
+        // It is checked per function and never assumed globally.
+        if (function.frameBaseLength == 1 && function.frameBase[0] == 0x56) {
+            frame.frameBase = stackFrame.rbp;
+            frame.frameBaseKnown = frame.frameBase != 0;
+        }
+    }
+    if (stackFrame.current) {
+        const DebugRegisterContext& context = controller->stoppedContext;
+        frame.registers.valid = true;
+        frame.registers.rax = context.rax; frame.registers.rbx = context.rbx;
+        frame.registers.rcx = context.rcx; frame.registers.rdx = context.rdx;
+        frame.registers.rsi = context.rsi; frame.registers.rdi = context.rdi;
+        frame.registers.rbp = context.rbp; frame.registers.rsp = context.rsp;
+        frame.registers.r8 = context.r8; frame.registers.r9 = context.r9;
+        frame.registers.r10 = context.r10; frame.registers.r11 = context.r11;
+        frame.registers.r12 = context.r12; frame.registers.r13 = context.r13;
+        frame.registers.r14 = context.r14; frame.registers.r15 = context.r15;
+        frame.registers.rip = context.rip; frame.registers.rflags = context.rflags;
+    }
+    if (!DebugDwarfInspectVariables(mapper, frame, backend.readTargetMemory, backend.userData,
+                                    &controller->variables)) {
+        if (error) *error = DebugErrorCode::SourceMappingUnavailable;
+        return false;
+    }
+    return true;
+}
+
 bool DebugControllerSelectCallStackFrame(DebugController* controller, uint32_t frameIndex,
                                          DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;

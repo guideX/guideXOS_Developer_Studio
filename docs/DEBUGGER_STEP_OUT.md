@@ -20,6 +20,10 @@ Step Out never selects a Call Stack row as the execution context. A selected
 caller frame is an inspection context only. The operation always uses frame #0
 from the exact current session, process, thread, artifact, and stop generation.
 
+## Phase 9 variable invalidation
+
+Step Out invalidates Locals/Arguments until the real caller stop is published. The execution marker remains tied to frame #0 while a selected caller frame is inspected.
+
 ## Return-address policy
 
 The frame-pointer unwinder exposes both values:
@@ -71,3 +75,4 @@ debugging, or multi-thread execution control.
 The Phase 8 fixture is `tests/fixtures/debugger-phase8`. Its primary proof is
 `level3 -> level2 -> level1 -> gx_main`; repeated Shift+F11 moves outward one
 physical frame at a time.
+Step Out invalidates Locals/Arguments until the real caller stop is published. The execution marker remains tied to frame #0 while a selected caller frame is inspected.

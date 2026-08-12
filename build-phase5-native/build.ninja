@@ -56,8 +56,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_find.cpp.obj: 
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_syntax.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_syntax.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -67,8 +65,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_syntax.cpp.obj
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_output.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_output.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -78,8 +74,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_output.cpp.obj
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_build.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_build.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -89,8 +83,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_build.cpp.obj:
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_models.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_models.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -100,8 +92,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_models.cpp.obj
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_projects.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_projects.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -111,8 +101,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_projects.cpp.o
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_run.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_run.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -122,8 +110,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_run.cpp.obj: C
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_workspace.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_workspace.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -133,8 +119,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_workspace.cpp.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_project_search.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_project_search.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -144,8 +128,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_project_search
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_symbols.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_symbols.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -155,8 +137,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_symbols.cpp.ob
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_navigation.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_navigation.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -166,8 +146,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_navigation.cpp
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_references.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_references.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -177,8 +155,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_references.cpp
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_rename.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_rename.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -188,8 +164,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_rename.cpp.obj
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_completion.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_completion.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -199,8 +173,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_completion.cpp
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_signature.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_signature.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -210,8 +182,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_signature.cpp.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_include_graph.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_include_graph.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -221,8 +191,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_include_graph.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_relationships.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_relationships.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -232,8 +200,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_relationships.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_ownership.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_ownership.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -243,8 +209,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_ownership.cpp.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_types.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_types.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -254,8 +218,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_types.cpp.obj:
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_debugger.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -265,8 +227,15 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.o
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
+
+build CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_debugger_stack.cpp || cmake_object_order_depends_target_developer_studio_models
+  CONFIG = Debug
+  DEP_FILE = CMakeFiles\developer_studio_models.dir\src\developer_studio_debugger_stack.cpp.obj.d
+  FLAGS = -g -std=c++11
+  INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
+  OBJECT_DIR = CMakeFiles\developer_studio_models.dir
+  OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_debug_symbols.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -276,8 +245,15 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
+
+build CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_variables.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_debug_variables.cpp || cmake_object_order_depends_target_developer_studio_models
+  CONFIG = Debug
+  DEP_FILE = CMakeFiles\developer_studio_models.dir\src\developer_studio_debug_variables.cpp.obj.d
+  FLAGS = -g -std=c++11
+  INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
+  OBJECT_DIR = CMakeFiles\developer_studio_models.dir
+  OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 build CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj: CXX_COMPILER__developer_studio_models_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/src/developer_studio_debugger_hosted.cpp || cmake_object_order_depends_target_developer_studio_models
@@ -287,8 +263,6 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hoste
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_models.dir\src
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
-  TARGET_PDB = libdeveloper_studio_models.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 
@@ -299,15 +273,14 @@ build CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hoste
 #############################################
 # Link the static library libdeveloper_studio_models.a
 
-build libdeveloper_studio_models.a: CXX_STATIC_LIBRARY_LINKER__developer_studio_models_Debug CMakeFiles/developer_studio_models.dir/src/developer_studio_find.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_syntax.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_output.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_build.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_models.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_projects.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_run.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_workspace.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_project_search.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_symbols.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_navigation.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_references.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_rename.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_completion.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_signature.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_include_graph.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_relationships.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_ownership.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_types.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj
+build libdeveloper_studio_models.a: CXX_STATIC_LIBRARY_LINKER__developer_studio_models_Debug CMakeFiles/developer_studio_models.dir/src/developer_studio_find.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_syntax.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_output.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_build.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_models.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_projects.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_run.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_workspace.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_project_search.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_symbols.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_navigation.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_references.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_rename.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_completion.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_signature.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_include_graph.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_relationships.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_ownership.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_types.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_stack.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_symbols.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debug_variables.cpp.obj CMakeFiles/developer_studio_models.dir/src/developer_studio_debugger_hosted.cpp.obj
   CONFIG = Debug
   LANGUAGE_COMPILE_FLAGS = -g
   OBJECT_DIR = CMakeFiles\developer_studio_models.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_models.dir\developer_studio_models.pdb
   TARGET_FILE = libdeveloper_studio_models.a
-  TARGET_PDB = libdeveloper_studio_models.pdb
+  TARGET_PDB = developer_studio_models.a.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_models.dir
 
 # =============================================================================
@@ -326,8 +299,6 @@ build CMakeFiles/developer_studio_model_test.dir/tests/model_test.cpp.obj: CXX_C
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_model_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_model_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_model_test.dir\
-  TARGET_PDB = developer_studio_model_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_model_test.dir
 
 
@@ -345,10 +316,9 @@ build developer_studio_model_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_m
   OBJECT_DIR = CMakeFiles\developer_studio_model_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_model_test.dir\
   TARGET_FILE = developer_studio_model_test.exe
   TARGET_IMPLIB = libdeveloper_studio_model_test.dll.a
-  TARGET_PDB = developer_studio_model_test.pdb
+  TARGET_PDB = developer_studio_model_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_model_test.dir
 
 # =============================================================================
@@ -367,8 +337,6 @@ build CMakeFiles/developer_studio_workflow_test.dir/tests/workflow_test.cpp.obj:
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_workflow_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_workflow_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_workflow_test.dir\
-  TARGET_PDB = developer_studio_workflow_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_workflow_test.dir
 
 
@@ -386,10 +354,9 @@ build developer_studio_workflow_test.exe: CXX_EXECUTABLE_LINKER__developer_studi
   OBJECT_DIR = CMakeFiles\developer_studio_workflow_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_workflow_test.dir\
   TARGET_FILE = developer_studio_workflow_test.exe
   TARGET_IMPLIB = libdeveloper_studio_workflow_test.dll.a
-  TARGET_PDB = developer_studio_workflow_test.pdb
+  TARGET_PDB = developer_studio_workflow_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_workflow_test.dir
 
 # =============================================================================
@@ -408,8 +375,6 @@ build CMakeFiles/developer_studio_project_test.dir/tests/project_test.cpp.obj: C
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_project_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_project_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_project_test.dir\
-  TARGET_PDB = developer_studio_project_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_project_test.dir
 
 
@@ -427,10 +392,9 @@ build developer_studio_project_test.exe: CXX_EXECUTABLE_LINKER__developer_studio
   OBJECT_DIR = CMakeFiles\developer_studio_project_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_project_test.dir\
   TARGET_FILE = developer_studio_project_test.exe
   TARGET_IMPLIB = libdeveloper_studio_project_test.dll.a
-  TARGET_PDB = developer_studio_project_test.pdb
+  TARGET_PDB = developer_studio_project_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_project_test.dir
 
 # =============================================================================
@@ -449,8 +413,6 @@ build CMakeFiles/developer_studio_build_test.dir/tests/build_test.cpp.obj: CXX_C
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_build_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_build_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_build_test.dir\
-  TARGET_PDB = developer_studio_build_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_build_test.dir
 
 
@@ -468,10 +430,9 @@ build developer_studio_build_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_b
   OBJECT_DIR = CMakeFiles\developer_studio_build_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_build_test.dir\
   TARGET_FILE = developer_studio_build_test.exe
   TARGET_IMPLIB = libdeveloper_studio_build_test.dll.a
-  TARGET_PDB = developer_studio_build_test.pdb
+  TARGET_PDB = developer_studio_build_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_build_test.dir
 
 # =============================================================================
@@ -490,8 +451,6 @@ build CMakeFiles/developer_studio_run_test.dir/tests/run_test.cpp.obj: CXX_COMPI
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_run_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_run_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_run_test.dir\
-  TARGET_PDB = developer_studio_run_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_run_test.dir
 
 
@@ -509,10 +468,9 @@ build developer_studio_run_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_run
   OBJECT_DIR = CMakeFiles\developer_studio_run_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_run_test.dir\
   TARGET_FILE = developer_studio_run_test.exe
   TARGET_IMPLIB = libdeveloper_studio_run_test.dll.a
-  TARGET_PDB = developer_studio_run_test.pdb
+  TARGET_PDB = developer_studio_run_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_run_test.dir
 
 # =============================================================================
@@ -531,8 +489,6 @@ build CMakeFiles/developer_studio_output_test.dir/tests/output_test.cpp.obj: CXX
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_output_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_output_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_output_test.dir\
-  TARGET_PDB = developer_studio_output_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_output_test.dir
 
 
@@ -550,10 +506,9 @@ build developer_studio_output_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_
   OBJECT_DIR = CMakeFiles\developer_studio_output_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_output_test.dir\
   TARGET_FILE = developer_studio_output_test.exe
   TARGET_IMPLIB = libdeveloper_studio_output_test.dll.a
-  TARGET_PDB = developer_studio_output_test.pdb
+  TARGET_PDB = developer_studio_output_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_output_test.dir
 
 # =============================================================================
@@ -572,8 +527,6 @@ build CMakeFiles/developer_studio_navigation_test.dir/tests/navigation_test.cpp.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_navigation_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_navigation_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_navigation_test.dir\
-  TARGET_PDB = developer_studio_navigation_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_navigation_test.dir
 
 
@@ -591,10 +544,9 @@ build developer_studio_navigation_test.exe: CXX_EXECUTABLE_LINKER__developer_stu
   OBJECT_DIR = CMakeFiles\developer_studio_navigation_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_navigation_test.dir\
   TARGET_FILE = developer_studio_navigation_test.exe
   TARGET_IMPLIB = libdeveloper_studio_navigation_test.dll.a
-  TARGET_PDB = developer_studio_navigation_test.pdb
+  TARGET_PDB = developer_studio_navigation_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_navigation_test.dir
 
 # =============================================================================
@@ -613,8 +565,6 @@ build CMakeFiles/developer_studio_syntax_test.dir/tests/syntax_test.cpp.obj: CXX
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_syntax_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_syntax_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_syntax_test.dir\
-  TARGET_PDB = developer_studio_syntax_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_syntax_test.dir
 
 
@@ -632,10 +582,9 @@ build developer_studio_syntax_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_
   OBJECT_DIR = CMakeFiles\developer_studio_syntax_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_syntax_test.dir\
   TARGET_FILE = developer_studio_syntax_test.exe
   TARGET_IMPLIB = libdeveloper_studio_syntax_test.dll.a
-  TARGET_PDB = developer_studio_syntax_test.pdb
+  TARGET_PDB = developer_studio_syntax_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_syntax_test.dir
 
 # =============================================================================
@@ -654,8 +603,6 @@ build CMakeFiles/developer_studio_find_test.dir/tests/find_test.cpp.obj: CXX_COM
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_find_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_find_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_find_test.dir\
-  TARGET_PDB = developer_studio_find_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_find_test.dir
 
 
@@ -673,10 +620,9 @@ build developer_studio_find_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_fi
   OBJECT_DIR = CMakeFiles\developer_studio_find_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_find_test.dir\
   TARGET_FILE = developer_studio_find_test.exe
   TARGET_IMPLIB = libdeveloper_studio_find_test.dll.a
-  TARGET_PDB = developer_studio_find_test.pdb
+  TARGET_PDB = developer_studio_find_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_find_test.dir
 
 # =============================================================================
@@ -695,8 +641,6 @@ build CMakeFiles/developer_studio_project_search_test.dir/tests/project_search_t
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_project_search_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_project_search_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_project_search_test.dir\
-  TARGET_PDB = developer_studio_project_search_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_project_search_test.dir
 
 
@@ -714,10 +658,9 @@ build developer_studio_project_search_test.exe: CXX_EXECUTABLE_LINKER__developer
   OBJECT_DIR = CMakeFiles\developer_studio_project_search_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_project_search_test.dir\
   TARGET_FILE = developer_studio_project_search_test.exe
   TARGET_IMPLIB = libdeveloper_studio_project_search_test.dll.a
-  TARGET_PDB = developer_studio_project_search_test.pdb
+  TARGET_PDB = developer_studio_project_search_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_project_search_test.dir
 
 # =============================================================================
@@ -736,8 +679,6 @@ build CMakeFiles/developer_studio_symbol_test.dir/tests/symbol_test.cpp.obj: CXX
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_symbol_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_symbol_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_symbol_test.dir\
-  TARGET_PDB = developer_studio_symbol_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_symbol_test.dir
 
 
@@ -755,10 +696,9 @@ build developer_studio_symbol_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_
   OBJECT_DIR = CMakeFiles\developer_studio_symbol_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_symbol_test.dir\
   TARGET_FILE = developer_studio_symbol_test.exe
   TARGET_IMPLIB = libdeveloper_studio_symbol_test.dll.a
-  TARGET_PDB = developer_studio_symbol_test.pdb
+  TARGET_PDB = developer_studio_symbol_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_symbol_test.dir
 
 # =============================================================================
@@ -777,8 +717,6 @@ build CMakeFiles/developer_studio_navigation_definition_test.dir/tests/navigatio
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_navigation_definition_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_navigation_definition_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_navigation_definition_test.dir\
-  TARGET_PDB = developer_studio_navigation_definition_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_navigation_definition_test.dir
 
 
@@ -796,10 +734,9 @@ build developer_studio_navigation_definition_test.exe: CXX_EXECUTABLE_LINKER__de
   OBJECT_DIR = CMakeFiles\developer_studio_navigation_definition_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_navigation_definition_test.dir\
   TARGET_FILE = developer_studio_navigation_definition_test.exe
   TARGET_IMPLIB = libdeveloper_studio_navigation_definition_test.dll.a
-  TARGET_PDB = developer_studio_navigation_definition_test.pdb
+  TARGET_PDB = developer_studio_navigation_definition_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_navigation_definition_test.dir
 
 # =============================================================================
@@ -818,8 +755,6 @@ build CMakeFiles/developer_studio_reference_test.dir/tests/reference_test.cpp.ob
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_reference_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_reference_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_reference_test.dir\
-  TARGET_PDB = developer_studio_reference_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_reference_test.dir
 
 
@@ -837,10 +772,9 @@ build developer_studio_reference_test.exe: CXX_EXECUTABLE_LINKER__developer_stud
   OBJECT_DIR = CMakeFiles\developer_studio_reference_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_reference_test.dir\
   TARGET_FILE = developer_studio_reference_test.exe
   TARGET_IMPLIB = libdeveloper_studio_reference_test.dll.a
-  TARGET_PDB = developer_studio_reference_test.pdb
+  TARGET_PDB = developer_studio_reference_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_reference_test.dir
 
 # =============================================================================
@@ -859,8 +793,6 @@ build CMakeFiles/developer_studio_rename_test.dir/tests/rename_test.cpp.obj: CXX
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_rename_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_rename_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_rename_test.dir\
-  TARGET_PDB = developer_studio_rename_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_rename_test.dir
 
 
@@ -878,10 +810,9 @@ build developer_studio_rename_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_
   OBJECT_DIR = CMakeFiles\developer_studio_rename_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_rename_test.dir\
   TARGET_FILE = developer_studio_rename_test.exe
   TARGET_IMPLIB = libdeveloper_studio_rename_test.dll.a
-  TARGET_PDB = developer_studio_rename_test.pdb
+  TARGET_PDB = developer_studio_rename_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_rename_test.dir
 
 # =============================================================================
@@ -900,8 +831,6 @@ build CMakeFiles/developer_studio_completion_test.dir/tests/completion_test.cpp.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_completion_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_completion_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_completion_test.dir\
-  TARGET_PDB = developer_studio_completion_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_completion_test.dir
 
 
@@ -919,10 +848,9 @@ build developer_studio_completion_test.exe: CXX_EXECUTABLE_LINKER__developer_stu
   OBJECT_DIR = CMakeFiles\developer_studio_completion_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_completion_test.dir\
   TARGET_FILE = developer_studio_completion_test.exe
   TARGET_IMPLIB = libdeveloper_studio_completion_test.dll.a
-  TARGET_PDB = developer_studio_completion_test.pdb
+  TARGET_PDB = developer_studio_completion_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_completion_test.dir
 
 # =============================================================================
@@ -941,8 +869,6 @@ build CMakeFiles/developer_studio_signature_test.dir/tests/signature_test.cpp.ob
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_signature_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_signature_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_signature_test.dir\
-  TARGET_PDB = developer_studio_signature_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_signature_test.dir
 
 
@@ -960,10 +886,9 @@ build developer_studio_signature_test.exe: CXX_EXECUTABLE_LINKER__developer_stud
   OBJECT_DIR = CMakeFiles\developer_studio_signature_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_signature_test.dir\
   TARGET_FILE = developer_studio_signature_test.exe
   TARGET_IMPLIB = libdeveloper_studio_signature_test.dll.a
-  TARGET_PDB = developer_studio_signature_test.pdb
+  TARGET_PDB = developer_studio_signature_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_signature_test.dir
 
 # =============================================================================
@@ -982,8 +907,6 @@ build CMakeFiles/developer_studio_include_graph_test.dir/tests/include_graph_tes
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_include_graph_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_include_graph_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_include_graph_test.dir\
-  TARGET_PDB = developer_studio_include_graph_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_include_graph_test.dir
 
 
@@ -1001,10 +924,9 @@ build developer_studio_include_graph_test.exe: CXX_EXECUTABLE_LINKER__developer_
   OBJECT_DIR = CMakeFiles\developer_studio_include_graph_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_include_graph_test.dir\
   TARGET_FILE = developer_studio_include_graph_test.exe
   TARGET_IMPLIB = libdeveloper_studio_include_graph_test.dll.a
-  TARGET_PDB = developer_studio_include_graph_test.pdb
+  TARGET_PDB = developer_studio_include_graph_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_include_graph_test.dir
 
 # =============================================================================
@@ -1023,8 +945,6 @@ build CMakeFiles/developer_studio_relationship_test.dir/tests/relationship_test.
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_relationship_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_relationship_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_relationship_test.dir\
-  TARGET_PDB = developer_studio_relationship_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_relationship_test.dir
 
 
@@ -1042,10 +962,9 @@ build developer_studio_relationship_test.exe: CXX_EXECUTABLE_LINKER__developer_s
   OBJECT_DIR = CMakeFiles\developer_studio_relationship_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_relationship_test.dir\
   TARGET_FILE = developer_studio_relationship_test.exe
   TARGET_IMPLIB = libdeveloper_studio_relationship_test.dll.a
-  TARGET_PDB = developer_studio_relationship_test.pdb
+  TARGET_PDB = developer_studio_relationship_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_relationship_test.dir
 
 # =============================================================================
@@ -1064,8 +983,6 @@ build CMakeFiles/developer_studio_ownership_test.dir/tests/ownership_test.cpp.ob
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_ownership_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_ownership_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_ownership_test.dir\
-  TARGET_PDB = developer_studio_ownership_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_ownership_test.dir
 
 
@@ -1083,10 +1000,9 @@ build developer_studio_ownership_test.exe: CXX_EXECUTABLE_LINKER__developer_stud
   OBJECT_DIR = CMakeFiles\developer_studio_ownership_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_ownership_test.dir\
   TARGET_FILE = developer_studio_ownership_test.exe
   TARGET_IMPLIB = libdeveloper_studio_ownership_test.dll.a
-  TARGET_PDB = developer_studio_ownership_test.pdb
+  TARGET_PDB = developer_studio_ownership_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_ownership_test.dir
 
 # =============================================================================
@@ -1105,8 +1021,6 @@ build CMakeFiles/developer_studio_types_test.dir/tests/types_test.cpp.obj: CXX_C
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_types_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_types_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_types_test.dir\
-  TARGET_PDB = developer_studio_types_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_types_test.dir
 
 
@@ -1124,10 +1038,9 @@ build developer_studio_types_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_t
   OBJECT_DIR = CMakeFiles\developer_studio_types_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_types_test.dir\
   TARGET_FILE = developer_studio_types_test.exe
   TARGET_IMPLIB = libdeveloper_studio_types_test.dll.a
-  TARGET_PDB = developer_studio_types_test.pdb
+  TARGET_PDB = developer_studio_types_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_types_test.dir
 
 # =============================================================================
@@ -1146,8 +1059,6 @@ build CMakeFiles/developer_studio_debugger_test.dir/tests/debugger_test.cpp.obj:
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_debugger_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_debugger_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_debugger_test.dir\
-  TARGET_PDB = developer_studio_debugger_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_test.dir
 
 
@@ -1165,10 +1076,9 @@ build developer_studio_debugger_test.exe: CXX_EXECUTABLE_LINKER__developer_studi
   OBJECT_DIR = CMakeFiles\developer_studio_debugger_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_debugger_test.dir\
   TARGET_FILE = developer_studio_debugger_test.exe
   TARGET_IMPLIB = libdeveloper_studio_debugger_test.dll.a
-  TARGET_PDB = developer_studio_debugger_test.pdb
+  TARGET_PDB = developer_studio_debugger_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_test.dir
 
 # =============================================================================
@@ -1187,8 +1097,6 @@ build CMakeFiles/developer_studio_debug_symbols_test.dir/tests/debug_symbols_tes
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_debug_symbols_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_debug_symbols_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_debug_symbols_test.dir\
-  TARGET_PDB = developer_studio_debug_symbols_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debug_symbols_test.dir
 
 
@@ -1206,10 +1114,9 @@ build developer_studio_debug_symbols_test.exe: CXX_EXECUTABLE_LINKER__developer_
   OBJECT_DIR = CMakeFiles\developer_studio_debug_symbols_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_debug_symbols_test.dir\
   TARGET_FILE = developer_studio_debug_symbols_test.exe
   TARGET_IMPLIB = libdeveloper_studio_debug_symbols_test.dll.a
-  TARGET_PDB = developer_studio_debug_symbols_test.pdb
+  TARGET_PDB = developer_studio_debug_symbols_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debug_symbols_test.dir
 
 # =============================================================================
@@ -1228,8 +1135,6 @@ build CMakeFiles/developer_studio_debugger_step_test.dir/tests/debugger_step_tes
   INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
   OBJECT_DIR = CMakeFiles\developer_studio_debugger_step_test.dir
   OBJECT_FILE_DIR = CMakeFiles\developer_studio_debugger_step_test.dir\tests
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_debugger_step_test.dir\
-  TARGET_PDB = developer_studio_debugger_step_test.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_step_test.dir
 
 
@@ -1247,11 +1152,86 @@ build developer_studio_debugger_step_test.exe: CXX_EXECUTABLE_LINKER__developer_
   OBJECT_DIR = CMakeFiles\developer_studio_debugger_step_test.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
-  TARGET_COMPILE_PDB = CMakeFiles\developer_studio_debugger_step_test.dir\
   TARGET_FILE = developer_studio_debugger_step_test.exe
   TARGET_IMPLIB = libdeveloper_studio_debugger_step_test.dll.a
-  TARGET_PDB = developer_studio_debugger_step_test.pdb
+  TARGET_PDB = developer_studio_debugger_step_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_step_test.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target developer_studio_debugger_stack_test
+
+
+#############################################
+# Order-only phony target for developer_studio_debugger_stack_test
+
+build cmake_object_order_depends_target_developer_studio_debugger_stack_test: phony || cmake_object_order_depends_target_developer_studio_models
+
+build CMakeFiles/developer_studio_debugger_stack_test.dir/tests/debugger_stack_test.cpp.obj: CXX_COMPILER__developer_studio_debugger_stack_test_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/tests/debugger_stack_test.cpp || cmake_object_order_depends_target_developer_studio_debugger_stack_test
+  CONFIG = Debug
+  DEP_FILE = CMakeFiles\developer_studio_debugger_stack_test.dir\tests\debugger_stack_test.cpp.obj.d
+  FLAGS = -g -std=c++17
+  INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
+  OBJECT_DIR = CMakeFiles\developer_studio_debugger_stack_test.dir
+  OBJECT_FILE_DIR = CMakeFiles\developer_studio_debugger_stack_test.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_stack_test.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target developer_studio_debugger_stack_test
+
+
+#############################################
+# Link the executable developer_studio_debugger_stack_test.exe
+
+build developer_studio_debugger_stack_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_debugger_stack_test_Debug CMakeFiles/developer_studio_debugger_stack_test.dir/tests/debugger_stack_test.cpp.obj | libdeveloper_studio_models.a || libdeveloper_studio_models.a
+  CONFIG = Debug
+  FLAGS = -g
+  LINK_LIBRARIES = libdeveloper_studio_models.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\developer_studio_debugger_stack_test.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = developer_studio_debugger_stack_test.exe
+  TARGET_IMPLIB = libdeveloper_studio_debugger_stack_test.dll.a
+  TARGET_PDB = developer_studio_debugger_stack_test.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_stack_test.dir
+
+# =============================================================================
+# Object build statements for EXECUTABLE target developer_studio_debugger_variables_test
+
+
+#############################################
+# Order-only phony target for developer_studio_debugger_variables_test
+
+build cmake_object_order_depends_target_developer_studio_debugger_variables_test: phony || cmake_object_order_depends_target_developer_studio_models
+
+build CMakeFiles/developer_studio_debugger_variables_test.dir/tests/debugger_variables_test.cpp.obj: CXX_COMPILER__developer_studio_debugger_variables_test_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/tests/debugger_variables_test.cpp || cmake_object_order_depends_target_developer_studio_debugger_variables_test
+  CONFIG = Debug
+  DEP_FILE = CMakeFiles\developer_studio_debugger_variables_test.dir\tests\debugger_variables_test.cpp.obj.d
+  FLAGS = -g -std=c++17
+  INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
+  OBJECT_DIR = CMakeFiles\developer_studio_debugger_variables_test.dir
+  OBJECT_FILE_DIR = CMakeFiles\developer_studio_debugger_variables_test.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_variables_test.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target developer_studio_debugger_variables_test
+
+
+#############################################
+# Link the executable developer_studio_debugger_variables_test.exe
+
+build developer_studio_debugger_variables_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_debugger_variables_test_Debug CMakeFiles/developer_studio_debugger_variables_test.dir/tests/debugger_variables_test.cpp.obj | libdeveloper_studio_models.a || libdeveloper_studio_models.a
+  CONFIG = Debug
+  FLAGS = -g
+  LINK_LIBRARIES = libdeveloper_studio_models.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\developer_studio_debugger_variables_test.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = developer_studio_debugger_variables_test.exe
+  TARGET_IMPLIB = libdeveloper_studio_debugger_variables_test.dll.a
+  TARGET_PDB = developer_studio_debugger_variables_test.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_variables_test.dir
 
 
 #############################################
@@ -1297,9 +1277,13 @@ build developer_studio_completion_test: phony developer_studio_completion_test.e
 
 build developer_studio_debug_symbols_test: phony developer_studio_debug_symbols_test.exe
 
+build developer_studio_debugger_stack_test: phony developer_studio_debugger_stack_test.exe
+
 build developer_studio_debugger_step_test: phony developer_studio_debugger_step_test.exe
 
 build developer_studio_debugger_test: phony developer_studio_debugger_test.exe
+
+build developer_studio_debugger_variables_test: phony developer_studio_debugger_variables_test.exe
 
 build developer_studio_find_test: phony developer_studio_find_test.exe
 
@@ -1347,7 +1331,7 @@ build developer_studio_workflow_test: phony developer_studio_workflow_test.exe
 #############################################
 # Folder: D:/dev/guideXOS_Developer_Studio/build-phase5-native
 
-build all: phony libdeveloper_studio_models.a developer_studio_model_test.exe developer_studio_workflow_test.exe developer_studio_project_test.exe developer_studio_build_test.exe developer_studio_run_test.exe developer_studio_output_test.exe developer_studio_navigation_test.exe developer_studio_syntax_test.exe developer_studio_find_test.exe developer_studio_project_search_test.exe developer_studio_symbol_test.exe developer_studio_navigation_definition_test.exe developer_studio_reference_test.exe developer_studio_rename_test.exe developer_studio_completion_test.exe developer_studio_signature_test.exe developer_studio_include_graph_test.exe developer_studio_relationship_test.exe developer_studio_ownership_test.exe developer_studio_types_test.exe developer_studio_debugger_test.exe developer_studio_debug_symbols_test.exe developer_studio_debugger_step_test.exe
+build all: phony libdeveloper_studio_models.a developer_studio_model_test.exe developer_studio_workflow_test.exe developer_studio_project_test.exe developer_studio_build_test.exe developer_studio_run_test.exe developer_studio_output_test.exe developer_studio_navigation_test.exe developer_studio_syntax_test.exe developer_studio_find_test.exe developer_studio_project_search_test.exe developer_studio_symbol_test.exe developer_studio_navigation_definition_test.exe developer_studio_reference_test.exe developer_studio_rename_test.exe developer_studio_completion_test.exe developer_studio_signature_test.exe developer_studio_include_graph_test.exe developer_studio_relationship_test.exe developer_studio_ownership_test.exe developer_studio_types_test.exe developer_studio_debugger_test.exe developer_studio_debug_symbols_test.exe developer_studio_debugger_step_test.exe developer_studio_debugger_stack_test.exe developer_studio_debugger_variables_test.exe
 
 # =============================================================================
 # Built-in targets
@@ -1356,14 +1340,14 @@ build all: phony libdeveloper_studio_models.a developer_studio_model_test.exe de
 #############################################
 # Re-run CMake if any of its inputs changed.
 
-build build.ninja D$:/dev/guideXOS_Developer_Studio/build-phase5-native/cmake_install.cmake D$:/dev/guideXOS_Developer_Studio/build-phase5-native/CTestTestfile.cmake: RERUN_CMAKE | C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXCompiler.cmake.in C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXCompilerABI.cpp C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeCommonLanguageInclude.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeCompilerIdDetection.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerABI.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerSupport.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineRCCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineSystem.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeGenericSystem.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeInitializeConfigs.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeLanguageInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeNinjaFindMake.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeParseImplicitIncludeInfo.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeParseImplicitLinkInfo.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeParseLibraryArchitecture.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeRCCompiler.cmake.in C$:/mingw64/share/cmake-4.3/Modules/CMakeRCInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystem.cmake.in C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInitialize.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeTestCXXCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeTestCompilerCommon.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeTestRCCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/ADSP-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/ARMCC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/ARMClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/AppleClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Borland-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Clang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Clang-DetermineCompilerInternal.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Cray-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/CrayClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Diab-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Embarcadero-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Fujitsu-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GHS-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX-CXXImportStd.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-FindBinUtils.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/HP-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IAR-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IBMClang-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Intel-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/LCC-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/MSVC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/NVHPC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/NVIDIA-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/OrangeC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/PGI-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/PathScale-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Renesas-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/SCO-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/TI-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/TIClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Tasking-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Watcom-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/XL-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeDetermineLinkerId.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeInspectCXXLinker.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/FeatureTesting.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Determine-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Initialize.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-windres.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.3.1/CMakeCXXCompiler.cmake CMakeFiles/4.3.1/CMakeRCCompiler.cmake CMakeFiles/4.3.1/CMakeSystem.cmake D$:/dev/guideXOS_Developer_Studio/CMakeLists.txt
+build build.ninja D$:/dev/guideXOS_Developer_Studio/build-phase5-native/cmake_install.cmake D$:/dev/guideXOS_Developer_Studio/build-phase5-native/CTestTestfile.cmake: RERUN_CMAKE | C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeCommonLanguageInclude.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeGenericSystem.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeInitializeConfigs.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeLanguageInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeRCInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInitialize.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Initialize.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-windres.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.3.1/CMakeCXXCompiler.cmake CMakeFiles/4.3.1/CMakeRCCompiler.cmake CMakeFiles/4.3.1/CMakeSystem.cmake D$:/dev/guideXOS_Developer_Studio/CMakeLists.txt
   pool = console
 
 
 #############################################
 # A missing CMake input file is not an error.
 
-build C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXCompiler.cmake.in C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXCompilerABI.cpp C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeCommonLanguageInclude.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeCompilerIdDetection.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerABI.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineCompilerSupport.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineRCCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeDetermineSystem.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeGenericSystem.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeInitializeConfigs.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeLanguageInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeNinjaFindMake.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeParseImplicitIncludeInfo.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeParseImplicitLinkInfo.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeParseLibraryArchitecture.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeRCCompiler.cmake.in C$:/mingw64/share/cmake-4.3/Modules/CMakeRCInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystem.cmake.in C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInitialize.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeTestCXXCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeTestCompilerCommon.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeTestRCCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/ADSP-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/ARMCC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/ARMClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/AppleClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Borland-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Clang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Clang-DetermineCompilerInternal.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Cray-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/CrayClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Diab-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Embarcadero-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Fujitsu-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GHS-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX-CXXImportStd.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-FindBinUtils.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/HP-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IAR-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IBMClang-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Intel-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/LCC-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/MSVC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/NVHPC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/NVIDIA-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/OrangeC-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/PGI-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/PathScale-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Renesas-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/SCO-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/TI-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/TIClang-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Tasking-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/Watcom-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/XL-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeDetermineLinkerId.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeInspectCXXLinker.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/FeatureTesting.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Determine-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Initialize.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-windres.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.3.1/CMakeCXXCompiler.cmake CMakeFiles/4.3.1/CMakeRCCompiler.cmake CMakeFiles/4.3.1/CMakeSystem.cmake D$:/dev/guideXOS_Developer_Studio/CMakeLists.txt: phony
+build C$:/mingw64/share/cmake-4.3/Modules/CMakeCXXInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeCommonLanguageInclude.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeGenericSystem.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeInitializeConfigs.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeLanguageInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeRCInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/CMakeSystemSpecificInitialize.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Compiler/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Linker/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU-CXX.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-GNU.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-Initialize.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows-windres.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/Windows.cmake C$:/mingw64/share/cmake-4.3/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/4.3.1/CMakeCXXCompiler.cmake CMakeFiles/4.3.1/CMakeRCCompiler.cmake CMakeFiles/4.3.1/CMakeSystem.cmake D$:/dev/guideXOS_Developer_Studio/CMakeLists.txt: phony
 
 
 #############################################

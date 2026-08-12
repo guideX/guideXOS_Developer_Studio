@@ -11,6 +11,10 @@ milestone adds real call-aware Step Over; it does not claim call-stack
 unwinding, inline-frame semantics, optimized-code parity, or general-purpose
 debugger support.
 
+## Phase 9 variable invalidation
+
+Step Over treats Locals/Arguments as stop-generation data; the panels do not retain the caller’s previous values while the callee executes.
+
 ## User command and state
 
 F10 is accepted only for an owned, genuinely paused session with a valid
@@ -99,3 +103,4 @@ byte overlays. The hosted Windows runtime harness executes a real `E8` call,
 observes the callee exactly once, receives the real internal return trap,
 removes the temporary owner, restores/rebinds the user breakpoint state, and
 verifies teardown bytes.
+Step Over treats Locals/Arguments as stop-generation data; the panels do not retain the caller’s previous values while the callee executes.
