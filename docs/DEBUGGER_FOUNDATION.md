@@ -1,4 +1,4 @@
-# Debugger Foundation — Phase 5
+# Debugger Foundation — Phase 7
 
 ## Phase 5 status
 
@@ -9,7 +9,9 @@ copied register context, and correct breakpoint continuation through a real
 processor single-step. The Phase 4 runtime proof established Level B + Continue
 for this bounded source-breakpoint path; Phase 5 adds Level B + Step Into. This
 is not a claim of general-purpose debugger support. Phase 6 adds Level B Step
-Over through real call-aware execution and temporary return breakpoints.
+Over through real call-aware execution and temporary return breakpoints. Phase
+7 adds a bounded AMD64 frame-pointer call stack with target-owned stack reads;
+it does not add CFI unwinding or Step Out.
 
 Developer Studio now has a bounded, UI-independent debugger foundation. The
 hosted backend launches the existing temporary Native ELF development
@@ -41,12 +43,15 @@ The hosted Native ELF backend publishes these capabilities:
   mapping.
 - Step Over: supported through bounded AMD64 call decoding, real call execution,
   and an internal return `INT3` owner. Step Out remains unavailable.
+- Call Stack: supported from a genuinely paused AMD64 stop through bounded RBP
+  links, ELF function symbols, and DWARF source enrichment. The result is
+  partial when the frame chain is unsafe or unavailable.
 - Source and instruction breakpoints: source breakpoints are supported through
   DWARF mapping and the hosted software-breakpoint binder; instruction-level
   editing remains outside the UI contract.
 - Registers are captured in a bounded read-only stopped context and the session
   panel shows `RIP`, `RSP`, `RBP`, and `RFLAGS` while paused. Memory, thread
-  enumeration, call stack, expressions, and register editing remain unavailable.
+  enumeration, expressions, and register editing remain unavailable.
 
 The UI keeps ordinary Run on F5. F9 toggles the current editor line because it
 was not occupied by an existing Developer Studio shortcut. Debug commands are
@@ -222,8 +227,13 @@ operation is bounded and cleans up its temporary logical owner on completion,
 interruption, stale identity, failure, process exit, and teardown. See
 [DEBUGGER_STEP_OVER.md](DEBUGGER_STEP_OVER.md).
 
+Phase 7 adds the bounded Call Stack tab and frame-pointer unwinder described in
+[DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md). It reads only the stopped
+target stack through the append-only debug boundary and clears the result on
+resume or stale identity.
+
 Deferred work includes additional instruction-breakpoint workflows, DWARF
-expressions, locals, stack unwinding, watches,
+expressions, locals, CFI/`eh_frame` unwinding, Step Out, watches,
 memory/register editing, conditional/data breakpoints, attach/remote/multiple
 process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
 bare-metal trap implementation.

@@ -77,6 +77,14 @@ tear down the session without performing user stepping.
 
 ## Register view and commands
 
+## Phase 7 Call Stack
+
+Call-stack state is valid only while the exact stopped context remains paused.
+Continue clears the frame list before the target resumes; a later stop builds
+a new identity-bound result. The call stack uses the target-memory boundary,
+not instruction memory or host pointer access. See
+[DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
+
 While paused, Developer Studio shows read-only `RIP`, `RSP`, `RBP`, and
 `RFLAGS`. The values are cleared when the real single-step completion publishes
 Running or when the process exits.

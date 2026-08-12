@@ -1,5 +1,10 @@
 # Debugger Phase 4: Hosted Software Breakpoints and Continuation
 
+Phase 7 extends the exact paused-stop identity with validated target stack
+bounds and bounded stack reads for the Call Stack tab. It does not change the
+software-breakpoint ownership or continuation protocol. See
+[DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
+
 Phase 3 adds the first hosted Native ELF software-breakpoint path. It is intentionally
 limited to the current AMD64/ELF64 fixed-address `ET_EXEC` runtime and is not a general
 purpose process debugger.
@@ -135,8 +140,9 @@ exposed as Step Into.
 ## Scope and evidence boundary
 
 Supported target: AMD64, little-endian ELF64, fixed-address `ET_EXEC`, load bias zero,
-Windows-hosted Native ELF execution. Bare-metal breakpoint handling, arbitrary memory
-read/write, register inspection, call stacks, and user-visible stepping are deferred.
+Windows-hosted Native ELF execution. Bare-metal breakpoint handling and arbitrary
+memory read/write remain deferred. Phase 7 adds a bounded stopped-context call stack;
+user-visible stepping remains limited to the documented F11/F10 paths.
 
 The model tests cover binding state transitions, retained/installed-byte metadata,
 duplicate logical ownership, partial-bind rollback, stale/incorrect trap routing,
@@ -150,6 +156,6 @@ Studio UI path, not from a fake backend or predetermined callback.
 
 The evidence boundary remains narrow: the target is the current Windows-hosted
 AMD64 little-endian ELF64 fixed-address `ET_EXEC` runtime with load bias zero.
-Pause, user-visible stepping, memory access, call stacks, and multi-process/attach
-workflows remain unsupported. A normal F5 with no active debugger remains ordinary
-Run.
+Pause, arbitrary memory access, and multi-process/attach workflows remain unsupported.
+The Phase 7 Call Stack is available only after an exact owned stopped context. A
+normal F5 with no active debugger remains ordinary Run.

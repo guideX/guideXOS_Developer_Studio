@@ -16,6 +16,9 @@ static const uint32_t kDebugMaxMappedAddresses = 8;
 static const uint32_t kDebugMaxSourceStepInstructions = 1024;
 static const uint32_t kDebugMaxStepOverCalls = 32;
 static const uint32_t kDebugMaxInstructionBytes = 16;
+static const uint32_t kDebugMaxStackFrames = 64;
+static const uint32_t kDebugMaxStackFrameDelta = 1024u * 1024u;
+static const uint32_t kDebugMaxFunctionNameBytes = 128;
 
 enum class DebugArchitecture {
     Unknown = 0,
@@ -364,6 +367,8 @@ struct DebugRegisterContext {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
+    uint64_t stackLow;
+    uint64_t stackHigh;
 };
 
 struct DebugBackendSnapshot {
@@ -392,6 +397,8 @@ struct DebugBackendSnapshot {
     DebugRegisterContext registerContext;
     bool internalBreakpointTrap;
     uint64_t internalBreakpointId;
+    uint64_t stackLow;
+    uint64_t stackHigh;
 };
 
 struct DebugBackendBinding {
@@ -436,6 +443,11 @@ typedef bool (*DebugBackendReadMemoryFn)(void* userData, uint64_t sessionGenerat
                                          uint64_t processId, uint64_t nativeRuntimeId,
                                          uint64_t address, uint8_t* bytes, uint32_t requested,
                                          uint32_t* returned);
+typedef bool (*DebugBackendReadTargetMemoryFn)(void* userData, uint64_t sessionGeneration,
+                                               uint64_t processId, uint64_t nativeRuntimeId,
+                                               uint64_t threadId, uint64_t stopGeneration,
+                                               uint64_t address, uint8_t* bytes, uint32_t requested,
+                                               uint32_t* returned);
 typedef bool (*DebugBackendStepOverCallFn)(void* userData, uint64_t sessionGeneration,
                                            const DebugRegisterContext& context,
                                            uint64_t callAddress, uint64_t returnAddress,
@@ -455,6 +467,7 @@ struct DebugBackend {
     DebugBackendBindFn bindSoftwareBreakpoint;
     DebugBackendCommandFn debugCommand;
     DebugBackendReadMemoryFn readMemory;
+    DebugBackendReadTargetMemoryFn readTargetMemory;
     DebugBackendStepOverCallFn stepOverCall;
 };
 
@@ -463,6 +476,77 @@ struct DebugSourceMapper {
     bool (*sourceToAddress)(void* userData, const DebugTarget& target, DebugSourceLocation* location);
     bool (*addressToSource)(void* userData, const DebugTarget& target, DebugSourceLocation* location);
     bool (*symbolToAddress)(void* userData, const DebugTarget& target, const char* symbol, DebugAddress* address);
+};
+
+enum class DebugStackFrameMappingState {
+    Unmapped = 0,
+    Mapped,
+    External,
+    Stale
+};
+
+enum class DebugStackFrameConfidence {
+    ExactCurrent = 0,
+    FramePointer,
+    Unmapped,
+    Invalid
+};
+
+enum class DebugUnwindTerminationReason {
+    None = 0,
+    EndOfStack,
+    FrameLimit,
+    InvalidFramePointer,
+    ReadFailure,
+    Cycle,
+    OutsideStack,
+    OutsideTarget,
+    NoFramePointer,
+    StaleContext,
+    UnsupportedArchitecture
+};
+
+struct DebugStackFrame {
+    uint32_t index;
+    bool current;
+    bool hasReturnAddress;
+    DebugStackFrameMappingState mapping;
+    DebugStackFrameConfidence confidence;
+    uint64_t instructionAddress;
+    uint64_t rawReturnAddress;
+    uint64_t lookupAddress;
+    uint64_t rsp;
+    uint64_t rbp;
+    uint64_t functionStartAddress;
+    uint64_t functionSize;
+    char functionName[kDebugMaxFunctionNameBytes];
+    char sourcePath[kMaxProjectPathBytes];
+    uint32_t sourceLine;
+    uint32_t sourceColumn;
+};
+
+struct DebugUnwindResult {
+    DebugStackFrame frames[kDebugMaxStackFrames];
+    uint32_t frameCount;
+    bool truncated;
+    DebugUnwindTerminationReason terminationReason;
+    char status[160];
+};
+
+struct DebugCallStack {
+    bool valid;
+    bool stale;
+    uint16_t reserved;
+    uint64_t sessionGeneration;
+    uint64_t processId;
+    uint64_t nativeRuntimeId;
+    uint64_t threadId;
+    uint64_t stopGeneration;
+    uint32_t selectedFrameIndex;
+    uint32_t mapperGeneration;
+    char artifactSha256[kMaxRunArtifactSha256Bytes];
+    char unwinderName[kDebugMaxBackendNameBytes];
+    DebugUnwindResult result;
 };
 
 struct DebugController {
@@ -494,6 +578,7 @@ struct DebugController {
     uint64_t reportedInstructionPointer;
     uint64_t lastBreakpointId;
     uint64_t nextTemporaryBreakpointId;
+    DebugCallStack callStack;
     DebugSourceStepOperation sourceStep;
     DebugStepOverOperation stepOver;
     DebugBreakpoint breakpoints[kDebugMaxBreakpoints];
@@ -546,6 +631,20 @@ bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionG
                                   const DebugBackendSnapshot& snapshot);
 bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugDwarfMapper* mapper,
                                        DebugErrorCode* error);
+bool DebugUnwindAmd64FramePointer(const DebugRegisterContext& context,
+                                  const DebugDwarfMapper* mapper,
+                                  DebugBackendReadTargetMemoryFn readMemory,
+                                  void* userData, uint64_t sessionGeneration,
+                                  DebugUnwindResult* result);
+const char* DebugStackFrameMappingStateName(DebugStackFrameMappingState state);
+const char* DebugStackFrameConfidenceName(DebugStackFrameConfidence confidence);
+const char* DebugUnwindTerminationReasonName(DebugUnwindTerminationReason reason);
+bool DebugControllerBuildCallStack(DebugController* controller, const DebugBackend& backend,
+                                   const DebugDwarfMapper* mapper, DebugErrorCode* error);
+bool DebugControllerSelectCallStackFrame(DebugController* controller, uint32_t frameIndex,
+                                         DebugErrorCode* error);
+const DebugStackFrame* DebugControllerCallStackFrameAt(const DebugController* controller,
+                                                       uint32_t index);
 
 bool DebugControllerToggleBreakpoint(DebugController* controller, const char* projectId,
                                      const char* projectRoot, uint64_t projectGeneration,

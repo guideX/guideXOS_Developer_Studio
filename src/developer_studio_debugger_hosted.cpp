@@ -86,6 +86,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }
+        outSnapshot->stackLow = debugResult.stackLow;
+        outSnapshot->stackHigh = debugResult.stackHigh;
         if (debugResult.status == 3 && debugResult.trapKind == 1) {
             outSnapshot->state = DebugSessionState::Paused;
             outSnapshot->stopReason = debugResult.internalBreakpointTrap ? DebugStopReason::Step : DebugStopReason::Breakpoint;
@@ -128,6 +130,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.r13 = debugResult.registerContext.r13;
             outSnapshot->registerContext.r14 = debugResult.registerContext.r14;
             outSnapshot->registerContext.r15 = debugResult.registerContext.r15;
+            outSnapshot->registerContext.stackLow = debugResult.stackLow;
+            outSnapshot->registerContext.stackHigh = debugResult.stackHigh;
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage),
                       debugResult.internalBreakpointTrap ? "Step over return breakpoint observed" : "Breakpoint trap observed");
             backend->internalTrapStopPending = debugResult.internalBreakpointTrap;
@@ -168,6 +172,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.r13 = debugResult.registerContext.r13;
             outSnapshot->registerContext.r14 = debugResult.registerContext.r14;
             outSnapshot->registerContext.r15 = debugResult.registerContext.r15;
+            outSnapshot->registerContext.stackLow = debugResult.stackLow;
+            outSnapshot->registerContext.stackHigh = debugResult.stackHigh;
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "User source-step EXCEPTION_SINGLE_STEP observed");
             backend->userStepStopPending = true;
             backend->userStepStopSnapshot = *outSnapshot;
@@ -314,6 +320,26 @@ static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t proc
     return true;
 }
 
+static bool readTargetMemory(void* userData, uint64_t sessionGeneration, uint64_t processId,
+                             uint64_t nativeRuntimeId, uint64_t threadId, uint64_t stopGeneration,
+                             uint64_t address, uint8_t* bytes, uint32_t requested,
+                             uint32_t* returned) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (returned) *returned = 0;
+    if (!backend || !backend->runService.debugCommand || !bytes || requested == 0 ||
+        requested > kDebugMaxInstructionBytes || threadId == 0 || stopGeneration == 0) return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ReadMemory,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          processId, nativeRuntimeId, 0, address,
+                                          backend->runController.request.artifactSha256, threadId,
+                                          stopGeneration, false, 0, requested, &result) ||
+        result.status != 1 || result.byteCount != requested) return false;
+    for (uint32_t i = 0; i < result.byteCount; ++i) bytes[i] = result.bytes[i];
+    if (returned) *returned = result.byteCount;
+    return true;
+}
+
 static bool stepOverCall(void* userData, uint64_t sessionGeneration,
                          const DebugRegisterContext& context, uint64_t callAddress,
                          uint64_t returnAddress, uint64_t temporaryBreakpointId) {
@@ -363,7 +389,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.capabilities.canReadMemory = true;
     result.capabilities.canWriteMemory = false;
     result.capabilities.canEnumerateThreads = false;
-    result.capabilities.canReadCallStack = false;
+    result.capabilities.canReadCallStack = true;
     result.capabilities.canResolveSourceLocations = false;
     result.capabilities.canEvaluateExpressions = false;
     result.capabilities.canBindSoftwareBreakpoint = true;
@@ -381,6 +407,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     result.debugCommand = debugCommand;
     result.readMemory = readMemory;
+    result.readTargetMemory = readTargetMemory;
     result.stepOverCall = stepOverCall;
     return result;
 }

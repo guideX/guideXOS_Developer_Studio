@@ -1,17 +1,17 @@
-Start testing: Aug 10 21:59 Pacific Daylight Time
+Start testing: Aug 11 21:22 Pacific Daylight Time
 ----------------------------------------------------------
 1/22 Testing: developer_studio_model_test
 1/22 Test: developer_studio_model_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_model_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_model_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_model_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.03 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_model_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_model_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_model_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -19,15 +19,15 @@ Test Passed.
 2/22 Test: developer_studio_project_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_project_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_project_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_project_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio project parser/generator PASS
 <end of output>
-Test time =   0.04 sec
+Test time =   0.03 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_project_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_project_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_project_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -35,15 +35,15 @@ Test Passed.
 3/22 Test: developer_studio_build_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_build_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_build_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_build_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio build controller PASS
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_build_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_build_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_build_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -51,7 +51,7 @@ Test Passed.
 4/22 Test: developer_studio_run_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_run_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_run_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_run_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio run controller PASS
@@ -59,7 +59,7 @@ Developer Studio run controller PASS
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_run_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_run_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_run_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -67,15 +67,15 @@ Test Passed.
 5/22 Test: developer_studio_output_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_output_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_output_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_output_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio output service and diagnostic parser PASS
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_output_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_output_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_output_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -83,15 +83,15 @@ Test Passed.
 6/22 Test: developer_studio_navigation_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_navigation_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_navigation_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_navigation_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio diagnostic navigation PASS
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_navigation_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_navigation_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_navigation_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -99,15 +99,15 @@ Test Passed.
 7/22 Test: developer_studio_syntax_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_syntax_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_syntax_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_syntax_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio syntax tests PASS
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_syntax_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_syntax_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_syntax_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -115,14 +115,14 @@ Test Passed.
 8/22 Test: developer_studio_find_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_find_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_find_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_find_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_find_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_find_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_find_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -130,15 +130,15 @@ Test Passed.
 9/22 Test: developer_studio_project_search_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_project_search_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_project_search_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_project_search_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio project search PASS
 <end of output>
-Test time =   0.04 sec
+Test time =   0.03 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_project_search_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_project_search_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_project_search_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -146,14 +146,14 @@ Test Passed.
 10/22 Test: developer_studio_symbol_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_symbol_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_symbol_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_symbol_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.23 sec
+Test time =   0.21 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_symbol_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_symbol_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_symbol_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -161,14 +161,14 @@ Test Passed.
 11/22 Test: developer_studio_navigation_definition_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_navigation_definition_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_navigation_definition_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_navigation_definition_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.03 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_navigation_definition_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_navigation_definition_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_navigation_definition_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -176,14 +176,14 @@ Test Passed.
 12/22 Test: developer_studio_reference_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_reference_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_reference_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_reference_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.03 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_reference_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_reference_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_reference_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -191,14 +191,14 @@ Test Passed.
 13/22 Test: developer_studio_rename_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_rename_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_rename_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_rename_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.26 sec
+Test time =   0.25 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_rename_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_rename_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_rename_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -206,15 +206,15 @@ Test Passed.
 14/22 Test: developer_studio_completion_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_completion_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_completion_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_completion_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio completion model PASS
 <end of output>
-Test time =   0.16 sec
+Test time =   0.15 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_completion_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_completion_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_completion_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -222,15 +222,15 @@ Test Passed.
 15/22 Test: developer_studio_signature_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_signature_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_signature_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_signature_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio signature help model PASS
 <end of output>
-Test time =   0.03 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_signature_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_signature_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_signature_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -238,7 +238,7 @@ Test Passed.
 16/22 Test: developer_studio_include_graph_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_include_graph_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_include_graph_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_include_graph_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio include graph model PASS
@@ -246,7 +246,7 @@ Developer Studio include graph model PASS
 Test time =   0.32 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_include_graph_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_include_graph_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_include_graph_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -254,14 +254,14 @@ Test Passed.
 17/22 Test: developer_studio_relationship_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_relationship_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_relationship_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_relationship_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_relationship_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_relationship_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_relationship_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -269,14 +269,14 @@ Test Passed.
 18/22 Test: developer_studio_ownership_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_ownership_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_ownership_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_ownership_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.02 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_ownership_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_ownership_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_ownership_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -284,14 +284,14 @@ Test Passed.
 19/22 Test: developer_studio_types_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_types_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_types_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_types_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 <end of output>
-Test time =   0.05 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_types_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_types_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_types_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -299,15 +299,15 @@ Test Passed.
 20/22 Test: developer_studio_debug_symbols_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_debug_symbols_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_debug_symbols_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_debug_symbols_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio DWARF source mapping PASS
 <end of output>
-Test time =   0.17 sec
+Test time =   0.16 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_debug_symbols_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_debug_symbols_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_debug_symbols_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -315,15 +315,15 @@ Test Passed.
 21/22 Test: developer_studio_debugger_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_debugger_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_debugger_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_debugger_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio debugger model PASS
 <end of output>
-Test time =   0.03 sec
+Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_debugger_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_debugger_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_debugger_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -331,16 +331,16 @@ Test Passed.
 22/22 Test: developer_studio_debugger_step_test
 Command: "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_debugger_step_test.exe"
 Directory: D:/dev/guideXOS_Developer_Studio/build-phase5-native
-"developer_studio_debugger_step_test" start time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_debugger_step_test" start time: Aug 11 21:22 Pacific Daylight Time
 Output:
 ----------------------------------------------------------
 Developer Studio source-step model PASS
 <end of output>
-Test time =   0.03 sec
+Test time =   0.02 sec
 ----------------------------------------------------------
 Test Passed.
-"developer_studio_debugger_step_test" end time: Aug 10 21:59 Pacific Daylight Time
+"developer_studio_debugger_step_test" end time: Aug 11 21:22 Pacific Daylight Time
 "developer_studio_debugger_step_test" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Aug 10 21:59 Pacific Daylight Time
+End testing: Aug 11 21:22 Pacific Daylight Time

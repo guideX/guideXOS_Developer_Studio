@@ -117,6 +117,11 @@ static void clearStepOver(DebugController* controller, DebugStepOverStatus statu
     if (reason) copyText(controller->stepOver.reason, sizeof(controller->stepOver.reason), reason);
 }
 
+static void clearCallStack(DebugController* controller) {
+    if (!controller) return;
+    controller->callStack = DebugCallStack();
+}
+
 static void clearStoppedContext(DebugController* controller) {
     if (!controller) return;
     controller->currentInstructionAddress = DebugAddress();
@@ -125,6 +130,7 @@ static void clearStoppedContext(DebugController* controller) {
     controller->reportedInstructionPointer = 0;
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
+    clearCallStack(controller);
 }
 
 static int findBreakpoint(const DebugController* controller, uint64_t breakpointId) {
@@ -1140,6 +1146,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
+    clearCallStack(controller);
     controller->currentInstructionAddress = DebugAddress();
     controller->currentLocation = DebugSourceLocation();
     controller->currentThreadId = 0;
@@ -1743,6 +1750,7 @@ bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t
 
 void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t projectGeneration) {
     if (!controller) return;
+    if (controller->projectGeneration != projectGeneration) clearCallStack(controller);
     controller->projectGeneration = projectGeneration;
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
@@ -1754,6 +1762,7 @@ void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t 
 
 void DebugControllerMarkArtifactStale(DebugController* controller, const char* message) {
     if (!controller) return;
+    clearCallStack(controller);
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
         if (!breakpoint.enabled) continue;

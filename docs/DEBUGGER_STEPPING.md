@@ -1,5 +1,10 @@
 # Debugger Phase 5 — Source-Level Step Into
 
+Phase 7 adds a Call Stack tab for paused stops. It is a bounded AMD64
+frame-pointer view and is independent of the F11/F10 stepping operation; it
+does not provide Step Out or DWARF CFI unwinding. See
+[DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
+
 Status: implemented in the debugger model and hosted AMD64 path. The feature
 is intended for bounded debug-build Native ELF sessions (`-g -O0`) and does not
 claim optimized-code debugging parity.

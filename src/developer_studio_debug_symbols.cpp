@@ -7,7 +7,10 @@ namespace {
 static const uint16_t kElfTypeExec = 2;
 static const uint16_t kElfMachineAmd64 = 62;
 static const uint32_t kSectionTypeString = 3;
+static const uint32_t kSectionTypeSymtab = 2;
 static const uint32_t kSectionTypeNoBits = 8;
+static const uint32_t kProgramTypeLoad = 1;
+static const uint32_t kProgramFlagsExecute = 1;
 static const uint16_t kDwarfVersion4 = 4;
 static const uint16_t kDwarfVersion5 = 5;
 static const uint16_t kNoSourceFile = 0xffffu;
@@ -146,6 +149,16 @@ static bool equalText(const char* left, const char* right, bool insensitive) {
     }
 }
 
+static int compareText(const char* left, const char* right) {
+    if (!left) left = "";
+    if (!right) right = "";
+    while (*left && *left == *right) {
+        ++left;
+        ++right;
+    }
+    return static_cast<unsigned char>(*left) - static_cast<unsigned char>(*right);
+}
+
 static bool isSlash(char value) { return value == '/' || value == static_cast<char>(92); }
 
 static bool checkedRange(uint64_t offset, uint64_t size, uint64_t total) {
@@ -175,6 +188,13 @@ struct Cursor {
     uint64_t position;
     uint64_t end;
 };
+
+static bool functionSymbolBefore(const DebugDwarfFunctionSymbol& left,
+                                 const DebugDwarfFunctionSymbol& right) {
+    if (left.startAddress != right.startAddress) return left.startAddress < right.startAddress;
+    if (left.size != right.size) return left.size > right.size;
+    return compareText(left.name, right.name) < 0;
+}
 
 static bool canRead(const Cursor& cursor, uint64_t count) {
     return count <= cursor.end - cursor.position;
@@ -829,12 +849,35 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
         return false;
     }
     const uint64_t sectionOffset = readU64(bytes, 40);
+    const uint64_t programOffset = readU64(bytes, 32);
+    const uint16_t programEntrySize = readU16(bytes, 54);
+    const uint16_t programCount = readU16(bytes, 56);
     const uint16_t sectionEntrySize = readU16(bytes, 58);
     const uint16_t sectionCount = readU16(bytes, 60);
     const uint16_t stringIndex = readU16(bytes, 62);
     if (sectionCount == 0 || sectionCount > kDebugMapperMaxSections || sectionEntrySize < 64 ||
         !checkedRange(sectionOffset, static_cast<uint64_t>(sectionEntrySize) * sectionCount, size) || stringIndex >= sectionCount) {
         mapper->error = DebugDwarfError::MalformedElf; return false;
+    }
+    if (programCount != 0 && (programEntrySize < 56 ||
+        !checkedRange(programOffset, static_cast<uint64_t>(programEntrySize) * programCount, size))) {
+        mapper->error = DebugDwarfError::MalformedElf; return false;
+    }
+    for (uint16_t i = 0; i < programCount; ++i) {
+        const uint64_t header = programOffset + static_cast<uint64_t>(i) * programEntrySize;
+        const uint32_t type = readU32(bytes, header);
+        const uint32_t flags = readU32(bytes, header + 4);
+        const uint64_t virtualAddress = readU64(bytes, header + 16);
+        const uint64_t memorySize = readU64(bytes, header + 40);
+        if (type != kProgramTypeLoad || (flags & kProgramFlagsExecute) == 0 || memorySize == 0) continue;
+        if (virtualAddress > UINT64_MAX - memorySize || mapper->executableSegmentCount >= kDebugMapperMaxExecutableSegments) {
+            mapper->error = mapper->executableSegmentCount >= kDebugMapperMaxExecutableSegments ?
+                DebugDwarfError::LimitExceeded : DebugDwarfError::MalformedElf;
+            return false;
+        }
+        DebugDwarfExecutableSegment& segment = mapper->executableSegments[mapper->executableSegmentCount++];
+        segment.startAddress = virtualAddress;
+        segment.endAddress = virtualAddress + memorySize;
     }
     const uint64_t stringHeader = sectionOffset + static_cast<uint64_t>(stringIndex) * sectionEntrySize;
     const uint64_t stringOffset = readU64(bytes, stringHeader + 24);
@@ -846,6 +889,10 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
     SectionView line = { nullptr, 0 };
     SectionView lineStrings = { nullptr, 0 };
     SectionView debugStrings = { nullptr, 0 };
+    SectionView symbolTable = { nullptr, 0 };
+    SectionView symbolStrings = { nullptr, 0 };
+    uint32_t symbolStringIndex = 0;
+    uint64_t symbolEntrySize = 0;
     for (uint16_t i = 0; i < sectionCount; ++i) {
         const uint64_t header = sectionOffset + static_cast<uint64_t>(i) * sectionEntrySize;
         const uint32_t nameOffset = readU32(bytes, header);
@@ -864,6 +911,83 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
         if (equalText(name, ".debug_line", false)) line = view;
         else if (equalText(name, ".debug_line_str", false)) lineStrings = view;
         else if (equalText(name, ".debug_str", false)) debugStrings = view;
+        else if (equalText(name, ".eh_frame", false)) mapper->ehFrameSectionBytes = sectionSize;
+        else if (equalText(name, ".eh_frame_hdr", false)) mapper->ehFrameHeaderSectionBytes = sectionSize;
+        else if (equalText(name, ".debug_frame", false)) mapper->debugFrameSectionBytes = sectionSize;
+        else if (equalText(name, ".symtab", false)) {
+            symbolTable = view;
+            symbolStringIndex = readU32(bytes, header + 40);
+            symbolEntrySize = readU64(bytes, header + 56);
+        }
+        else if (equalText(name, ".strtab", false)) symbolStrings = view;
+    }
+    if (symbolTable.data && symbolTable.size != 0) {
+        if (symbolEntrySize < 24 || symbolTable.size % symbolEntrySize != 0 ||
+            symbolStringIndex >= sectionCount) {
+            mapper->error = DebugDwarfError::MalformedElf;
+            return false;
+        }
+        const uint64_t stringHeader = sectionOffset + static_cast<uint64_t>(symbolStringIndex) * sectionEntrySize;
+        const uint32_t stringType = readU32(bytes, stringHeader + 4);
+        const uint64_t stringOffset = readU64(bytes, stringHeader + 24);
+        const uint64_t stringSize = readU64(bytes, stringHeader + 32);
+        if (stringType != kSectionTypeString || !checkedRange(stringOffset, stringSize, size) ||
+            stringSize == 0 || bytes[stringOffset] != '\0') {
+            mapper->error = DebugDwarfError::MalformedElf;
+            return false;
+        }
+        symbolStrings.data = bytes + stringOffset;
+        symbolStrings.size = stringSize;
+        const uint64_t symbolCount = symbolTable.size / symbolEntrySize;
+        if (symbolCount > kDebugMapperMaxFunctionSymbols) {
+            mapper->error = DebugDwarfError::LimitExceeded;
+            return false;
+        }
+        for (uint64_t i = 0; i < symbolCount; ++i) {
+            const uint64_t symbol = static_cast<uint64_t>(i) * symbolEntrySize;
+            const uint32_t nameOffset = readU32(symbolTable.data, symbol);
+            const uint8_t info = symbolTable.data[symbol + 4];
+            const uint16_t sectionIndex = readU16(symbolTable.data, symbol + 6);
+            const uint64_t value = readU64(symbolTable.data, symbol + 8);
+            const uint64_t symbolSize = readU64(symbolTable.data, symbol + 16);
+            if (nameOffset >= symbolStrings.size) {
+                mapper->error = DebugDwarfError::MalformedElf;
+                return false;
+            }
+            if ((info & 0x0fu) != 2u || sectionIndex == 0 || value == 0) continue;
+            if (symbolSize != 0 && value > UINT64_MAX - symbolSize) {
+                mapper->error = DebugDwarfError::MalformedElf;
+                return false;
+            }
+            bool executable = false;
+            for (uint32_t segment = 0; segment < mapper->executableSegmentCount; ++segment) {
+                const DebugDwarfExecutableSegment& range = mapper->executableSegments[segment];
+                if (value >= range.startAddress && value < range.endAddress) { executable = true; break; }
+            }
+            if (!executable) continue;
+            if (mapper->functionSymbolCount >= kDebugMapperMaxFunctionSymbols) {
+                mapper->error = DebugDwarfError::LimitExceeded;
+                return false;
+            }
+            DebugDwarfFunctionSymbol& function = mapper->functionSymbols[mapper->functionSymbolCount++];
+            function = DebugDwarfFunctionSymbol();
+            function.startAddress = value;
+            function.size = symbolSize;
+            if (!readSectionString(symbolStrings.data, symbolStrings.size, nameOffset,
+                                   function.name, sizeof(function.name))) {
+                mapper->error = DebugDwarfError::MalformedElf;
+                return false;
+            }
+        }
+        for (uint32_t i = 1; i < mapper->functionSymbolCount; ++i) {
+            const DebugDwarfFunctionSymbol value = mapper->functionSymbols[i];
+            uint32_t j = i;
+            while (j > 0 && functionSymbolBefore(value, mapper->functionSymbols[j - 1])) {
+                mapper->functionSymbols[j] = mapper->functionSymbols[j - 1];
+                --j;
+            }
+            mapper->functionSymbols[j] = value;
+        }
     }
     if (!line.data || line.size == 0) { mapper->error = DebugDwarfError::MissingLineSection; return false; }
     mapper->lineSectionBytes = line.size > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(line.size);
@@ -1133,6 +1257,53 @@ bool DebugDwarfMapperMapAddressToSource(const DebugDwarfMapper* mapper,
     *line = selected->line;
     *column = selected->column;
     return true;
+}
+
+bool DebugDwarfMapperLookupFunction(const DebugDwarfMapper* mapper, uint64_t address,
+                                    char* name, uint32_t nameSize, uint64_t* startAddress,
+                                    uint64_t* size, DebugDwarfError* error) {
+    if (error) *error = DebugDwarfError::None;
+    if (name && nameSize > 0) name[0] = '\0';
+    if (startAddress) *startAddress = 0;
+    if (size) *size = 0;
+    if (!mapper || !name || nameSize == 0 || !startAddress || !size ||
+        mapper->state != DebugDwarfMapperState::Ready) {
+        if (error) *error = mapper && mapper->state == DebugDwarfMapperState::Stale ?
+            DebugDwarfError::ArtifactChanged : DebugDwarfError::NoDebugInfo;
+        return false;
+    }
+    uint32_t low = 0;
+    uint32_t high = mapper->functionSymbolCount;
+    while (low < high) {
+        const uint32_t middle = low + (high - low) / 2;
+        if (mapper->functionSymbols[middle].startAddress <= address) low = middle + 1;
+        else high = middle;
+    }
+    while (low > 0) {
+        const DebugDwarfFunctionSymbol& function = mapper->functionSymbols[low - 1];
+        bool contains = false;
+        if (function.size != 0 && function.startAddress <= UINT64_MAX - function.size)
+            contains = address >= function.startAddress && address < function.startAddress + function.size;
+        else if (function.size == 0) contains = address == function.startAddress;
+        if (contains) {
+            copyText(name, nameSize, function.name);
+            *startAddress = function.startAddress;
+            *size = function.size;
+            return name[0] != '\0';
+        }
+        --low;
+    }
+    if (error) *error = DebugDwarfError::LineNotMapped;
+    return false;
+}
+
+bool DebugDwarfMapperIsExecutableAddress(const DebugDwarfMapper* mapper, uint64_t address) {
+    if (!mapper || mapper->state != DebugDwarfMapperState::Ready) return false;
+    for (uint32_t i = 0; i < mapper->executableSegmentCount; ++i) {
+        const DebugDwarfExecutableSegment& segment = mapper->executableSegments[i];
+        if (address >= segment.startAddress && address < segment.endAddress) return true;
+    }
+    return false;
 }
 
 bool DebugDwarfNormalizeSourcePath(const char* projectRoot, const char* rawPath,

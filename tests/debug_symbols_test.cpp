@@ -133,6 +133,77 @@ static std::vector<unsigned char> fixtureElf() {
     return bytes;
 }
 
+static std::vector<unsigned char> symbolFixtureElf() {
+    std::vector<unsigned char> bytes = fixtureElf();
+    const uint64_t oldSectionOffset = readU64At(bytes, 40);
+    bytes.insert(bytes.begin() + 64, 56, 0);
+    patchU64(bytes, 40, oldSectionOffset + 56);
+
+    // One executable PT_LOAD covers the synthetic line and symbol addresses.
+    const uint32_t program = 64;
+    patchU32(bytes, program + 0, 1);
+    patchU32(bytes, program + 4, 5);
+    patchU64(bytes, program + 8, 0);
+    patchU64(bytes, program + 16, 0x401000);
+    patchU64(bytes, program + 24, 0x401000);
+    patchU64(bytes, program + 32, 0x3000);
+    patchU64(bytes, program + 40, 0x3000);
+    patchU64(bytes, program + 48, 0x1000);
+    patchU16(bytes, 54, 56);
+    patchU16(bytes, 56, 1);
+    patchU64(bytes, 32, 64);
+
+    const uint32_t sectionOffset = static_cast<uint32_t>(oldSectionOffset + 56);
+    for (uint32_t index = 1; index < 4; ++index) {
+        const uint32_t header = sectionOffset + index * 64;
+        patchU64(bytes, header + 24, readU64At(bytes, header + 24) + 56);
+    }
+
+    const char shStrings[] = "\0.debug_line\0.debug_line_str\0.shstrtab\0.symtab\0.strtab\0";
+    const char symStrings[] = "\0main\0helper\0";
+    const uint32_t shStringsOffset = static_cast<uint32_t>(bytes.size());
+    bytes.insert(bytes.end(), shStrings, shStrings + sizeof(shStrings));
+    const uint32_t symStringsOffset = static_cast<uint32_t>(bytes.size());
+    bytes.insert(bytes.end(), symStrings, symStrings + sizeof(symStrings));
+    const uint32_t symtabOffset = static_cast<uint32_t>(bytes.size());
+    bytes.resize(bytes.size() + 3 * 24, 0);
+    // Null symbol, main at 0x401000, and a zero-sized helper at 0x401010.
+    patchU32(bytes, symtabOffset + 24 + 0, 1);
+    bytes[symtabOffset + 24 + 4] = 2;
+    patchU16(bytes, symtabOffset + 24 + 6, 2);
+    patchU64(bytes, symtabOffset + 24 + 8, 0x401000);
+    patchU64(bytes, symtabOffset + 24 + 16, 0x10);
+    patchU32(bytes, symtabOffset + 48 + 0, 6);
+    bytes[symtabOffset + 48 + 4] = 2;
+    patchU16(bytes, symtabOffset + 48 + 6, 2);
+    patchU64(bytes, symtabOffset + 48 + 8, 0x401010);
+
+    const uint32_t newSectionOffset = static_cast<uint32_t>(bytes.size());
+    bytes.resize(bytes.size() + 6 * 64, 0);
+    auto putSection = [&](uint32_t index, uint32_t name, uint32_t type,
+                          uint64_t offset, uint64_t size, uint32_t link,
+                          uint64_t entrySize) {
+        const uint32_t header = newSectionOffset + index * 64;
+        patchU32(bytes, header, name);
+        patchU32(bytes, header + 4, type);
+        patchU64(bytes, header + 24, offset);
+        patchU64(bytes, header + 32, size);
+        patchU32(bytes, header + 40, link);
+        patchU64(bytes, header + 56, entrySize);
+    };
+    putSection(1, 1, 1, readU64At(bytes, sectionOffset + 64 + 24),
+               readU64At(bytes, sectionOffset + 64 + 32), 0, 0);
+    putSection(2, 13, 3, readU64At(bytes, sectionOffset + 128 + 24),
+               readU64At(bytes, sectionOffset + 128 + 32), 0, 0);
+    putSection(3, 29, 3, shStringsOffset, sizeof(shStrings), 0, 0);
+    putSection(4, 39, 2, symtabOffset, 3 * 24, 5, 24);
+    putSection(5, 47, 3, symStringsOffset, sizeof(symStrings), 0, 0);
+    patchU64(bytes, 40, newSectionOffset);
+    patchU16(bytes, 60, 6);
+    patchU16(bytes, 62, 3);
+    return bytes;
+}
+
 int main() {
     const unsigned char shaInput[] = {'a', 'b', 'c'};
     char shaOutput[65] = {};
@@ -154,6 +225,25 @@ int main() {
     assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src\\main.cpp", 42, addresses, 8, &count, &primary, &error));
     assert(count == 3 && primary == 0x401000 && addresses[1] == 0x401004 && addresses[2] == 0x402000);
     assert(mapper.sequenceCount == 2);
+
+    std::vector<unsigned char> symbolFixture = symbolFixtureElf();
+    static DebugDwarfMapper symbolMapper = {};
+    assert(DebugDwarfMapperLoad(&symbolMapper, "D:/fixture", "fixture", "target", "amd64",
+                                "build/bin/fixture-symbols.elf", symbolFixture.size(),
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                7, &symbolFixture[0], symbolFixture.size(), 2, &error));
+    assert(symbolMapper.functionSymbolCount == 2 && symbolMapper.executableSegmentCount == 1);
+    char functionName[kDebugMapperMaxFunctionNameBytes] = {};
+    uint64_t functionStart = 0;
+    uint64_t functionSize = 0;
+    assert(DebugDwarfMapperLookupFunction(&symbolMapper, 0x401008, functionName,
+                                          sizeof(functionName), &functionStart, &functionSize, &error));
+    assert(std::strcmp(functionName, "main") == 0 && functionStart == 0x401000 && functionSize == 0x10);
+    assert(DebugDwarfMapperLookupFunction(&symbolMapper, 0x401010, functionName,
+                                          sizeof(functionName), &functionStart, &functionSize, &error));
+    assert(std::strcmp(functionName, "helper") == 0 && functionSize == 0);
+    assert(DebugDwarfMapperIsExecutableAddress(&symbolMapper, 0x401020));
+    assert(!DebugDwarfMapperIsExecutableAddress(&symbolMapper, 0x404000));
     char path[kMaxProjectPathBytes] = {}; uint32_t line = 0; uint32_t column = 0;
     assert(DebugDwarfMapperMapAddressToSource(&mapper, 0x401006, path, sizeof(path), &line, &column, &error));
     assert(std::strcmp(path, "src/main.cpp") == 0 && line == 42);

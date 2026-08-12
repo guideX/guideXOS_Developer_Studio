@@ -22,6 +22,9 @@ static const uint32_t kDebugMapperMaxPathBytes = kMaxProjectPathBytes;
 static const uint32_t kDebugMapperMaxStringBytes = 1024;
 static const uint32_t kDebugMapperMaxSha256Bytes = 65;
 static const uint32_t kDebugMapperMaxArchitectureBytes = 32;
+static const uint32_t kDebugMapperMaxFunctionSymbols = 16384;
+static const uint32_t kDebugMapperMaxExecutableSegments = 32;
+static const uint32_t kDebugMapperMaxFunctionNameBytes = 128;
 
 enum class DebugDwarfMapperState {
     Empty = 0,
@@ -84,6 +87,17 @@ struct DebugDwarfLineRow {
     bool isStmt;
 };
 
+struct DebugDwarfFunctionSymbol {
+    uint64_t startAddress;
+    uint64_t size;
+    char name[kDebugMapperMaxFunctionNameBytes];
+};
+
+struct DebugDwarfExecutableSegment {
+    uint64_t startAddress;
+    uint64_t endAddress;
+};
+
 struct DebugDwarfMapper {
     DebugDwarfMapperState state;
     DebugDwarfError error;
@@ -97,12 +111,19 @@ struct DebugDwarfMapper {
     uint32_t lineKeyCount;
     uint32_t addressOrderCount;
     uint32_t sequenceCount;
+    uint32_t functionSymbolCount;
+    uint32_t executableSegmentCount;
+    uint64_t ehFrameSectionBytes;
+    uint64_t ehFrameHeaderSectionBytes;
+    uint64_t debugFrameSectionBytes;
     bool truncated;
     char statusText[160];
     DebugDwarfSourceFile sourceFiles[kDebugMapperMaxSourceFiles];
     DebugDwarfLineKey lineKeys[kDebugMapperMaxLineKeys];
     DebugDwarfLineRow rows[kDebugMapperMaxLineRows];
     uint32_t addressOrder[kDebugMapperMaxLineRows];
+    DebugDwarfFunctionSymbol functionSymbols[kDebugMapperMaxFunctionSymbols];
+    DebugDwarfExecutableSegment executableSegments[kDebugMapperMaxExecutableSegments];
 
     // These are parser scratch fields. They are cleared before Load returns;
     // no result retains a pointer into the ELF buffer.
@@ -145,6 +166,10 @@ bool DebugDwarfMapperMapAddressToSource(const DebugDwarfMapper* mapper,
                                         uint64_t address, char* relativePath,
                                         uint32_t relativePathSize, uint32_t* line,
                                         uint32_t* column, DebugDwarfError* error);
+bool DebugDwarfMapperLookupFunction(const DebugDwarfMapper* mapper, uint64_t address,
+                                    char* name, uint32_t nameSize, uint64_t* startAddress,
+                                    uint64_t* size, DebugDwarfError* error);
+bool DebugDwarfMapperIsExecutableAddress(const DebugDwarfMapper* mapper, uint64_t address);
 bool DebugDwarfNormalizeSourcePath(const char* projectRoot, const char* rawPath,
                                    char* relativePath, uint32_t relativePathSize,
                                    bool* external);

@@ -1,5 +1,13 @@
 # Debugger Phase 2 — DWARF / Source-Line Mapping
 
+## Phase 7 call-stack enrichment
+
+Callers discovered from the bounded AMD64 frame-pointer chain keep their raw
+saved return address, but source and function lookup use `returnAddress - 1`.
+This maps the call site in the caller rather than the first instruction after
+the call. The stack contract and partial-result policy are documented in
+[DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
+
 ## Phase 6 Step Over lookup
 
 Step Over uses the same sequence-aware reverse mapper as Step Into. The
@@ -165,8 +173,9 @@ only after the backend publishes Running.
 ## Deferred work
 
 Call-aware Step Over is documented in [DEBUGGER_STEP_OVER.md](DEBUGGER_STEP_OVER.md)
-and reuses this mapper for the post-return source stop. User-visible Step Out,
-call stacks, memory, expressions, locals, watches,
+and reuses this mapper for the post-return source stop. The bounded Phase 7
+Call Stack is documented in [DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
+User-visible Step Out, arbitrary memory, expressions, locals, watches,
 conditional/data breakpoints, and attach/remote debugging remain future
 milestones. Phase 4 uses the mapping only to identify the exact physical address;
 it does not infer source-level stepping from a single machine instruction.

@@ -139,6 +139,8 @@ struct HostedDebugResult {
     uint64_t internalBreakpointId = 0;
     uint32_t byteCount = 0;
     uint8_t bytes[16] = {};
+    uint64_t stackLow = 0;
+    uint64_t stackHigh = 0;
     char errorMessage[kMaxRunErrorBytes] = {};
 };
 

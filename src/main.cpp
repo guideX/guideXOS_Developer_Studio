@@ -511,6 +511,11 @@ using guidexos::developer_studio::DebugDwarfErrorName;
 using guidexos::developer_studio::DebugDwarfMapperIsReady;
 using guidexos::developer_studio::DebugControllerMapBreakpoints;
 using guidexos::developer_studio::DebugControllerMarkArtifactStale;
+using guidexos::developer_studio::DebugControllerSelectCallStackFrame;
+using guidexos::developer_studio::DebugStackFrame;
+using guidexos::developer_studio::DebugStackFrameMappingState;
+using guidexos::developer_studio::DebugUnwindTerminationReason;
+using guidexos::developer_studio::DebugUnwindTerminationReasonName;
 using guidexos::developer_studio::HostedDebugBackend;
 using guidexos::developer_studio::HostedDebugBackendCreate;
 using guidexos::developer_studio::HostedDebugBackendInit;
@@ -585,6 +590,7 @@ static const int kIncludeGraphPanelModeWidth = 138;
 static const int kDebugPanelTop = 56;
 static const int kDebugPanelRowHeight = 22;
 static const int kDebugPanelMaxRows = 20;
+static const int kDebugCallStackPanelMaxRows = 16;
 
 enum class InputMode {
     Normal = 0,
@@ -3042,6 +3048,8 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->byteCount = snapshot.byteCount;
     for (uint32_t i = 0; i < outResult->byteCount && i < sizeof(outResult->bytes); ++i)
         outResult->bytes[i] = snapshot.bytes[i];
+    outResult->stackLow = snapshot.stackLow;
+    outResult->stackHigh = snapshot.stackHigh;
     outResult->executionState = snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_SINGLE_STEP_PENDING ?
         static_cast<uint32_t>(DebugBackendExecutionState::SingleStepPending) :
         static_cast<uint32_t>(DebugBackendExecutionState::None);
@@ -3690,6 +3698,28 @@ static bool navigateDebugStop(gx_app_context* ctx, bool recordHistory) {
     return true;
 }
 
+static bool navigateDebugStackFrame(gx_app_context* ctx, uint32_t frameIndex) {
+    const DebugStackFrame* frame = guidexos::developer_studio::DebugControllerCallStackFrameAt(
+        &g_debugController, frameIndex);
+    if (!frame || frame->mapping != DebugStackFrameMappingState::Mapped ||
+        !frame->sourcePath[0] || frame->sourceLine == 0) return false;
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode error = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
+                                                   frame->sourcePath, frame->sourceLine, frame->sourceColumn,
+                                                   &documentIndex, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Call Stack navigation failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), OutputErrorName(error));
+        writeStudioOutput(g_textScratch);
+        return false;
+    }
+    g_editorFocused = true;
+    g_outputFocused = false;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (document) keepCaretVisible(document);
+    return true;
+}
+
 static void pollDebug(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) return;
     if (!g_controller.model.hasProject || !PathsEqual(g_controller.model.project.projectId, g_debugController.projectId)) {
@@ -3733,6 +3763,11 @@ static void pollDebug(gx_app_context* ctx) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_trap_backend=PASS");
             DebugErrorCode stopMappingError = DebugErrorCode::None;
             const bool resolved = DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
+            DebugErrorCode stackError = DebugErrorCode::None;
+            const bool stackBuilt = DebugControllerBuildCallStack(&g_debugController, g_debugBackend,
+                                                                   &g_debugMapper, &stackError);
+            if (stackBuilt) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS");
+            else logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PARTIAL");
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
             if (resolved && g_debugController.currentLocation.relativePath[0]) {
@@ -6314,7 +6349,28 @@ static bool navigateSelectedBreakpoint(gx_app_context* ctx) {
 static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
-    if (keyCode == 9) { g_debugPanelTab = g_debugPanelTab == 0 ? 1 : 0; g_debugSelectedBreakpoint = 0; return true; }
+    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 3; g_debugSelectedBreakpoint = 0; return true; }
+    if (g_debugPanelTab == 2) {
+        const uint32_t frameCount = g_debugController.callStack.valid && !g_debugController.callStack.stale ?
+            g_debugController.callStack.result.frameCount : 0;
+        if (keyCode == GX_KEY_UP) {
+            if (g_debugController.callStack.selectedFrameIndex > 0)
+                DebugControllerSelectCallStackFrame(&g_debugController,
+                                                     g_debugController.callStack.selectedFrameIndex - 1, nullptr);
+            return true;
+        }
+        if (keyCode == GX_KEY_DOWN) {
+            if (frameCount > 0 && g_debugController.callStack.selectedFrameIndex + 1 < frameCount)
+                DebugControllerSelectCallStackFrame(&g_debugController,
+                                                     g_debugController.callStack.selectedFrameIndex + 1, nullptr);
+            return true;
+        }
+        if (keyCode == 13 && frameCount > 0) {
+            navigateDebugStackFrame(ctx, g_debugController.callStack.selectedFrameIndex);
+            return true;
+        }
+        return true;
+    }
     if (g_debugPanelTab != 0) return true;
     if (keyCode == GX_KEY_UP) {
         if (g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
@@ -6347,7 +6403,8 @@ static void drawDebugPanel(gx_app_context* ctx) {
     drawText(ctx, 92, 82, "DEBUGGER FOUNDATION");
     drawText(ctx, 112, 108, "Breakpoints");
     drawText(ctx, 260, 108, "Debug Session");
-    drawPanel(ctx, { g_debugPanelTab == 0 ? 96 : 244, 116, 136, 2 }, 0xD6E4FFu);
+    drawText(ctx, 430, 108, "Call Stack");
+    drawPanel(ctx, { g_debugPanelTab == 0 ? 96 : (g_debugPanelTab == 1 ? 244 : 414), 116, 136, 2 }, 0xD6E4FFu);
     if (g_debugPanelTab == 0) {
         if (g_debugController.breakpointCount == 0) drawText(ctx, 100, 150, "No source breakpoints. F9 toggles the current line.");
         const uint32_t rows = g_debugController.breakpointCount < kDebugPanelMaxRows ? g_debugController.breakpointCount : kDebugPanelMaxRows;
@@ -6375,7 +6432,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
             drawText(ctx, 100, y, g_textScratch);
         }
         drawText(ctx, 100, 584, "Up/Down Select   Enter Navigate   Space Enable   Delete Remove   Tab Session   Esc Close");
-    } else {
+    } else if (g_debugPanelTab == 1) {
         drawText(ctx, 100, 148, "Backend:");
         drawText(ctx, 220, 148, g_debugController.backendName[0] ? g_debugController.backendName : "(none)");
         drawText(ctx, 100, 172, "State:");
@@ -6448,7 +6505,49 @@ static void drawDebugPanel(gx_app_context* ctx) {
             appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.rflags);
             drawText(ctx, 170, 604, g_textScratch);
         } else drawText(ctx, 170, 604, "(stale while target is running)");
-        drawText(ctx, 100, 628, "Tab Breakpoints   Esc Close");
+        drawText(ctx, 100, 628, "Tab Call Stack   Esc Close");
+    } else {
+        drawText(ctx, 100, 148, "Call Stack");
+        if (!g_debugController.callStack.valid || g_debugController.callStack.stale) {
+            drawText(ctx, 100, 178, "Call Stack unavailable");
+            drawText(ctx, 100, 200, "No valid stopped context");
+        } else {
+            const uint32_t frameCount = g_debugController.callStack.result.frameCount;
+            copyText(g_textScratch, sizeof(g_textScratch), "Frames: ");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), frameCount);
+            appendText(g_textScratch, sizeof(g_textScratch), "  Selected frame: #");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.selectedFrameIndex);
+            appendText(g_textScratch, sizeof(g_textScratch), "  Unwinder: ");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.unwinderName);
+            drawText(ctx, 100, 178, g_textScratch);
+            const uint32_t rows = frameCount < kDebugCallStackPanelMaxRows ? frameCount : kDebugCallStackPanelMaxRows;
+            for (uint32_t row = 0; row < rows; ++row) {
+                const DebugStackFrame* frame = guidexos::developer_studio::DebugControllerCallStackFrameAt(
+                    &g_debugController, row);
+                if (!frame) continue;
+                const int y = 212 + static_cast<int>(row) * kDebugPanelRowHeight;
+                if (row == g_debugController.callStack.selectedFrameIndex)
+                    drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+                copyText(g_textScratch, sizeof(g_textScratch), frame->current ? "▶ #" : "  #");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), row);
+                appendText(g_textScratch, sizeof(g_textScratch), "  ");
+                appendText(g_textScratch, sizeof(g_textScratch), frame->functionName[0] ? frame->functionName : "<unknown>");
+                appendText(g_textScratch, sizeof(g_textScratch), "  ");
+                if (frame->mapping == DebugStackFrameMappingState::Mapped) {
+                    appendText(g_textScratch, sizeof(g_textScratch), frame->sourcePath);
+                    appendText(g_textScratch, sizeof(g_textScratch), ":");
+                    appendUnsigned(g_textScratch, sizeof(g_textScratch), frame->sourceLine);
+                } else {
+                    appendHexAddress(g_textScratch, sizeof(g_textScratch), frame->instructionAddress);
+                }
+                drawText(ctx, 100, y, g_textScratch);
+            }
+            const DebugUnwindTerminationReason termination = g_debugController.callStack.result.terminationReason;
+            copyText(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.result.truncated ? "Partial stack | " : "Stack status | ");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugUnwindTerminationReasonName(termination));
+            drawText(ctx, 100, 584, g_textScratch);
+        }
+        drawText(ctx, 100, 628, "Up/Down Select   Enter Navigate   Tab Breakpoints   Esc Close");
     }
 }
 
@@ -6759,7 +6858,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 312, 116, "Request Project Close");
     }
     if (g_debugMenuOpen) {
-        drawPanel(ctx, { 580, 42, 360, 220 }, 0x34496Au);
+        drawPanel(ctx, { 580, 42, 360, 244 }, 0x34496Au);
         drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
         drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
         drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
@@ -6769,6 +6868,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 592, 196, "Toggle Breakpoint (F9)");
         drawText(ctx, 592, 218, "Breakpoints");
         drawText(ctx, 592, 240, "Debug Session");
+        drawText(ctx, 592, 262, "Call Stack");
     }
     drawModal(ctx);
 }
@@ -7704,14 +7804,21 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         if (action == GX_MOUSE_ACTION_WHEEL) return;
         if (button == GX_MOUSE_BUTTON_LEFT &&
             (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
-            if (y >= 94 && y < 122 && x >= 90 && x < 390) {
-                g_debugPanelTab = x < 230 ? 0 : 1;
+            if (y >= 94 && y < 122 && x >= 90 && x < 560) {
+                g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : 2);
                 g_debugSelectedBreakpoint = 0;
             } else if (g_debugPanelTab == 0 && y >= 130 && y < 580 && x >= 88 && x < 872) {
                 const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
                 if (row < g_debugController.breakpointCount) {
                     g_debugSelectedBreakpoint = row;
                     if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSelectedBreakpoint(ctx);
+                }
+            } else if (g_debugPanelTab == 2 && y >= 194 && y < 580 && x >= 88 && x < 872) {
+                const uint32_t row = static_cast<uint32_t>((y - 194) / kDebugPanelRowHeight);
+                if (g_debugController.callStack.valid && row < g_debugController.callStack.result.frameCount &&
+                    row < static_cast<uint32_t>(kDebugCallStackPanelMaxRows)) {
+                    DebugControllerSelectCallStackFrame(&g_debugController, row, nullptr);
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateDebugStackFrame(ctx, row);
                 }
             }
         }
@@ -8133,7 +8240,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
-    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 264) {
+    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 286) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
@@ -8153,6 +8260,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         else if (row == 6) toggleBreakpointAtCaret(ctx);
         else if (row == 7) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 8) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 9) { g_debugPanelTab = 2; g_debugPanelOpen = true; g_editorFocused = false; }
         g_debugMenuOpen = false;
         drawShell(ctx);
         return;

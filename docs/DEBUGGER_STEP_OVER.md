@@ -1,5 +1,10 @@
 # Debugger Phase 6 — Step Over / F10
 
+Phase 7 can display the paused frame-pointer call stack after Step Over, but
+does not change F10's call-aware execution path. The stack is cleared when
+execution resumes and is not a Step Out implementation. See
+[DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
+
 Status: implemented for the bounded hosted AMD64 Native ELF debug path. This
 milestone adds real call-aware Step Over; it does not claim Step Out, call-stack
 unwinding, inline-frame semantics, optimized-code parity, or general-purpose
@@ -92,4 +97,3 @@ byte overlays. The hosted Windows runtime harness executes a real `E8` call,
 observes the callee exactly once, receives the real internal return trap,
 removes the temporary owner, restores/rebinds the user breakpoint state, and
 verifies teardown bytes.
-
