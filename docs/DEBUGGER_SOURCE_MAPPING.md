@@ -3,6 +3,7 @@
 ## Phase 9 variable lookup
 
 Phase 9 reuses the exact ELF artifact identity and stopped-PC policy for DWARF variable lookup. Source mapping and variable lookup remain separate: a source line does not provide a runtime value.
+Phase 10 keeps that separation for structured children: member offsets and array bounds come from the retained DWARF type graph, never from source declarations.
 
 ## Phase 7 call-stack enrichment
 

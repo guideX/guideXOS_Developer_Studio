@@ -23,6 +23,7 @@ from the exact current session, process, thread, artifact, and stop generation.
 ## Phase 9 variable invalidation
 
 Step Out invalidates Locals/Arguments until the real caller stop is published. The execution marker remains tied to frame #0 while a selected caller frame is inspected.
+Structured values follow the same invalidation boundary and are never carried across the real return-address stop.
 
 ## Return-address policy
 

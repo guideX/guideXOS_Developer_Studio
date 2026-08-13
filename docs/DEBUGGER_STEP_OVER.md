@@ -103,4 +103,5 @@ byte overlays. The hosted Windows runtime harness executes a real `E8` call,
 observes the callee exactly once, receives the real internal return trap,
 removes the temporary owner, restores/rebinds the user breakpoint state, and
 verifies teardown bytes.
+Structured value nodes are owned by the selected stop generation and are not reused after F10.
 Step Over treats Locals/Arguments as stop-generation data; the panels do not retain the caller’s previous values while the callee executes.

@@ -1233,6 +1233,44 @@ build developer_studio_debugger_variables_test.exe: CXX_EXECUTABLE_LINKER__devel
   TARGET_PDB = developer_studio_debugger_variables_test.exe.dbg
   TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_variables_test.dir
 
+# =============================================================================
+# Object build statements for EXECUTABLE target developer_studio_debugger_structured_variables_test
+
+
+#############################################
+# Order-only phony target for developer_studio_debugger_structured_variables_test
+
+build cmake_object_order_depends_target_developer_studio_debugger_structured_variables_test: phony || cmake_object_order_depends_target_developer_studio_models
+
+build CMakeFiles/developer_studio_debugger_structured_variables_test.dir/tests/debugger_structured_variables_test.cpp.obj: CXX_COMPILER__developer_studio_debugger_structured_variables_test_unscanned_Debug D$:/dev/guideXOS_Developer_Studio/tests/debugger_structured_variables_test.cpp || cmake_object_order_depends_target_developer_studio_debugger_structured_variables_test
+  CONFIG = Debug
+  DEP_FILE = CMakeFiles\developer_studio_debugger_structured_variables_test.dir\tests\debugger_structured_variables_test.cpp.obj.d
+  FLAGS = -g -std=c++17
+  INCLUDES = -ID:/dev/guideXOS_Developer_Studio/src
+  OBJECT_DIR = CMakeFiles\developer_studio_debugger_structured_variables_test.dir
+  OBJECT_FILE_DIR = CMakeFiles\developer_studio_debugger_structured_variables_test.dir\tests
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_structured_variables_test.dir
+
+
+# =============================================================================
+# Link build statements for EXECUTABLE target developer_studio_debugger_structured_variables_test
+
+
+#############################################
+# Link the executable developer_studio_debugger_structured_variables_test.exe
+
+build developer_studio_debugger_structured_variables_test.exe: CXX_EXECUTABLE_LINKER__developer_studio_debugger_structured_variables_test_Debug CMakeFiles/developer_studio_debugger_structured_variables_test.dir/tests/debugger_structured_variables_test.cpp.obj | libdeveloper_studio_models.a || libdeveloper_studio_models.a
+  CONFIG = Debug
+  FLAGS = -g
+  LINK_LIBRARIES = libdeveloper_studio_models.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  OBJECT_DIR = CMakeFiles\developer_studio_debugger_structured_variables_test.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = developer_studio_debugger_structured_variables_test.exe
+  TARGET_IMPLIB = libdeveloper_studio_debugger_structured_variables_test.dll.a
+  TARGET_PDB = developer_studio_debugger_structured_variables_test.exe.dbg
+  TARGET_SUPPORT_DIR = CMakeFiles\developer_studio_debugger_structured_variables_test.dir
+
 
 #############################################
 # Utility command for test
@@ -1280,6 +1318,8 @@ build developer_studio_debug_symbols_test: phony developer_studio_debug_symbols_
 build developer_studio_debugger_stack_test: phony developer_studio_debugger_stack_test.exe
 
 build developer_studio_debugger_step_test: phony developer_studio_debugger_step_test.exe
+
+build developer_studio_debugger_structured_variables_test: phony developer_studio_debugger_structured_variables_test.exe
 
 build developer_studio_debugger_test: phony developer_studio_debugger_test.exe
 
@@ -1331,7 +1371,7 @@ build developer_studio_workflow_test: phony developer_studio_workflow_test.exe
 #############################################
 # Folder: D:/dev/guideXOS_Developer_Studio/build-phase5-native
 
-build all: phony libdeveloper_studio_models.a developer_studio_model_test.exe developer_studio_workflow_test.exe developer_studio_project_test.exe developer_studio_build_test.exe developer_studio_run_test.exe developer_studio_output_test.exe developer_studio_navigation_test.exe developer_studio_syntax_test.exe developer_studio_find_test.exe developer_studio_project_search_test.exe developer_studio_symbol_test.exe developer_studio_navigation_definition_test.exe developer_studio_reference_test.exe developer_studio_rename_test.exe developer_studio_completion_test.exe developer_studio_signature_test.exe developer_studio_include_graph_test.exe developer_studio_relationship_test.exe developer_studio_ownership_test.exe developer_studio_types_test.exe developer_studio_debugger_test.exe developer_studio_debug_symbols_test.exe developer_studio_debugger_step_test.exe developer_studio_debugger_stack_test.exe developer_studio_debugger_variables_test.exe
+build all: phony libdeveloper_studio_models.a developer_studio_model_test.exe developer_studio_workflow_test.exe developer_studio_project_test.exe developer_studio_build_test.exe developer_studio_run_test.exe developer_studio_output_test.exe developer_studio_navigation_test.exe developer_studio_syntax_test.exe developer_studio_find_test.exe developer_studio_project_search_test.exe developer_studio_symbol_test.exe developer_studio_navigation_definition_test.exe developer_studio_reference_test.exe developer_studio_rename_test.exe developer_studio_completion_test.exe developer_studio_signature_test.exe developer_studio_include_graph_test.exe developer_studio_relationship_test.exe developer_studio_ownership_test.exe developer_studio_types_test.exe developer_studio_debugger_test.exe developer_studio_debug_symbols_test.exe developer_studio_debugger_step_test.exe developer_studio_debugger_stack_test.exe developer_studio_debugger_variables_test.exe developer_studio_debugger_structured_variables_test.exe
 
 # =============================================================================
 # Built-in targets

@@ -12,6 +12,7 @@ claim optimized-code debugging parity.
 ## Phase 9 variable invalidation
 
 Step Into invalidates variable inspection while the target runs and rebuilds it from the new stopped context.
+The same invalidation applies to lazy aggregate, array, and explicit pointer children.
 
 ## User command
 

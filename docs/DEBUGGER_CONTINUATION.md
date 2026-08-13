@@ -12,6 +12,7 @@ RFLAGS audit fields. The ABI layout test covers the resulting fixed sizes.
 ## Phase 9 variable invalidation
 
 Continue invalidates the stopped Locals/Arguments generation. Values are rebuilt only after the next genuine paused stop.
+Continue also invalidates all materialized structured nodes; no child memory read is permitted against the old stop.
 
 ## Phase 5 source stepping and Phase 6 Step Over
 

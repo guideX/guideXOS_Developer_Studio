@@ -513,9 +513,11 @@ using guidexos::developer_studio::DebugControllerMapBreakpoints;
 using guidexos::developer_studio::DebugControllerMarkArtifactStale;
 using guidexos::developer_studio::DebugControllerSelectCallStackFrame;
 using guidexos::developer_studio::DebugControllerBuildVariables;
+using guidexos::developer_studio::DebugControllerExpandVariable;
 using guidexos::developer_studio::DebugDwarfVariableKind;
 using guidexos::developer_studio::DebugDwarfVariable;
 using guidexos::developer_studio::DebugDwarfVariableView;
+using guidexos::developer_studio::DebugDwarfValueNode;
 using guidexos::developer_studio::DebugStackFrame;
 using guidexos::developer_studio::DebugStackFrameMappingState;
 using guidexos::developer_studio::DebugUnwindTerminationReason;
@@ -527,6 +529,7 @@ using guidexos::developer_studio::HostedDebugCommand;
 using guidexos::developer_studio::HostedDebugResult;
 using guidexos::developer_studio::PathsEqual;
 using guidexos::developer_studio::kMaxProjectPathBytes;
+using guidexos::developer_studio::kDebugDwarfMaxValueNodes;
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -697,6 +700,8 @@ static bool g_debugMenuOpen = false;
 static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
 static uint32_t g_debugSelectedBreakpoint = 0;
+static uint64_t g_debugSelectedValueNode = 0;
+static uint64_t g_debugVisibleValueNodes[kDebugDwarfMaxValueNodes] = {};
 static bool g_requestExit = false;
 static bool g_workspaceSwitchPending = false;
 static uint32_t g_pendingDocument = kMaxOpenDocuments;
@@ -6373,10 +6378,66 @@ static bool navigateSelectedBreakpoint(gx_app_context* ctx) {
     return true;
 }
 
+static void collectDebugValueNodeIds(const DebugDwarfVariableView& view, uint64_t nodeId,
+                                     uint32_t* count) {
+    if (!count || *count >= kDebugDwarfMaxValueNodes || nodeId == 0 || nodeId > view.nodeCount) return;
+    const DebugDwarfValueNode& node = view.nodes[nodeId - 1u];
+    if (node.nodeId != nodeId) return;
+    g_debugVisibleValueNodes[(*count)++] = nodeId;
+    if (!node.expanded) return;
+    for (uint32_t i = 0; i < node.childCount; ++i)
+        collectDebugValueNodeIds(view, node.childNodeIds[i], count);
+}
+
+static uint32_t collectDebugVisibleValueNodes(const DebugDwarfVariableView& view, bool arguments) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < view.variableCount; ++i) {
+        const DebugDwarfVariable& variable = view.variables[i];
+        if ((arguments && variable.kind != DebugDwarfVariableKind::Argument) ||
+            (!arguments && variable.kind != DebugDwarfVariableKind::Local) || variable.nodeId == 0) continue;
+        collectDebugValueNodeIds(view, variable.nodeId, &count);
+    }
+    return count;
+}
+
+static int debugVisibleValueNodeIndex(uint32_t count, uint64_t nodeId) {
+    for (uint32_t i = 0; i < count; ++i) if (g_debugVisibleValueNodes[i] == nodeId) return static_cast<int>(i);
+    return -1;
+}
+
+static bool handleDebugValueKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!ctx || action != GX_KEY_ACTION_DOWN || (g_debugPanelTab != 3 && g_debugPanelTab != 4)) return false;
+    const DebugDwarfVariableView& view = g_debugController.variables;
+    if (!view.valid || view.stale) return true;
+    const bool arguments = g_debugPanelTab == 4;
+    const uint32_t count = collectDebugVisibleValueNodes(view, arguments);
+    if (count == 0) { g_debugSelectedValueNode = 0; return true; }
+    int selected = debugVisibleValueNodeIndex(count, g_debugSelectedValueNode);
+    if (selected < 0) selected = 0;
+    if (keyCode == GX_KEY_UP) selected = selected > 0 ? selected - 1 : 0;
+    else if (keyCode == GX_KEY_DOWN) selected = selected + 1 < static_cast<int>(count) ? selected + 1 : selected;
+    else if (keyCode == 13 || keyCode == GX_KEY_RIGHT) {
+        const uint64_t nodeId = g_debugVisibleValueNodes[selected];
+        const DebugDwarfValueNode& node = view.nodes[nodeId - 1u];
+        if (node.expandable) DebugControllerExpandVariable(&g_debugController, g_debugBackend, &g_debugMapper, nodeId, nullptr);
+    } else if (keyCode == GX_KEY_LEFT) {
+        const uint64_t nodeId = g_debugVisibleValueNodes[selected];
+        DebugDwarfValueNode& node = g_debugController.variables.nodes[nodeId - 1u];
+        if (node.expanded) node.expanded = false;
+        else if (node.parentNodeId != 0) {
+            g_debugSelectedValueNode = node.parentNodeId;
+            return true;
+        }
+    } else return true;
+    g_debugSelectedValueNode = g_debugVisibleValueNodes[selected];
+    return true;
+}
+
 static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
-    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 5; g_debugSelectedBreakpoint = 0; return true; }
+    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 5; g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; return true; }
+    if (handleDebugValueKey(ctx, keyCode, action)) return true;
     if (g_debugPanelTab == 2) {
         const uint32_t frameCount = g_debugController.callStack.valid && !g_debugController.callStack.stale ?
             g_debugController.callStack.result.frameCount : 0;
@@ -6592,18 +6653,26 @@ static void drawDebugPanel(gx_app_context* ctx) {
             appendText(g_textScratch, sizeof(g_textScratch), view.functionName[0] ? view.functionName : "<unknown>");
             drawText(ctx, 220, 148, g_textScratch);
             drawText(ctx, 100, 174, "Name"); drawText(ctx, 300, 174, "Type"); drawText(ctx, 550, 174, "Value");
-            uint32_t row = 0;
-            for (uint32_t i = 0; i < view.variableCount && row < kDebugPanelMaxRows; ++i) {
-                const DebugDwarfVariable& variable = view.variables[i];
-                if ((arguments && variable.kind != DebugDwarfVariableKind::Argument) ||
-                    (!arguments && variable.kind != DebugDwarfVariableKind::Local)) continue;
-                const int y = 198 + static_cast<int>(row++) * kDebugPanelRowHeight;
-                drawText(ctx, 100, y, variable.name);
-                drawText(ctx, 300, y, variable.typeDisplay);
-                drawText(ctx, 550, y, variable.valueDisplay);
+            const uint32_t visibleCount = collectDebugVisibleValueNodes(view, arguments);
+            const uint32_t rows = visibleCount < static_cast<uint32_t>(kDebugPanelMaxRows) ? visibleCount : static_cast<uint32_t>(kDebugPanelMaxRows);
+            for (uint32_t row = 0; row < rows; ++row) {
+                const uint64_t nodeId = g_debugVisibleValueNodes[row];
+                const DebugDwarfValueNode& node = view.nodes[nodeId - 1u];
+                const int y = 198 + static_cast<int>(row) * kDebugPanelRowHeight;
+                if (nodeId == g_debugSelectedValueNode) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+                const int x = 100 + static_cast<int>(node.depth > 12 ? 12 : node.depth) * 18;
+                if (node.kind == guidexos::developer_studio::DebugDwarfValueNodeKind::Diagnostic) {
+                    drawText(ctx, x, y, node.valueDisplay);
+                } else {
+                    copyText(g_textScratch, sizeof(g_textScratch), node.expandable ? (node.expanded ? "[-] " : "[+] ") : "    ");
+                    appendText(g_textScratch, sizeof(g_textScratch), node.name);
+                    drawText(ctx, x, y, g_textScratch);
+                    drawText(ctx, 300, y, node.typeDisplay);
+                    drawText(ctx, 550, y, node.valueDisplay);
+                }
             }
-            if (row == 0) drawText(ctx, 100, 198, arguments ? "No arguments" : "No locals");
-            drawText(ctx, 100, 628, "Live stopped values | Tab Arguments/Locals   Esc Close");
+            if (rows == 0) drawText(ctx, 100, 198, arguments ? "No arguments" : "No locals");
+            drawText(ctx, 100, 628, "Enter/Right Expand   Left Collapse   Up/Down Select   Tab Arguments/Locals   Esc Close");
         } else {
             drawText(ctx, 100, 184, g_debugController.state == DebugSessionState::Running ?
                      "Variables unavailable while target is running" :
@@ -7876,6 +7945,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             if (y >= 94 && y < 122 && x >= 90 && x < 820) {
                 g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : x < 550 ? 2 : x < 680 ? 3 : 4);
                 g_debugSelectedBreakpoint = 0;
+                g_debugSelectedValueNode = 0;
             } else if (g_debugPanelTab == 0 && y >= 130 && y < 580 && x >= 88 && x < 872) {
                 const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
                 if (row < g_debugController.breakpointCount) {
@@ -7889,6 +7959,16 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                     DebugControllerSelectCallStackFrame(&g_debugController, row, nullptr);
                     DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
                     if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateDebugStackFrame(ctx, row);
+                }
+            } else if ((g_debugPanelTab == 3 || g_debugPanelTab == 4) && y >= 182 && y < 580 && x >= 88 && x < 872) {
+                const bool arguments = g_debugPanelTab == 4;
+                const uint32_t count = collectDebugVisibleValueNodes(g_debugController.variables, arguments);
+                const uint32_t row = static_cast<uint32_t>((y - 182) / kDebugPanelRowHeight);
+                if (row < count && row < static_cast<uint32_t>(kDebugPanelMaxRows)) {
+                    g_debugSelectedValueNode = g_debugVisibleValueNodes[row];
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                        DebugControllerExpandVariable(&g_debugController, g_debugBackend, &g_debugMapper,
+                                                      g_debugSelectedValueNode, nullptr);
                 }
             }
         }

@@ -700,6 +700,9 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
                                    const DebugDwarfMapper* mapper, DebugErrorCode* error);
 bool DebugControllerBuildVariables(DebugController* controller, const DebugBackend& backend,
                                    const DebugDwarfMapper* mapper, DebugErrorCode* error);
+bool DebugControllerExpandVariable(DebugController* controller, const DebugBackend& backend,
+                                   const DebugDwarfMapper* mapper, uint64_t nodeId,
+                                   DebugErrorCode* error);
 bool DebugControllerSelectCallStackFrame(DebugController* controller, uint32_t frameIndex,
                                          DebugErrorCode* error);
 const DebugStackFrame* DebugControllerCallStackFrameAt(const DebugController* controller,

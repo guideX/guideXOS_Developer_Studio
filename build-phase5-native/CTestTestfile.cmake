@@ -50,5 +50,7 @@ add_test(developer_studio_debugger_step_test "D:/dev/guideXOS_Developer_Studio/b
 set_tests_properties(developer_studio_debugger_step_test PROPERTIES  _BACKTRACE_TRIPLES "D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;196;add_test;D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;0;")
 add_test(developer_studio_debugger_stack_test "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_debugger_stack_test.exe")
 set_tests_properties(developer_studio_debugger_stack_test PROPERTIES  _BACKTRACE_TRIPLES "D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;203;add_test;D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;0;")
+add_test(developer_studio_debugger_structured_variables_test "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_debugger_structured_variables_test.exe")
+set_tests_properties(developer_studio_debugger_structured_variables_test PROPERTIES  _BACKTRACE_TRIPLES "D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;216;add_test;D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;0;")
 add_test(developer_studio_debugger_variables_test "D:/dev/guideXOS_Developer_Studio/build-phase5-native/developer_studio_debugger_variables_test.exe")
-set_tests_properties(developer_studio_debugger_variables_test PROPERTIES  _BACKTRACE_TRIPLES "D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;210;add_test;D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;0;")
+set_tests_properties(developer_studio_debugger_variables_test PROPERTIES  _BACKTRACE_TRIPLES "D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;217;add_test;D:/dev/guideXOS_Developer_Studio/CMakeLists.txt;0;")

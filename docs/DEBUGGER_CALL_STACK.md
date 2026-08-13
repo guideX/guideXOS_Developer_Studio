@@ -5,6 +5,7 @@ adds a real, bounded call stack for a stopped thread. It is intentionally a
 frame-pointer unwinder, not a general-purpose unwind engine.
 
 Selecting a Call Stack frame also rebuilds the Phase 9 Locals and Arguments view. Frame #0 has real GPR context; caller frames conservatively expose only locations supported by known frame data.
+Phase 10 structured roots follow the selected frame and are rebuilt on frame change; nested children are lazy and use only memory-backed locations supported by that frame.
 
 ## Scope and evidence boundary
 

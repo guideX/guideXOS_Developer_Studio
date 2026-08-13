@@ -40,6 +40,10 @@ static const uint32_t kDebugDwarfMaxVariableValueBytes = 16;
 static const uint32_t kDebugDwarfMaxExpressionOperations = 64;
 static const uint32_t kDebugDwarfMaxExpressionStack = 16;
 static const uint32_t kDebugDwarfMaxDereferences = 4;
+static const uint32_t kDebugDwarfMaxValueDepth = 8;
+static const uint32_t kDebugDwarfMaxValueChildren = 16;
+static const uint32_t kDebugDwarfMaxValueNodes = 64;
+static const uint32_t kDebugDwarfMaxArrayElements = 16;
 
 enum class DebugDwarfMapperState {
     Empty = 0,
@@ -145,6 +149,63 @@ enum class DebugDwarfLocationKind {
     Malformed
 };
 
+enum class DebugDwarfTypeKind {
+    Unknown = 0,
+    Scalar,
+    Pointer,
+    Structure,
+    Class,
+    Union,
+    Array,
+    Enumeration,
+    Opaque
+};
+
+enum class DebugDwarfValueNodeKind {
+    Unavailable = 0,
+    Scalar,
+    Pointer,
+    Structure,
+    Class,
+    Union,
+    Array,
+    OpaqueAggregate,
+    Diagnostic
+};
+
+struct DebugDwarfMemberInfo {
+    uint64_t parentTypeDieOffset;
+    uint64_t dieOffset;
+    uint64_t typeDieOffset;
+    int64_t byteOffset;
+    uint32_t declarationFile;
+    uint32_t declarationLine;
+    uint8_t accessibility;
+    bool hasByteOffset;
+    bool byteOffsetIsExpression;
+    bool declaration;
+    bool artificial;
+    bool bitField;
+    char name[kDebugDwarfMaxVariableNameBytes];
+};
+
+struct DebugDwarfTypeInfo {
+    uint64_t dieOffset;
+    uint64_t byteSize;
+    uint64_t elementTypeDieOffset;
+    uint64_t elementCount;
+    int64_t lowerBound;
+    int64_t upperBound;
+    uint32_t memberCount;
+    uint32_t visibleMemberCount;
+    DebugDwarfTypeKind kind;
+    bool complete;
+    bool hasElementCount;
+    bool hasBounds;
+    char name[kDebugDwarfMaxTypeDisplayBytes];
+    char display[kDebugDwarfMaxTypeDisplayBytes];
+};
+
 // These values intentionally retain only the bounded DIE data needed by the
 // first locals/arguments implementation. No raw DIE pointers survive a load.
 struct DebugDwarfDieInfo {
@@ -192,6 +253,24 @@ struct DebugDwarfDieInfo {
     uint64_t constValue;
     bool hasCount;
     uint64_t count;
+    bool hasLowerBound;
+    int64_t lowerBound;
+    bool hasUpperBound;
+    int64_t upperBound;
+    bool hasDataMemberLocation;
+    bool dataMemberLocationIsExpression;
+    int64_t dataMemberLocation;
+    uint32_t dataMemberLocationLength;
+    uint8_t dataMemberLocationExpression[kDebugDwarfMaxExpressionBytes];
+    bool hasAccessibility;
+    uint8_t accessibility;
+    bool declaration;
+    bool hasBitSize;
+    uint64_t bitSize;
+    bool hasBitOffset;
+    uint64_t bitOffset;
+    bool hasDataBitOffset;
+    uint64_t dataBitOffset;
     bool hasStrOffsetsBase;
     uint32_t strOffsetsBase;
     bool hasAddrBase;
@@ -279,6 +358,8 @@ struct DebugDwarfVariable {
     DebugDwarfLocationKind locationKind;
     uint64_t typeDieOffset;
     uint64_t address;
+    uint64_t scalarValue;
+    uint64_t nodeId;
     uint16_t registerNumber;
     uint16_t scopeDepth;
     uint32_t rawByteCount;
@@ -290,12 +371,41 @@ struct DebugDwarfVariable {
     char status[kDebugDwarfMaxTypeDisplayBytes];
 };
 
+struct DebugDwarfValueNode {
+    uint64_t nodeId;
+    uint64_t dieOffset;
+    uint64_t parentNodeId;
+    uint64_t typeDieOffset;
+    uint64_t address;
+    uint64_t scalarValue;
+    uint64_t targetAddress;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
+    uint64_t artifactGeneration;
+    uint32_t frameIndex;
+    uint32_t depth;
+    uint32_t childCount;
+    uint64_t childNodeIds[kDebugDwarfMaxValueChildren];
+    DebugDwarfValueNodeKind kind;
+    DebugDwarfVariableState state;
+    DebugDwarfLocationKind locationKind;
+    bool expandable;
+    bool expanded;
+    bool truncated;
+    char name[kDebugDwarfMaxVariableNameBytes];
+    char typeDisplay[kDebugDwarfMaxTypeDisplayBytes];
+    char valueDisplay[kDebugDwarfMaxTypeDisplayBytes];
+    char status[kDebugDwarfMaxTypeDisplayBytes];
+};
+
 struct DebugDwarfVariableView {
     bool valid;
     bool stale;
     uint32_t frameIndex;
     uint64_t sessionGeneration;
     uint64_t stopGeneration;
+    uint64_t artifactGeneration;
+    char artifactSha256[kDebugMapperMaxSha256Bytes];
     uint64_t frameInstructionAddress;
     uint32_t functionIndex;
     char functionName[kDebugMapperMaxFunctionNameBytes];
@@ -304,6 +414,10 @@ struct DebugDwarfVariableView {
     uint32_t localCount;
     char status[kDebugDwarfMaxTypeDisplayBytes];
     DebugDwarfVariable variables[kDebugDwarfMaxDisplayedVariables];
+    uint32_t nodeCount;
+    uint32_t materializedNodeCount;
+    uint32_t targetMemoryReadCount;
+    DebugDwarfValueNode nodes[kDebugDwarfMaxValueNodes];
 };
 
 typedef bool (*DebugDwarfReadMemoryFn)(void* userData, uint64_t sessionGeneration,
@@ -412,12 +526,22 @@ const char* DebugDwarfVariableKindName(DebugDwarfVariableKind kind);
 const char* DebugDwarfVariableStateName(DebugDwarfVariableState state);
 const char* DebugDwarfValueKindName(DebugDwarfValueKind kind);
 const char* DebugDwarfLocationKindName(DebugDwarfLocationKind kind);
+const char* DebugDwarfTypeKindName(DebugDwarfTypeKind kind);
+const char* DebugDwarfValueNodeKindName(DebugDwarfValueNodeKind kind);
+bool DebugDwarfDescribeType(const DebugDwarfMapper* mapper, uint64_t typeDieOffset,
+                            DebugDwarfTypeInfo* type);
+bool DebugDwarfDescribeMember(const DebugDwarfMapper* mapper, uint64_t parentTypeDieOffset,
+                              uint32_t memberIndex, DebugDwarfMemberInfo* member);
 bool DebugDwarfMapperLookupDebugFunction(const DebugDwarfMapper* mapper, uint64_t address,
                                          uint32_t* functionIndex, DebugDwarfError* error);
 bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
                                 const DebugDwarfFrameContext& frame,
                                 DebugDwarfReadMemoryFn readMemory, void* userData,
                                 DebugDwarfVariableView* view);
+bool DebugDwarfExpandValue(const DebugDwarfMapper* mapper,
+                           const DebugDwarfFrameContext& frame,
+                           DebugDwarfReadMemoryFn readMemory, void* userData,
+                           DebugDwarfVariableView* view, uint64_t nodeId);
 bool DebugDwarfNormalizeSourcePath(const char* projectRoot, const char* rawPath,
                                    char* relativePath, uint32_t relativePathSize,
                                    bool* external);

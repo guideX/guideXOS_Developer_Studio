@@ -252,3 +252,8 @@ unsupported.
 ## Phase 9 locals and arguments
 
 The debugger now has a bounded read-only DWARF variable index for simple Native ELF debug builds. Locals and formal arguments are evaluated from the exact stopped register/frame-base/target-memory state. See [DEBUGGER_LOCALS_ARGUMENTS.md](DEBUGGER_LOCALS_ARGUMENTS.md). This does not add Watch expressions, arbitrary C++ expression evaluation, or full optimized-variable debugging.
+
+Phase 10 adds bounded lazy structured-value nodes for DWARF-backed members,
+arrays, nested aggregates, and explicit pointer expansion. See
+[DEBUGGER_STRUCTURED_VARIABLES.md](DEBUGGER_STRUCTURED_VARIABLES.md). Hosted
+structured UI proof remains distinct from model/runtime proof.

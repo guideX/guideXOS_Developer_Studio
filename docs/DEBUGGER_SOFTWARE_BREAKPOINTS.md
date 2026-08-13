@@ -170,3 +170,6 @@ StepOut owner is added without a second patch. User intent wins at the combined
 trap, so the persistent breakpoint remains `Paused / Breakpoint` after the
 temporary owner is removed.
 Locals/Arguments inspection is only rebuilt after a real owned breakpoint stop; breakpoint source text is never treated as a value source.
+Structured children are also stop snapshots. They are cleared with the parent
+view and can be expanded only while the same paused artifact and stop
+generation remain current.

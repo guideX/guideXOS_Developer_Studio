@@ -67,10 +67,12 @@ memory reads become `ReadFailure`/`<unavailable>`.
 
 Frame #0 receives the real stopped general-purpose register context and frame base. Non-zero frames use the unwinder’s known frame base and saved-return-address-minus-one PC. Register-only caller variables are unavailable because the current unwinder does not reconstruct caller GPRs; frame-base-relative stack variables remain evaluable where target memory is readable. Selecting a Call Stack frame rebuilds both panels without moving the execution marker.
 
-Locals and Arguments are rebuilt for every stopped generation. Continue, Step Into, Step Over, Step Out, exit, artifact replacement, and a running state invalidate the view. The UI never presents a prior stopped value as live.
+Locals and Arguments are rebuilt for every stopped generation. Continue, Step Into, Step Over, Step Out, exit, artifact replacement, and a running state invalidate the view. The UI never presents a prior stopped value as live. Structured children share the same selected-frame and stop-generation ownership.
 
 ## Not implemented
 
-This is not a full DWARF evaluator. Watch expressions, arbitrary C++ expressions, generalized location lists, optimized-variable tracking, register editing, pointer dereference, strings, object member expansion, STL/NatVis, and dynamic types are intentionally deferred. The current behavior assumes deterministic unoptimized Clang AMD64 debug builds.
+This is not a full DWARF evaluator. Watch expressions, arbitrary C++ expressions, generalized location lists, optimized-variable tracking, register editing, strings, STL/NatVis, and dynamic types remain intentionally deferred. Phase 10 adds bounded object member expansion and explicit pointer dereference in a separate structured-value model. The current behavior assumes deterministic unoptimized Clang AMD64 debug builds.
+
+Phase 10 is complete; the next intentionally small milestone is **Debugger Phase 11 — Watches and Bounded Expression Evaluation Foundation**.
 
 Next milestone: **Debugger Phase 10 — Structured Variables and Object Expansion**.
