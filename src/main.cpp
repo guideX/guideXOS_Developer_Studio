@@ -6666,6 +6666,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
                 } else {
                     copyText(g_textScratch, sizeof(g_textScratch), node.expandable ? (node.expanded ? "[-] " : "[+] ") : "    ");
                     appendText(g_textScratch, sizeof(g_textScratch), node.name);
+                    if (node.truncated) appendText(g_textScratch, sizeof(g_textScratch), " <truncated>");
                     drawText(ctx, x, y, g_textScratch);
                     drawText(ctx, 300, y, node.typeDisplay);
                     drawText(ctx, 550, y, node.valueDisplay);

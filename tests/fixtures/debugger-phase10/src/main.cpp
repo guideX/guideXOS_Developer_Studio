@@ -22,6 +22,12 @@ struct Node {
     Node* next;
 };
 
+struct Wide {
+    int m0; int m1; int m2; int m3; int m4; int m5;
+    int m6; int m7; int m8; int m9; int m10; int m11;
+    int m12; int m13; int m14; int m15; int m16; int m17;
+};
+
 volatile int g_sink = 0;
 gx_handle g_window = 0;
 }
@@ -37,6 +43,9 @@ static __attribute__((noinline)) int inspect(Point point, Config* config) {
     Node node{};
     node.value = 77;
     node.next = &node;
+
+    Wide wide{};
+    wide.m17 = 18;
 
     Config* nothing = nullptr;
     volatile int sink =

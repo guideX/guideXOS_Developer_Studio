@@ -43,7 +43,8 @@ for the selected stopped frame. The current hard limits are:
 * maximum materialized nodes per view: 64;
 * maximum array elements materialized per expansion: 16.
 
-Excess children receive an explicit truncation diagnostic. Unsupported member
+Excess children receive an explicit truncation diagnostic or a `<truncated>`
+marker on the parent row when the per-node child slot is already full. Unsupported member
 expressions, bit fields, incomplete types, malformed references, and register-
 backed aggregates are represented as diagnostics such as `<unsupported layout>`,
 `<incomplete type>`, or `<aggregate location unsupported>` rather than guessed
@@ -54,7 +55,8 @@ formed; unsigned address overflow is rejected rather than clamped.
 
 Pointers remain scalar address values until explicitly expanded. Null pointers
 display `nullptr`, are not read, and are not expandable. A non-null pointer is
-checked for a canonical AMD64 address and probed through the existing
+required to have a canonical AMD64 address before it receives a disclosure
+marker, then is probed through the existing
 session/process/thread/stop-generation-bound memory callback. Failed probes
 display `<unreadable>`.
 

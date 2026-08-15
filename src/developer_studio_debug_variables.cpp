@@ -923,6 +923,42 @@ static const DebugDwarfDieInfo* canonicalTypeDie(const DebugDwarfMapper* mapper,
     return die;
 }
 
+static bool addArrayRangeSpan(int64_t lower, uint64_t span, int64_t* upper) {
+    if (!upper) return false;
+    if (lower >= 0) {
+        if (span > static_cast<uint64_t>(INT64_MAX - lower)) return false;
+        *upper = lower + static_cast<int64_t>(span);
+        return true;
+    }
+    const uint64_t magnitude = static_cast<uint64_t>(-(lower + 1)) + 1u;
+    if (span < magnitude) {
+        const uint64_t remaining = magnitude - span;
+        if (remaining == (static_cast<uint64_t>(INT64_MAX) + 1u)) *upper = INT64_MIN;
+        else *upper = -static_cast<int64_t>(remaining);
+        return true;
+    }
+    const uint64_t positive = span - magnitude;
+    if (positive > static_cast<uint64_t>(INT64_MAX)) return false;
+    *upper = static_cast<int64_t>(positive);
+    return true;
+}
+
+static bool inclusiveArrayBoundCount(int64_t lower, int64_t upper, uint64_t* count) {
+    if (!count || upper < lower) return false;
+    uint64_t span = 0;
+    if (lower < 0 && upper >= 0) {
+        const uint64_t magnitude = static_cast<uint64_t>(-(lower + 1)) + 1u;
+        const uint64_t positive = static_cast<uint64_t>(upper);
+        if (positive > UINT64_MAX - magnitude) return false;
+        span = positive + magnitude;
+    } else {
+        span = static_cast<uint64_t>(upper) - static_cast<uint64_t>(lower);
+    }
+    if (span == UINT64_MAX) return false;
+    *count = span + 1u;
+    return true;
+}
+
 static bool arrayBounds(const DebugDwarfMapper* mapper, const DebugDwarfDieInfo* array,
                         uint64_t* elementType, uint64_t* count, int64_t* lower,
                         int64_t* upper, bool* haveBounds) {
@@ -935,16 +971,14 @@ static bool arrayBounds(const DebugDwarfMapper* mapper, const DebugDwarfDieInfo*
         if (range.hasCount) {
             *count = range.count;
             *lower = range.hasLowerBound ? range.lowerBound : 0;
-            if (*count == 0 || *count - 1 > static_cast<uint64_t>(INT64_MAX - *lower)) return false;
-            *upper = *lower + static_cast<int64_t>(*count - 1);
+            if (*count == 0 || !addArrayRangeSpan(*lower, *count - 1u, upper)) return false;
             *haveBounds = true;
             return true;
         }
         if (range.hasUpperBound) {
             *lower = range.hasLowerBound ? range.lowerBound : 0;
             *upper = range.upperBound;
-            if (*upper < *lower) return false;
-            *count = static_cast<uint64_t>(*upper - *lower) + 1u;
+            if (!inclusiveArrayBoundCount(*lower, *upper, count)) return false;
             *haveBounds = true;
             return true;
         }
@@ -1489,7 +1523,17 @@ static bool appendDiagnostic(DebugDwarfVariableView* view, DebugDwarfValueNode* 
     copyText(diagnostic.valueDisplay, sizeof(diagnostic.valueDisplay), text);
     copyText(diagnostic.status, sizeof(diagnostic.status), text);
     uint64_t childId = 0;
-    return appendNode(view, diagnostic, &childId) && linkChild(view, parent, childId);
+    if (!appendNode(view, diagnostic, &childId)) {
+        // A diagnostic must remain observable even when the global node budget
+        // is exhausted. The UI renders this flag on the parent row.
+        parent->truncated = true;
+        return false;
+    }
+    if (!linkChild(view, parent, childId)) {
+        parent->truncated = true;
+        return false;
+    }
+    return true;
 }
 
 static DebugDwarfValueNodeKind nodeKind(const TypeDescription& type) {
@@ -1589,6 +1633,7 @@ static bool addValueChild(DebugDwarfVariableView* view, const DebugDwarfMapper* 
         child.targetAddress = child.scalarValue;
     child.expandable = child.state == DebugDwarfVariableState::Available &&
         ((child.kind == DebugDwarfValueNodeKind::Pointer && child.targetAddress != 0 &&
+          canonicalAddress(child.targetAddress) &&
           pointedTypeDie(mapper, typeDieOffset) != nullptr) ||
          (type.complete && child.kind != DebugDwarfValueNodeKind::Pointer &&
           child.kind != DebugDwarfValueNodeKind::Scalar && child.kind != DebugDwarfValueNodeKind::Unavailable &&
@@ -1637,7 +1682,11 @@ static bool addMemberChildren(DebugDwarfVariableView* view, const DebugDwarfMapp
     for (uint32_t i = 0; i < mapper->debugInfoDieCount; ++i) {
         const DebugDwarfDieInfo& candidate = mapper->dies[i];
         if (candidate.parentIndex != parentIndex || candidate.tag != kTagMember) continue;
-        if (memberIndex >= kDebugDwarfMaxValueChildren) { parent->truncated = true; break; }
+        if (memberIndex >= kDebugDwarfMaxValueChildren) {
+            appendDiagnostic(view, parent, "<truncated>", DebugDwarfVariableState::Unavailable);
+            parent->truncated = true;
+            break;
+        }
         DebugDwarfMemberInfo member = DebugDwarfMemberInfo();
         if (!memberInfoInternal(mapper, typeDie.offset, memberIndex++, &member) || !member.hasByteOffset) {
             DebugDwarfValueNode diagnostic = DebugDwarfValueNode();
@@ -2112,6 +2161,7 @@ bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
             populateNodeFromVariable(&node, variable, type, frame, view->artifactGeneration);
             if (node.kind == DebugDwarfValueNodeKind::Pointer)
                 node.expandable = variable.state == DebugDwarfVariableState::Available && variable.scalarValue != 0 &&
+                    canonicalAddress(variable.scalarValue) &&
                     pointedTypeDie(mapper, variable.typeDieOffset) != nullptr;
             else node.expandable = variable.state == DebugDwarfVariableState::Available &&
                 type.complete &&

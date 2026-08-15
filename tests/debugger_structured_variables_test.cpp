@@ -178,8 +178,9 @@ int main() {
     const DebugDwarfVariable* rect = findVariable(mapper, view, "rect");
     const DebugDwarfVariable* values = findVariable(mapper, view, "values");
     const DebugDwarfVariable* node = findVariable(mapper, view, "node");
+    const DebugDwarfVariable* wide = findVariable(mapper, view, "wide");
     const DebugDwarfVariable* nothing = findVariable(mapper, view, "nothing");
-    assert(point && config && rect && values && node && nothing);
+    assert(point && config && rect && values && node && wide && nothing);
     assert(config->address != 0 && config->rawByteCount == 8);
     const uint64_t pointAddress = frameLocation(mapper, *point, frameBase);
     const uint64_t configAddress = frameLocation(mapper, *config, frameBase);
@@ -243,6 +244,10 @@ int main() {
     assert(view.targetMemoryReadCount == readsBeforeCycle && next->childCount == 1 &&
            std::strcmp(view.nodes[next->childNodeIds[0] - 1].valueDisplay, "<cycle>") == 0);
 
+    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, wide->nodeId));
+    assert(view.nodes[wide->nodeId - 1].childCount == kDebugDwarfMaxValueChildren &&
+           view.nodes[wide->nodeId - 1].truncated);
+
     const uint32_t readsBeforeNull = view.targetMemoryReadCount;
     assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, nothing->nodeId));
     assert(view.targetMemoryReadCount == readsBeforeNull &&
@@ -283,6 +288,16 @@ int main() {
     assert(invalidConfig && DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view,
                                                   invalidConfig->nodeId));
     assert(std::strcmp(view.nodes[invalidConfig->nodeId - 1].valueDisplay, "<unreadable>") == 0);
+
+    put64(&memory, configAddress, 0x0001000000000000ull);
+    assert(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
+    const DebugDwarfVariable* nonCanonicalConfig = findVariable(mapper, view, "config");
+    assert(nonCanonicalConfig && !view.nodes[nonCanonicalConfig->nodeId - 1].expandable);
+    const uint32_t readsBeforeNonCanonical = view.targetMemoryReadCount;
+    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view,
+                                 nonCanonicalConfig->nodeId));
+    assert(view.targetMemoryReadCount == readsBeforeNonCanonical &&
+           std::strcmp(view.nodes[nonCanonicalConfig->nodeId - 1].valueDisplay, "<unreadable>") == 0);
 
     DebugDwarfFrameContext wrongOwner = frame;
     wrongOwner.processId = 43;
