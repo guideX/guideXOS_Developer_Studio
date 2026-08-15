@@ -8,6 +8,11 @@ namespace guidexos {
 namespace developer_studio {
 
 static const uint32_t kDebugMaxBreakpoints = 128;
+// Condition text is kept in a fixed debugger-owned pool rather than copied
+// into every breakpoint slot. This preserves the existing bounded controller
+// stack footprint while allowing each condition to use the full Phase 11
+// expression limit.
+static const uint32_t kDebugMaxConditionStorages = kDebugMaxBreakpoints;
 static const uint32_t kDebugMaxEvents = 64;
 static const uint32_t kDebugMaxMessageBytes = 160;
 static const uint32_t kDebugMaxBackendNameBytes = 64;
@@ -98,7 +103,9 @@ enum class DebugErrorCode {
     NoCallerFrame,
     InvalidReturnAddress,
     StepOutFailed,
-    StaleStepOut
+    StaleStepOut,
+    InvalidCondition,
+    ConditionError
 };
 
 enum class DebugBreakpointState {
@@ -108,6 +115,13 @@ enum class DebugBreakpointState {
     Rejected,
     Disabled,
     Stale
+};
+
+enum class DebugBreakpointConditionEvaluation {
+    NotEvaluated = 0,
+    True,
+    False,
+    Error
 };
 
 enum class DebugMappingState {
@@ -175,7 +189,9 @@ enum class DebugEventKind {
     StepOutStarted,
     StepOutReturnReached,
     StepOutCompleted,
-    StepOutInterrupted
+    StepOutInterrupted,
+    BreakpointConditionFalse,
+    BreakpointConditionError
 };
 
 enum class DebugSourceStepStatus {
@@ -363,6 +379,16 @@ struct DebugBreakpoint {
     bool lastHit;
     uint64_t lastHitSessionGeneration;
     char message[kDebugMaxMessageBytes];
+    // Conditions reuse the bounded Phase 11 expression language. These point
+    // into the fixed debugger-owned condition pool and survive mapping
+    // refreshes/rebinds; null means unconditional.
+    char* condition;
+    DebugExpressionParseState conditionParseState;
+    char* conditionParseDiagnostic;
+    DebugBreakpointConditionEvaluation conditionLastEvaluation;
+    DebugWatchState conditionLastValueState;
+    DebugDwarfValueKind conditionLastValueKind;
+    bool conditionLastTruthValue;
 };
 
 struct DebugEvent {
@@ -644,11 +670,17 @@ struct DebugController {
     uint32_t breakpointCount;
     DebugEvent events[kDebugMaxEvents];
     uint32_t eventCount;
+    // True only while a false conditional hit is completing the existing
+    // breakpoint restore/single-step/reinsert sequence. It is an internal
+    // filtered hit, not a user-visible paused stop.
+    bool conditionResumePending;
+    bool conditionEvaluationPending;
 };
 
 const char* DebugSessionStateName(DebugSessionState state);
 const char* DebugErrorName(DebugErrorCode error);
 const char* DebugBreakpointStateName(DebugBreakpointState state);
+const char* DebugBreakpointConditionEvaluationName(DebugBreakpointConditionEvaluation evaluation);
 const char* DebugStopReasonName(DebugStopReason reason);
 const char* DebugEventKindName(DebugEventKind kind);
 bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabilities& right);
@@ -736,7 +768,12 @@ bool DebugControllerAddBreakpoint(DebugController* controller, const char* proje
 bool DebugControllerDeleteBreakpoint(DebugController* controller, uint64_t breakpointId,
                                      DebugErrorCode* error);
 bool DebugControllerSetBreakpointEnabled(DebugController* controller, uint64_t breakpointId,
-                                         bool enabled, DebugErrorCode* error);
+                                          bool enabled, DebugErrorCode* error);
+bool DebugControllerSetBreakpointCondition(DebugController* controller, uint64_t breakpointId,
+                                           const char* expression, DebugErrorCode* error);
+bool DebugControllerClearBreakpointCondition(DebugController* controller, uint64_t breakpointId,
+                                             DebugErrorCode* error);
+bool DebugControllerIsConditionResumePending(const DebugController* controller);
 bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t sessionGeneration,
                                             uint64_t breakpointId, bool accepted,
                                             uint64_t backendBindingId, DebugAddress address,
@@ -749,6 +786,20 @@ void DebugControllerMarkSourceGeneration(DebugController* controller, const char
                                          const char* sourcePath, uint32_t sourceGeneration);
 const DebugBreakpoint* DebugControllerBreakpointAt(const DebugController* controller, uint32_t index);
 const DebugEvent* DebugControllerEventAt(const DebugController* controller, uint32_t index);
+
+enum class DebugBreakpointConditionDecision {
+    NoCondition = 0,
+    True,
+    False,
+    Error
+};
+
+// Evaluates only the condition for the pending real breakpoint hit. The
+// caller owns execution control; this function never resumes the target.
+bool DebugControllerEvaluateBreakpointCondition(DebugController* controller,
+                                                const DebugBackend& backend,
+                                                const DebugDwarfMapper* mapper,
+                                                DebugBreakpointConditionDecision* decision);
 
 enum class DebugAmd64InstructionKind {
     Call = 0,

@@ -5,6 +5,53 @@ namespace guidexos {
 namespace developer_studio {
 namespace {
 
+struct DebugBreakpointConditionStorage {
+    const DebugController* owner;
+    uint64_t breakpointId;
+    char expression[kDebugWatchMaxExpressionBytes + 1];
+    char parseDiagnostic[kDebugWatchMaxDiagnosticBytes];
+};
+
+static DebugBreakpointConditionStorage g_conditionStorages[kDebugMaxConditionStorages] = {};
+
+static void releaseConditionStorages(const DebugController* owner) {
+    if (!owner) return;
+    for (uint32_t i = 0; i < kDebugMaxConditionStorages; ++i) {
+        if (g_conditionStorages[i].owner != owner) continue;
+        g_conditionStorages[i] = DebugBreakpointConditionStorage();
+    }
+}
+
+static DebugBreakpointConditionStorage* conditionStorage(const DebugController* owner,
+                                                          const DebugBreakpoint& breakpoint) {
+    if (!owner || !breakpoint.condition) return nullptr;
+    for (uint32_t i = 0; i < kDebugMaxConditionStorages; ++i) {
+        DebugBreakpointConditionStorage& storage = g_conditionStorages[i];
+        if (storage.owner == owner && storage.breakpointId == breakpoint.id &&
+            storage.expression == breakpoint.condition) return &storage;
+    }
+    return nullptr;
+}
+
+static DebugBreakpointConditionStorage* reserveConditionStorage(const DebugController* owner,
+                                                                uint64_t breakpointId) {
+    if (!owner || breakpointId == 0) return nullptr;
+    for (uint32_t i = 0; i < kDebugMaxConditionStorages; ++i) {
+        DebugBreakpointConditionStorage& storage = g_conditionStorages[i];
+        if (storage.owner) continue;
+        storage = DebugBreakpointConditionStorage();
+        storage.owner = owner;
+        storage.breakpointId = breakpointId;
+        return &storage;
+    }
+    return nullptr;
+}
+
+static void releaseConditionStorage(const DebugController* owner, const DebugBreakpoint& breakpoint) {
+    DebugBreakpointConditionStorage* storage = conditionStorage(owner, breakpoint);
+    if (storage) *storage = DebugBreakpointConditionStorage();
+}
+
 static uint32_t textLength(const char* value, uint32_t capacity) {
     if (!value) return 0;
     uint32_t length = 0;
@@ -154,6 +201,8 @@ static void clearStoppedContext(DebugController* controller) {
     controller->reportedInstructionPointer = 0;
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
+    controller->conditionResumePending = false;
+    controller->conditionEvaluationPending = false;
     controller->variables = DebugDwarfVariableView();
     if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
@@ -193,6 +242,12 @@ static bool validRelativeSourcePath(const char* projectRoot, const char* sourceP
 
 static void setBreakpointMessage(DebugBreakpoint& breakpoint, const char* message) {
     copyText(breakpoint.message, sizeof(breakpoint.message), message ? message : "");
+}
+
+static void publishBreakpointHit(DebugController* controller) {
+    if (!controller || controller->lastBreakpointId == 0) return;
+    appendEvent(controller, DebugEventKind::BreakpointHit, controller->state,
+                DebugStopReason::Breakpoint, "Owned breakpoint hit");
 }
 
 static void appendText(char* output, uint32_t outputSize, const char* input) {
@@ -390,6 +445,7 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
     if (snapshot.registerContext.valid) controller->stoppedContext = snapshot.registerContext;
     controller->lastBreakpointId = controller->breakpoints[ownerIndex].id;
     controller->stopReason = DebugStopReason::Breakpoint;
+    controller->conditionEvaluationPending = true;
     if (controller->sourceStep.active)
         clearSourceStep(controller, DebugSourceStepStatus::Cancelled, "Source step interrupted by a breakpoint");
     copyText(controller->lastMessage, sizeof(controller->lastMessage), "Breakpoint trap observed");
@@ -407,7 +463,6 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
             breakpoint.lastHitSessionGeneration = controller->sessionGeneration;
         }
     }
-    appendEvent(controller, DebugEventKind::BreakpointHit, controller->state, DebugStopReason::Breakpoint, "Owned breakpoint hit");
     return true;
 }
 
@@ -1070,6 +1125,8 @@ const char* DebugErrorName(DebugErrorCode error) {
     case DebugErrorCode::InvalidReturnAddress: return "invalid_return_address";
     case DebugErrorCode::StepOutFailed: return "step_out_failed";
     case DebugErrorCode::StaleStepOut: return "stale_step_out";
+    case DebugErrorCode::InvalidCondition: return "invalid_condition";
+    case DebugErrorCode::ConditionError: return "condition_error";
     }
     return "unknown";
 }
@@ -1082,6 +1139,16 @@ const char* DebugBreakpointStateName(DebugBreakpointState state) {
     case DebugBreakpointState::Rejected: return "Rejected";
     case DebugBreakpointState::Disabled: return "Disabled";
     case DebugBreakpointState::Stale: return "Stale";
+    }
+    return "Unknown";
+}
+
+const char* DebugBreakpointConditionEvaluationName(DebugBreakpointConditionEvaluation evaluation) {
+    switch (evaluation) {
+    case DebugBreakpointConditionEvaluation::NotEvaluated: return "NotEvaluated";
+    case DebugBreakpointConditionEvaluation::True: return "True";
+    case DebugBreakpointConditionEvaluation::False: return "False";
+    case DebugBreakpointConditionEvaluation::Error: return "Error";
     }
     return "Unknown";
 }
@@ -1135,6 +1202,8 @@ const char* DebugEventKindName(DebugEventKind kind) {
     case DebugEventKind::StepOutReturnReached: return "Step out return reached";
     case DebugEventKind::StepOutCompleted: return "Step out completed";
     case DebugEventKind::StepOutInterrupted: return "Step out interrupted";
+    case DebugEventKind::BreakpointConditionFalse: return "Breakpoint condition false";
+    case DebugEventKind::BreakpointConditionError: return "Breakpoint condition error";
     }
     return "Unknown";
 }
@@ -1216,6 +1285,7 @@ bool DebugRelativeSourcePath(const char* projectRoot, const char* absolutePath,
 
 bool DebugControllerInit(DebugController* controller) {
     if (!controller) return false;
+    releaseConditionStorages(controller);
     // Do not value-initialize this large bounded controller through a stack
     // temporary: Native ELF application stacks are intentionally small.
     unsigned char* bytes = reinterpret_cast<unsigned char*>(controller);
@@ -1239,11 +1309,13 @@ bool DebugControllerSetProjectContext(DebugController* controller, const char* p
 
 void DebugControllerClearBreakpoints(DebugController* controller) {
     if (!controller) return;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i)
+        releaseConditionStorage(controller, controller->breakpoints[i]);
     controller->breakpointCount = 0;
 }
 
 bool DebugControllerStart(DebugController* controller, const DebugBackend& backend,
-                          const DebugTarget& target, DebugErrorCode* error) {
+                           const DebugTarget& target, DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
     if (!controller || !backend.launch || !backend.capabilities.canLaunch || target.projectId[0] == '\0' ||
         target.executablePath[0] == '\0') {
@@ -1276,6 +1348,8 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
+    controller->conditionResumePending = false;
+    controller->conditionEvaluationPending = false;
     if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
     controller->currentInstructionAddress = DebugAddress();
@@ -1324,6 +1398,50 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     return true;
 }
 
+static bool processPendingBreakpointCondition(DebugController* controller,
+                                              const DebugBackend& backend,
+                                              const DebugDwarfMapper* mapper) {
+    if (!controller || !controller->conditionEvaluationPending) return true;
+    const int breakpointIndex = findBreakpoint(controller, controller->lastBreakpointId);
+    if (breakpointIndex < 0) {
+        controller->conditionEvaluationPending = false;
+        controller->error = DebugErrorCode::ConditionError;
+        setMessage(controller, "ConditionError: breakpoint identity is stale");
+        appendEvent(controller, DebugEventKind::BreakpointConditionError, controller->state,
+                    DebugStopReason::Breakpoint, controller->lastMessage);
+        return true;
+    }
+
+    DebugBreakpointConditionDecision decision = DebugBreakpointConditionDecision::Error;
+    if (!DebugControllerEvaluateBreakpointCondition(controller, backend, mapper, &decision))
+        decision = DebugBreakpointConditionDecision::Error;
+
+    controller->conditionEvaluationPending = false;
+    if (decision == DebugBreakpointConditionDecision::NoCondition ||
+        decision == DebugBreakpointConditionDecision::True) {
+        publishBreakpointHit(controller);
+        return true;
+    }
+    if (decision == DebugBreakpointConditionDecision::Error) {
+        appendEvent(controller, DebugEventKind::BreakpointConditionError, controller->state,
+                    DebugStopReason::Breakpoint, controller->lastMessage);
+        return true;
+    }
+
+    appendEvent(controller, DebugEventKind::BreakpointConditionFalse, controller->state,
+                DebugStopReason::Breakpoint, "Conditional breakpoint filtered; continuing");
+    DebugErrorCode continueError = DebugErrorCode::None;
+    if (!DebugControllerContinue(controller, backend, &continueError)) {
+        controller->error = continueError == DebugErrorCode::None ? DebugErrorCode::BackendError : continueError;
+        setMessage(controller, "Condition false; automatic resume was rejected; target remains stopped");
+        appendEvent(controller, DebugEventKind::BreakpointConditionError, controller->state,
+                    DebugStopReason::Breakpoint, controller->lastMessage);
+        return true;
+    }
+    controller->conditionResumePending = true;
+    return true;
+}
+
 bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionGeneration,
                                   const DebugBackendSnapshot& snapshot) {
     if (!controller || sessionGeneration == 0 || sessionGeneration != controller->sessionGeneration ||
@@ -1358,6 +1476,14 @@ bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionG
     }
     controller->error = DebugErrorCode::None;
     applySnapshotUnchecked(controller, snapshot);
+    if (controller->conditionEvaluationPending) {
+        const int breakpointIndex = findBreakpoint(controller, controller->lastBreakpointId);
+        if (breakpointIndex >= 0 && (!controller->breakpoints[breakpointIndex].condition ||
+                                     controller->breakpoints[breakpointIndex].condition[0] == '\0')) {
+            controller->conditionEvaluationPending = false;
+            publishBreakpointHit(controller);
+        }
+    }
     return controller->error != DebugErrorCode::InvalidTransition;
 }
 
@@ -1387,14 +1513,14 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
                 if (controller->error == DebugErrorCode::None) controller->error = DebugErrorCode::StaleStepOut;
                 return false;
             }
-            return true;
+            return processPendingBreakpointCondition(controller, backend, mapper);
         }
         if (controller->stepOver.active) {
             if (!processStepOverInternalTrap(controller, backend, mapper, snapshot)) {
                 if (controller->error == DebugErrorCode::None) controller->error = DebugErrorCode::StaleStepOver;
                 return false;
             }
-            return true;
+            return processPendingBreakpointCondition(controller, backend, mapper);
         }
         // The physical trap remains held while an internal Step Over stop is
         // presented to the user. Do not re-publish it on every UI poll.
@@ -1465,7 +1591,8 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         clearSourceStep(controller, DebugSourceStepStatus::Failed, controller->lastMessage);
         return false;
     }
-    return DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot);
+    if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot)) return false;
+    return processPendingBreakpointCondition(controller, backend, mapper);
 }
 
 bool DebugControllerRequestStop(DebugController* controller, const DebugBackend& backend,
@@ -2029,6 +2156,7 @@ bool DebugControllerDeleteBreakpoint(DebugController* controller, uint64_t break
     if (error) *error = DebugErrorCode::None;
     const int index = findBreakpoint(controller, breakpointId);
     if (index < 0) { if (error) *error = DebugErrorCode::BreakpointNotFound; return false; }
+    releaseConditionStorage(controller, controller->breakpoints[index]);
     for (uint32_t i = static_cast<uint32_t>(index) + 1; i < controller->breakpointCount; ++i)
         controller->breakpoints[i - 1] = controller->breakpoints[i];
     --controller->breakpointCount;
@@ -2048,6 +2176,63 @@ bool DebugControllerSetBreakpointEnabled(DebugController* controller, uint64_t b
     clearBreakpointMapping(breakpoint);
     setBreakpointMessage(breakpoint, enabled ? "Pending: source mapping unavailable" : "Disabled by user");
     return true;
+}
+
+bool DebugControllerSetBreakpointCondition(DebugController* controller, uint64_t breakpointId,
+                                           const char* expression, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    const int index = findBreakpoint(controller, breakpointId);
+    if (index < 0 || !expression || expression[0] == '\0') {
+        if (error) *error = index < 0 ? DebugErrorCode::BreakpointNotFound : DebugErrorCode::InvalidCondition;
+        return false;
+    }
+    DebugExpressionAst ast = {};
+    DebugExpressionParse(expression, &ast);
+    DebugBreakpoint& breakpoint = controller->breakpoints[index];
+    DebugBreakpointConditionStorage* storage = conditionStorage(controller, breakpoint);
+    if (!storage) storage = reserveConditionStorage(controller, breakpoint.id);
+    if (!storage) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    copyText(storage->expression, sizeof(storage->expression), expression);
+    copyText(storage->parseDiagnostic, sizeof(storage->parseDiagnostic), ast.diagnostic);
+    breakpoint.condition = storage->expression;
+    breakpoint.conditionParseDiagnostic = storage->parseDiagnostic;
+    breakpoint.conditionParseState = ast.state;
+    breakpoint.conditionLastEvaluation = DebugBreakpointConditionEvaluation::NotEvaluated;
+    breakpoint.conditionLastValueState = DebugWatchState::Empty;
+    breakpoint.conditionLastValueKind = DebugDwarfValueKind::Unavailable;
+    breakpoint.conditionLastTruthValue = false;
+    if (!ast.valid) {
+        if (error) *error = DebugErrorCode::InvalidCondition;
+        return false;
+    }
+    return true;
+}
+
+bool DebugControllerClearBreakpointCondition(DebugController* controller, uint64_t breakpointId,
+                                             DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    const int index = findBreakpoint(controller, breakpointId);
+    if (index < 0) {
+        if (error) *error = DebugErrorCode::BreakpointNotFound;
+        return false;
+    }
+    DebugBreakpoint& breakpoint = controller->breakpoints[index];
+    releaseConditionStorage(controller, breakpoint);
+    breakpoint.condition = nullptr;
+    breakpoint.conditionParseDiagnostic = nullptr;
+    breakpoint.conditionParseState = DebugExpressionParseState::Empty;
+    breakpoint.conditionLastEvaluation = DebugBreakpointConditionEvaluation::NotEvaluated;
+    breakpoint.conditionLastValueState = DebugWatchState::Empty;
+    breakpoint.conditionLastValueKind = DebugDwarfValueKind::Unavailable;
+    breakpoint.conditionLastTruthValue = false;
+    return true;
+}
+
+bool DebugControllerIsConditionResumePending(const DebugController* controller) {
+    return controller && controller->conditionResumePending;
 }
 
 bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t sessionGeneration,

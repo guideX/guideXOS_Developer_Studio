@@ -463,38 +463,28 @@ const DebugStackFrame* DebugControllerCallStackFrameAt(const DebugController* co
         index < controller->callStack.result.frameCount ? &controller->callStack.result.frames[index] : nullptr;
 }
 
-static bool controllerWatchContext(const DebugController* controller, const DebugBackend& backend,
-                                   const DebugDwarfMapper* mapper,
-                                   DebugWatchEvaluationContext* context) {
-    if (!controller || !context || controller->state != DebugSessionState::Paused ||
-        !controller->callStack.valid || controller->callStack.stale || !mapper ||
+static bool fillWatchContext(const DebugController* controller, const DebugBackend& backend,
+                             const DebugDwarfMapper* mapper, uint32_t frameIndex,
+                             uint64_t instructionAddress, uint64_t frameBase,
+                             bool frameBaseKnown, bool current,
+                             DebugWatchEvaluationContext* context) {
+    if (!controller || !context || controller->state != DebugSessionState::Paused || !mapper ||
         !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
-        !DebugRegisterContextIsValid(controller->stoppedContext)) return false;
-    const uint32_t selected = controller->callStack.selectedFrameIndex;
-    if (selected >= controller->callStack.result.frameCount) return false;
-    const DebugStackFrame& stackFrame = controller->callStack.result.frames[selected];
+        !DebugRegisterContextIsValid(controller->stoppedContext) || instructionAddress == 0) return false;
     context->mapper = mapper;
     context->frame = DebugDwarfFrameContext();
-    context->frame.frameIndex = selected;
-    context->frame.instructionAddress = stackFrame.current ? controller->stoppedContext.rip : stackFrame.lookupAddress;
+    context->frame.frameIndex = frameIndex;
+    context->frame.instructionAddress = instructionAddress;
     context->frame.processId = controller->processId;
     context->frame.nativeRuntimeId = controller->nativeRuntimeId;
     context->frame.threadId = controller->currentThreadId;
     context->frame.sessionGeneration = controller->sessionGeneration;
     context->frame.stopGeneration = controller->stopGeneration;
+    context->frame.frameBase = frameBase;
+    context->frame.frameBaseKnown = frameBaseKnown;
     context->readMemory = backend.readTargetMemory;
     context->userData = backend.userData;
-    uint32_t functionIndex = 0;
-    DebugDwarfError dwarfError = DebugDwarfError::None;
-    if (DebugDwarfMapperLookupDebugFunction(mapper, context->frame.instructionAddress,
-                                            &functionIndex, &dwarfError)) {
-        const DebugDwarfFunctionInfo& function = mapper->debugFunctions[functionIndex];
-        if (function.frameBaseLength == 1 && function.frameBase[0] == 0x56) {
-            context->frame.frameBase = stackFrame.rbp;
-            context->frame.frameBaseKnown = context->frame.frameBase != 0;
-        }
-    }
-    if (stackFrame.current) {
+    if (current) {
         const DebugRegisterContext& registers = controller->stoppedContext;
         context->frame.registers.valid = true;
         context->frame.registers.rax = registers.rax; context->frame.registers.rbx = registers.rbx;
@@ -507,6 +497,154 @@ static bool controllerWatchContext(const DebugController* controller, const Debu
         context->frame.registers.r14 = registers.r14; context->frame.registers.r15 = registers.r15;
         context->frame.registers.rip = registers.rip; context->frame.registers.rflags = registers.rflags;
     }
+    return true;
+}
+
+static bool controllerWatchContext(const DebugController* controller, const DebugBackend& backend,
+                                   const DebugDwarfMapper* mapper,
+                                   DebugWatchEvaluationContext* context) {
+    if (!controller || !context || !controller->callStack.valid || controller->callStack.stale) return false;
+    const uint32_t selected = controller->callStack.selectedFrameIndex;
+    if (selected >= controller->callStack.result.frameCount) return false;
+    const DebugStackFrame& stackFrame = controller->callStack.result.frames[selected];
+    uint64_t instructionAddress = stackFrame.current ? controller->stoppedContext.rip : stackFrame.lookupAddress;
+    bool frameBaseKnown = false;
+    uint64_t frameBase = 0;
+    uint32_t functionIndex = 0;
+    DebugDwarfError dwarfError = DebugDwarfError::None;
+    if (mapper && DebugDwarfMapperLookupDebugFunction(mapper, instructionAddress, &functionIndex, &dwarfError)) {
+        const DebugDwarfFunctionInfo& function = mapper->debugFunctions[functionIndex];
+        if (function.frameBaseLength == 1 && function.frameBase[0] == 0x56) {
+            frameBase = stackFrame.rbp;
+            frameBaseKnown = frameBase != 0;
+        }
+    }
+    return fillWatchContext(controller, backend, mapper, selected, instructionAddress,
+                            frameBase, frameBaseKnown, stackFrame.current, context);
+}
+
+static bool breakpointWatchContext(const DebugController* controller, const DebugBackend& backend,
+                                  const DebugDwarfMapper* mapper,
+                                  DebugWatchEvaluationContext* context) {
+    if (!controller || !DebugRegisterContextIsValid(controller->stoppedContext)) return false;
+    const uint64_t instructionAddress = controller->stoppedContext.rip != 0 ?
+        controller->stoppedContext.rip : controller->currentInstructionAddress.value;
+    uint64_t frameBase = 0;
+    bool frameBaseKnown = false;
+    uint32_t functionIndex = 0;
+    DebugDwarfError dwarfError = DebugDwarfError::None;
+    if (mapper && DebugDwarfMapperLookupDebugFunction(mapper, instructionAddress, &functionIndex, &dwarfError)) {
+        const DebugDwarfFunctionInfo& function = mapper->debugFunctions[functionIndex];
+        if (function.frameBaseLength == 1 && function.frameBase[0] == 0x56) {
+            frameBase = controller->stoppedContext.rbp;
+            frameBaseKnown = frameBase != 0;
+        }
+    }
+    return fillWatchContext(controller, backend, mapper, 0, instructionAddress,
+                            frameBase, frameBaseKnown, true, context);
+}
+
+static void setConditionDiagnostic(DebugController* controller, DebugBreakpoint& breakpoint,
+                                   DebugBreakpointConditionEvaluation evaluation,
+                                   DebugWatchState valueState, DebugDwarfValueKind valueKind,
+                                   uint64_t scalarValue, bool truth, uint32_t frameIndex,
+                                   const char* diagnostic) {
+    (void)controller;
+    (void)scalarValue;
+    (void)frameIndex;
+    breakpoint.conditionLastEvaluation = evaluation;
+    breakpoint.conditionLastValueState = valueState;
+    breakpoint.conditionLastValueKind = valueKind;
+    breakpoint.conditionLastTruthValue = truth;
+    (void)diagnostic;
+}
+
+static void setConditionError(DebugController* controller, DebugBreakpoint& breakpoint,
+                              DebugWatchState valueState, DebugDwarfValueKind valueKind,
+                              uint64_t scalarValue, uint32_t frameIndex, const char* diagnostic) {
+    setConditionDiagnostic(controller, breakpoint, DebugBreakpointConditionEvaluation::Error,
+                           valueState, valueKind, scalarValue, false, frameIndex, diagnostic);
+    if (controller) {
+        controller->error = DebugErrorCode::ConditionError;
+        copyText(controller->lastMessage, sizeof(controller->lastMessage), "ConditionError: ");
+        uint32_t length = 0;
+        while (length + 1 < sizeof(controller->lastMessage) && controller->lastMessage[length]) ++length;
+        const char* text = breakpoint.condition && breakpoint.condition[0] ? breakpoint.condition : "<condition>";
+        for (uint32_t i = 0; length + 1 < sizeof(controller->lastMessage) && text[i]; ++i)
+            controller->lastMessage[length++] = text[i];
+        const char separator[] = " | ";
+        for (uint32_t i = 0; length + 1 < sizeof(controller->lastMessage) && separator[i]; ++i)
+            controller->lastMessage[length++] = separator[i];
+        text = diagnostic && diagnostic[0] ? diagnostic : "condition could not be evaluated safely";
+        for (uint32_t i = 0; length + 1 < sizeof(controller->lastMessage) && text[i]; ++i)
+            controller->lastMessage[length++] = text[i];
+        controller->lastMessage[length] = '\0';
+    }
+}
+
+bool DebugControllerEvaluateBreakpointCondition(DebugController* controller,
+                                                const DebugBackend& backend,
+                                                const DebugDwarfMapper* mapper,
+                                                DebugBreakpointConditionDecision* decision) {
+    if (decision) *decision = DebugBreakpointConditionDecision::Error;
+    if (!controller || controller->state != DebugSessionState::Paused ||
+        !DebugRegisterContextIsValid(controller->stoppedContext)) return false;
+    int breakpointIndex = -1;
+    for (uint32_t i = 0; i < controller->breakpointCount; ++i)
+        if (controller->breakpoints[i].id == controller->lastBreakpointId) { breakpointIndex = static_cast<int>(i); break; }
+    if (breakpointIndex < 0) return false;
+    DebugBreakpoint& breakpoint = controller->breakpoints[breakpointIndex];
+    if (!breakpoint.condition || breakpoint.condition[0] == '\0') {
+        if (decision) *decision = DebugBreakpointConditionDecision::NoCondition;
+        return true;
+    }
+
+    DebugExpressionAst ast = {};
+    if (!DebugExpressionParse(breakpoint.condition, &ast)) {
+        breakpoint.conditionParseState = ast.state;
+        if (breakpoint.conditionParseDiagnostic)
+            copyText(breakpoint.conditionParseDiagnostic, kDebugWatchMaxDiagnosticBytes, ast.diagnostic);
+        setConditionError(controller, breakpoint, DebugWatchState::ParseError, DebugDwarfValueKind::Unavailable,
+                          0, 0, ast.diagnostic[0] ? ast.diagnostic : "invalid condition expression");
+        return true;
+    }
+    breakpoint.conditionParseState = DebugExpressionParseState::Valid;
+    if (breakpoint.conditionParseDiagnostic)
+        breakpoint.conditionParseDiagnostic[0] = '\0';
+    DebugWatchEvaluationContext context = {};
+    if (!breakpointWatchContext(controller, backend, mapper, &context)) {
+        setConditionError(controller, breakpoint, DebugWatchState::Stale, DebugDwarfValueKind::Unavailable,
+                          0, 0, "stopped condition context is stale or unavailable");
+        return true;
+    }
+    if (!DebugDwarfInspectVariables(context.mapper, context.frame, context.readMemory,
+                                    context.userData, &controller->variables)) {
+        setConditionError(controller, breakpoint, DebugWatchState::MalformedDebugInfo,
+                          DebugDwarfValueKind::Unavailable, 0, 0,
+                          "condition variables could not be materialized safely");
+        return true;
+    }
+    DebugWatchResult result = {};
+    if (!DebugWatchEvaluateExpression(ast, breakpoint.condition, context,
+                                      &controller->variables, &result)) {
+        setConditionError(controller, breakpoint, result.state, result.valueKind,
+                          result.scalarValue, result.frameIndex,
+                          result.diagnostic[0] ? result.diagnostic : "condition evaluation failed");
+        return true;
+    }
+    bool truth = false;
+    char truthDiagnostic[kDebugWatchMaxDiagnosticBytes] = {};
+    if (!DebugWatchConvertToTruth(result, &truth, truthDiagnostic, sizeof(truthDiagnostic))) {
+        setConditionError(controller, breakpoint, result.state, result.valueKind,
+                          result.scalarValue, result.frameIndex,
+                          truthDiagnostic[0] ? truthDiagnostic : "condition value is not scalar");
+        return true;
+    }
+    setConditionDiagnostic(controller, breakpoint,
+                           truth ? DebugBreakpointConditionEvaluation::True : DebugBreakpointConditionEvaluation::False,
+                           result.state, result.valueKind, result.scalarValue, truth,
+                           result.frameIndex, "");
+    if (decision) *decision = truth ? DebugBreakpointConditionDecision::True : DebugBreakpointConditionDecision::False;
     return true;
 }
 

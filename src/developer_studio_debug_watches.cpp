@@ -973,6 +973,46 @@ bool DebugWatchEvaluateExpression(const DebugExpressionAst& ast, const char* exp
     return true;
 }
 
+bool DebugWatchConvertToTruth(const DebugWatchResult& result, bool* truth,
+                              char* diagnostic, uint32_t diagnosticSize) {
+    if (truth) *truth = false;
+    if (diagnostic && diagnosticSize > 0) diagnostic[0] = '\0';
+    if (result.state != DebugWatchState::Available) {
+        if (diagnostic && diagnosticSize > 0)
+            copyText(diagnostic, diagnosticSize, result.diagnostic[0] ? result.diagnostic : "condition value is unavailable");
+        return false;
+    }
+    if (result.structured || !result.hasScalar) {
+        if (diagnostic && diagnosticSize > 0)
+            copyText(diagnostic, diagnosticSize, "condition value is not a supported scalar");
+        return false;
+    }
+    switch (result.valueKind) {
+    case DebugDwarfValueKind::SignedInteger:
+    case DebugDwarfValueKind::UnsignedInteger:
+    case DebugDwarfValueKind::Boolean:
+        if (truth) *truth = result.scalarValue != 0;
+        return true;
+    case DebugDwarfValueKind::Pointer:
+    case DebugDwarfValueKind::Address:
+        if (result.scalarValue == 0) {
+            if (truth) *truth = false;
+            return true;
+        }
+        if (!canonicalAddress(result.scalarValue)) {
+            if (diagnostic && diagnosticSize > 0)
+                copyText(diagnostic, diagnosticSize, "condition pointer is not canonical");
+            return false;
+        }
+        if (truth) *truth = true;
+        return true;
+    default:
+        if (diagnostic && diagnosticSize > 0)
+            copyText(diagnostic, diagnosticSize, "condition value is not a supported scalar");
+        return false;
+    }
+}
+
 bool DebugWatchCollectionRefresh(DebugWatchCollection* collection,
                                  const DebugWatchEvaluationContext& context) {
     if (!collection || !context.mapper || context.frame.sessionGeneration == 0 ||

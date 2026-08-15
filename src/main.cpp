@@ -486,6 +486,7 @@ using guidexos::developer_studio::DebugControllerPause;
 using guidexos::developer_studio::DebugControllerPoll;
 using guidexos::developer_studio::DebugControllerRequestStop;
 using guidexos::developer_studio::DebugControllerSetBreakpointEnabled;
+using guidexos::developer_studio::DebugControllerIsConditionResumePending;
 using guidexos::developer_studio::DebugControllerSetProjectContext;
 using guidexos::developer_studio::DebugControllerStart;
 using guidexos::developer_studio::DebugControllerStepInto;
@@ -522,6 +523,7 @@ using guidexos::developer_studio::DebugWatchItem;
 using guidexos::developer_studio::DebugWatchState;
 using guidexos::developer_studio::DebugWatchCollection;
 using guidexos::developer_studio::DebugWatchCollectionInit;
+using guidexos::developer_studio::DebugBreakpointConditionEvaluationName;
 using guidexos::developer_studio::kDebugWatchMaxWatches;
 using guidexos::developer_studio::DebugDwarfVariableKind;
 using guidexos::developer_studio::DebugDwarfVariable;
@@ -3799,7 +3801,8 @@ static void pollDebug(gx_app_context* ctx) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
         } else if (g_debugController.state == DebugSessionState::Stopping) {
             reportDebugMessage(ctx, "Debug: stopping target");
-        } else if (g_debugController.state == DebugSessionState::Paused) {
+        } else if (g_debugController.state == DebugSessionState::Paused &&
+                   !DebugControllerIsConditionResumePending(&g_debugController)) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_trap_backend=PASS");
             DebugErrorCode stopMappingError = DebugErrorCode::None;
             const bool resolved = DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
@@ -6588,6 +6591,18 @@ static void drawDebugPanel(gx_app_context* ctx) {
             appendText(g_textScratch, sizeof(g_textScratch), breakpoint->message);
             appendText(g_textScratch, sizeof(g_textScratch), " | last=");
             appendText(g_textScratch, sizeof(g_textScratch), breakpoint->lastHit ? "Hit" : "not hit");
+            appendText(g_textScratch, sizeof(g_textScratch), " | ");
+            if (!breakpoint->condition || breakpoint->condition[0] == '\0') {
+                appendText(g_textScratch, sizeof(g_textScratch), "unconditional");
+            } else if (breakpoint->conditionParseState != guidexos::developer_studio::DebugExpressionParseState::Valid) {
+                appendText(g_textScratch, sizeof(g_textScratch), "invalid condition");
+            } else {
+                appendText(g_textScratch, sizeof(g_textScratch), "condition=");
+                appendText(g_textScratch, sizeof(g_textScratch), breakpoint->condition);
+                appendText(g_textScratch, sizeof(g_textScratch), " (");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugBreakpointConditionEvaluationName(breakpoint->conditionLastEvaluation));
+                appendText(g_textScratch, sizeof(g_textScratch), ")");
+            }
             if (breakpoint->location.instructionAddress.valid) {
                 appendText(g_textScratch, sizeof(g_textScratch), " @ ");
                 char addressText[32] = {};
@@ -6601,7 +6616,8 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 100, 148, "Backend:");
         drawText(ctx, 220, 148, g_debugController.backendName[0] ? g_debugController.backendName : "(none)");
         drawText(ctx, 100, 172, "State:");
-        drawText(ctx, 220, 172, DebugSessionStateName(g_debugController.state));
+        drawText(ctx, 220, 172, DebugControllerIsConditionResumePending(&g_debugController) ?
+                 "Running (filtered breakpoint)" : DebugSessionStateName(g_debugController.state));
         drawText(ctx, 100, 196, "Target:");
         drawText(ctx, 220, 196, g_debugController.target.applicationId[0] ? g_debugController.target.applicationId : "(none)");
         drawText(ctx, 100, 220, "Architecture:");

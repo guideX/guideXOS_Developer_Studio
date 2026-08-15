@@ -38,6 +38,7 @@ $DebuggerStepTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-step-te
 $DebuggerStackTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-stack-test.exe"
 $DebuggerVariablesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-variables-test.exe"
 $DebuggerWatchesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-watches-test.exe"
+$DebuggerConditionalTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-conditional-breakpoints-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -242,6 +243,14 @@ try {
     & $DebuggerWatchesTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio debugger Watches test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_conditional_breakpoints_test.cpp",
+        "-o", $DebuggerConditionalTest
+    )
+    & $DebuggerConditionalTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio conditional breakpoint test failed with exit code $LASTEXITCODE" }
+
     $compileFlags = @(
         "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
@@ -345,5 +354,6 @@ try {
     if (Test-Path -LiteralPath $DebuggerStackTest) { Remove-Item -LiteralPath $DebuggerStackTest -Force }
     if (Test-Path -LiteralPath $DebuggerVariablesTest) { Remove-Item -LiteralPath $DebuggerVariablesTest -Force }
     if (Test-Path -LiteralPath $DebuggerWatchesTest) { Remove-Item -LiteralPath $DebuggerWatchesTest -Force }
+    if (Test-Path -LiteralPath $DebuggerConditionalTest) { Remove-Item -LiteralPath $DebuggerConditionalTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }

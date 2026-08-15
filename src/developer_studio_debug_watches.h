@@ -169,6 +169,11 @@ bool DebugWatchEvaluateExpression(const DebugExpressionAst& ast, const char* exp
                                   const DebugWatchEvaluationContext& context,
                                   DebugDwarfVariableView* valueTree,
                                   DebugWatchResult* result);
+// Converts an already-evaluated Phase 11 value to the deliberately minimal
+// Phase 12 condition truth value. This never reads memory or changes target
+// state; pointer validation is limited to the canonical-address check.
+bool DebugWatchConvertToTruth(const DebugWatchResult& result, bool* truth,
+                              char* diagnostic, uint32_t diagnosticSize);
 bool DebugWatchCollectionRefresh(DebugWatchCollection* collection,
                                  const DebugWatchEvaluationContext& context);
 bool DebugWatchCollectionExpand(DebugWatchCollection* collection,

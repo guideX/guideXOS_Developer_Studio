@@ -224,6 +224,13 @@ target_link_libraries(developer_studio_debugger_watches_test PRIVATE developer_s
 set_target_properties(developer_studio_debugger_watches_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_debugger_watches_test COMMAND developer_studio_debugger_watches_test)
 
+add_executable(developer_studio_debugger_conditional_breakpoints_test
+    tests/debugger_conditional_breakpoints_test.cpp
+)
+target_link_libraries(developer_studio_debugger_conditional_breakpoints_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_debugger_conditional_breakpoints_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_debugger_conditional_breakpoints_test COMMAND developer_studio_debugger_conditional_breakpoints_test)
+
 # The production Native ELF link is intentionally driven by build.ps1. That
 # script follows the Server SDK's direct clang/ld.lld convention and writes the
 # package into the Server checkout rather than creating a second SDK copy here.
