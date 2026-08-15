@@ -402,6 +402,9 @@ struct DebugDwarfVariableView {
     bool valid;
     bool stale;
     uint32_t frameIndex;
+    uint64_t processId;
+    uint64_t nativeRuntimeId;
+    uint64_t threadId;
     uint64_t sessionGeneration;
     uint64_t stopGeneration;
     uint64_t artifactGeneration;

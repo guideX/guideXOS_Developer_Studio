@@ -45,8 +45,10 @@ for the selected stopped frame. The current hard limits are:
 
 Excess children receive an explicit truncation diagnostic. Unsupported member
 expressions, bit fields, incomplete types, malformed references, and register-
-backed aggregates are represented as diagnostics such as `<unsupported layout>`
-or `<aggregate location unsupported>` rather than guessed values.
+backed aggregates are represented as diagnostics such as `<unsupported layout>`,
+`<incomplete type>`, or `<aggregate location unsupported>` rather than guessed
+values. Aggregate and array byte ranges are checked before child addresses are
+formed; unsigned address overflow is rejected rather than clamped.
 
 ## Pointers and arrays
 
@@ -69,11 +71,17 @@ depth limit applies equally to nested aggregates and pointer dereferences.
 ## Snapshot ownership and stale state
 
 Each value view and node carries session generation, stop generation, selected
-frame identity, and mapper artifact generation. Expansion validates those
-values plus the mapper SHA-256 before reading memory. Continue, stepping,
-frame changes, exit, and artifact replacement clear or invalidate the view.
-Actual target values are never cached across stops; only immutable DWARF
-metadata is reused for the exact artifact.
+frame identity, owner process/runtime/thread identity, and mapper artifact
+generation. Expansion validates those values plus the mapper SHA-256 before
+reading memory. Continue, stepping, frame changes, exit, and artifact
+replacement clear or invalidate the view. Actual target values are never
+cached across stops; only immutable DWARF metadata is reused for the exact
+artifact.
+
+Collapse retains the materialized children for the same stopped generation.
+Re-expansion only reveals that snapshot again, so it does not reread target
+memory or consume additional node budget. A new stop rebuilds roots and resets
+the child tree.
 
 ## Current limitations
 

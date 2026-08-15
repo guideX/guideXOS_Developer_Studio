@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 
@@ -74,6 +75,15 @@ static uint64_t findFunctionAddress(const DebugDwarfMapper& mapper, const char* 
     return 0;
 }
 
+static uint64_t findTypeDie(const DebugDwarfMapper& mapper, const char* name) {
+    for (uint32_t i = 0; i < mapper.debugInfoDieCount; ++i) {
+        const DebugDwarfDieInfo& die = mapper.dies[i];
+        if ((die.tag == 0x13 || die.tag == 0x02 || die.tag == 0x17) &&
+            std::strcmp(die.name, name) == 0) return die.offset;
+    }
+    return 0;
+}
+
 static uint64_t frameLocation(const DebugDwarfMapper& mapper, const DebugDwarfVariable& variable,
                              uint64_t frameBase) {
     assert(variable.dieOffset != 0);
@@ -138,6 +148,11 @@ int main() {
                                 "phase10", "native", "amd64", "build/bin/amd64/debugger-phase10.elf",
                                 elf.size(), sha, 9, elf.data(), elf.size(), 10, &error));
     assert(mapper.debugInfoReady && mapper.dwarfVersion == 5);
+    const uint64_t incompleteTypeDie = findTypeDie(mapper, "gx_file_info");
+    assert(incompleteTypeDie != 0);
+    DebugDwarfTypeInfo incompleteType = {};
+    assert(DebugDwarfDescribeType(&mapper, incompleteTypeDie, &incompleteType));
+    assert(!incompleteType.complete && incompleteType.memberCount == 0);
     const uint64_t inspectAddress = findFunctionAddress(mapper, "inspect");
     assert(inspectAddress != 0);
 
@@ -165,6 +180,7 @@ int main() {
     const DebugDwarfVariable* node = findVariable(mapper, view, "node");
     const DebugDwarfVariable* nothing = findVariable(mapper, view, "nothing");
     assert(point && config && rect && values && node && nothing);
+    assert(config->address != 0 && config->rawByteCount == 8);
     const uint64_t pointAddress = frameLocation(mapper, *point, frameBase);
     const uint64_t configAddress = frameLocation(mapper, *config, frameBase);
     const uint64_t rectAddress = frameLocation(mapper, *rect, frameBase);
@@ -197,12 +213,20 @@ int main() {
     assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, originNode->nodeId));
     DebugDwarfValueNode* xNode = childByName(&view, originNode->nodeId, "x");
     DebugDwarfValueNode* yNode = childByName(&view, originNode->nodeId, "y");
-    assert(xNode && yNode && std::strcmp(xNode->valueDisplay, "10") == 0 && std::strcmp(yNode->valueDisplay, "20") == 0);
+    assert(xNode && yNode && xNode->address == originAddress && yNode->address == originAddress + 4 &&
+           std::strcmp(xNode->valueDisplay, "10") == 0 && std::strcmp(yNode->valueDisplay, "20") == 0);
+
+    const uint32_t nodesBeforeCollapse = view.nodeCount;
+    const uint32_t readsBeforeCollapse = view.targetMemoryReadCount;
+    view.nodes[rect->nodeId - 1].expanded = false;
+    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, rect->nodeId));
+    assert(view.nodeCount == nodesBeforeCollapse && view.targetMemoryReadCount == readsBeforeCollapse);
 
     assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, values->nodeId));
     assert(childByName(&view, values->nodeId, "[0]") &&
            std::strcmp(childByName(&view, values->nodeId, "[0]")->valueDisplay, "1") == 0 &&
-           std::strcmp(childByName(&view, values->nodeId, "[2]")->valueDisplay, "3") == 0);
+           std::strcmp(childByName(&view, values->nodeId, "[2]")->valueDisplay, "3") == 0 &&
+           childByName(&view, values->nodeId, "[2]")->address == valuesAddress + 8);
     assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, config->nodeId));
     DebugDwarfValueNode* enabled = childByName(&view, config->nodeId, "enabled");
     DebugDwarfValueNode* count = childByName(&view, config->nodeId, "count");
@@ -224,6 +248,35 @@ int main() {
     assert(view.targetMemoryReadCount == readsBeforeNull &&
            std::strcmp(view.nodes[nothing->nodeId - 1].valueDisplay, "nullptr") == 0);
 
+    uint32_t typeDieCount = 0;
+    uint32_t aggregateDieCount = 0;
+    uint32_t memberDieCount = 0;
+    for (uint32_t i = 0; i < mapper.debugInfoDieCount; ++i) {
+        const uint16_t tag = mapper.dies[i].tag;
+        if (tag == 0x13 || tag == 0x02 || tag == 0x17 || tag == 0x04 || tag == 0x01 || tag == 0x0f ||
+            tag == 0x16 || tag == 0x26 || tag == 0x35 || tag == 0x24 || tag == 0x21)
+            ++typeDieCount;
+        if (tag == 0x13 || tag == 0x02 || tag == 0x17) ++aggregateDieCount;
+        if (tag == 0x0d) ++memberDieCount;
+    }
+    std::cout << "Phase10 evidence: debugInfoBytes=" << mapper.debugInfoSectionBytes
+              << " abbrevBytes=" << mapper.debugAbbrevSectionBytes
+              << " typeDies=" << typeDieCount
+              << " aggregateDies=" << aggregateDieCount
+              << " memberDies=" << memberDieCount
+              << " rootVariables=" << view.variableCount
+              << " materializedNodes=" << view.nodeCount
+              << " targetMemoryReads=" << view.targetMemoryReadCount << "\n";
+    std::cout << "Phase10 addresses: rect=0x" << std::hex << rectAddress
+              << " originX=0x" << originAddress
+              << " originY=0x" << (originAddress + 4)
+              << " width=0x" << (rectAddress + 8)
+              << " values=0x" << valuesAddress
+              << " values2=0x" << (valuesAddress + 8)
+              << " configLocation=0x" << configAddress
+              << " configTarget=0x" << configTarget
+              << " node=0x" << nodeAddress << std::dec << "\n";
+
     put64(&memory, configAddress, 0x740000);
     assert(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
     const DebugDwarfVariable* invalidConfig = findVariable(mapper, view, "config");
@@ -231,6 +284,9 @@ int main() {
                                                   invalidConfig->nodeId));
     assert(std::strcmp(view.nodes[invalidConfig->nodeId - 1].valueDisplay, "<unreadable>") == 0);
 
+    DebugDwarfFrameContext wrongOwner = frame;
+    wrongOwner.processId = 43;
+    assert(!DebugDwarfExpandValue(&mapper, wrongOwner, readMemory, &memory, &view, invalidConfig->nodeId));
     DebugDwarfFrameContext stale = frame;
     stale.stopGeneration = 6;
     assert(!DebugDwarfExpandValue(&mapper, stale, readMemory, &memory, &view, rect->nodeId));

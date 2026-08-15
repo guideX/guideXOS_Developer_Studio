@@ -47,7 +47,7 @@ Malformed lengths, references, nesting, forms, and section offsets fail closed. 
 
 ## Types and values
 
-Signed and unsigned integral types, `bool`, pointers, qualifiers, typedef chains, opaque aggregates, and recognized arrays are displayed. Pointer values are printed as target addresses and are not dereferenced automatically. Aggregates display `<aggregate>` and arrays display `<array>`; member expansion is Phase 10 work.
+Signed and unsigned integral types, `bool`, pointers, qualifiers, typedef chains, opaque aggregates, and recognized arrays are displayed. Pointer values are printed as target addresses and are not dereferenced automatically. Aggregates and arrays are bounded structured-value roots; their children are materialized only after explicit expansion.
 
 Values are read from the stopped register context or the owner-bound target-memory callback. Source text, assignments, and fixture constants are never used to produce a value. Unsupported or failed evaluations display `<unavailable>` or a bounded status such as `unsupported location expression`.
 
@@ -74,5 +74,3 @@ Locals and Arguments are rebuilt for every stopped generation. Continue, Step In
 This is not a full DWARF evaluator. Watch expressions, arbitrary C++ expressions, generalized location lists, optimized-variable tracking, register editing, strings, STL/NatVis, and dynamic types remain intentionally deferred. Phase 10 adds bounded object member expansion and explicit pointer dereference in a separate structured-value model. The current behavior assumes deterministic unoptimized Clang AMD64 debug builds.
 
 Phase 10 is complete; the next intentionally small milestone is **Debugger Phase 11 — Watches and Bounded Expression Evaluation Foundation**.
-
-Next milestone: **Debugger Phase 10 — Structured Variables and Object Expansion**.

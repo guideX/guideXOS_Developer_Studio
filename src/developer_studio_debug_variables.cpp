@@ -300,6 +300,12 @@ static bool addSigned(uint64_t base, int64_t offset, uint64_t* result) {
     return true;
 }
 
+static bool addUnsigned(uint64_t base, uint64_t amount, uint64_t* result) {
+    if (!result || base > UINT64_MAX - amount) return false;
+    *result = base + amount;
+    return true;
+}
+
 static bool findSection(const unsigned char* bytes, uint64_t size, uint64_t sectionOffset,
                         uint16_t sectionEntrySize, uint16_t sectionCount,
                         const SectionView& sectionNames, const char* wanted,
@@ -894,6 +900,7 @@ struct TypeDescription {
     int64_t upperBound;
     bool hasElementCount;
     bool hasBounds;
+    bool complete;
     DebugDwarfTypeKind kind;
     char display[kDebugDwarfMaxTypeDisplayBytes];
 };
@@ -966,10 +973,12 @@ static bool typeDescription(const DebugDwarfMapper* mapper, uint64_t offset,
             (die->encoding == 5 || die->encoding == 6);
         description->unsignedInteger = !description->boolean && !description->floating && !description->signedInteger;
         description->scalar = true;
+        description->complete = description->byteSize != 0;
         description->kind = DebugDwarfTypeKind::Scalar;
     } else if (die->tag == kTagPointerType) {
         description->pointer = true; description->scalar = true; description->kind = DebugDwarfTypeKind::Pointer;
         description->byteSize = die->hasByteSize && die->byteSize <= UINT32_MAX ? static_cast<uint32_t>(die->byteSize) : 8;
+        description->complete = description->byteSize != 0;
     } else if (die->tag == kTagArrayType) {
         description->array = true; description->aggregate = true; description->kind = DebugDwarfTypeKind::Array;
         description->byteSize = die->hasByteSize && die->byteSize <= UINT32_MAX ? static_cast<uint32_t>(die->byteSize) : 0;
@@ -981,21 +990,26 @@ static bool typeDescription(const DebugDwarfMapper* mapper, uint64_t offset,
             description->upperBound = upper;
             description->hasElementCount = true;
             description->hasBounds = bounds;
-            if (description->byteSize == 0 && die->hasType) {
-                uint64_t elementSeen[kDebugDwarfMaxTypeDepth] = {};
-                TypeDescription element;
-                if (typeDescription(mapper, die->typeReference, &element, elementSeen, depth + 1) &&
-                    element.byteSize != 0 && count <= UINT32_MAX / element.byteSize)
-                    description->byteSize = static_cast<uint32_t>(count * element.byteSize);
-            }
+            TypeDescription element;
+            uint64_t elementSeen[kDebugDwarfMaxTypeDepth] = {};
+            const bool elementKnown = die->hasType &&
+                typeDescription(mapper, die->typeReference, &element, elementSeen, depth + 1);
+            if (description->byteSize == 0 && elementKnown && element.byteSize != 0 &&
+                count <= UINT32_MAX / element.byteSize)
+                description->byteSize = static_cast<uint32_t>(count * element.byteSize);
+            description->complete = elementKnown && element.complete && element.byteSize != 0 && count != 0 &&
+                count <= UINT64_MAX / element.byteSize &&
+                (!die->hasByteSize || count * element.byteSize <= die->byteSize);
         }
     } else if (die->tag == kTagStructureType || die->tag == kTagClassType || die->tag == kTagUnionType) {
         description->aggregate = true;
         description->kind = die->tag == kTagStructureType ? DebugDwarfTypeKind::Structure :
             die->tag == kTagClassType ? DebugDwarfTypeKind::Class : DebugDwarfTypeKind::Union;
         description->byteSize = die->hasByteSize && die->byteSize <= UINT32_MAX ? static_cast<uint32_t>(die->byteSize) : 0;
+        description->complete = die->hasByteSize && !die->declaration && description->byteSize != 0;
     } else if (die->tag == kTagEnumerationType) {
         description->scalar = true; description->signedInteger = true; description->byteSize = die->hasByteSize ? static_cast<uint32_t>(die->byteSize) : 4;
+        description->complete = description->byteSize != 0;
         description->kind = DebugDwarfTypeKind::Enumeration;
         if (die->hasType) {
             TypeDescription underlying;
@@ -1010,6 +1024,7 @@ static bool typeDescription(const DebugDwarfMapper* mapper, uint64_t offset,
     } else {
         description->aggregate = true;
         description->kind = DebugDwarfTypeKind::Opaque;
+        description->complete = false;
     }
     if (!formatType(mapper, offset, description->display, sizeof(description->display), seen, depth)) return false;
     return true;
@@ -1239,7 +1254,7 @@ static void appendHex(char* output, uint32_t outputSize, uint64_t value) {
 static void fillValue(DebugDwarfVariable* variable, const TypeDescription& type,
                        const EvaluatedLocation& location, const DebugDwarfDieInfo& die,
                        const DebugDwarfFrameContext& frame, DebugDwarfReadMemoryFn readMemory,
-                       void* userData) {
+                       void* userData, uint32_t* targetMemoryReadCount) {
     if (!variable) return;
     variable->locationKind = location.kind;
     variable->address = location.kind == DebugDwarfLocationKind::MemoryAddress ? location.value : 0;
@@ -1249,6 +1264,12 @@ static void fillValue(DebugDwarfVariable* variable, const TypeDescription& type,
         type.signedInteger ? DebugDwarfValueKind::SignedInteger : type.unsignedInteger ? DebugDwarfValueKind::UnsignedInteger :
         type.floating ? DebugDwarfValueKind::FloatingPoint : type.array ? DebugDwarfValueKind::Array : DebugDwarfValueKind::Aggregate;
     if (type.aggregate || type.array) {
+        if (!type.complete) {
+            variable->state = DebugDwarfVariableState::UnsupportedLocation;
+            copyText(variable->valueDisplay, sizeof(variable->valueDisplay), "<incomplete type>");
+            copyText(variable->status, sizeof(variable->status), "<incomplete type>");
+            return;
+        }
         if (location.kind == DebugDwarfLocationKind::MemoryAddress && location.known && location.value != 0) {
             variable->state = DebugDwarfVariableState::Available;
             copyText(variable->valueDisplay, sizeof(variable->valueDisplay), type.array ? "<array>" : "<aggregate>");
@@ -1273,6 +1294,7 @@ static void fillValue(DebugDwarfVariable* variable, const TypeDescription& type,
             variable->state = DebugDwarfVariableState::ReadFailure; copyText(variable->valueDisplay, sizeof(variable->valueDisplay), "<unavailable>");
             copyText(variable->status, sizeof(variable->status), "target memory read failed"); return;
         }
+        if (targetMemoryReadCount) ++*targetMemoryReadCount;
     } else {
         variable->state = DebugDwarfVariableState::Unavailable; copyText(variable->valueDisplay, sizeof(variable->valueDisplay), location.status[0] ? location.status : "<unavailable>"); return;
     }
@@ -1549,7 +1571,8 @@ static bool addValueChild(DebugDwarfVariableView* view, const DebugDwarfMapper* 
     copyText(temporary.name, sizeof(temporary.name), name);
     if (location.known) {
         DebugDwarfDieInfo memberDie = DebugDwarfDieInfo();
-        fillValue(&temporary, type, location, memberDie, frame, readMemory, userData);
+        fillValue(&temporary, type, location, memberDie, frame, readMemory, userData,
+                  &view->targetMemoryReadCount);
     } else {
         temporary.state = DebugDwarfVariableState::ReadFailure;
         temporary.locationKind = DebugDwarfLocationKind::MemoryAddress;
@@ -1567,7 +1590,8 @@ static bool addValueChild(DebugDwarfVariableView* view, const DebugDwarfMapper* 
     child.expandable = child.state == DebugDwarfVariableState::Available &&
         ((child.kind == DebugDwarfValueNodeKind::Pointer && child.targetAddress != 0 &&
           pointedTypeDie(mapper, typeDieOffset) != nullptr) ||
-         (child.kind != DebugDwarfValueNodeKind::Scalar && child.kind != DebugDwarfValueNodeKind::Unavailable &&
+         (type.complete && child.kind != DebugDwarfValueNodeKind::Pointer &&
+          child.kind != DebugDwarfValueNodeKind::Scalar && child.kind != DebugDwarfValueNodeKind::Unavailable &&
           child.locationKind == DebugDwarfLocationKind::MemoryAddress));
     uint64_t childId = 0;
     if (!appendNode(view, child, &childId)) { parent->truncated = true; return false; }
@@ -1687,6 +1711,17 @@ static bool addArrayChildren(DebugDwarfVariableView* view, const DebugDwarfMappe
         return true;
     }
     const uint64_t elementSize = elementType.byteSize;
+    if (count > UINT64_MAX / elementSize) {
+        appendDiagnostic(view, parent, "<array size overflow>", DebugDwarfVariableState::MalformedDebugInfo);
+        parent->truncated = true;
+        return true;
+    }
+    const uint64_t arrayByteSize = count * elementSize;
+    if (arrayDie.hasByteSize && arrayByteSize > arrayDie.byteSize) {
+        appendDiagnostic(view, parent, "<array size exceeds type>", DebugDwarfVariableState::MalformedDebugInfo);
+        parent->truncated = true;
+        return true;
+    }
     const uint64_t emitted = count < kDebugDwarfMaxArrayElements ? count : kDebugDwarfMaxArrayElements;
     for (uint64_t index = 0; index < emitted; ++index) {
         if (index > UINT64_MAX / elementSize) {
@@ -1695,8 +1730,7 @@ static bool addArrayChildren(DebugDwarfVariableView* view, const DebugDwarfMappe
         }
         const uint64_t byteOffset = index * elementSize;
         uint64_t elementAddress = 0;
-        if (!addSigned(baseAddress, byteOffset > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX :
-                       static_cast<int64_t>(byteOffset), &elementAddress)) {
+        if (!addUnsigned(baseAddress, byteOffset, &elementAddress)) {
             appendDiagnostic(view, parent, "<array address overflow>", DebugDwarfVariableState::MalformedDebugInfo);
             return false;
         }
@@ -1744,6 +1778,13 @@ static bool expandValueNodeInternal(const DebugDwarfMapper* mapper,
                                     DebugDwarfVariableView* view, DebugDwarfValueNode* node) {
     if (!mapper || !view || !node) return false;
     if (node->expanded) return true;
+    // Collapse retains the stopped-state snapshot. Re-expanding must reveal
+    // those same children rather than rereading target memory or consuming
+    // another portion of the per-view node budget.
+    if (node->childCount != 0) {
+        node->expanded = true;
+        return true;
+    }
     node->expanded = true;
     if (node->depth >= kDebugDwarfMaxValueDepth - 1u) {
         appendDiagnostic(view, node, "<maximum expansion depth>", DebugDwarfVariableState::UnsupportedLocation);
@@ -1758,6 +1799,21 @@ static bool expandValueNodeInternal(const DebugDwarfMapper* mapper,
         node->expandable = false;
         return true;
     }
+    TypeDescription nodeType;
+    uint64_t nodeTypeSeen[kDebugDwarfMaxTypeDepth] = {};
+    if (!typeDescription(mapper, node->typeDieOffset, &nodeType, nodeTypeSeen, 0)) {
+        copyText(node->valueDisplay, sizeof(node->valueDisplay), "<unsupported type>");
+        node->state = DebugDwarfVariableState::MalformedDebugInfo;
+        node->expandable = false;
+        return true;
+    }
+    if ((nodeType.aggregate || nodeType.array) && !nodeType.complete) {
+        copyText(node->valueDisplay, sizeof(node->valueDisplay), "<incomplete type>");
+        copyText(node->status, sizeof(node->status), "<incomplete type>");
+        node->state = DebugDwarfVariableState::UnsupportedLocation;
+        node->expandable = false;
+        return true;
+    }
     if (die->tag == kTagPointerType) {
         if (node->targetAddress == 0) {
             copyText(node->valueDisplay, sizeof(node->valueDisplay), "nullptr");
@@ -1767,6 +1823,16 @@ static bool expandValueNodeInternal(const DebugDwarfMapper* mapper,
         const DebugDwarfDieInfo* targetType = pointedTypeDie(mapper, node->typeDieOffset);
         if (!targetType) {
             copyText(node->valueDisplay, sizeof(node->valueDisplay), "<unsupported pointee>");
+            node->state = DebugDwarfVariableState::UnsupportedLocation;
+            node->expandable = false;
+            return true;
+        }
+        TypeDescription targetDescription;
+        uint64_t targetSeen[kDebugDwarfMaxTypeDepth] = {};
+        if (!typeDescription(mapper, targetType->offset, &targetDescription, targetSeen, 0) ||
+            ((targetDescription.aggregate || targetDescription.array) && !targetDescription.complete)) {
+            copyText(node->valueDisplay, sizeof(node->valueDisplay), "<incomplete type>");
+            copyText(node->status, sizeof(node->status), "<incomplete type>");
             node->state = DebugDwarfVariableState::UnsupportedLocation;
             node->expandable = false;
             return true;
@@ -1963,6 +2029,9 @@ bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
     if (!view) return false;
     *view = DebugDwarfVariableView();
     view->frameIndex = frame.frameIndex;
+    view->processId = frame.processId;
+    view->nativeRuntimeId = frame.nativeRuntimeId;
+    view->threadId = frame.threadId;
     view->sessionGeneration = frame.sessionGeneration;
     view->stopGeneration = frame.stopGeneration;
     view->frameInstructionAddress = frame.instructionAddress;
@@ -2013,7 +2082,8 @@ bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
                 location.status[0] = '\0';
                 locationOk = true;
             } else locationOk = evaluateLocation(die, frame, &location);
-            if (locationOk) fillValue(&variable, type, location, die, frame, readMemory, userData);
+            if (locationOk) fillValue(&variable, type, location, die, frame, readMemory, userData,
+                                      &view->targetMemoryReadCount);
             else {
                 variable.locationKind = location.kind;
                 variable.registerNumber = location.registerNumber;
@@ -2044,6 +2114,7 @@ bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
                 node.expandable = variable.state == DebugDwarfVariableState::Available && variable.scalarValue != 0 &&
                     pointedTypeDie(mapper, variable.typeDieOffset) != nullptr;
             else node.expandable = variable.state == DebugDwarfVariableState::Available &&
+                type.complete &&
                 node.locationKind == DebugDwarfLocationKind::MemoryAddress && canonicalAddress(node.address) &&
                 (node.kind == DebugDwarfValueNodeKind::Structure || node.kind == DebugDwarfValueNodeKind::Class ||
                  node.kind == DebugDwarfValueNodeKind::Union || node.kind == DebugDwarfValueNodeKind::Array);
@@ -2081,6 +2152,8 @@ bool DebugDwarfExpandValue(const DebugDwarfMapper* mapper,
     if (!mapper || !view || !view->valid || view->stale || mapper->state != DebugDwarfMapperState::Ready ||
         !mapper->debugInfoReady || view->artifactGeneration != mapper->identity.mapperGeneration ||
         !equalLiteral(view->artifactSha256, mapper->identity.sha256) ||
+        view->processId != frame.processId || view->nativeRuntimeId != frame.nativeRuntimeId ||
+        view->threadId != frame.threadId ||
         view->sessionGeneration != frame.sessionGeneration || view->stopGeneration != frame.stopGeneration ||
         view->frameIndex != frame.frameIndex || view->frameInstructionAddress != frame.instructionAddress) return false;
     DebugDwarfValueNode* node = nodeForId(view, nodeId);
