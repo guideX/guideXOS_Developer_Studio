@@ -514,6 +514,15 @@ using guidexos::developer_studio::DebugControllerMarkArtifactStale;
 using guidexos::developer_studio::DebugControllerSelectCallStackFrame;
 using guidexos::developer_studio::DebugControllerBuildVariables;
 using guidexos::developer_studio::DebugControllerExpandVariable;
+using guidexos::developer_studio::DebugControllerAddWatch;
+using guidexos::developer_studio::DebugControllerEditWatch;
+using guidexos::developer_studio::DebugControllerRemoveWatch;
+using guidexos::developer_studio::DebugControllerExpandWatch;
+using guidexos::developer_studio::DebugWatchItem;
+using guidexos::developer_studio::DebugWatchState;
+using guidexos::developer_studio::DebugWatchCollection;
+using guidexos::developer_studio::DebugWatchCollectionInit;
+using guidexos::developer_studio::kDebugWatchMaxWatches;
 using guidexos::developer_studio::DebugDwarfVariableKind;
 using guidexos::developer_studio::DebugDwarfVariable;
 using guidexos::developer_studio::DebugDwarfVariableView;
@@ -611,7 +620,8 @@ enum class InputMode {
     ConfirmRun,
     ConfirmRunClose,
     ConfirmDebug,
-    ConfirmDebugClose
+    ConfirmDebugClose,
+    WatchExpression
 };
 
 struct NativeFileSystemContext {
@@ -701,6 +711,8 @@ static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
 static uint32_t g_debugSelectedBreakpoint = 0;
 static uint64_t g_debugSelectedValueNode = 0;
+static uint32_t g_debugSelectedWatch = 0;
+static uint64_t g_debugEditingWatchId = 0;
 static uint64_t g_debugVisibleValueNodes[kDebugDwarfMaxValueNodes] = {};
 static bool g_requestExit = false;
 static bool g_workspaceSwitchPending = false;
@@ -730,6 +742,8 @@ static bool g_runWaitingForBuild = false;
 static RunState g_lastRunState = RunState::Idle;
 static bool g_runTerminalReported = false;
 static DebugController g_debugController = {};
+static DebugWatchCollection g_debugWatches = {};
+static DebugWatchCollection& debugWatches() { return g_debugWatches; }
 static DebugDwarfMapper g_debugMapper = {};
 static unsigned char g_debugArtifactBytes[guidexos::developer_studio::kDebugMapperMaxElfBytes] = {};
 static HostedDebugBackend g_hostedDebugBackend = {};
@@ -6433,11 +6447,68 @@ static bool handleDebugValueKey(gx_app_context* ctx, int keyCode, int action) {
     return true;
 }
 
+static DebugWatchItem* debugWatchAt(uint32_t index) {
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < kDebugWatchMaxWatches; ++i) {
+        DebugWatchItem& item = debugWatches().items[i];
+        if (!item.used) continue;
+        if (seen++ == index) return &item;
+    }
+    return nullptr;
+}
+
+static void beginWatchPrompt(uint64_t watchId) {
+    g_debugEditingWatchId = watchId;
+    const DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
+    copyText(g_prompt, sizeof(g_prompt), item && watchId != 0 ? item->expression : "");
+    g_inputMode = InputMode::WatchExpression;
+}
+
+static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
+    if (!ctx || action != GX_KEY_ACTION_DOWN || g_debugPanelTab != 5) return false;
+    const uint32_t count = debugWatches().count;
+    if (keyCode == 65 || keyCode == 97) { beginWatchPrompt(0); return true; }
+    if (keyCode == 69 || keyCode == 101) {
+        DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
+        if (item) beginWatchPrompt(item->id);
+        return true;
+    }
+    if (keyCode == GX_KEY_UP) {
+        if (g_debugSelectedWatch > 0) --g_debugSelectedWatch;
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN) {
+        if (g_debugSelectedWatch + 1 < count) ++g_debugSelectedWatch;
+        return true;
+    }
+    DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
+    if (keyCode == 46 && item) {
+        DebugControllerRemoveWatch(&g_debugController, item->id, nullptr);
+        if (g_debugSelectedWatch >= debugWatches().count && g_debugSelectedWatch > 0) --g_debugSelectedWatch;
+        return true;
+    }
+    if ((keyCode == 13 || keyCode == GX_KEY_RIGHT) && item &&
+        item->result.state == DebugWatchState::Available && item->result.structured) {
+        DebugControllerExpandWatch(&g_debugController, g_debugBackend, &g_debugMapper, item->id, nullptr);
+        return true;
+    }
+    if (keyCode == GX_KEY_LEFT && item && item->result.nodeId != 0 &&
+        item->result.nodeId <= debugWatches().tree.nodeCount) {
+        DebugDwarfValueNode& node = debugWatches().tree.nodes[item->result.nodeId - 1u];
+        if (node.expanded) node.expanded = false;
+        else if (node.parentNodeId != 0 && node.parentNodeId <= debugWatches().tree.nodeCount)
+            debugWatches().tree.nodes[node.parentNodeId - 1u].expanded = false;
+        return true;
+    }
+    return true;
+}
+
 static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
-    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 5; g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; return true; }
+    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 6; g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; g_debugSelectedWatch = 0; return true; }
     if (handleDebugValueKey(ctx, keyCode, action)) return true;
+    if (handleDebugWatchKey(ctx, keyCode, action)) return true;
     if (g_debugPanelTab == 2) {
         const uint32_t frameCount = g_debugController.callStack.valid && !g_debugController.callStack.stale ?
             g_debugController.callStack.result.frameCount : 0;
@@ -6496,7 +6567,8 @@ static void drawDebugPanel(gx_app_context* ctx) {
     drawText(ctx, 430, 108, "Call Stack");
     drawText(ctx, 574, 108, "Locals");
     drawText(ctx, 704, 108, "Arguments");
-    const int tabX = g_debugPanelTab == 0 ? 96 : g_debugPanelTab == 1 ? 244 : g_debugPanelTab == 2 ? 414 : g_debugPanelTab == 3 ? 558 : 688;
+    drawText(ctx, 820, 108, "Watch");
+    const int tabX = g_debugPanelTab == 0 ? 96 : g_debugPanelTab == 1 ? 244 : g_debugPanelTab == 2 ? 414 : g_debugPanelTab == 3 ? 558 : g_debugPanelTab == 4 ? 688 : 804;
     drawPanel(ctx, { tabX, 116, 118, 2 }, 0xD6E4FFu);
     if (g_debugPanelTab == 0) {
         if (g_debugController.breakpointCount == 0) drawText(ctx, 100, 150, "No source breakpoints. F9 toggles the current line.");
@@ -6642,7 +6714,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
             drawText(ctx, 100, 584, g_textScratch);
         }
         drawText(ctx, 100, 628, "Up/Down Select   Enter Navigate   Tab Locals   Esc Close");
-    } else {
+    } else if (g_debugPanelTab == 3 || g_debugPanelTab == 4) {
         const bool arguments = g_debugPanelTab == 4;
         const DebugDwarfVariableView& view = g_debugController.variables;
         drawText(ctx, 100, 148, arguments ? "Arguments" : "Locals");
@@ -6680,6 +6752,48 @@ static void drawDebugPanel(gx_app_context* ctx) {
                      (view.status[0] ? view.status : "Variables unavailable"));
             drawText(ctx, 100, 628, "Values are rebuilt for each stopped frame/stop generation");
         }
+    } else {
+        drawText(ctx, 100, 148, "Watch");
+        drawText(ctx, 220, 148, "A Add   E Edit   Delete Remove");
+        drawText(ctx, 100, 174, "Expression"); drawText(ctx, 390, 174, "Type"); drawText(ctx, 620, 174, "Value");
+        uint32_t row = 0;
+        uint32_t watchIndex = 0;
+        for (uint32_t i = 0; i < kDebugWatchMaxWatches && row < static_cast<uint32_t>(kDebugPanelMaxRows); ++i) {
+            const DebugWatchItem& item = debugWatches().items[i];
+            if (!item.used) continue;
+            const int y = 198 + static_cast<int>(row++) * kDebugPanelRowHeight;
+            if (watchIndex++ == g_debugSelectedWatch) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+            drawText(ctx, 100, y, item.expression);
+            drawText(ctx, 390, y, item.result.typeDisplay[0] ? item.result.typeDisplay : DebugWatchStateName(item.result.state));
+            if (item.result.state == DebugWatchState::Available)
+                drawText(ctx, 620, y, item.result.valueDisplay);
+            else {
+                copyText(g_textScratch, sizeof(g_textScratch), "<");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugWatchStateName(item.result.state));
+                appendText(g_textScratch, sizeof(g_textScratch), "> ");
+                appendText(g_textScratch, sizeof(g_textScratch), item.result.diagnostic[0] ? item.result.diagnostic : item.result.valueDisplay);
+                drawText(ctx, 620, y, g_textScratch);
+            }
+            if (item.result.state == DebugWatchState::Available && item.result.structured &&
+                item.result.nodeId != 0 && item.result.nodeId <= debugWatches().tree.nodeCount) {
+                const DebugDwarfValueNode& root = debugWatches().tree.nodes[item.result.nodeId - 1u];
+                if (root.expanded) {
+                    for (uint32_t child = 0; child < root.childCount && row < static_cast<uint32_t>(kDebugPanelMaxRows); ++child) {
+                        const uint64_t childId = root.childNodeIds[child];
+                        if (childId == 0 || childId > debugWatches().tree.nodeCount) continue;
+                        const DebugDwarfValueNode& node = debugWatches().tree.nodes[childId - 1u];
+                        const int childY = 198 + static_cast<int>(row++) * kDebugPanelRowHeight;
+                        copyText(g_textScratch, sizeof(g_textScratch), "  ");
+                        appendText(g_textScratch, sizeof(g_textScratch), node.name);
+                        drawText(ctx, 100, childY, g_textScratch);
+                        drawText(ctx, 390, childY, node.typeDisplay);
+                        drawText(ctx, 620, childY, node.valueDisplay);
+                    }
+                }
+            }
+        }
+        if (row == 0) drawText(ctx, 100, 198, "No Watches. Press A to add one.");
+        drawText(ctx, 100, 628, "Up/Down Select   A Add   E Edit   Enter Expand   Delete Remove   Tab Breakpoints   Esc Close");
     }
 }
 
@@ -6895,6 +7009,14 @@ static void drawModal(gx_app_context* ctx) {
         drawText(ctx, 180, 474, "Folder is derived from the display name when blank; Escape cancels");
         return;
     }
+    if (g_inputMode == InputMode::WatchExpression) {
+        drawText(ctx, 210, 220, g_debugEditingWatchId == 0 ? "Add Watch" : "Edit Watch");
+        drawText(ctx, 210, 250, "Supported: name, ., ->, [], *, &, integer, parentheses");
+        drawPanel(ctx, { 210, 265, 540, 30 }, 0x111722u);
+        drawText(ctx, 220, 285, g_prompt);
+        drawText(ctx, 210, 325, "Enter: apply   Escape: cancel");
+        return;
+    }
     if (g_inputMode == InputMode::ConfirmBuild) {
         drawText(ctx, 210, 220, "Build Project");
         drawText(ctx, 210, 246, "Project documents have unsaved changes.");
@@ -6990,7 +7112,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 312, 116, "Request Project Close");
     }
     if (g_debugMenuOpen) {
-        drawPanel(ctx, { 580, 42, 360, 288 }, 0x34496Au);
+        drawPanel(ctx, { 580, 42, 360, 312 }, 0x34496Au);
         drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
         drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
         drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
@@ -7004,6 +7126,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 592, 284, "Call Stack");
         drawText(ctx, 592, 306, "Locals");
         drawText(ctx, 592, 328, "Arguments");
+        drawText(ctx, 592, 350, "Watch");
     }
     drawModal(ctx);
 }
@@ -7134,6 +7257,28 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         if (keyCode == 13) {
             copyText(g_pendingWorkspacePath, sizeof(g_pendingWorkspacePath), g_prompt);
             requestWorkspaceOpen(ctx);
+            return;
+        }
+        if (keyCode == 8) { promptBackspace(); return; }
+        promptAppend(keyCode, modifiers);
+        return;
+    }
+    if (g_inputMode == InputMode::WatchExpression) {
+        if (keyCode == 27) { g_inputMode = InputMode::Normal; return; }
+        if (keyCode == 13) {
+            if (g_prompt[0] != '\0') {
+                DebugErrorCode error = DebugErrorCode::None;
+                if (g_debugEditingWatchId == 0) {
+                    uint64_t watchId = 0;
+                    DebugControllerAddWatch(&g_debugController, g_prompt, &watchId, &error);
+                    if (watchId != 0) g_debugSelectedWatch = debugWatches().count - 1u;
+                } else DebugControllerEditWatch(&g_debugController, g_debugEditingWatchId, g_prompt, &error);
+                if (g_debugController.state == DebugSessionState::Paused)
+                    DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
+                if (error != DebugErrorCode::None) writeStudioOutput("Watch update failed");
+            }
+            g_debugEditingWatchId = 0;
+            g_inputMode = InputMode::Normal;
             return;
         }
         if (keyCode == 8) { promptBackspace(); return; }
@@ -7943,10 +8088,11 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         if (action == GX_MOUSE_ACTION_WHEEL) return;
         if (button == GX_MOUSE_BUTTON_LEFT &&
             (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
-            if (y >= 94 && y < 122 && x >= 90 && x < 820) {
-                g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : x < 550 ? 2 : x < 680 ? 3 : 4);
+            if (y >= 94 && y < 122 && x >= 90 && x < 888) {
+                g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : x < 550 ? 2 : x < 680 ? 3 : x < 800 ? 4 : 5);
                 g_debugSelectedBreakpoint = 0;
                 g_debugSelectedValueNode = 0;
+                g_debugSelectedWatch = 0;
             } else if (g_debugPanelTab == 0 && y >= 130 && y < 580 && x >= 88 && x < 872) {
                 const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
                 if (row < g_debugController.breakpointCount) {
@@ -7970,6 +8116,16 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                     if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
                         DebugControllerExpandVariable(&g_debugController, g_debugBackend, &g_debugMapper,
                                                       g_debugSelectedValueNode, nullptr);
+                }
+            } else if (g_debugPanelTab == 5 && y >= 182 && y < 580 && x >= 88 && x < 872) {
+                const uint32_t row = static_cast<uint32_t>((y - 182) / kDebugPanelRowHeight);
+                if (row < debugWatches().count && row < static_cast<uint32_t>(kDebugPanelMaxRows)) {
+                    g_debugSelectedWatch = row;
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) {
+                        DebugWatchItem* item = debugWatchAt(row);
+                        if (item) DebugControllerExpandWatch(&g_debugController, g_debugBackend, &g_debugMapper,
+                                                             item->id, nullptr);
+                    }
                 }
             }
         }
@@ -8391,7 +8547,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
-    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 330) {
+    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 374) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
@@ -8415,6 +8571,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         else if (row == 10) { g_debugPanelTab = 2; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 11) { g_debugPanelTab = 3; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 12) { g_debugPanelTab = 4; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 13) { g_debugPanelTab = 5; g_debugPanelOpen = true; g_editorFocused = false; }
         g_debugMenuOpen = false;
         drawShell(ctx);
         return;
@@ -8699,6 +8856,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_lastRunState = RunState::Idle;
     g_runTerminalReported = false;
     DebugControllerInit(&g_debugController);
+    DebugWatchCollectionInit(&g_debugWatches);
+    g_debugController.watches = &g_debugWatches;
     DebugDwarfMapperReset(&g_debugMapper);
     HostedDebugBackendInit(&g_hostedDebugBackend, developmentRunService());
     g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);

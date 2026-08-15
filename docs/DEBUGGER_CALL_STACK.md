@@ -27,7 +27,7 @@ The supported evidence boundary is:
 
 Step Out consumes the current frame's validated raw caller return address; there
 is still no DWARF CFI execution, `eh_frame`/`eh_frame_hdr` unwinding,
-inline-frame expansion, locals, arguments, expressions, watches, attach, or
+inline-frame expansion, attach, or
 optimized-code parity in this phase.
 
 ## Model

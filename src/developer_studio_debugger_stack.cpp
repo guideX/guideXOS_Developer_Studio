@@ -371,6 +371,15 @@ bool DebugControllerBuildVariables(DebugController* controller, const DebugBacke
         if (error) *error = DebugErrorCode::SourceMappingUnavailable;
         return false;
     }
+    DebugWatchEvaluationContext watchContext = {};
+    watchContext.mapper = mapper;
+    watchContext.frame = frame;
+    watchContext.readMemory = backend.readTargetMemory;
+    watchContext.userData = backend.userData;
+    // Watch refresh is intentionally independent from the Locals result. A
+    // malformed or unavailable expression must never hide otherwise valid
+    // locals/arguments for the selected stopped frame.
+    if (controller->watches) DebugWatchCollectionRefresh(controller->watches, watchContext);
     return true;
 }
 
@@ -452,6 +461,101 @@ const DebugStackFrame* DebugControllerCallStackFrameAt(const DebugController* co
     return controller && controller->state == DebugSessionState::Paused &&
         controller->callStack.valid && !controller->callStack.stale &&
         index < controller->callStack.result.frameCount ? &controller->callStack.result.frames[index] : nullptr;
+}
+
+static bool controllerWatchContext(const DebugController* controller, const DebugBackend& backend,
+                                   const DebugDwarfMapper* mapper,
+                                   DebugWatchEvaluationContext* context) {
+    if (!controller || !context || controller->state != DebugSessionState::Paused ||
+        !controller->callStack.valid || controller->callStack.stale || !mapper ||
+        !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
+        !DebugRegisterContextIsValid(controller->stoppedContext)) return false;
+    const uint32_t selected = controller->callStack.selectedFrameIndex;
+    if (selected >= controller->callStack.result.frameCount) return false;
+    const DebugStackFrame& stackFrame = controller->callStack.result.frames[selected];
+    context->mapper = mapper;
+    context->frame = DebugDwarfFrameContext();
+    context->frame.frameIndex = selected;
+    context->frame.instructionAddress = stackFrame.current ? controller->stoppedContext.rip : stackFrame.lookupAddress;
+    context->frame.processId = controller->processId;
+    context->frame.nativeRuntimeId = controller->nativeRuntimeId;
+    context->frame.threadId = controller->currentThreadId;
+    context->frame.sessionGeneration = controller->sessionGeneration;
+    context->frame.stopGeneration = controller->stopGeneration;
+    context->readMemory = backend.readTargetMemory;
+    context->userData = backend.userData;
+    uint32_t functionIndex = 0;
+    DebugDwarfError dwarfError = DebugDwarfError::None;
+    if (DebugDwarfMapperLookupDebugFunction(mapper, context->frame.instructionAddress,
+                                            &functionIndex, &dwarfError)) {
+        const DebugDwarfFunctionInfo& function = mapper->debugFunctions[functionIndex];
+        if (function.frameBaseLength == 1 && function.frameBase[0] == 0x56) {
+            context->frame.frameBase = stackFrame.rbp;
+            context->frame.frameBaseKnown = context->frame.frameBase != 0;
+        }
+    }
+    if (stackFrame.current) {
+        const DebugRegisterContext& registers = controller->stoppedContext;
+        context->frame.registers.valid = true;
+        context->frame.registers.rax = registers.rax; context->frame.registers.rbx = registers.rbx;
+        context->frame.registers.rcx = registers.rcx; context->frame.registers.rdx = registers.rdx;
+        context->frame.registers.rsi = registers.rsi; context->frame.registers.rdi = registers.rdi;
+        context->frame.registers.rbp = registers.rbp; context->frame.registers.rsp = registers.rsp;
+        context->frame.registers.r8 = registers.r8; context->frame.registers.r9 = registers.r9;
+        context->frame.registers.r10 = registers.r10; context->frame.registers.r11 = registers.r11;
+        context->frame.registers.r12 = registers.r12; context->frame.registers.r13 = registers.r13;
+        context->frame.registers.r14 = registers.r14; context->frame.registers.r15 = registers.r15;
+        context->frame.registers.rip = registers.rip; context->frame.registers.rflags = registers.rflags;
+    }
+    return true;
+}
+
+bool DebugControllerAddWatch(DebugController* controller, const char* expression,
+                             uint64_t* outWatchId, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->watches || !expression || !DebugWatchCollectionAdd(controller->watches, expression, outWatchId)) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    if (controller->state == DebugSessionState::Paused) {
+        // BuildVariables is the normal refresh path. The direct API remains
+        // useful to UI/model clients that add a watch after a stop.
+        controller->watches->treeStale = true;
+    }
+    return true;
+}
+
+bool DebugControllerEditWatch(DebugController* controller, uint64_t watchId,
+                              const char* expression, DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->watches || !DebugWatchCollectionEdit(controller->watches, watchId, expression)) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    return true;
+}
+
+bool DebugControllerRemoveWatch(DebugController* controller, uint64_t watchId,
+                                DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->watches || !DebugWatchCollectionRemove(controller->watches, watchId)) {
+        if (error) *error = DebugErrorCode::InvalidRequest;
+        return false;
+    }
+    return true;
+}
+
+bool DebugControllerExpandWatch(DebugController* controller, const DebugBackend& backend,
+                                const DebugDwarfMapper* mapper, uint64_t watchId,
+                                DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    DebugWatchEvaluationContext context = {};
+    if (!controllerWatchContext(controller, backend, mapper, &context) ||
+        !controller->watches || !DebugWatchCollectionExpand(controller->watches, context, watchId)) {
+        if (error) *error = DebugErrorCode::StaleStopContext;
+        return false;
+    }
+    return true;
 }
 
 } // namespace developer_studio

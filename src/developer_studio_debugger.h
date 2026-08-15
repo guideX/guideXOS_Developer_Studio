@@ -2,6 +2,7 @@
 
 #include "developer_studio_run.h"
 #include "developer_studio_debug_symbols.h"
+#include "developer_studio_debug_watches.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -632,6 +633,10 @@ struct DebugController {
     uint64_t nextTemporaryBreakpointId;
     DebugCallStack callStack;
     DebugDwarfVariableView variables;
+    // Watch storage is owned by the host/session owner rather than embedded
+    // here; existing debugger tests and Native stacks intentionally keep this
+    // controller bounded and small.
+    DebugWatchCollection* watches;
     DebugSourceStepOperation sourceStep;
     DebugStepOverOperation stepOver;
     DebugStepOutOperation stepOut;
@@ -707,6 +712,16 @@ bool DebugControllerSelectCallStackFrame(DebugController* controller, uint32_t f
                                          DebugErrorCode* error);
 const DebugStackFrame* DebugControllerCallStackFrameAt(const DebugController* controller,
                                                        uint32_t index);
+
+bool DebugControllerAddWatch(DebugController* controller, const char* expression,
+                             uint64_t* outWatchId, DebugErrorCode* error);
+bool DebugControllerEditWatch(DebugController* controller, uint64_t watchId,
+                              const char* expression, DebugErrorCode* error);
+bool DebugControllerRemoveWatch(DebugController* controller, uint64_t watchId,
+                                DebugErrorCode* error);
+bool DebugControllerExpandWatch(DebugController* controller, const DebugBackend& backend,
+                                const DebugDwarfMapper* mapper, uint64_t watchId,
+                                DebugErrorCode* error);
 
 bool DebugControllerToggleBreakpoint(DebugController* controller, const char* projectId,
                                      const char* projectRoot, uint64_t projectGeneration,

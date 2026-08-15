@@ -155,6 +155,7 @@ static void clearStoppedContext(DebugController* controller) {
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
     controller->variables = DebugDwarfVariableView();
+    if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
 }
 
@@ -1275,6 +1276,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
     controller->stoppedContext = DebugRegisterContext();
+    if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
     controller->currentInstructionAddress = DebugAddress();
     controller->currentLocation = DebugSourceLocation();
@@ -2095,6 +2097,7 @@ void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t 
 void DebugControllerMarkArtifactStale(DebugController* controller, const char* message) {
     if (!controller) return;
     clearCallStack(controller);
+    if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
         if (!breakpoint.enabled) continue;

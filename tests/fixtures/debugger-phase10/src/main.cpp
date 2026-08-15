@@ -40,6 +40,9 @@ static __attribute__((noinline)) int inspect(Point point, Config* config) {
 
     int values[4] = {1, 2, 3, 4};
 
+    int doubled = 42;
+    int* ptr = &doubled;
+
     Node node{};
     node.value = 77;
     node.next = &node;
@@ -55,6 +58,8 @@ static __attribute__((noinline)) int inspect(Point point, Config* config) {
         rect.height +
         values[2] +
         config->count +
+        doubled +
+        *ptr - 84 +
         node.value +
         (nothing == nullptr ? 0 : 1); // Phase 10 breakpoint.
 

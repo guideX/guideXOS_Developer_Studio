@@ -234,8 +234,8 @@ Phase 7 adds the bounded Call Stack tab and frame-pointer unwinder described in
 target stack through the append-only debug boundary and clears the result on
 resume or stale identity.
 
-Deferred work includes additional instruction-breakpoint workflows, DWARF
-expressions, locals, CFI/`eh_frame` unwinding, watches,
+Deferred work includes additional instruction-breakpoint workflows, general
+DWARF expressions beyond the bounded Watch grammar, CFI/`eh_frame` unwinding,
 memory/register editing, conditional/data breakpoints, attach/remote/multiple
 process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
 bare-metal trap implementation.
@@ -247,11 +247,12 @@ uses the current physical frame, validates the caller return address from the
 fresh Call Stack, arms a temporary internal return breakpoint, and waits for
 the real return-address `EXCEPTION_BREAKPOINT`. See
 [DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). Pause, locals, arguments,
-watches, DWARF CFI unwinding, and optimized-code full debugging remain
-unsupported.
+general expression evaluation beyond Phase 11, DWARF CFI unwinding, and optimized-code full debugging remain
+unsupported. Phase 11 adds the separate bounded Watch expression path; it does
+not change the structured Locals/Arguments contract.
 ## Phase 9 locals and arguments
 
-The debugger now has a bounded read-only DWARF variable index for simple Native ELF debug builds. Locals and formal arguments are evaluated from the exact stopped register/frame-base/target-memory state. See [DEBUGGER_LOCALS_ARGUMENTS.md](DEBUGGER_LOCALS_ARGUMENTS.md). This does not add Watch expressions, arbitrary C++ expression evaluation, or full optimized-variable debugging.
+The debugger now has a bounded read-only DWARF variable index for simple Native ELF debug builds. Locals and formal arguments are evaluated from the exact stopped register/frame-base/target-memory state. See [DEBUGGER_LOCALS_ARGUMENTS.md](DEBUGGER_LOCALS_ARGUMENTS.md). Phase 11 adds bounded Watch expressions on top of this same value model; arbitrary C++ expression evaluation and full optimized-variable debugging remain outside the contract.
 
 Phase 10 adds bounded lazy structured-value nodes for DWARF-backed members,
 arrays, nested aggregates, and explicit pointer expansion. See

@@ -87,11 +87,13 @@ the child tree.
 
 ## Current limitations
 
-Not implemented: Watch expressions, general C++ expression evaluation, STL or
+Not implemented: general C++ expression evaluation, STL or
 NatVis visualizers, strings, dynamic types, RTTI/downcasts, full inheritance,
 virtual bases, optimized aggregate reconstruction, arbitrary location lists,
 `DW_OP_piece` composites, bit-field editing, memory/register editing, static
-member storage calculation, and automatic pointer chasing.
+member storage calculation, and automatic pointer chasing. Phase 11 adds a
+separate bounded Watch grammar on top of this same value model; it does not
+change structured Locals semantics or add general expression evaluation.
 
 The Phase 10 model and real-DWARF memory harness are tested. Hosted UI proof
 remains separate from that evidence because the existing hosted smoke can

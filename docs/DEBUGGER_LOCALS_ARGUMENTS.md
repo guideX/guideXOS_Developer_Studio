@@ -71,6 +71,6 @@ Locals and Arguments are rebuilt for every stopped generation. Continue, Step In
 
 ## Not implemented
 
-This is not a full DWARF evaluator. Watch expressions, arbitrary C++ expressions, generalized location lists, optimized-variable tracking, register editing, strings, STL/NatVis, and dynamic types remain intentionally deferred. Phase 10 adds bounded object member expansion and explicit pointer dereference in a separate structured-value model. The current behavior assumes deterministic unoptimized Clang AMD64 debug builds.
+This is not a full DWARF evaluator. General C++ expressions, generalized location lists, optimized-variable tracking, register editing, strings, STL/NatVis, and dynamic types remain intentionally deferred. Phase 10 adds bounded object member expansion and explicit pointer dereference in a separate structured-value model. Phase 11 adds the separate bounded read-only Watch grammar documented in [DEBUGGER_WATCHES.md](DEBUGGER_WATCHES.md). The current behavior assumes deterministic unoptimized Clang AMD64 debug builds.
 
-Phase 10 is complete; the next intentionally small milestone is **Debugger Phase 11 — Watches and Bounded Expression Evaluation Foundation**.
+Phase 11 is complete; the next intentionally small milestone is **Debugger Phase 12 — Conditional Breakpoints Foundation**.

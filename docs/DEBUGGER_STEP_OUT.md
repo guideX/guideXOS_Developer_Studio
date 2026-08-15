@@ -69,8 +69,8 @@ new stop generation and frame #0 selected.
 
 Step Out is supported for valid frame-pointer debug builds, including leaf,
 recursive, and multiple-return functions when the saved caller address is
-valid. It does not add Pause, locals, arguments, watches, expression
-evaluation, DWARF CFI unwinding, optimized-code full debugging, managed
+valid. It does not add Pause, locals, arguments, general expression
+evaluation beyond the bounded Phase 11 Watch grammar, DWARF CFI unwinding, optimized-code full debugging, managed
 debugging, or multi-thread execution control.
 
 The Phase 8 fixture is `tests/fixtures/debugger-phase8`. Its primary proof is

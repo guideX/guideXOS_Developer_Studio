@@ -32,6 +32,7 @@ add_library(developer_studio_models STATIC
     src/developer_studio_debugger_stack.cpp
     src/developer_studio_debug_symbols.cpp
     src/developer_studio_debug_variables.cpp
+    src/developer_studio_debug_watches.cpp
     src/developer_studio_debugger_hosted.cpp
 )
 target_include_directories(developer_studio_models PUBLIC src)
@@ -216,6 +217,13 @@ set_target_properties(developer_studio_debugger_structured_variables_test PROPER
 add_test(NAME developer_studio_debugger_structured_variables_test COMMAND developer_studio_debugger_structured_variables_test)
 add_test(NAME developer_studio_debugger_variables_test COMMAND developer_studio_debugger_variables_test)
 
+add_executable(developer_studio_debugger_watches_test
+    tests/debugger_watches_test.cpp
+)
+target_link_libraries(developer_studio_debugger_watches_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_debugger_watches_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_debugger_watches_test COMMAND developer_studio_debugger_watches_test)
+
 # The production Native ELF link is intentionally driven by build.ps1. That
 # script follows the Server SDK's direct clang/ld.lld convention and writes the
 # package into the Server checkout rather than creating a second SDK copy here.
@@ -251,6 +259,7 @@ add_executable(developerstudio.elf
         src/developer_studio_debugger_stack.cpp
         src/developer_studio_debug_symbols.cpp
         src/developer_studio_debug_variables.cpp
+        src/developer_studio_debug_watches.cpp
         src/developer_studio_debugger_hosted.cpp
         src/freestanding_memory.cpp
         src/main.cpp
