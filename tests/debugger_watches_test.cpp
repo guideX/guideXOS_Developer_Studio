@@ -201,7 +201,11 @@ int main() {
     assert(DebugWatchCollectionInit(&watches));
     const char* expressions[] = {
         "rect", "rect.width", "rect.origin.x", "config->count", "values[2]", "*ptr", "&doubled", "node",
-        "doesNotExist", "nothing->count", "values[99]", "inspect()", "rect.width = 5"
+        "doesNotExist", "nothing->count", "values[99]", "inspect()", "rect.width = 5",
+        "doubled == 42", "doubled == 41", "doubled != 41", "doubled < 43", "doubled <= 42",
+        "doubled > 41", "doubled >= 42", "rect.origin.x < rect.width", "config->count >= 4",
+        "values[2] != 0", "*ptr == 42", "config != 0", "config == 0", "nothing == 0",
+        "values[99] == 3", "*nothing == 5", "rect == 1", "doubled < 18446744073709551615"
     };
     for (uint32_t i = 0; i < sizeof(expressions) / sizeof(expressions[0]); ++i)
         assert(DebugWatchCollectionAdd(&watches, expressions[i], nullptr));
@@ -226,6 +230,36 @@ int main() {
     assert(watchNamed(&watches, "values[99]")->result.state == DebugWatchState::IndexOutOfRange);
     assert(watchNamed(&watches, "inspect()")->result.state == DebugWatchState::UnsupportedExpression);
     assert(watchNamed(&watches, "rect.width = 5")->result.state == DebugWatchState::UnsupportedExpression);
+    assert(std::strcmp(watchNamed(&watches, "doubled == 42")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "doubled == 41")->result.valueDisplay, "false") == 0);
+    assert(std::strcmp(watchNamed(&watches, "doubled != 41")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "doubled < 43")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "doubled <= 42")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "doubled > 41")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "doubled >= 42")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "rect.origin.x < rect.width")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "config->count >= 4")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "values[2] != 0")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "*ptr == 42")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "config != 0")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "config == 0")->result.valueDisplay, "false") == 0);
+    assert(std::strcmp(watchNamed(&watches, "nothing == 0")->result.valueDisplay, "true") == 0);
+    assert(watchNamed(&watches, "values[99] == 3")->result.state == DebugWatchState::IndexOutOfRange);
+    assert(watchNamed(&watches, "*nothing == 5")->result.state == DebugWatchState::NullPointer);
+    assert(watchNamed(&watches, "rect == 1")->result.state == DebugWatchState::TypeMismatch);
+    assert(std::strcmp(watchNamed(&watches, "doubled < 18446744073709551615")->result.valueDisplay, "true") == 0);
+    assert(!watchNamed(&watches, "doubled == 42")->result.structured &&
+           watchNamed(&watches, "doubled == 42")->result.nodeId == 0);
+
+    put64(&memory, configAddress, 0x0001000000000000ull);
+    assert(DebugWatchCollectionRefresh(&watches, context));
+    assert(watchNamed(&watches, "config == 0")->result.state == DebugWatchState::UnreadableTarget);
+    put64(&memory, configAddress, 0);
+    assert(DebugWatchCollectionRefresh(&watches, context));
+    assert(std::strcmp(watchNamed(&watches, "config == 0")->result.valueDisplay, "true") == 0);
+    assert(std::strcmp(watchNamed(&watches, "config != 0")->result.valueDisplay, "false") == 0);
+    put64(&memory, configAddress, configTarget);
+    assert(DebugWatchCollectionRefresh(&watches, context));
     assert(DebugWatchCollectionExpand(&watches, context, watchNamed(&watches, "rect")->id));
     assert(watches.tree.nodes[watchNamed(&watches, "rect")->result.nodeId - 1u].childCount > 0);
     assert(DebugWatchCollectionExpand(&watches, context, watchNamed(&watches, "node")->id));
@@ -245,7 +279,9 @@ int main() {
     assert(DebugWatchCollectionEdit(&watches, watchNamed(&watches, "rect")->id, "rect.height"));
     assert(DebugWatchCollectionRemove(&watches, watchNamed(&watches, "rect.height")->id));
 
-    const char* invalid[] = { "foo.bar.", "foo->", "values[2", "(foo", "foo()", "a+b", "*" };
+    const char* invalid[] = { "foo.bar.", "foo->", "values[2", "(foo", "foo()", "a+b", "*",
+        "counter = 5", "counter === 5", "counter < < 5", "a < b < c", "a == b == c", "!counter",
+        "inspect() == 0", "18446744073709551616" };
     for (uint32_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
         DebugExpressionAst ast = {};
         assert(!DebugExpressionParse(invalid[i], &ast));
@@ -254,6 +290,9 @@ int main() {
     }
     DebugExpressionAst valid = {};
     assert(DebugExpressionParse("(*config).count", &valid) && valid.nodeCount >= 3);
+    assert(DebugExpressionParse("(doubled == 42)", &valid));
+    assert(DebugExpressionParse("(doubled == 42) == 1", &valid));
+    assert(valid.nodeCount >= 3);
     std::cout << "Phase11 watch proof: expressions=" << watches.count
               << " reads=" << memory.reads << " writes=" << memory.writes
               << " rectWidth=100 rectOriginX=10 configCount=4 values2=3 ptr=42\n";

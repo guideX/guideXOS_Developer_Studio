@@ -360,11 +360,14 @@ int main() {
     static DebugDwarfVariableView roots = {};
     assert(DebugDwarfInspectVariables(&mapper, seedFrame, readMemoryDirect, &memory, &roots));
     const DebugDwarfVariable* doubled = variableNamed(roots, "doubled");
+    const DebugDwarfVariable* ptr = variableNamed(roots, "ptr");
     const DebugDwarfVariable* values = variableNamed(roots, "values");
+    const DebugDwarfVariable* rect = variableNamed(roots, "rect");
     const DebugDwarfVariable* config = variableNamed(roots, "config");
     const DebugDwarfVariable* nothing = variableNamed(roots, "nothing");
-    assert(doubled && values && config && nothing);
+    assert(doubled && ptr && values && rect && config && nothing);
     const uint64_t doubledAddress = variableAddress(mapper, *doubled, seedFrame.frameBase);
+    const uint64_t ptrAddress = variableAddress(mapper, *ptr, seedFrame.frameBase);
     const uint64_t valuesAddress = variableAddress(mapper, *values, seedFrame.frameBase);
     const uint64_t configAddress = variableAddress(mapper, *config, seedFrame.frameBase);
     const uint64_t nothingAddress = variableAddress(mapper, *nothing, seedFrame.frameBase);
@@ -375,6 +378,7 @@ int main() {
     put64(&memory, configAddress, configTarget);
     put64(&memory, nothingAddress, 0);
     put32(&memory, doubledAddress, 0);
+    put64(&memory, ptrAddress, doubledAddress);
 
     Project project = validProject();
     BuildResult build = validBuild();
@@ -392,13 +396,13 @@ int main() {
     assert(error == DebugErrorCode::InvalidCondition);
     assert(controller.breakpoints[0].enabled && controller.breakpoints[0].id == breakpointId &&
            controller.breakpoints[0].conditionParseState == DebugExpressionParseState::UnsupportedExpression);
-    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "doubled", &error));
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "doubled == 2", &error));
     assert(DebugControllerSetBreakpointEnabled(&controller, breakpointId, false, &error));
     assert(!controller.breakpoints[0].enabled && controller.breakpoints[0].condition &&
-           std::strcmp(controller.breakpoints[0].condition, "doubled") == 0);
+           std::strcmp(controller.breakpoints[0].condition, "doubled == 2") == 0);
     assert(DebugControllerSetBreakpointEnabled(&controller, breakpointId, true, &error));
     assert(controller.breakpoints[0].enabled && controller.breakpoints[0].condition &&
-           std::strcmp(controller.breakpoints[0].condition, "doubled") == 0);
+           std::strcmp(controller.breakpoints[0].condition, "doubled == 2") == 0);
     prepareMappedBreakpoint(&controller, breakpointId);
     FakeBackend fake = {};
     fake.memory = &memory;
@@ -416,8 +420,20 @@ int main() {
     assert(sawEvent(controller, DebugEventKind::BreakpointConditionFalse));
     assert(!sawEvent(controller, DebugEventKind::BreakpointHit));
 
-    put32(&memory, doubledAddress, 42);
+    put32(&memory, doubledAddress, 1);
     fake.trapRequests = 2;
+    assert(DebugControllerPoll(&controller, backend, &mapper));
+    assert(controller.state == DebugSessionState::Running);
+    assert(!DebugControllerIsConditionResumePending(&controller));
+    assert(DebugControllerPoll(&controller, backend, &mapper));
+    assert(controller.state == DebugSessionState::Paused);
+    assert(DebugControllerIsConditionResumePending(&controller));
+    assert(controller.breakpoints[0].conditionLastEvaluation == DebugBreakpointConditionEvaluation::False);
+    assert(!sawEvent(controller, DebugEventKind::BreakpointHit));
+    assert(fake.continueCalls == 2 && fake.physicalBinds == 1);
+
+    put32(&memory, doubledAddress, 2);
+    fake.trapRequests = 3;
     assert(DebugControllerPoll(&controller, backend, &mapper));
     assert(controller.state == DebugSessionState::Running);
     assert(!DebugControllerIsConditionResumePending(&controller));
@@ -427,23 +443,42 @@ int main() {
     assert(controller.breakpoints[0].conditionLastEvaluation == DebugBreakpointConditionEvaluation::True);
     assert(controller.breakpoints[0].conditionLastTruthValue);
     assert(sawEvent(controller, DebugEventKind::BreakpointHit));
-    assert(fake.continueCalls == 1 && fake.physicalBinds == 1);
+    assert(fake.continueCalls == 2 && fake.physicalBinds == 1);
     assert(memory.writes == 0 && memory.targetCalls == 0);
 
     DebugBreakpointConditionDecision decision = DebugBreakpointConditionDecision::Error;
-    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "config->enabled", &error));
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "config->count >= 4", &error));
     assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
            decision == DebugBreakpointConditionDecision::True);
-    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "values[2]", &error));
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "values[2] == 3", &error));
     assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
            decision == DebugBreakpointConditionDecision::True);
-    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "config", &error));
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "config != 0", &error));
     assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
            decision == DebugBreakpointConditionDecision::True);
-    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "nothing", &error));
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "ptr == &doubled", &error));
     assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
-           decision == DebugBreakpointConditionDecision::False);
-    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "doesNotExist", &error));
+           decision == DebugBreakpointConditionDecision::True);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "config < 1", &error));
+    assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
+           decision == DebugBreakpointConditionDecision::Error && controller.error == DebugErrorCode::ConditionError);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "nothing == 0", &error));
+    assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
+           decision == DebugBreakpointConditionDecision::True);
+    put32(&memory, doubledAddress, 0xfffffff9u);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "doubled < 18446744073709551615", &error));
+    assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
+           decision == DebugBreakpointConditionDecision::True);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "18446744073709551615 == 18446744073709551615", &error));
+    assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
+           decision == DebugBreakpointConditionDecision::True);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "rect == 1", &error));
+    assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
+           decision == DebugBreakpointConditionDecision::Error && controller.error == DebugErrorCode::ConditionError);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "values[99] == 3", &error));
+    assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
+           decision == DebugBreakpointConditionDecision::Error && controller.error == DebugErrorCode::ConditionError);
+    assert(DebugControllerSetBreakpointCondition(&controller, breakpointId, "doesNotExist == 4", &error));
     assert(DebugControllerEvaluateBreakpointCondition(&controller, backend, &mapper, &decision) &&
            decision == DebugBreakpointConditionDecision::Error && controller.state == DebugSessionState::Paused &&
            controller.error == DebugErrorCode::ConditionError);
@@ -451,8 +486,8 @@ int main() {
     assert((!controller.breakpoints[0].condition || controller.breakpoints[0].condition[0] == '\0') &&
            controller.breakpoints[0].conditionParseState == DebugExpressionParseState::Empty);
 
-    std::cout << "Phase12 conditional breakpoint proof: false_resume=1 repeated_hit=1 "
-              << "member=1 array=1 pointer_truth=1 errors_stop=1 memory_writes=" << memory.writes
+    std::cout << "Phase13 conditional comparison proof: false_false_true=1 reinsertion=1 "
+              << "member=1 array=1 pointer_null=1 signed_mixed=1 errors_stop=1 memory_writes=" << memory.writes
               << " target_calls=" << memory.targetCalls << "\n";
     std::cout << "Developer Studio debugger conditional breakpoints test PASS\n";
     return 0;

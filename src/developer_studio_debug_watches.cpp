@@ -164,6 +164,26 @@ private:
                 offset += 2;
                 continue;
             }
+            if (value == '=' && offset + 1 < length && source_[offset + 1] == '=') {
+                if (!pushToken(DebugExpressionTokenKind::EqualEqual, offset, 2)) return false;
+                offset += 2;
+                continue;
+            }
+            if (value == '!' && offset + 1 < length && source_[offset + 1] == '=') {
+                if (!pushToken(DebugExpressionTokenKind::NotEqual, offset, 2)) return false;
+                offset += 2;
+                continue;
+            }
+            if (value == '<' && offset + 1 < length && source_[offset + 1] == '=') {
+                if (!pushToken(DebugExpressionTokenKind::LessEqual, offset, 2)) return false;
+                offset += 2;
+                continue;
+            }
+            if (value == '>' && offset + 1 < length && source_[offset + 1] == '=') {
+                if (!pushToken(DebugExpressionTokenKind::GreaterEqual, offset, 2)) return false;
+                offset += 2;
+                continue;
+            }
             DebugExpressionTokenKind kind;
             switch (value) {
             case '.': kind = DebugExpressionTokenKind::Dot; break;
@@ -173,6 +193,8 @@ private:
             case ']': kind = DebugExpressionTokenKind::RightBracket; break;
             case '(': kind = DebugExpressionTokenKind::LeftParen; break;
             case ')': kind = DebugExpressionTokenKind::RightParen; break;
+            case '<': kind = DebugExpressionTokenKind::Less; break;
+            case '>': kind = DebugExpressionTokenKind::Greater; break;
             default:
                 return fail(DebugExpressionParseState::UnsupportedExpression, offset,
                             "operator is not supported");
@@ -218,7 +240,44 @@ private:
     }
     void leaveDepth() { if (depth_ > 0) --depth_; }
 
-    uint16_t parseExpression() { return parsePostfix(); }
+    static bool isComparisonToken(DebugExpressionTokenKind kind) {
+        return kind == DebugExpressionTokenKind::EqualEqual ||
+            kind == DebugExpressionTokenKind::NotEqual ||
+            kind == DebugExpressionTokenKind::Less ||
+            kind == DebugExpressionTokenKind::LessEqual ||
+            kind == DebugExpressionTokenKind::Greater ||
+            kind == DebugExpressionTokenKind::GreaterEqual;
+    }
+
+    static DebugExpressionComparisonKind comparisonKind(DebugExpressionTokenKind kind) {
+        switch (kind) {
+        case DebugExpressionTokenKind::EqualEqual: return DebugExpressionComparisonKind::Equal;
+        case DebugExpressionTokenKind::NotEqual: return DebugExpressionComparisonKind::NotEqual;
+        case DebugExpressionTokenKind::Less: return DebugExpressionComparisonKind::Less;
+        case DebugExpressionTokenKind::LessEqual: return DebugExpressionComparisonKind::LessEqual;
+        case DebugExpressionTokenKind::Greater: return DebugExpressionComparisonKind::Greater;
+        case DebugExpressionTokenKind::GreaterEqual: return DebugExpressionComparisonKind::GreaterEqual;
+        default: return DebugExpressionComparisonKind::Equal;
+        }
+    }
+
+    uint16_t parseExpression() { return parseComparison(); }
+
+    uint16_t parseComparison() {
+        const uint16_t left = parsePostfix();
+        if (left == 0xffffu || !isComparisonToken(current().kind)) return left;
+        const Token operation = current();
+        ++cursor_;
+        const uint16_t right = parsePostfix();
+        if (right == 0xffffu) return right;
+        if (isComparisonToken(current().kind)) {
+            fail(DebugExpressionParseState::UnsupportedExpression, current().offset,
+                 "chained comparisons are not supported; parenthesize each comparison");
+            return 0xffffu;
+        }
+        return addNode(DebugExpressionNodeKind::Comparison, operation, left, right, nullptr,
+                       static_cast<uint64_t>(comparisonKind(operation.kind)));
+    }
 
     uint16_t parsePostfix() {
         uint16_t value = parseUnary();
@@ -392,9 +451,25 @@ static bool isAggregate(DebugDwarfValueNodeKind kind) {
         kind == DebugDwarfValueNodeKind::OpaqueAggregate;
 }
 
+enum class EvalCategory {
+    Invalid = 0,
+    SignedInteger,
+    UnsignedInteger,
+    Boolean,
+    Pointer,
+    Aggregate,
+    FloatingPoint
+};
+
+struct EvalTypeInfo {
+    EvalCategory category;
+    uint32_t bitWidth;
+};
+
 struct EvalValue {
     bool valid;
     bool fromNode;
+    bool literal;
     bool logicalDereference;
     bool aggregate;
     bool pointer;
@@ -408,6 +483,80 @@ struct EvalValue {
     char typeDisplay[kDebugDwarfMaxTypeDisplayBytes];
     char valueDisplay[kDebugDwarfMaxTypeDisplayBytes];
 };
+
+static bool classifyDwarfType(const DebugDwarfMapper* mapper, uint64_t typeOffset,
+                              EvalTypeInfo* info) {
+    if (!mapper || !info || typeOffset == 0) return false;
+    *info = EvalTypeInfo();
+    uint64_t current = typeOffset;
+    for (uint32_t depth = 0; depth < kDebugDwarfMaxTypeDepth; ++depth) {
+        const DebugDwarfDieInfo* die = dieAt(mapper, current);
+        if (!die) return false;
+        if ((die->tag == 0x16u || die->tag == 0x26u || die->tag == 0x35u) && die->hasType) {
+            current = die->typeReference;
+            continue;
+        }
+        if (die->tag == 0x0fu) {
+            info->category = EvalCategory::Pointer;
+            info->bitWidth = die->hasByteSize && die->byteSize <= 8u ?
+                static_cast<uint32_t>(die->byteSize * 8u) : 64u;
+            return info->bitWidth != 0;
+        }
+        if (die->tag == 0x24u) {
+            if (!die->hasEncoding || !die->hasByteSize || die->byteSize == 0 || die->byteSize > 8u)
+                return false;
+            info->bitWidth = static_cast<uint32_t>(die->byteSize * 8u);
+            if (die->encoding == 2u) info->category = EvalCategory::Boolean;
+            else if (die->encoding == 4u) info->category = EvalCategory::FloatingPoint;
+            else if (die->encoding == 5u || die->encoding == 6u)
+                info->category = EvalCategory::SignedInteger;
+            else info->category = EvalCategory::UnsignedInteger;
+            return true;
+        }
+        if (die->tag == 0x04u) {
+            if (die->hasType) {
+                current = die->typeReference;
+                continue;
+            }
+            info->category = EvalCategory::SignedInteger;
+            info->bitWidth = die->hasByteSize && die->byteSize <= 8u ?
+                static_cast<uint32_t>(die->byteSize * 8u) : 32u;
+            return true;
+        }
+        info->category = EvalCategory::Aggregate;
+        info->bitWidth = 0;
+        return true;
+    }
+    return false;
+}
+
+static bool classifyEvalValue(const DebugDwarfMapper* mapper, const EvalValue& value,
+                              EvalTypeInfo* info) {
+    if (!info || !value.valid) return false;
+    *info = EvalTypeInfo();
+    if (value.pointer || value.valueKind == DebugDwarfValueKind::Pointer ||
+        value.valueKind == DebugDwarfValueKind::Address) {
+        info->category = EvalCategory::Pointer;
+        info->bitWidth = 64;
+        return true;
+    }
+    if (value.aggregate || !value.scalar) {
+        info->category = EvalCategory::Aggregate;
+        return true;
+    }
+    if (!value.fromNode) {
+        switch (value.valueKind) {
+        case DebugDwarfValueKind::Boolean: info->category = EvalCategory::Boolean; break;
+        case DebugDwarfValueKind::SignedInteger: info->category = EvalCategory::SignedInteger; break;
+        case DebugDwarfValueKind::UnsignedInteger: info->category = EvalCategory::UnsignedInteger; break;
+        case DebugDwarfValueKind::FloatingPoint: info->category = EvalCategory::FloatingPoint; break;
+        default: info->category = EvalCategory::Invalid; break;
+        }
+        info->bitWidth = value.valueKind == DebugDwarfValueKind::Boolean ? 1u : 64u;
+        return info->category != EvalCategory::Invalid;
+    }
+    return classifyDwarfType(mapper, value.typeDieOffset, info);
+}
 
 static EvalValue evalValueFromNode(const DebugDwarfValueNode& node) {
     EvalValue value = EvalValue();
@@ -600,6 +749,145 @@ static bool evaluateArrayIndex(const DebugExpressionNode& expressionNode,
     return true;
 }
 
+static bool isEqualityComparison(DebugExpressionComparisonKind kind) {
+    return kind == DebugExpressionComparisonKind::Equal ||
+        kind == DebugExpressionComparisonKind::NotEqual;
+}
+
+static bool applyComparison(DebugExpressionComparisonKind kind, int comparison) {
+    switch (kind) {
+    case DebugExpressionComparisonKind::Equal: return comparison == 0;
+    case DebugExpressionComparisonKind::NotEqual: return comparison != 0;
+    case DebugExpressionComparisonKind::Less: return comparison < 0;
+    case DebugExpressionComparisonKind::LessEqual: return comparison <= 0;
+    case DebugExpressionComparisonKind::Greater: return comparison > 0;
+    case DebugExpressionComparisonKind::GreaterEqual: return comparison >= 0;
+    }
+    return false;
+}
+
+static int compareUnsigned(uint64_t left, uint64_t right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+static int64_t signedValue(uint64_t value, uint32_t bitWidth) {
+    if (bitWidth == 0 || bitWidth >= 64u) return static_cast<int64_t>(value);
+    const uint64_t mask = (1ull << bitWidth) - 1u;
+    value &= mask;
+    const uint64_t sign = 1ull << (bitWidth - 1u);
+    if (value & sign) value |= ~mask;
+    return static_cast<int64_t>(value);
+}
+
+static int compareIntegers(const EvalValue& left, const EvalTypeInfo& leftType,
+                           const EvalValue& right, const EvalTypeInfo& rightType) {
+    const bool leftSigned = leftType.category == EvalCategory::SignedInteger;
+    const bool rightSigned = rightType.category == EvalCategory::SignedInteger;
+    if (leftSigned && rightSigned) {
+        const int64_t leftNumber = signedValue(left.scalarValue, leftType.bitWidth);
+        const int64_t rightNumber = signedValue(right.scalarValue, rightType.bitWidth);
+        return leftNumber < rightNumber ? -1 : leftNumber > rightNumber ? 1 : 0;
+    }
+    if (!leftSigned && !rightSigned) return compareUnsigned(left.scalarValue, right.scalarValue);
+
+    // Mixed signed/unsigned comparison is explicit and mathematical within the
+    // bounded 64-bit model: a negative signed value is below every unsigned
+    // value; a non-negative signed value is compared as uint64_t. This avoids
+    // host compiler promotions and preserves unsigned maxima.
+    if (leftSigned) {
+        const int64_t leftNumber = signedValue(left.scalarValue, leftType.bitWidth);
+        if (leftNumber < 0) return -1;
+        return compareUnsigned(static_cast<uint64_t>(leftNumber), right.scalarValue);
+    }
+    const int64_t rightNumber = signedValue(right.scalarValue, rightType.bitWidth);
+    if (rightNumber < 0) return 1;
+    return compareUnsigned(left.scalarValue, static_cast<uint64_t>(rightNumber));
+}
+
+static bool comparisonFailure(DebugWatchResult* result, DebugWatchState state,
+                              const char* diagnostic) {
+    if (!result) return false;
+    result->state = state;
+    copyText(result->diagnostic, sizeof(result->diagnostic), diagnostic);
+    return false;
+}
+
+static bool evaluateComparison(const DebugExpressionNode& expressionNode,
+                               const DebugExpressionAst& ast,
+                               const DebugWatchEvaluationContext& context,
+                               DebugDwarfVariableView* view, EvalValue* value,
+                               DebugWatchResult* result) {
+    EvalValue left = {};
+    EvalValue right = {};
+    if (!evaluateNode(expressionNode.left, ast, context, view, &left, result) ||
+        !evaluateNode(expressionNode.right, ast, context, view, &right, result)) return false;
+
+    const DebugExpressionComparisonKind kind = static_cast<DebugExpressionComparisonKind>(expressionNode.integerValue);
+    EvalTypeInfo leftType = {};
+    EvalTypeInfo rightType = {};
+    if (!classifyEvalValue(context.mapper, left, &leftType) ||
+        !classifyEvalValue(context.mapper, right, &rightType))
+        return comparisonFailure(result, DebugWatchState::TypeMismatch,
+                                 "comparison type is unavailable");
+
+    const bool leftPointer = leftType.category == EvalCategory::Pointer;
+    const bool rightPointer = rightType.category == EvalCategory::Pointer;
+    if (leftPointer || rightPointer) {
+        if (!isEqualityComparison(kind))
+            return comparisonFailure(result, DebugWatchState::TypeMismatch,
+                                     "relational pointer comparison is not supported");
+        const bool rightIsZeroLiteral = right.literal && right.scalarValue == 0;
+        const bool leftIsZeroLiteral = left.literal && left.scalarValue == 0;
+        if (leftPointer && rightPointer) {
+            if (left.scalarValue != 0 && !canonicalAddress(left.scalarValue))
+                return comparisonFailure(result, DebugWatchState::UnreadableTarget,
+                                         "left pointer is not canonical");
+            if (right.scalarValue != 0 && !canonicalAddress(right.scalarValue))
+                return comparisonFailure(result, DebugWatchState::UnreadableTarget,
+                                         "right pointer is not canonical");
+        } else if (leftPointer && rightIsZeroLiteral) {
+            if (left.scalarValue != 0 && !canonicalAddress(left.scalarValue))
+                return comparisonFailure(result, DebugWatchState::UnreadableTarget,
+                                         "pointer is not canonical");
+        } else if (rightPointer && leftIsZeroLiteral) {
+            if (right.scalarValue != 0 && !canonicalAddress(right.scalarValue))
+                return comparisonFailure(result, DebugWatchState::UnreadableTarget,
+                                         "pointer is not canonical");
+        } else {
+            return comparisonFailure(result, DebugWatchState::TypeMismatch,
+                                     "pointer equality needs a pointer or integer literal zero");
+        }
+        *value = EvalValue();
+        value->valid = true;
+        value->scalar = true;
+        value->valueKind = DebugDwarfValueKind::Boolean;
+        value->locationKind = DebugDwarfLocationKind::ImmediateValue;
+        value->scalarValue = applyComparison(kind, compareUnsigned(left.scalarValue, right.scalarValue)) ? 1u : 0u;
+        copyText(value->typeDisplay, sizeof(value->typeDisplay), "bool");
+        copyText(value->valueDisplay, sizeof(value->valueDisplay), value->scalarValue ? "true" : "false");
+        return true;
+    }
+
+    const bool leftInteger = leftType.category == EvalCategory::SignedInteger ||
+        leftType.category == EvalCategory::UnsignedInteger || leftType.category == EvalCategory::Boolean;
+    const bool rightInteger = rightType.category == EvalCategory::SignedInteger ||
+        rightType.category == EvalCategory::UnsignedInteger || rightType.category == EvalCategory::Boolean;
+    if (!leftInteger || !rightInteger)
+        return comparisonFailure(result, DebugWatchState::TypeMismatch,
+                                 "comparison needs compatible integral scalar values");
+
+    const int ordering = compareIntegers(left, leftType, right, rightType);
+    *value = EvalValue();
+    value->valid = true;
+    value->scalar = true;
+    value->valueKind = DebugDwarfValueKind::Boolean;
+    value->locationKind = DebugDwarfLocationKind::ImmediateValue;
+    value->scalarValue = applyComparison(kind, ordering) ? 1u : 0u;
+    copyText(value->typeDisplay, sizeof(value->typeDisplay), "bool");
+    copyText(value->valueDisplay, sizeof(value->valueDisplay), value->scalarValue ? "true" : "false");
+    return true;
+}
+
 static bool evaluateNode(uint16_t nodeIndex, const DebugExpressionAst& ast,
                          const DebugWatchEvaluationContext& context, DebugDwarfVariableView* view,
                          EvalValue* value, DebugWatchResult* result) {
@@ -632,11 +920,14 @@ static bool evaluateNode(uint16_t nodeIndex, const DebugExpressionAst& ast,
     case DebugExpressionNodeKind::IntegerLiteral: {
         *value = EvalValue();
         value->valid = true;
+        value->literal = true;
         value->scalar = true;
         value->scalarValue = expressionNode.integerValue;
-        value->valueKind = DebugDwarfValueKind::SignedInteger;
+        value->valueKind = expressionNode.integerValue <= static_cast<uint64_t>(INT64_MAX) ?
+            DebugDwarfValueKind::SignedInteger : DebugDwarfValueKind::UnsignedInteger;
         value->locationKind = DebugDwarfLocationKind::ImmediateValue;
-        copyText(value->typeDisplay, sizeof(value->typeDisplay), "int");
+        copyText(value->typeDisplay, sizeof(value->typeDisplay),
+                 value->valueKind == DebugDwarfValueKind::SignedInteger ? "int" : "uint64");
         char number[24] = {};
         uint64_t numberValue = expressionNode.integerValue;
         uint32_t digits = 0;
@@ -710,7 +1001,7 @@ static bool evaluateNode(uint16_t nodeIndex, const DebugExpressionAst& ast,
         copyText(value->valueDisplay, sizeof(value->valueDisplay), "{...}");
         return true;
     }
-    case DebugExpressionNodeKind::AddressOf:
+    case DebugExpressionNodeKind::AddressOf: {
         if (!evaluateNode(expressionNode.left, ast, context, view, value, result)) return false;
         if (!value->fromNode || !value->address || value->locationKind != DebugDwarfLocationKind::MemoryAddress) {
             result->state = DebugWatchState::AddressUnavailable;
@@ -732,6 +1023,9 @@ static bool evaluateNode(uint16_t nodeIndex, const DebugExpressionAst& ast,
         formatHexAddress(value->valueDisplay, sizeof(value->valueDisplay), value->scalarValue);
         value->nodeId = 0;
         return true;
+    }
+    case DebugExpressionNodeKind::Comparison:
+        return evaluateComparison(expressionNode, ast, context, view, value, result);
     }
     return false;
 }
@@ -778,6 +1072,12 @@ const char* DebugExpressionTokenKindName(DebugExpressionTokenKind kind) {
     case DebugExpressionTokenKind::LeftParen: return "LeftParen";
     case DebugExpressionTokenKind::RightParen: return "RightParen";
     case DebugExpressionTokenKind::End: return "End";
+    case DebugExpressionTokenKind::EqualEqual: return "EqualEqual";
+    case DebugExpressionTokenKind::NotEqual: return "NotEqual";
+    case DebugExpressionTokenKind::Less: return "Less";
+    case DebugExpressionTokenKind::LessEqual: return "LessEqual";
+    case DebugExpressionTokenKind::Greater: return "Greater";
+    case DebugExpressionTokenKind::GreaterEqual: return "GreaterEqual";
     }
     return "Unknown";
 }
@@ -791,6 +1091,7 @@ const char* DebugExpressionNodeKindName(DebugExpressionNodeKind kind) {
     case DebugExpressionNodeKind::ArrayIndex: return "ArrayIndex";
     case DebugExpressionNodeKind::Dereference: return "Dereference";
     case DebugExpressionNodeKind::AddressOf: return "AddressOf";
+    case DebugExpressionNodeKind::Comparison: return "Comparison";
     }
     return "Unknown";
 }

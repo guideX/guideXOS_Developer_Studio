@@ -15,10 +15,11 @@ Conditions reuse the bounded Phase 11 Watch parser, AST, DWARF lookup, lvalue/va
 - unary `*`
 - unary `&`
 - parentheses
+- scalar comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
 
 The limits are unchanged: 256 expression bytes, 96 tokens, 64 AST nodes, and parser depth 16. The debugger supports at most 128 condition-text storage slots, one per configured breakpoint capacity slot. Condition text is bounded by the Phase 11 expression limit.
 
-This phase intentionally does not add a general C/C++ expression evaluator. Function calls, assignments, arithmetic, comparisons, casts, `sizeof`, pointer arithmetic, templates, overloads, and other unsupported C++ syntax are rejected. For example, `inspect()` is an invalid condition.
+This phase intentionally does not add a general C/C++ expression evaluator. Function calls, assignments, arithmetic, casts, `sizeof`, pointer arithmetic, templates, overloads, and other unsupported C++ syntax are rejected. Comparisons are the bounded Phase 13 scalar layer documented in [DEBUGGER_COMPARISONS.md](DEBUGGER_COMPARISONS.md); `inspect()` remains an invalid condition.
 
 ## Truth conversion
 
@@ -29,7 +30,7 @@ Only already-supported scalar values can be converted to a condition result:
 - a non-null canonical pointer is true
 - structured aggregates and arrays are not implicitly truthy
 
-A noncanonical pointer or any non-scalar/unsupported value produces a condition evaluation error. Comparisons such as `counter == 3` are reserved for a later phase.
+A noncanonical pointer or any non-scalar/unsupported value produces a condition evaluation error. Pointer comparisons support equality/inequality, including comparison with literal zero; relational pointer comparisons remain unsupported.
 
 ## Hit behavior and errors
 

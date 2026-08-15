@@ -9,7 +9,9 @@ target-side expression runtime.
 ## Grammar
 
 ```text
-expression       := postfix
+expression       := comparison
+comparison       := postfix (comparison_operator postfix)?
+comparison_operator := "==" | "!=" | "<" | "<=" | ">" | ">="
 postfix          := unary postfix_suffix*
 postfix_suffix   := "." identifier
                   | "->" identifier
@@ -24,14 +26,15 @@ primary          := identifier
 
 Supported forms include `local`, `argument`, `object.member`,
 `pointer->member`, `array[index]`, `*pointer`, `&variable`, decimal integer
-literals, hexadecimal integer literals such as `0x10`, and parentheses.
-Array indexes are bounded integer Watch expressions; general arithmetic is
-not accepted.
+literals, hexadecimal integer literals such as `0x10`, parentheses, and the
+bounded scalar comparisons documented in [DEBUGGER_COMPARISONS.md](DEBUGGER_COMPARISONS.md).
+Array indexes are bounded integer Watch expressions; general arithmetic is not
+accepted.
 
 The tokenizer recognizes only identifiers, integer literals, `.`, `->`, `*`,
-`&`, brackets, parentheses, and end-of-input. Function calls, assignments,
-arithmetic, comparisons, logical operators, casts, `sizeof`, pointer
-arithmetic, comma/ternary expressions, overloaded operators, templates,
+`&`, brackets, parentheses, the six comparison operators, and end-of-input.
+Function calls, assignments, arithmetic, logical operators, casts, `sizeof`,
+pointer arithmetic, comma/ternary expressions, overloaded operators, templates,
 methods, and side effects are explicitly unsupported. `operator*`,
 `operator->`, and `operator[]` are not invoked; syntax always means builtin
 DWARF pointer/member/array navigation.
@@ -117,9 +120,9 @@ Assignment syntax is rejected before any target mutation path is reachable.
 
 ## Deferred work
 
-General C++ evaluation, function/method calls, arithmetic and comparison
-expressions, conditional breakpoints, data breakpoints, casts, pointer
-arithmetic, dynamic types/RTTI, STL pretty printers, NatVis, optimized-code
-reconstruction, and memory/register editing remain outside Phase 11. A later
-conditional-breakpoint phase should reuse this read-only bounded evaluator
-and add only a narrowly bounded comparison layer.
+General C++ evaluation, function/method calls, arithmetic expressions,
+conditional/data breakpoints, casts, pointer arithmetic, dynamic types/RTTI,
+STL pretty printers, NatVis, optimized-code reconstruction, and
+memory/register editing remain outside Phase 11. Phase 13 adds the narrowly
+bounded comparison layer shared by Watches and conditional breakpoints; its
+contract is documented in [DEBUGGER_COMPARISONS.md](DEBUGGER_COMPARISONS.md).

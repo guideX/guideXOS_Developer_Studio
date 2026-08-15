@@ -31,7 +31,13 @@ enum class DebugExpressionTokenKind {
     RightBracket,
     LeftParen,
     RightParen,
-    End
+    End,
+    EqualEqual,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual
 };
 
 enum class DebugExpressionNodeKind {
@@ -41,7 +47,17 @@ enum class DebugExpressionNodeKind {
     PointerMemberAccess,
     ArrayIndex,
     Dereference,
-    AddressOf
+    AddressOf,
+    Comparison
+};
+
+enum class DebugExpressionComparisonKind {
+    Equal = 0,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual
 };
 
 enum class DebugExpressionParseState {
