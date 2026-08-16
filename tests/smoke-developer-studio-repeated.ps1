@@ -28,17 +28,18 @@ $startInfo.RedirectStandardError = $true
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
 $lines = New-Object 'System.Collections.Generic.List[string]'
-$outputQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
 $windowIds = New-Object 'System.Collections.Generic.List[string]'
 $errorTask = $null
-$outputSubscription = $null
+$script:RepeatedLaunchLineTask = $null
 
 function Read-Until([scriptblock]$Predicate, [int]$TimeoutSeconds = 20) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $line = $null
-        if ($outputQueue.TryDequeue([ref]$line)) {
+        if ($script:RepeatedLaunchLineTask.IsCompleted) {
+            $line = $script:RepeatedLaunchLineTask.Result
+            if ($null -eq $line) { break }
             $lines.Add($line)
+            $script:RepeatedLaunchLineTask = $process.StandardOutput.ReadLineAsync()
             if (& $Predicate $line $lines) { return $line }
             continue
         }
@@ -46,25 +47,30 @@ function Read-Until([scriptblock]$Predicate, [int]$TimeoutSeconds = 20) {
         Start-Sleep -Milliseconds 25
     }
     $lastLine = if ($lines.Count -gt 0) { $lines[$lines.Count - 1] } else { "<none>" }
+    Write-Host 'Captured repeated-launch output before timeout:'
+    @($lines | Select-Object -Last 40)
     throw "Timed out waiting for hosted Server output. processExited=$($process.HasExited) lastLine=$lastLine"
+}
+
+function Send-Command([string]$Command) {
+    $process.StandardInput.WriteLine($Command)
+    $process.StandardInput.Flush()
 }
 
 try {
     Assert-True $process.Start() "hosted Server starts"
-    $outputSubscription = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -MessageData $outputQueue -Action {
-        $line = $Event.SourceEventArgs.Data
-        if ($null -ne $line) { $Event.MessageData.Enqueue($line) }
-    }
-    $process.BeginOutputReadLine()
+    $script:RepeatedLaunchLineTask = $process.StandardOutput.ReadLineAsync()
     $errorTask = $process.StandardError.ReadToEndAsync()
+    Send-Command "gui.start"
+    Start-Sleep -Seconds 5
 
     for ($index = 1; $index -le $LaunchCount; $index++) {
-        $process.StandardInput.WriteLine("desktop.launch guideXOS Developer Studio")
-        Read-Until { param($line, $all) $line.Contains("Desktop launch successful: guideXOS Developer Studio") } | Out-Null
+        Send-Command "desktop.launch com.guidexos.developerstudio"
+        Read-Until { param($line, $all) $line.Contains("Desktop launch successful: com.guidexos.developerstudio") } | Out-Null
         Read-Until { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS") } | Out-Null
 
         $ownerStart = $lines.Count
-        $process.StandardInput.WriteLine("desktop.windows.owners")
+        Send-Command "desktop.windows.owners"
         Read-Until {
             param($line, $all)
             $currentOwnership = @($all | Select-Object -Skip $ownerStart)
@@ -79,11 +85,11 @@ try {
         $windowId = $ownerMatch.Groups[1].Value
         $windowIds.Add($windowId)
 
-        $process.StandardInput.WriteLine("gui.close $windowId")
+        Send-Command "gui.close $windowId"
         Read-Until { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS") } | Out-Null
 
         $windowStart = $lines.Count
-        $process.StandardInput.WriteLine("desktop.windows.owners")
+        Send-Command "desktop.windows.owners"
         Read-Until {
             param($line, $all)
             $currentOwnership = @($all | Select-Object -Skip $windowStart)
@@ -94,13 +100,13 @@ try {
         $windowLines = @($lines | Select-Object -Skip $windowStart)
         Assert-True (@($windowLines | Where-Object { $_ -eq "windowCount=0" }).Count -gt 0) "launch $index leaves zero windows"
 
-        $process.StandardInput.WriteLine("nativeapp.processes")
+        Send-Command "nativeapp.processes"
         Read-Until { param($line, $all) $line -match 'appId=com.guidexos.developerstudio.*state=Exited' } | Out-Null
         Write-Host "PASS: launch $index native process exits and ownership is released"
     }
 
     Assert-True (($windowIds | Select-Object -Unique).Count -eq $LaunchCount) "window IDs are not reused while stale ownership exists"
-    $process.StandardInput.WriteLine("exit")
+    Send-Command "exit"
     $process.StandardInput.Close()
     $process.WaitForExit()
     Assert-True ($process.ExitCode -eq 0) "Server exits cleanly after repeated launches"
@@ -112,9 +118,5 @@ finally {
         $process.WaitForExit()
     }
     if ($errorTask) { $null = $errorTask.Result }
-    if ($outputSubscription) {
-        Unregister-Event -SubscriptionId $outputSubscription.Id -ErrorAction SilentlyContinue
-        Remove-Job -Id $outputSubscription.Id -Force -ErrorAction SilentlyContinue
-    }
     $process.Dispose()
 }

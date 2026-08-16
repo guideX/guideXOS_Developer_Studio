@@ -5,6 +5,9 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 using namespace guidexos::developer_studio;
 
@@ -125,6 +128,16 @@ static DebugWatchItem* watchNamed(DebugWatchCollection* watches, const char* exp
     return 0;
 }
 
+#if defined(_WIN32)
+static DebugWatchCollection g_smallStackWatchCollection = {};
+
+static DWORD WINAPI initializeWatchCollectionOnSmallStack(void* userData) {
+    bool* initialized = static_cast<bool*>(userData);
+    *initialized = DebugWatchCollectionInit(&g_smallStackWatchCollection);
+    return *initialized ? 0u : 1u;
+}
+#endif
+
 static DebugDwarfValueNode* watchChildByName(DebugDwarfVariableView* view, uint64_t parentId,
                                              const char* name) {
     if (!view || parentId == 0 || parentId > view->nodeCount || !name) return 0;
@@ -139,6 +152,22 @@ static DebugDwarfValueNode* watchChildByName(DebugDwarfVariableView* view, uint6
 }
 
 int main() {
+#if defined(_WIN32)
+    // Native ELF entry points run with a deliberately small stack.  Keep this
+    // regression on a small Windows thread stack so a collection-sized startup
+    // temporary cannot regress unnoticed.
+    bool initializedOnSmallStack = false;
+    HANDLE thread = CreateThread(nullptr, 64u * 1024u,
+                                 initializeWatchCollectionOnSmallStack,
+                                 &initializedOnSmallStack, 0, nullptr);
+    assert(thread);
+    assert(WaitForSingleObject(thread, 5000) == WAIT_OBJECT_0);
+    DWORD exitCode = 1;
+    assert(GetExitCodeThread(thread, &exitCode));
+    CloseHandle(thread);
+    assert(exitCode == 0 && initializedOnSmallStack);
+#endif
+
     const std::vector<unsigned char> elf = readFile(
         "tests/fixtures/debugger-phase10/build/bin/amd64/debugger-phase10.elf",
         "../tests/fixtures/debugger-phase10/build/bin/amd64/debugger-phase10.elf");

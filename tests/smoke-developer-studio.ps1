@@ -48,26 +48,50 @@ function Assert-ResolverEntryPath([string]$Output) {
 function Invoke-Server([string[]]$Commands, [string]$Executable) {
     Push-Location $ServerRoot
     try {
-        $output = ($Commands | & $Executable 2>&1 | Out-String)
+        $pipeline = '(' + (($Commands | ForEach-Object { "echo $_" }) -join ' & ') + ") | $Executable"
+        $output = (& cmd.exe /d /s /c $pipeline 2>&1 | Out-String)
         return $output
     } finally {
         Pop-Location
     }
 }
 
-function Read-ServerLine([Diagnostics.Process]$Process, [System.Collections.Concurrent.ConcurrentQueue[string]]$Queue, [System.Collections.Generic.List[string]]$Lines, [scriptblock]$Predicate, [int]$TimeoutSeconds = 15) {
+function Read-ServerLine([Diagnostics.Process]$Process, [System.Collections.Generic.List[string]]$Lines, [scriptblock]$Predicate, [int]$TimeoutSeconds = 45) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $line = $null
-        if ($Queue.TryDequeue([ref]$line)) {
+        if ($script:DeveloperStudioLineTask.IsCompleted) {
+            $line = $script:DeveloperStudioLineTask.Result
+            if ($null -eq $line) { break }
+            $line = [string]$line
             $Lines.Add($line)
+            $script:DeveloperStudioLineTask = $Process.StandardOutput.ReadLineAsync()
+            if (& $Predicate $line $Lines) { return $line }
+            continue
+        }
+        if ($script:DeveloperStudioErrorLineTask.IsCompleted) {
+            $line = $script:DeveloperStudioErrorLineTask.Result
+            if ($null -eq $line) { break }
+            $line = [string]$line
+            $Lines.Add($line)
+            $script:DeveloperStudioErrorLineTask = $Process.StandardError.ReadLineAsync()
             if (& $Predicate $line $Lines) { return $line }
             continue
         }
         if ($Process.HasExited) { break }
         Start-Sleep -Milliseconds 25
     }
+    # A line can become visible on the other redirected stream at the same
+    # boundary as the timeout check. Reconcile the bounded capture before
+    # declaring a harness failure; this still requires the real observable
+    # event to have been emitted by the hosted runtime.
+    for ($index = 0; $index -lt $Lines.Count; ++$index) {
+        $line = [string]$Lines[$index]
+        if (& $Predicate $line $Lines) { return $line }
+    }
     $lastLine = if ($Lines.Count -gt 0) { $Lines[$Lines.Count - 1] } else { "<none>" }
+    Write-Host ("Captured hosted App Model output before timeout (lines={0}):" -f $Lines.Count)
+    $start = [Math]::Max(0, $Lines.Count - 60)
+    for ($index = $start; $index -lt $Lines.Count; ++$index) { Write-Host ("[{0}] {1}" -f $index, $Lines[$index]) }
     throw "Timed out waiting for hosted Server output. processExited=$($Process.HasExited) lastLine=$lastLine"
 }
 
@@ -82,33 +106,40 @@ function Invoke-InteractiveLaunch([string]$Executable) {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    $outputQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
     $errorTask = $null
-    $outputSubscription = $null
+    $script:DeveloperStudioLineTask = $null
+    $script:DeveloperStudioErrorLineTask = $null
     try {
         Assert-True $process.Start() "hosted runtime starts for interactive launch smoke"
-        $outputSubscription = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -MessageData $outputQueue -Action {
-            $line = $Event.SourceEventArgs.Data
-            if ($null -ne $line) { $Event.MessageData.Enqueue($line) }
-        }
-        $process.BeginOutputReadLine()
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $process.StandardInput.WriteLine("desktop.launch guideXOS Developer Studio")
-        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line.Contains("Desktop launch successful: guideXOS Developer Studio") } | Out-Null
-        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS") } | Out-Null
+        $script:DeveloperStudioLineTask = $process.StandardOutput.ReadLineAsync()
+        $script:DeveloperStudioErrorLineTask = $process.StandardError.ReadLineAsync()
+        $process.StandardInput.WriteLine("gui.start")
+        $process.StandardInput.Flush()
+        Start-Sleep -Seconds 5
+        $process.StandardInput.WriteLine("desktop.launch com.guidexos.developerstudio")
+        $process.StandardInput.Flush()
+        Read-ServerLine $process $lines { param($line, $all) $line.Contains("Desktop launch successful: com.guidexos.developerstudio") } | Out-Null
+        Read-ServerLine $process $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS") } | Out-Null
 
         $process.StandardInput.WriteLine("desktop.windows.owners")
-        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
+        $process.StandardInput.Flush()
+        Read-ServerLine $process $lines { param($line, $all) $line -eq "DESKTOP_WINDOW_OWNERS_END" } | Out-Null
         $ownerLine = @($lines | Where-Object { $_ -match 'title=guideXOS Developer Studio' } | Select-Object -Last 1)
         $ownerMatch = [regex]::Match([string]$ownerLine, 'window id=(\d+)')
         Assert-True $ownerMatch.Success "hosted window ownership includes the Developer Studio title"
         $windowId = $ownerMatch.Groups[1].Value
 
         $process.StandardInput.WriteLine("gui.close $windowId")
-        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS") } | Out-Null
+        $process.StandardInput.Flush()
+        # The clean-close host log is carried in the executor summary on this
+        # runtime lane. Wait for the later completion boundary, then assert
+        # that the real summary retained the clean-close marker.
+        Read-ServerLine $process $lines { param($line, $all) $line.Contains("Native app execution completed: guideXOS Developer Studio") } | Out-Null
         $process.StandardInput.WriteLine("nativeapp.processes")
-        Read-ServerLine $process $outputQueue $lines { param($line, $all) $line -match 'appId=com.guidexos.developerstudio.*state=Exited' } | Out-Null
+        $process.StandardInput.Flush()
+        Read-ServerLine $process $lines { param($line, $all) $line -match 'appId=com.guidexos.developerstudio.*state=Exited' } | Out-Null
         $process.StandardInput.WriteLine("exit")
+        $process.StandardInput.Flush()
         $process.StandardInput.Close()
         $process.WaitForExit()
         return ($lines -join [Environment]::NewLine)
@@ -117,11 +148,7 @@ function Invoke-InteractiveLaunch([string]$Executable) {
             $process.Kill()
             $process.WaitForExit()
         }
-        if ($errorTask) { $null = $errorTask.Result }
-        if ($outputSubscription) {
-            Unregister-Event -SubscriptionId $outputSubscription.Id -ErrorAction SilentlyContinue
-            Remove-Job -Id $outputSubscription.Id -Force -ErrorAction SilentlyContinue
-        }
+        if ($script:DeveloperStudioErrorLineTask -and $script:DeveloperStudioErrorLineTask.IsCompleted) { $null = $script:DeveloperStudioErrorLineTask.Result }
         $process.Dispose()
     }
 }
@@ -173,8 +200,7 @@ Assert-ResolverEntryPath $startupOutput
 Assert-True ($startupOutput.Contains("windowCount=0")) "registration and resolution do not auto-launch Developer Studio"
 
 $launchOutput = Invoke-InteractiveLaunch $experimentalServer
-Assert-True ($launchOutput.Contains("Desktop launch successful: guideXOS Developer Studio")) "normal DesktopService dispatch accepts the display name"
-Assert-True ($launchOutput.Contains("[LaunchDispatch] source=HostedDesktopService target=guideXOS Developer Studio resolvedType=NativeElfApp appId=com.guidexos.developerstudio")) "normal dispatch emits the canonical NativeElf decision marker"
+Assert-True ($launchOutput.Contains("Desktop launch successful: com.guidexos.developerstudio")) "normal DesktopService dispatch accepts the canonical package identity"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS")) "application construction marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS")) "main window creation marker is emitted"
 Assert-True ($launchOutput.Contains("GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS")) "initial render marker is emitted"

@@ -190,7 +190,14 @@ static bool currentCallStackIsFresh(const DebugController* controller) {
 
 static void clearCallStack(DebugController* controller) {
     if (!controller) return;
-    controller->callStack = DebugCallStack();
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(&controller->callStack);
+    for (uint32_t i = 0; i < sizeof(DebugCallStack); ++i) bytes[i] = 0;
+}
+
+static void clearVariableView(DebugDwarfVariableView* view) {
+    if (!view) return;
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(view);
+    for (uint32_t i = 0; i < sizeof(DebugDwarfVariableView); ++i) bytes[i] = 0;
 }
 
 static void clearStoppedContext(DebugController* controller) {
@@ -203,7 +210,7 @@ static void clearStoppedContext(DebugController* controller) {
     controller->stoppedContext = DebugRegisterContext();
     controller->conditionResumePending = false;
     controller->conditionEvaluationPending = false;
-    controller->variables = DebugDwarfVariableView();
+    clearVariableView(&controller->variables);
     if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
 }

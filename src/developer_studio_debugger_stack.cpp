@@ -290,29 +290,38 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
         if (error) *error = DebugErrorCode::StaleStopContext;
         return false;
     }
-    DebugCallStack stack = DebugCallStack();
-    stack.sessionGeneration = controller->sessionGeneration;
-    stack.processId = controller->processId;
-    stack.nativeRuntimeId = controller->nativeRuntimeId;
-    stack.threadId = controller->currentThreadId;
-    stack.stopGeneration = controller->stopGeneration;
-    stack.mapperGeneration = mapper->identity.mapperGeneration;
-    copyText(stack.artifactSha256, sizeof(stack.artifactSha256), controller->target.artifactSha256);
-    copyText(stack.unwinderName, sizeof(stack.unwinderName), "AMD64 Frame Pointer");
-    stack.selectedFrameIndex = 0;
+    // Native ELF application stacks are intentionally small.  Build directly
+    // into the controller-owned bounded result instead of making a full
+    // DebugCallStack temporary on the stack.
+    DebugCallStack* stack = &controller->callStack;
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(stack);
+    for (uint32_t i = 0; i < sizeof(DebugCallStack); ++i) bytes[i] = 0;
+    stack->sessionGeneration = controller->sessionGeneration;
+    stack->processId = controller->processId;
+    stack->nativeRuntimeId = controller->nativeRuntimeId;
+    stack->threadId = controller->currentThreadId;
+    stack->stopGeneration = controller->stopGeneration;
+    stack->mapperGeneration = mapper->identity.mapperGeneration;
+    copyText(stack->artifactSha256, sizeof(stack->artifactSha256), controller->target.artifactSha256);
+    copyText(stack->unwinderName, sizeof(stack->unwinderName), "AMD64 Frame Pointer");
+    stack->selectedFrameIndex = 0;
     if (!DebugUnwindAmd64FramePointer(controller->stoppedContext, mapper,
-                                      backend.readTargetMemory, backend.userData,
-                                      controller->sessionGeneration, &stack.result)) {
+                                       backend.readTargetMemory, backend.userData,
+                                       controller->sessionGeneration, &stack->result)) {
         if (error) *error = DebugErrorCode::StaleStopContext;
-        controller->callStack = stack;
-        controller->callStack.valid = false;
-        controller->callStack.stale = false;
+        stack->valid = false;
+        stack->stale = false;
         return false;
     }
-    stack.valid = true;
-    stack.stale = false;
-    controller->callStack = stack;
+    stack->valid = true;
+    stack->stale = false;
     return true;
+}
+
+static void clearVariableView(DebugDwarfVariableView* view) {
+    if (!view) return;
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(view);
+    for (uint32_t i = 0; i < sizeof(DebugDwarfVariableView); ++i) bytes[i] = 0;
 }
 
 bool DebugControllerBuildVariables(DebugController* controller, const DebugBackend& backend,
@@ -323,13 +332,13 @@ bool DebugControllerBuildVariables(DebugController* controller, const DebugBacke
         !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
         !DebugRegisterContextIsValid(controller->stoppedContext)) {
         if (error) *error = DebugErrorCode::StaleStopContext;
-        if (controller) controller->variables = DebugDwarfVariableView();
+        if (controller) clearVariableView(&controller->variables);
         return false;
     }
     const uint32_t selected = controller->callStack.selectedFrameIndex;
     if (selected >= controller->callStack.result.frameCount) {
         if (error) *error = DebugErrorCode::StaleStopContext;
-        controller->variables = DebugDwarfVariableView();
+        clearVariableView(&controller->variables);
         return false;
     }
     const DebugStackFrame& stackFrame = controller->callStack.result.frames[selected];

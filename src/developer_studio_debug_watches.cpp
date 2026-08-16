@@ -1147,7 +1147,10 @@ bool DebugExpressionParse(const char* expression, DebugExpressionAst* ast) {
 
 bool DebugWatchCollectionInit(DebugWatchCollection* collection) {
     if (!collection) return false;
-    *collection = DebugWatchCollection();
+    // Native ELF application stacks are intentionally small.  Avoid creating
+    // a full collection-sized temporary on the caller's stack during startup.
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(collection);
+    for (uint32_t i = 0; i < sizeof(DebugWatchCollection); ++i) bytes[i] = 0;
     collection->nextId = 1;
     return true;
 }
@@ -1321,7 +1324,8 @@ bool DebugWatchCollectionRefresh(DebugWatchCollection* collection,
         if (collection) DebugWatchCollectionMarkStale(collection);
         return false;
     }
-    collection->tree = DebugDwarfVariableView();
+    unsigned char* treeBytes = reinterpret_cast<unsigned char*>(&collection->tree);
+    for (uint32_t i = 0; i < sizeof(DebugDwarfVariableView); ++i) treeBytes[i] = 0;
     if (!DebugDwarfInspectVariables(context.mapper, context.frame, context.readMemory,
                                     context.userData, &collection->tree)) {
         collection->treeValid = false;

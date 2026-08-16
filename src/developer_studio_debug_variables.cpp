@@ -777,13 +777,16 @@ static bool parseCompilationUnit(DebugDwarfMapper* mapper, const SectionView& in
                                  uint64_t unitEnd, uint16_t version, uint8_t unitType,
                                  uint8_t addressSize, uint32_t abbrevOffset,
                                  uint32_t unitIndex) {
-    AbbrevDeclaration declarations[kDebugDwarfMaxAbbreviations] = {};
+    // Native ELF application stacks are intentionally small.  These bounded
+    // parser workspaces are reused for one compilation unit at a time instead
+    // of consuming another large temporary stack frame during startup.
+    static AbbrevDeclaration declarations[kDebugDwarfMaxAbbreviations] = {};
     uint32_t declarationCount = 0;
     if (!parseAbbreviations(abbrev, abbrevOffset, declarations, &declarationCount)) return false;
     if (mapper->debugInfoCompilationUnitCount >= kDebugDwarfMaxCompilationUnits) return false;
     const uint32_t rootIndex = mapper->debugInfoDieCount;
     Cursor cursor = { info.data, dieStart, unitEnd };
-    uint32_t parentStack[kDebugDwarfMaxDies > 64 ? 64 : kDebugDwarfMaxDies] = {};
+    static uint32_t parentStack[kDebugDwarfMaxDies > 64 ? 64 : kDebugDwarfMaxDies] = {};
     uint32_t depth = 0;
     bool sawRoot = false;
     while (cursor.position < cursor.end) {
@@ -2076,7 +2079,8 @@ bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
                                 DebugDwarfReadMemoryFn readMemory, void* userData,
                                 DebugDwarfVariableView* view) {
     if (!view) return false;
-    *view = DebugDwarfVariableView();
+    unsigned char* viewBytes = reinterpret_cast<unsigned char*>(view);
+    for (uint32_t i = 0; i < sizeof(DebugDwarfVariableView); ++i) viewBytes[i] = 0;
     view->frameIndex = frame.frameIndex;
     view->processId = frame.processId;
     view->nativeRuntimeId = frame.nativeRuntimeId;
