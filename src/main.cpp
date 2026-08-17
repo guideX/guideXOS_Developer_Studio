@@ -486,6 +486,8 @@ using guidexos::developer_studio::DebugControllerPause;
 using guidexos::developer_studio::DebugControllerPoll;
 using guidexos::developer_studio::DebugControllerRequestStop;
 using guidexos::developer_studio::DebugControllerSetBreakpointEnabled;
+using guidexos::developer_studio::DebugControllerSetBreakpointCondition;
+using guidexos::developer_studio::DebugControllerClearBreakpointCondition;
 using guidexos::developer_studio::DebugControllerIsConditionResumePending;
 using guidexos::developer_studio::DebugControllerSetProjectContext;
 using guidexos::developer_studio::DebugControllerStart;
@@ -623,7 +625,8 @@ enum class InputMode {
     ConfirmRunClose,
     ConfirmDebug,
     ConfirmDebugClose,
-    WatchExpression
+    WatchExpression,
+    BreakpointCondition
 };
 
 struct NativeFileSystemContext {
@@ -715,6 +718,7 @@ static uint32_t g_debugSelectedBreakpoint = 0;
 static uint64_t g_debugSelectedValueNode = 0;
 static uint32_t g_debugSelectedWatch = 0;
 static uint64_t g_debugEditingWatchId = 0;
+static uint64_t g_debugEditingBreakpointId = 0;
 static uint64_t g_debugVisibleValueNodes[kDebugDwarfMaxValueNodes] = {};
 static bool g_requestExit = false;
 static bool g_workspaceSwitchPending = false;
@@ -752,6 +756,7 @@ static HostedDebugBackend g_hostedDebugBackend = {};
 static DebugBackend g_debugBackend = {};
 static bool g_debugWaitingForBuild = false;
 static bool g_debugTerminalReported = false;
+static uint32_t g_debugReportedEventCount = 0;
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
@@ -3587,6 +3592,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
         return false;
     }
     g_debugTerminalReported = false;
+    g_debugReportedEventCount = 0;
     copyText(g_textScratch, sizeof(g_textScratch), "Debug: launching ");
     appendText(g_textScratch, sizeof(g_textScratch), target.projectId);
     reportDebugMessage(ctx, g_textScratch);
@@ -3792,6 +3798,32 @@ static void pollDebug(gx_app_context* ctx) {
             g_debugTerminalReported = true;
         }
         return;
+    }
+    if (g_debugController.eventCount < g_debugReportedEventCount)
+        g_debugReportedEventCount = 0;
+    while (g_debugReportedEventCount < g_debugController.eventCount) {
+        const guidexos::developer_studio::DebugEvent* event =
+            guidexos::developer_studio::DebugControllerEventAt(&g_debugController,
+                                                                g_debugReportedEventCount);
+        if (event && event->kind == guidexos::developer_studio::DebugEventKind::BreakpointConditionFalse) {
+            reportDebugMessage(ctx, "Debug: breakpoint condition false; continuing");
+        } else if (event && event->kind == guidexos::developer_studio::DebugEventKind::BreakpointConditionError) {
+            copyText(g_textScratch, sizeof(g_textScratch), "Debug: breakpoint condition error | ");
+            appendText(g_textScratch, sizeof(g_textScratch), event->message);
+            reportDebugMessage(ctx, g_textScratch);
+        } else if (event && event->kind == guidexos::developer_studio::DebugEventKind::BreakpointHit) {
+            for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+                const guidexos::developer_studio::DebugBreakpoint* breakpoint =
+                    guidexos::developer_studio::DebugControllerBreakpointAt(&g_debugController, i);
+                if (breakpoint && breakpoint->id == event->breakpointId && breakpoint->condition &&
+                    breakpoint->condition[0] &&
+                    breakpoint->conditionLastEvaluation == guidexos::developer_studio::DebugBreakpointConditionEvaluation::True) {
+                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS");
+                    break;
+                }
+            }
+        }
+        ++g_debugReportedEventCount;
     }
     if (g_debugController.state != previous) {
         if (g_debugController.state == DebugSessionState::Running) {
@@ -6467,6 +6499,30 @@ static void beginWatchPrompt(uint64_t watchId) {
     g_inputMode = InputMode::WatchExpression;
 }
 
+static void beginBreakpointConditionPrompt() {
+    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController,
+                                                                     g_debugSelectedBreakpoint);
+    if (!breakpoint) return;
+    g_debugEditingBreakpointId = breakpoint->id;
+    copyText(g_prompt, sizeof(g_prompt), breakpoint->condition ? breakpoint->condition : "");
+    g_inputMode = InputMode::BreakpointCondition;
+}
+
+static void clearSelectedBreakpointCondition(gx_app_context* ctx) {
+    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController,
+                                                                     g_debugSelectedBreakpoint);
+    if (!breakpoint) return;
+    DebugErrorCode error = DebugErrorCode::None;
+    if (DebugControllerClearBreakpointCondition(&g_debugController, breakpoint->id, &error)) {
+        writeStudioOutput("Breakpoint condition cleared");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
+    } else {
+        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition clear failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        writeStudioOutput(g_textScratch);
+    }
+}
+
 static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
     if (!ctx || action != GX_KEY_ACTION_DOWN || g_debugPanelTab != 5) return false;
     const uint32_t count = debugWatches().count;
@@ -6516,17 +6572,59 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
         const uint32_t frameCount = g_debugController.callStack.valid && !g_debugController.callStack.stale ?
             g_debugController.callStack.result.frameCount : 0;
         if (keyCode == GX_KEY_UP) {
-            if (g_debugController.callStack.selectedFrameIndex > 0)
-                DebugControllerSelectCallStackFrame(&g_debugController,
-                                                     g_debugController.callStack.selectedFrameIndex - 1, nullptr);
-            DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
+            uint32_t targetFrame = g_debugController.callStack.selectedFrameIndex;
+            if (targetFrame > 0) --targetFrame;
+            DebugErrorCode frameError = DebugErrorCode::None;
+            const bool selected = DebugControllerSelectCallStackFrame(&g_debugController, targetFrame, &frameError);
+            DebugErrorCode variablesError = DebugErrorCode::None;
+            const bool variables = selected && DebugControllerBuildVariables(&g_debugController, g_debugBackend,
+                                                                               &g_debugMapper, &variablesError);
+            if (selected) {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), targetFrame);
+                logMarker(ctx, g_textScratch);
+            } else {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=FAIL error=");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(frameError));
+                logMarker(ctx, g_textScratch);
+            }
+            if (variables) {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=PASS index=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), targetFrame);
+                logMarker(ctx, g_textScratch);
+            } else {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=FAIL error=");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(variablesError));
+                logMarker(ctx, g_textScratch);
+            }
             return true;
         }
         if (keyCode == GX_KEY_DOWN) {
-            if (frameCount > 0 && g_debugController.callStack.selectedFrameIndex + 1 < frameCount)
-                DebugControllerSelectCallStackFrame(&g_debugController,
-                                                     g_debugController.callStack.selectedFrameIndex + 1, nullptr);
-            DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
+            uint32_t targetFrame = g_debugController.callStack.selectedFrameIndex;
+            if (frameCount > 0 && targetFrame + 1 < frameCount) ++targetFrame;
+            DebugErrorCode frameError = DebugErrorCode::None;
+            const bool selected = DebugControllerSelectCallStackFrame(&g_debugController, targetFrame, &frameError);
+            DebugErrorCode variablesError = DebugErrorCode::None;
+            const bool variables = selected && DebugControllerBuildVariables(&g_debugController, g_debugBackend,
+                                                                               &g_debugMapper, &variablesError);
+            if (selected) {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), targetFrame);
+                logMarker(ctx, g_textScratch);
+            } else {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=FAIL error=");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(frameError));
+                logMarker(ctx, g_textScratch);
+            }
+            if (variables) {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=PASS index=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), targetFrame);
+                logMarker(ctx, g_textScratch);
+            } else {
+                copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=FAIL error=");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(variablesError));
+                logMarker(ctx, g_textScratch);
+            }
             return true;
         }
         if (keyCode == 13 && frameCount > 0) {
@@ -6545,10 +6643,23 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
         return true;
     }
     const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
+    if ((keyCode == 67 || keyCode == 99) && breakpoint) {
+        beginBreakpointConditionPrompt();
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN");
+        return true;
+    }
+    if ((keyCode == 88 || keyCode == 120) && breakpoint) {
+        clearSelectedBreakpointCondition(ctx);
+        return true;
+    }
     if (keyCode == 13) { navigateSelectedBreakpoint(ctx); return true; }
     if (keyCode == 32 && breakpoint) {
         DebugErrorCode error = DebugErrorCode::None;
         DebugControllerSetBreakpointEnabled(&g_debugController, breakpoint->id, !breakpoint->enabled, &error);
+        const DebugBreakpoint* updated = DebugControllerBreakpointAt(&g_debugController,
+                                                                      g_debugSelectedBreakpoint);
+        if (updated && updated->condition && updated->condition[0])
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS");
         refreshDebugMappings();
         return true;
     }
@@ -6611,7 +6722,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
             }
             drawText(ctx, 100, y, g_textScratch);
         }
-        drawText(ctx, 100, 584, "Up/Down Select   Enter Navigate   Space Enable   Delete Remove   Tab Session   Esc Close");
+        drawText(ctx, 100, 584, "Up/Down Select   C Condition   X Clear   Space Enable   Delete Remove   Tab Session   Esc Close");
     } else if (g_debugPanelTab == 1) {
         drawText(ctx, 100, 148, "Backend:");
         drawText(ctx, 220, 148, g_debugController.backendName[0] ? g_debugController.backendName : "(none)");
@@ -7033,6 +7144,14 @@ static void drawModal(gx_app_context* ctx) {
         drawText(ctx, 210, 325, "Enter: apply   Escape: cancel");
         return;
     }
+    if (g_inputMode == InputMode::BreakpointCondition) {
+        drawText(ctx, 210, 220, "Breakpoint Condition");
+        drawText(ctx, 210, 250, "Bounded expression; blank applies Clear Condition");
+        drawPanel(ctx, { 210, 265, 540, 30 }, 0x111722u);
+        drawText(ctx, 220, 285, g_prompt);
+        drawText(ctx, 210, 325, "Enter: apply   Escape: cancel");
+        return;
+    }
     if (g_inputMode == InputMode::ConfirmBuild) {
         drawText(ctx, 210, 220, "Build Project");
         drawText(ctx, 210, 246, "Project documents have unsaved changes.");
@@ -7294,6 +7413,81 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
                 if (error != DebugErrorCode::None) writeStudioOutput("Watch update failed");
             }
             g_debugEditingWatchId = 0;
+            g_inputMode = InputMode::Normal;
+            return;
+        }
+        if (keyCode == 8) { promptBackspace(); return; }
+        promptAppend(keyCode, modifiers);
+        return;
+    }
+    if (g_inputMode == InputMode::BreakpointCondition) {
+        if (keyCode == 27) {
+            g_debugEditingBreakpointId = 0;
+            g_inputMode = InputMode::Normal;
+            return;
+        }
+        if (keyCode == 88 || keyCode == 120) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (g_debugEditingBreakpointId != 0 &&
+                DebugControllerClearBreakpointCondition(&g_debugController,
+                                                        g_debugEditingBreakpointId, &error)) {
+                writeStudioOutput("Breakpoint condition cleared");
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
+            } else if (error != DebugErrorCode::None) {
+                copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition clear failed: ");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+                writeStudioOutput(g_textScratch);
+            }
+            g_debugEditingBreakpointId = 0;
+            g_inputMode = InputMode::Normal;
+            return;
+        }
+        if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 65 || keyCode == 97)) {
+            g_prompt[0] = '\0';
+            return;
+        }
+        if (keyCode == 13) {
+            DebugErrorCode error = DebugErrorCode::None;
+            bool accepted = false;
+            if (g_debugEditingBreakpointId != 0 && g_prompt[0] == '\0') {
+                accepted = DebugControllerClearBreakpointCondition(&g_debugController,
+                                                                    g_debugEditingBreakpointId, &error);
+                if (accepted) {
+                    writeStudioOutput("Breakpoint condition cleared");
+                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
+                }
+            } else if (g_debugEditingBreakpointId != 0) {
+                accepted = DebugControllerSetBreakpointCondition(&g_debugController,
+                                                                 g_debugEditingBreakpointId,
+                                                                 g_prompt, &error);
+                if (accepted) {
+                    writeStudioOutput("Breakpoint condition accepted");
+                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS");
+                } else {
+                    const DebugBreakpoint* breakpoint = nullptr;
+                    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+                        const DebugBreakpoint* candidate = DebugControllerBreakpointAt(&g_debugController, i);
+                        if (candidate && candidate->id == g_debugEditingBreakpointId) {
+                            breakpoint = candidate;
+                            break;
+                        }
+                    }
+                    copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition invalid");
+                    if (breakpoint && breakpoint->conditionParseDiagnostic &&
+                        breakpoint->conditionParseDiagnostic[0]) {
+                        appendText(g_textScratch, sizeof(g_textScratch), ": ");
+                        appendText(g_textScratch, sizeof(g_textScratch), breakpoint->conditionParseDiagnostic);
+                    }
+                    writeStudioOutput(g_textScratch);
+                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID");
+                }
+            }
+            if (!accepted && error != DebugErrorCode::None && g_prompt[0] == '\0') {
+                copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition update failed: ");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+                writeStudioOutput(g_textScratch);
+            }
+            g_debugEditingBreakpointId = 0;
             g_inputMode = InputMode::Normal;
             return;
         }
@@ -8101,26 +8295,68 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         return;
     }
     if (g_debugPanelOpen) {
+        if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN)
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_mouse_down=SEEN");
         if (action == GX_MOUSE_ACTION_WHEEL) return;
         if (button == GX_MOUSE_BUTTON_LEFT &&
             (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (g_debugPanelTab == 2 && y >= 170 && y < 580 && x >= 88 && x < 872)
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack_mouse=SEEN");
             if (y >= 94 && y < 122 && x >= 90 && x < 888) {
                 g_debugPanelTab = x < 230 ? 0 : (x < 400 ? 1 : x < 550 ? 2 : x < 680 ? 3 : x < 800 ? 4 : 5);
                 g_debugSelectedBreakpoint = 0;
                 g_debugSelectedValueNode = 0;
                 g_debugSelectedWatch = 0;
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_tab=PASS tab=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugPanelTab);
+                logMarker(ctx, g_textScratch);
+                if (g_debugPanelTab == 2) {
+                    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack_tab=PASS frames=");
+                    appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                                   g_debugController.callStack.valid && !g_debugController.callStack.stale ?
+                                   g_debugController.callStack.result.frameCount : 0);
+                    logMarker(ctx, g_textScratch);
+                }
             } else if (g_debugPanelTab == 0 && y >= 130 && y < 580 && x >= 88 && x < 872) {
                 const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
                 if (row < g_debugController.breakpointCount) {
                     g_debugSelectedBreakpoint = row;
-                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSelectedBreakpoint(ctx);
+                    if (action == GX_MOUSE_ACTION_DOWN && x >= 600) {
+                        beginBreakpointConditionPrompt();
+                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN");
+                    } else if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSelectedBreakpoint(ctx);
                 }
-            } else if (g_debugPanelTab == 2 && y >= 194 && y < 580 && x >= 88 && x < 872) {
-                const uint32_t row = static_cast<uint32_t>((y - 194) / kDebugPanelRowHeight);
+            } else if (g_debugPanelTab == 2 && y >= 160 && y < 580 && x >= 88 && x < 872) {
+                // The summary line is an additional bounded hit target for
+                // selecting the first caller frame; row hit testing remains
+                // available below it.
+                const uint32_t row = y < 194 ? 1u : static_cast<uint32_t>((y - 194) / kDebugPanelRowHeight);
                 if (g_debugController.callStack.valid && row < g_debugController.callStack.result.frameCount &&
                     row < static_cast<uint32_t>(kDebugCallStackPanelMaxRows)) {
-                    DebugControllerSelectCallStackFrame(&g_debugController, row, nullptr);
-                    DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
+                    DebugErrorCode frameError = DebugErrorCode::None;
+                    const bool selected = DebugControllerSelectCallStackFrame(&g_debugController, row, &frameError);
+                    DebugErrorCode variablesError = DebugErrorCode::None;
+                    const bool variables = selected && DebugControllerBuildVariables(&g_debugController, g_debugBackend,
+                                                                                       &g_debugMapper, &variablesError);
+                    if (selected) {
+                        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=");
+                        appendUnsigned(g_textScratch, sizeof(g_textScratch), row);
+                        logMarker(ctx, g_textScratch);
+                    } else {
+                        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=FAIL error=");
+                        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(frameError));
+                        logMarker(ctx, g_textScratch);
+                    }
+                    if (variables) {
+                        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=PASS index=");
+                        appendUnsigned(g_textScratch, sizeof(g_textScratch), row);
+                        logMarker(ctx, g_textScratch);
+                    } else {
+                        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=FAIL error=");
+                        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(variablesError));
+                        logMarker(ctx, g_textScratch);
+                    }
                     if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateDebugStackFrame(ctx, row);
                 }
             } else if ((g_debugPanelTab == 3 || g_debugPanelTab == 4) && y >= 182 && y < 580 && x >= 88 && x < 872) {
@@ -8129,9 +8365,38 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 const uint32_t row = static_cast<uint32_t>((y - 182) / kDebugPanelRowHeight);
                 if (row < count && row < static_cast<uint32_t>(kDebugPanelMaxRows)) {
                     g_debugSelectedValueNode = g_debugVisibleValueNodes[row];
-                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                    const DebugDwarfValueNode& node = g_debugController.variables.nodes[
+                        g_debugSelectedValueNode - 1u];
+                    const int disclosureX = 100 + static_cast<int>(node.depth > 12 ? 12 : node.depth) * 18;
+                    // A press on the disclosure glyph is the generic mouse
+                    // path.  The hosted gui.mouse driver intentionally emits
+                    // only press/release events, so tree interaction must not
+                    // depend on a compositor-specific double-click action.
+                    if (action == GX_MOUSE_ACTION_DOWN && node.expandable &&
+                        x >= disclosureX && x < disclosureX + 16) {
+                        if (node.expanded) {
+                            g_debugController.variables.nodes[g_debugSelectedValueNode - 1u].expanded = false;
+                            copyText(g_textScratch, sizeof(g_textScratch),
+                                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_tree_collapse=PASS name=");
+                            appendText(g_textScratch, sizeof(g_textScratch), node.name);
+                            logMarker(ctx, g_textScratch);
+                        } else {
+                            const bool expanded = DebugControllerExpandVariable(&g_debugController, g_debugBackend,
+                                                                                 &g_debugMapper, g_debugSelectedValueNode,
+                                                                                 nullptr);
+                            copyText(g_textScratch, sizeof(g_textScratch), expanded ?
+                                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_tree_expand=PASS name=" :
+                                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_tree_expand=FAIL name=");
+                            appendText(g_textScratch, sizeof(g_textScratch), node.name);
+                            appendText(g_textScratch, sizeof(g_textScratch), " children=");
+                            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                                           g_debugController.variables.nodes[g_debugSelectedValueNode - 1u].childCount);
+                            logMarker(ctx, g_textScratch);
+                        }
+                    } else if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) {
                         DebugControllerExpandVariable(&g_debugController, g_debugBackend, &g_debugMapper,
                                                       g_debugSelectedValueNode, nullptr);
+                    }
                 }
             } else if (g_debugPanelTab == 5 && y >= 182 && y < 580 && x >= 88 && x < 872) {
                 const uint32_t row = static_cast<uint32_t>((y - 182) / kDebugPanelRowHeight);
@@ -8588,6 +8853,12 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         else if (row == 11) { g_debugPanelTab = 3; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 12) { g_debugPanelTab = 4; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 13) { g_debugPanelTab = 5; g_debugPanelOpen = true; g_editorFocused = false; }
+        if (row >= 8 && row <= 13) {
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_open=PASS tab=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugPanelTab);
+            logMarker(ctx, g_textScratch);
+        }
         g_debugMenuOpen = false;
         drawShell(ctx);
         return;
@@ -8879,6 +9150,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);
     g_debugWaitingForBuild = false;
     g_debugTerminalReported = false;
+    g_debugReportedEventCount = 0;
     g_debugMenuOpen = false;
     g_debugPanelOpen = false;
     g_debugPanelTab = 0;
