@@ -12,7 +12,9 @@ param(
     [switch]$UiOnly,
     [switch]$FrameOnly,
     [switch]$TreeOnly,
-    [switch]$EditorOnly
+    [switch]$WatchOnly,
+    [switch]$EditorOnly,
+    [switch]$KeepArtifacts
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,7 +61,7 @@ function Add-Delay([System.Collections.Generic.List[string]]$Parts, [int]$Second
 }
 
 function Add-Key([System.Collections.Generic.List[string]]$Parts, [int]$KeyCode, [int]$Modifiers = 0, [bool]$WaitForUi = $false) {
-    Add-ServerLine $Parts "gui.key $KeyCode down $Modifiers"
+    Add-ServerLine $Parts "gui.keyto 1000 $KeyCode down $Modifiers"
     if ($WaitForUi) { Add-ShortDelay $Parts }
 }
 
@@ -128,6 +130,12 @@ Add-ServerLine $parts 'desktop.launch com.guidexos.developerstudio'
 Add-Delay $parts 12
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
+# Establish the hosted focus handoff through the same real mouse path used by
+# the rest of the proof before sending the first keyboard sequence.  The
+# compositor may acknowledge activation before its focus notification reaches
+# the native app; a bounded click inside the target window makes that state
+# transition explicit without relying on timing.
+Add-Click $parts 300 180
 Add-Key $parts 79 3 $true
 foreach ($character in $FixtureRoot.ToLowerInvariant().ToCharArray()) {
     $key = Get-Key $character
@@ -150,8 +158,46 @@ Add-Delay $parts $initialDebugWait
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 
-if (-not $FrameOnly) {
-if (-not $UiOnly -and -not $TreeOnly) {
+if ($WatchOnly) {
+    Add-Key $parts 116 2 $true
+    Add-Delay $parts $DebugWaitSeconds
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Click $parts 610 30
+    Add-Click $parts 620 264
+    Add-Delay $parts 3
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Click $parts 470 106
+    Add-Click $parts 200 180
+    Add-Delay $parts 4
+    Add-Click $parts 840 106
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 65 0 $true
+    Add-ShortDelay $parts
+    Add-Text $parts 'outerValue'
+    Add-Key $parts 13 0 $true
+    Add-Delay $parts 4
+    Add-Click $parts 470 106
+    Add-Click $parts 200 202
+    Add-Delay $parts 4
+    Add-Click $parts 840 106
+    Add-Delay $parts 4
+    Add-ServerLine $parts 'log'
+    Add-Delay $parts 2
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 27 0 $true
+    Add-ShortDelay $parts
+    Add-Key $parts 27 0 $true
+    Add-ShortDelay $parts
+    Add-Key $parts 83 0 $true
+    Add-Delay $parts 8
+    Add-ServerLine $parts 'gui.close 1000'
+    Add-Delay $parts 3
+} elseif (-not $FrameOnly) {
+if (-not $UiOnly -and -not $TreeOnly -and -not $WatchOnly) {
     # Open the real Breakpoints panel through the Debug menu and exercise the
     # condition editor, including invalid text, clear, and enable-state retention.
     Add-ServerLine $parts 'gui.activate 1000'
@@ -193,7 +239,10 @@ if (-not $EditorOnly) {
         # proof; the separate frame-only smoke exercises mouse selection.
         Add-Key $parts 40 0 $true
     } elseif (-not $TreeOnly) {
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
         Add-Click $parts 470 106
+        Add-ShortDelay $parts
         Add-Click $parts 200 180
     }
 
@@ -202,11 +251,18 @@ if (-not $EditorOnly) {
         # refreshed through the real hosted control path.
         Add-Click $parts 600 106
         Add-Delay $parts 2
+        # Switch to Arguments on the same selected nonzero frame before
+        # creating the frame-sensitive Watch.
+        Add-Click $parts 740 106
+        Add-Delay $parts 2
 
         # Add a frame-sensitive Watch while frame 1 is selected, then return
         # to frame 0 and refresh it again through the panel tabs.
         Add-Click $parts 840 106
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
         Add-Key $parts 65 0 $true
+        Add-ShortDelay $parts
         Add-Text $parts 'outerValue'
         Add-Key $parts 13 0 $true
         Add-Delay $parts 2
@@ -247,20 +303,32 @@ if (-not $EditorOnly) {
 if ($EditorOnly) {
     Add-ServerLine $parts 'gui.close 1000'
     Add-Delay $parts 4
+} elseif ($TreeOnly -or $FrameOnly) {
+    # Close the panel through Escape, request Stop through the real Debug menu,
+    # then close the product after the bounded stop transition completes.
+    Add-ServerLine $parts 'log'
+    Add-Delay $parts 2
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 27 0 $true
+    Add-ShortDelay $parts
+    Add-Key $parts 27 0 $true
+    Add-ShortDelay $parts
+    Add-Key $parts 83 0 $true
+    Add-Delay $parts 8
+    Add-ServerLine $parts 'gui.close 1000'
+    Add-Delay $parts 3
+    Add-ServerLine $parts 'exit'
 } else {
     Add-ServerLine $parts 'log'
     Add-Delay $parts 2
     Add-ServerLine $parts 'gui.close 1000'
     Add-Delay $parts 3
-    if ($TreeOnly -or $FrameOnly) {
-        Add-ServerLine $parts 'exit'
-    } else {
-        Add-ServerLine $parts 'gui.activate 1000'
-        Add-Key $parts 83 0 $true
-        Add-Delay $parts 30
-        Add-ServerLine $parts 'gui.close 1000'
-        Add-Delay $parts 12
-    }
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-Key $parts 83 0 $true
+    Add-Delay $parts 30
+    Add-ServerLine $parts 'gui.close 1000'
+    Add-Delay $parts 12
 }
 } else {
     Add-Key $parts 116 2 $true
@@ -275,6 +343,8 @@ if ($EditorOnly) {
     Add-Click $parts 200 180
     Add-Delay $parts 8
     Add-Click $parts 600 106
+    Add-Delay $parts 4
+    Add-Click $parts 740 106
     Add-Delay $parts 4
     Add-ServerLine $parts 'log'
     Add-Delay $parts 1
@@ -329,14 +399,18 @@ try {
     $stdoutText = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -Raw -LiteralPath $stdoutPath } else { '' }
     $stderrText = if (Test-Path -LiteralPath $stderrPath) { Get-Content -Raw -LiteralPath $stderrPath } else { '' }
     $text = $stdoutText + "`n" + $stderrText
-    Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+    if (-not $KeepArtifacts) {
+        Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "Hosted smoke artifacts retained: $stdoutPath / $stderrPath"
+    }
     $script:Phase15CapturedText = $text
     Assert-True ($text.Contains('Desktop launch successful: com.guidexos.developerstudio')) "Developer Studio launches through the hosted desktop"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS')) "hosted Developer Studio reaches its real initial render"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS')) "Phase 15 fixture opens through Developer Studio"
     Assert-True ($text -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_key|_toggle)?=(PASS|PENDING|MAPPED)') "F9 arms the Phase 15 breakpoint"
-    if (-not $UiOnly -and -not $TreeOnly -and -not $FrameOnly) { Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS')) "valid condition entry is accepted by the UI" }
-    if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $TreeOnly -and -not $FrameOnly) {
+    if (-not $UiOnly -and -not $TreeOnly -and -not $FrameOnly -and -not $WatchOnly) { Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS')) "valid condition entry is accepted by the UI" }
+    if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $TreeOnly -and -not $FrameOnly -and -not $WatchOnly) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID')) "invalid condition remains visibly invalid"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS')) "condition clear is reportable"
         $retainedCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS')).Count
@@ -347,6 +421,10 @@ try {
         Assert-True ($text.Contains('Frames: 4  Selected frame: #1')) "frame-only hosted proof renders and selects a nonzero Call Stack frame"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack_mouse=SEEN')) "Call Stack summary receives the real hosted mouse selection event"
         Assert-True ($text.Contains('Frame #1 debugCaller') -and $text.Contains('outerValue')) "selected-frame Locals refresh after hosted frame selection"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_tab=PASS tab=4') -and
+                     $text -match 'draw_text windowId=1000 .*text="Arguments"' -and
+                     $text -match 'draw_text windowId=1000 .*text="\s*seed"' -and
+                     $text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Arguments render the authoritative caller parameter"
     } elseif ($TreeOnly) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "tree-only hosted proof reaches a real breakpoint stop"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_tab=PASS tab=3')) "tree-only hosted proof opens the real Locals panel"
@@ -360,12 +438,28 @@ try {
         Assert-True ($text.Contains('debug_tree_expand=PASS name=node') -and
                      $text.Contains('debug_tree_expand=PASS name=next')) "hosted cyclic-node disclosure events reach node.next"
         Assert-True ($text.Contains('<cycle>')) "hosted cyclic node expansion is bounded"
+    } elseif ($WatchOnly) {
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "watch-only hosted proof reaches a real breakpoint stop"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=1')) "watch-only proof selects the nonzero caller frame"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_key_a_received tab=5') -and
+                     $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_prompt=PASS') -and
+                     $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_add=PASS') -and
+                     $text -match 'draw_text windowId=1000 .*text="\s*outerValue"' -and
+                     $text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Watch evaluates caller data through the targeted hosted key path"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=0') -and $text.Contains('UnknownIdentifier')) "returning to frame zero refreshes the frame-sensitive Watch"
     } elseif ($UiOnly) {
         if (-not $EditorOnly) {
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "unconditional hosted UI proof reaches a real breakpoint stop"
             Assert-True ($text.Contains('Frame #1 debugCaller') -and $text.Contains('outerValue')) "nonzero Call Stack frame selection refreshes Locals"
             Assert-True ($text.Contains('Selected frame: #1')) "hosted UI visibly selects a nonzero Call Stack frame"
-            Assert-True ($text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Watch evaluates caller data"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_tab=PASS tab=4') -and
+                         $text -match 'draw_text windowId=1000 .*text="Arguments"' -and
+                         $text -match 'draw_text windowId=1000 .*text="\s*seed"' -and
+                         $text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Arguments render the authoritative caller parameter"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_prompt=PASS') -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_add=PASS') -and
+                         $text -match 'draw_text windowId=1000 .*text="\s*outerValue"' -and
+                         $text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Watch evaluates caller data"
             Assert-True ($text.Contains('Selected frame: #0') -and $text.Contains('UnknownIdentifier')) "returning to frame zero refreshes the frame-sensitive Watch"
             Assert-True ($text -match 'draw_text windowId=1000 .*text="10"') "hosted rect.origin.x expansion returns 10"
             Assert-True ($text -match 'draw_text windowId=1000 .*text="3"') "hosted values[2] expansion returns 3"
@@ -381,7 +475,10 @@ try {
                          $text.Contains('condition=counter == 2')) "breakpoint remains condition-bound at the true hit"
             Assert-True ($text.Contains('Frame #1 debugCaller') -and $text.Contains('outerValue')) "nonzero Call Stack frame selection refreshes Locals"
             Assert-True ($text.Contains('Selected frame: #1')) "hosted UI visibly selects a nonzero Call Stack frame"
-            Assert-True ($text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Watch evaluates caller data"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_prompt=PASS') -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_add=PASS') -and
+                         $text -match 'draw_text windowId=1000 .*text="\s*outerValue"' -and
+                         $text -match 'draw_text windowId=1000 .*text="90"') "selected-frame Watch evaluates caller data"
             Assert-True ($text.Contains('Selected frame: #0') -and $text.Contains('UnknownIdentifier')) "returning to frame zero refreshes the frame-sensitive Watch"
             Assert-True ($text -match 'draw_text windowId=1000 .*text="10"') "hosted rect.origin.x expansion returns 10"
             Assert-True ($text -match 'draw_text windowId=1000 .*text="3"') "hosted values[2] expansion returns 3"
@@ -394,14 +491,19 @@ try {
         Assert-True (-not $text.Contains('Debug: breakpoint condition false; continuing')) "condition error does not silently continue"
     }
     if ($timedOut) { throw "Phase 15 hosted smoke timed out after $MaxRuntimeSeconds seconds" }
-    if (-not $EditorOnly) {
+    if (-not $EditorOnly -and -not $WatchOnly -and -not $FrameOnly -and -not $ExpectConditionError) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')) "hosted debugger exits through the product close path"
+    }
+    if ($WatchOnly -or $FrameOnly -or $ExpectConditionError) {
+        Assert-True ($text.Contains('NativeAppRuntime] Cleanup complete app=com.example.debuggerphase15')) "focused proof leaves the hosted fixture in bounded cleanup"
     }
     Assert-True ($process.ExitCode -eq 0) "hosted Server exits cleanly after the Phase 15 proof"
     if ($ExpectConditionError) { Write-Host "Developer Studio Phase 15 hosted condition-error smoke PASS" }
     else { Write-Host "Developer Studio Phase 15 hosted interaction smoke PASS" }
 } finally {
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
-    Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+    if (-not $KeepArtifacts) {
+        Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+    }
     if ($process) { $process.Dispose() }
 }

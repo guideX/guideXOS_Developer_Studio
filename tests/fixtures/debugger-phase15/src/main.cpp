@@ -43,8 +43,8 @@ static __attribute__((noinline)) int debugLoop(int callerValue) {
     return g_sink;
 }
 
-static __attribute__((noinline)) int debugCaller() {
-    int outerValue = 90;
+static __attribute__((noinline)) int debugCaller(int seed) {
+    int outerValue = seed;
     return debugLoop(outerValue);
 }
 
@@ -56,7 +56,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                                      GX_WINDOW_FLAG_RESIZABLE | GX_WINDOW_FLAG_CENTERED, &g_window) :
         ctx->host->request_window(ctx, "Debugger Phase 15 Fixture", 640, 360, &g_window);
     if (result != GX_OK) return result;
-    const int resultValue = debugCaller();
+    const int resultValue = debugCaller(90);
     if (ctx->host->draw_rect) ctx->host->draw_rect(ctx, g_window, 0, 0, 640, 360, 0x172238u);
     if (ctx->host->draw_text) ctx->host->draw_text(ctx, g_window, 24, 40, "Debugger Phase 15 Fixture");
     if (ctx->host->log) ctx->host->log(ctx, resultValue == 399 ? "conditional values ready" : "conditional values failed");

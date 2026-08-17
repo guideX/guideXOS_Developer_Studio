@@ -6526,7 +6526,11 @@ static void clearSelectedBreakpointCondition(gx_app_context* ctx) {
 static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
     if (!ctx || action != GX_KEY_ACTION_DOWN || g_debugPanelTab != 5) return false;
     const uint32_t count = debugWatches().count;
-    if (keyCode == 65 || keyCode == 97) { beginWatchPrompt(0); return true; }
+    if (keyCode == 65 || keyCode == 97) {
+        beginWatchPrompt(0);
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_prompt=PASS");
+        return true;
+    }
     if (keyCode == 69 || keyCode == 101) {
         DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
         if (item) beginWatchPrompt(item->id);
@@ -6564,6 +6568,14 @@ static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
 
 static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 65 || keyCode == 97) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_key_a_received tab=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugPanelTab);
+        appendText(g_textScratch, sizeof(g_textScratch), " mode=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_inputMode));
+        logMarker(ctx, g_textScratch);
+    }
     if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
     if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 6; g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; g_debugSelectedWatch = 0; return true; }
     if (handleDebugValueKey(ctx, keyCode, action)) return true;
@@ -7406,7 +7418,10 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
                 if (g_debugEditingWatchId == 0) {
                     uint64_t watchId = 0;
                     DebugControllerAddWatch(&g_debugController, g_prompt, &watchId, &error);
-                    if (watchId != 0) g_debugSelectedWatch = debugWatches().count - 1u;
+                    if (watchId != 0) {
+                        g_debugSelectedWatch = debugWatches().count - 1u;
+                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_add=PASS");
+                    }
                 } else DebugControllerEditWatch(&g_debugController, g_debugEditingWatchId, g_prompt, &error);
                 if (g_debugController.state == DebugSessionState::Paused)
                     DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
@@ -8368,6 +8383,22 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                     const DebugDwarfValueNode& node = g_debugController.variables.nodes[
                         g_debugSelectedValueNode - 1u];
                     const int disclosureX = 100 + static_cast<int>(node.depth > 12 ? 12 : node.depth) * 18;
+                    if (action == GX_MOUSE_ACTION_DOWN) {
+                        copyText(g_textScratch, sizeof(g_textScratch),
+                                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_tree_hit row=");
+                        appendUnsigned(g_textScratch, sizeof(g_textScratch), row);
+                        appendText(g_textScratch, sizeof(g_textScratch), " name=");
+                        appendText(g_textScratch, sizeof(g_textScratch), node.name);
+                        appendText(g_textScratch, sizeof(g_textScratch), " expandable=");
+                        appendText(g_textScratch, sizeof(g_textScratch), node.expandable ? "1" : "0");
+                        appendText(g_textScratch, sizeof(g_textScratch), " depth=");
+                        appendUnsigned(g_textScratch, sizeof(g_textScratch), node.depth);
+                        appendText(g_textScratch, sizeof(g_textScratch), " disclosureX=");
+                        appendSigned(g_textScratch, sizeof(g_textScratch), disclosureX);
+                        appendText(g_textScratch, sizeof(g_textScratch), " x=");
+                        appendSigned(g_textScratch, sizeof(g_textScratch), x);
+                        logMarker(ctx, g_textScratch);
+                    }
                     // A press on the disclosure glyph is the generic mouse
                     // path.  The hosted gui.mouse driver intentionally emits
                     // only press/release events, so tree interaction must not
@@ -8391,6 +8422,10 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                             appendText(g_textScratch, sizeof(g_textScratch), " children=");
                             appendUnsigned(g_textScratch, sizeof(g_textScratch),
                                            g_debugController.variables.nodes[g_debugSelectedValueNode - 1u].childCount);
+                            appendText(g_textScratch, sizeof(g_textScratch), " nodes=");
+                            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.variables.nodeCount);
+                            appendText(g_textScratch, sizeof(g_textScratch), " reads=");
+                            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.variables.targetMemoryReadCount);
                             logMarker(ctx, g_textScratch);
                         }
                     } else if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) {
