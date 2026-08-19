@@ -94,3 +94,32 @@ refreshes (Call Stack, Locals, Arguments, and Watch) only rebuild stopped
 context; they do not mutate execution state. A persistent user breakpoint at
 the return address remains independently owned when the temporary Step Out
 owner is removed.
+
+## Phase 18 lifecycle observability
+
+The hosted diagnostic log emits compact lifecycle markers only while a debug
+session is active. The markers use the existing host-log path and do not poll
+target memory or add a production output entry:
+
+* `debug_session` records session generation, process/runtime/thread identity,
+  state, stop reason, stop generation, selected frame, and source location.
+* `debug_step` records the last operation (`StepInto`, `StepOver`, or
+  `StepOut`), its stop-generation binding, active flag, Step Out raw return and
+  lookup addresses, completion generation, temporary-owner state, and bounded
+  cleanup count.
+* `debug_binding` records the physical binding ID/address, logical owner count,
+  user/internal owner counts, shared status, and installed state. An overlap
+  therefore has one physical ID, two logical owners during Step Out, and one
+  user owner after cleanup.
+* `debug_transition` records the authoritative state transition sequence and
+  the last rejected transition/status. Strict transition validation remains in
+  force; duplicate observation is idempotent only for the already-published
+  Step Out trap.
+
+At an overlapping return-address stop, the internal Step Out completion is
+recorded internally but the user-visible reason is `Breakpoint`. Continue then
+uses the surviving user breakpoint owner, restores and re-inserts the same
+physical trap, and later hits retain the user's logical breakpoint identity.
+Continue is also valid from source-step, Step Over, and Step Out completion
+stops; each operation's temporary owner is released before the next operation
+is accepted.

@@ -26,6 +26,7 @@ struct StepOverFake {
 };
 
 struct StepOutFake {
+    bool overlapUserBreakpoint = false;
     uint32_t bindCalls = 0;
     uint32_t removeCalls = 0;
     uint32_t stepOutCalls = 0;
@@ -52,6 +53,8 @@ static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapsho
     snapshot->internalBreakpointId = fake->temporaryId;
     snapshot->targetAddress = { true, fake->returnAddress };
     snapshot->breakpointBindingId = fake->bindingId;
+    snapshot->bindingOwnerCount = fake->overlapUserBreakpoint ? 2 : 0;
+    snapshot->bindingInstalled = fake->overlapUserBreakpoint;
     snapshot->instructionPointer = fake->returnAddress + 1;
     snapshot->stopGeneration = 4;
     snapshot->executionState = DebugBackendExecutionState::PausedAtStepOut;
@@ -106,6 +109,7 @@ static bool stepOutBind(void* userData, const DebugTarget&, uint64_t, uint64_t, 
     binding->originalByte = 0x90;
     binding->installedByte = 0xCC;
     binding->originalByteValid = true;
+    binding->ownerCount = fake->overlapUserBreakpoint ? 2 : 1;
     return true;
 }
 
@@ -116,6 +120,9 @@ static bool stepOutCommand(void* userData, HostedDebugCommand command, uint64_t,
     *result = HostedDebugResult();
     if (command == HostedDebugCommand::RemoveSoftwareBreakpointOwner) ++fake->removeCalls;
     result->status = command == HostedDebugCommand::RemoveSoftwareBreakpointOwner ? 4 : 1;
+    result->bindingId = fake->bindingId;
+    result->bindingCount = command == HostedDebugCommand::RemoveSoftwareBreakpointOwner && fake->overlapUserBreakpoint ? 1 : 0;
+    result->bindingInstalled = result->bindingCount != 0;
     return true;
 }
 
@@ -135,6 +142,12 @@ static bool stepOutResume(void* userData, uint64_t, const DebugRegisterContext&)
     return true;
 }
 
+static bool stepOutContinue(void* userData, uint64_t, const DebugRegisterContext&, uint64_t,
+                            uint64_t, uint64_t, bool) {
+    ++static_cast<StepOutFake*>(userData)->resumeCalls;
+    return true;
+}
+
 static DebugBackend makeStepOutBackend(StepOutFake* fake) {
     DebugBackend backend = {};
     backend.userData = fake;
@@ -147,6 +160,7 @@ static DebugBackend makeStepOutBackend(StepOutFake* fake) {
     backend.debugCommand = stepOutCommand;
     backend.stepOutReturn = stepOutReturn;
     backend.resumeExecution = stepOutResume;
+    backend.continueExecution = stepOutContinue;
     return backend;
 }
 
@@ -467,6 +481,30 @@ int main() {
     outController.callStack.result.frames[2].rawReturnAddress = 0x220;
     outController.callStack.selectedFrameIndex = 0;
     assert(DebugControllerSelectCallStackFrame(&outController, 2, &error));
+    DebugController overlapController = outController;
+    StepOutFake overlapFake;
+    overlapFake.overlapUserBreakpoint = true;
+    DebugBackend overlapBackend = makeStepOutBackend(&overlapFake);
+    overlapController.breakpointCount = 1;
+    overlapController.breakpoints[0] = DebugBreakpoint();
+    overlapController.breakpoints[0].id = 700;
+    overlapController.breakpoints[0].enabled = true;
+    overlapController.breakpoints[0].state = DebugBreakpointState::Mapped;
+    overlapController.breakpoints[0].sessionGeneration = overlapController.sessionGeneration;
+    overlapController.breakpoints[0].backendBindingId = overlapFake.bindingId;
+    overlapController.breakpoints[0].location.instructionAddress = { true, overlapFake.returnAddress };
+    assert(DebugControllerCanStepOut(&overlapController));
+    assert(DebugControllerStepOut(&overlapController, overlapBackend, &mapper, &error));
+    assert(overlapFake.bindCalls == 1 && overlapController.lastBindingOwnerCount == 2);
+    assert(DebugControllerPoll(&overlapController, overlapBackend, &mapper));
+    assert(overlapController.stopReason == DebugStopReason::Breakpoint &&
+           overlapController.backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint &&
+           !overlapController.stepOut.active && overlapController.stepCleanupCount == 1 &&
+           overlapController.lastBindingOwnerCount == 1 && overlapController.lastBindingInstalled);
+    assert(DebugControllerCanContinue(&overlapController));
+    assert(DebugControllerContinue(&overlapController, overlapBackend, &error));
+    assert(overlapFake.resumeCalls == 1 &&
+           overlapController.backendExecutionState == DebugBackendExecutionState::SingleStepPending);
     assert(DebugControllerCanStepOut(&outController));
     assert(DebugControllerStepOut(&outController, outBackend, &mapper, &error));
     assert(outController.state == DebugSessionState::Stepping && outController.stepOut.active);
@@ -479,6 +517,7 @@ int main() {
     assert(!outController.stepOut.active && outController.stepOut.status == DebugStepOutStatus::Completed);
     assert(outController.stepOut.rawReturnAddress == 0x201 && outController.stepOut.callerLookupAddress == 0x200);
     assert(outFake.removeCalls == 1 && outController.currentInstructionAddress.value == 0x201);
+    assert(outController.stepCleanupCount == 1 && outController.stepCompletionGeneration == 4);
     assert(outController.currentLocation.line == 4 && outController.stoppedContext.rflags == 0x202);
     assert(outController.callStack.valid && outController.callStack.selectedFrameIndex == 0 &&
            outController.callStack.result.frameCount == 2 && outController.callStack.result.frames[0].current);
@@ -498,6 +537,8 @@ int main() {
     assert(outFake.resumeCalls == 1 && outController.state == DebugSessionState::Running &&
            outController.stopReason == DebugStopReason::None &&
            outController.backendExecutionState == DebugBackendExecutionState::Running);
+    assert(!DebugControllerContinue(&outController, outBackend, &error));
+    assert(outController.lastRejectedTransition != DebugErrorCode::None);
 
     std::cout << "Developer Studio source-step model PASS\n";
     return 0;

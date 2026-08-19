@@ -141,6 +141,33 @@ static void setMessage(DebugController* controller, const char* message) {
     copyText(controller->lastMessage, sizeof(controller->lastMessage), message ? message : "");
 }
 
+static void recordStateTransition(DebugController* controller, DebugSessionState destination) {
+    if (!controller) return;
+    const DebugSessionState source = controller->state;
+    if (source != destination) {
+        controller->lastTransitionSource = source;
+        controller->lastTransitionDestination = destination;
+        controller->lastRejectedTransition = DebugErrorCode::None;
+        ++controller->transitionSequence;
+    }
+    controller->state = destination;
+}
+
+static void recordRejectedTransition(DebugController* controller, DebugErrorCode error) {
+    if (!controller) return;
+    controller->lastRejectedTransition = error;
+    ++controller->transitionSequence;
+}
+
+static void observeBinding(DebugController* controller, uint64_t bindingId,
+                           uint64_t address, uint32_t ownerCount, bool installed) {
+    if (!controller) return;
+    controller->lastBindingId = bindingId;
+    controller->lastBindingAddress = address;
+    controller->lastBindingOwnerCount = ownerCount;
+    controller->lastBindingInstalled = installed;
+}
+
 static bool sameSourceStepLocation(const DebugSourceLocation& left, const DebugSourceLocation& right) {
     return left.relativePath[0] != '\0' && right.relativePath[0] != '\0' &&
         PathsEqual(left.relativePath, right.relativePath) && left.line == right.line;
@@ -353,6 +380,9 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     controller->nativeRuntimeId = snapshot.nativeRuntimeId;
     controller->debugHandle = snapshot.debugHandle;
     controller->exitCode = snapshot.exitCode;
+    if (snapshot.breakpointBindingId != 0 && snapshot.targetAddress.valid)
+        observeBinding(controller, snapshot.breakpointBindingId, snapshot.targetAddress.value,
+                       snapshot.bindingOwnerCount, snapshot.bindingInstalled || snapshot.bindingOwnerCount != 0);
     if (!continuingFromBreakpoint) controller->stopReason = snapshot.stopReason;
     if (snapshot.executionState != DebugBackendExecutionState::None)
         controller->backendExecutionState = snapshot.executionState;
@@ -381,8 +411,18 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     }
     if (snapshot.state != previous && !validTransition(previous, snapshot.state)) {
         controller->error = DebugErrorCode::InvalidTransition;
+        controller->lastTransitionSource = previous;
+        controller->lastTransitionDestination = snapshot.state;
+        controller->lastRejectedTransition = controller->error;
+        ++controller->transitionSequence;
         setMessage(controller, "Invalid debugger session transition");
         return;
+    }
+    if (snapshot.state != previous) {
+        controller->lastTransitionSource = previous;
+        controller->lastTransitionDestination = snapshot.state;
+        controller->lastRejectedTransition = DebugErrorCode::None;
+        ++controller->transitionSequence;
     }
     controller->state = snapshot.state;
     controller->active = snapshot.state == DebugSessionState::Launching ||
@@ -450,6 +490,8 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
     controller->reportedInstructionPointer = snapshot.instructionPointer;
     controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->stopGeneration + 1 : snapshot.stopGeneration;
     if (snapshot.registerContext.valid) controller->stoppedContext = snapshot.registerContext;
+    observeBinding(controller, snapshot.breakpointBindingId, snapshot.targetAddress.value,
+                   snapshot.bindingOwnerCount, snapshot.bindingInstalled || snapshot.bindingOwnerCount != 0);
     controller->lastBreakpointId = controller->breakpoints[ownerIndex].id;
     controller->stopReason = DebugStopReason::Breakpoint;
     controller->conditionEvaluationPending = true;
@@ -515,6 +557,8 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
         DebugErrorCode error = DebugErrorCode::None;
         if (!DebugControllerApplyBreakpointBinding(controller, controller->sessionGeneration, breakpoint.id, true,
                                                    binding.bindingId, address, binding.message[0] ? binding.message : "Bound / Verified", &error)) return false;
+        observeBinding(controller, binding.bindingId, address.value,
+                       binding.ownerCount == 0 ? 1 : binding.ownerCount, true);
         ++acceptedBindings;
     }
     HostedDebugResult released = {};
@@ -548,7 +592,7 @@ static bool mapSourceStepLocation(const DebugController* controller, const Debug
 static void publishSourceStepStop(DebugController* controller, const DebugBackendSnapshot& snapshot,
                                   const DebugSourceLocation& location, DebugSourceStepStatus status,
                                   const char* message) {
-    controller->state = DebugSessionState::Paused;
+    recordStateTransition(controller, DebugSessionState::Paused);
     controller->active = true;
     controller->stopReason = DebugStopReason::Step;
     controller->backendExecutionState = DebugBackendExecutionState::PausedAtSourceStep;
@@ -584,7 +628,7 @@ static bool processSourceStepTrap(DebugController* controller, const DebugBacken
         controller->error = snapshot.threadId != operation.threadId ? DebugErrorCode::WrongStepThread : DebugErrorCode::StaleSourceStep;
         setMessage(controller, "Rejected stale or wrong-thread source-step event");
         clearSourceStep(controller, DebugSourceStepStatus::Failed, controller->lastMessage);
-        controller->state = DebugSessionState::Failed;
+        recordStateTransition(controller, DebugSessionState::Failed);
         controller->active = false;
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Exception, controller->lastMessage);
         return true;
@@ -616,12 +660,12 @@ static bool processSourceStepTrap(DebugController* controller, const DebugBacken
         controller->error = DebugErrorCode::SourceStepFailed;
         setMessage(controller, "Source step instruction request was rejected");
         clearSourceStep(controller, DebugSourceStepStatus::Failed, controller->lastMessage);
-        controller->state = DebugSessionState::Failed;
+        recordStateTransition(controller, DebugSessionState::Failed);
         controller->active = false;
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Exception, controller->lastMessage);
         return true;
     }
-    controller->state = DebugSessionState::Stepping;
+    recordStateTransition(controller, DebugSessionState::Stepping);
     controller->stopReason = DebugStopReason::None;
     controller->backendExecutionState = DebugBackendExecutionState::UserSourceStepPending;
     setMessage(controller, "Source step instruction pending");
@@ -655,10 +699,17 @@ static bool removeStepOverBreakpoint(DebugController* controller, const DebugBac
                                      const DebugStepOverOperation& operation) {
     if (!controller || !backend.debugCommand || operation.temporaryBreakpointId == 0) return false;
     HostedDebugResult result = {};
-    return backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
+    const bool removed = backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
         controller->debugHandle, controller->sessionGeneration, controller->processId,
         controller->nativeRuntimeId, operation.temporaryBreakpointId, operation.returnAddress,
         controller->target.artifactSha256, 0, 0, false, 0, 0, &result);
+    if (removed) {
+        ++controller->stepCleanupCount;
+        observeBinding(controller, result.bindingId != 0 ? result.bindingId : operation.temporaryBindingId,
+                       operation.returnAddress, result.bindingCount,
+                       result.bindingInstalled || result.bindingCount != 0);
+    }
+    return removed;
 }
 
 static bool startStepOverCall(DebugController* controller, const DebugBackend& backend,
@@ -697,6 +748,8 @@ static bool startStepOverCall(DebugController* controller, const DebugBackend& b
     operation->installedByte = binding.installedByte;
     operation->originalByteValid = binding.originalByteValid;
     operation->temporaryInstalled = true;
+    observeBinding(controller, binding.bindingId, returnAddress,
+                   binding.ownerCount == 0 ? 1 : binding.ownerCount, true);
     ++operation->callCount;
     appendEvent(controller, DebugEventKind::StepOverCallDetected, DebugSessionState::Stepping,
                 DebugStopReason::Step, "Step over call detected");
@@ -710,7 +763,7 @@ static bool startStepOverCall(DebugController* controller, const DebugBackend& b
         setMessage(controller, "Step over call resume was rejected");
         return false;
     }
-    controller->state = DebugSessionState::Stepping;
+    recordStateTransition(controller, DebugSessionState::Stepping);
     controller->stopReason = DebugStopReason::None;
     controller->backendExecutionState = DebugBackendExecutionState::StepOverPending;
     clearStoppedContext(controller);
@@ -755,7 +808,7 @@ static bool startStepOverSourceInstruction(DebugController* controller, const De
         return false;
     }
     operation->mode = DebugStepOverMode::SourceSingleStep;
-    controller->state = DebugSessionState::Stepping;
+    recordStateTransition(controller, DebugSessionState::Stepping);
     controller->stopReason = DebugStopReason::None;
     controller->backendExecutionState = DebugBackendExecutionState::StepOverPending;
     clearStoppedContext(controller);
@@ -767,7 +820,7 @@ static void publishStepOverStop(DebugController* controller, const DebugBackendS
                                 const DebugSourceLocation& location, DebugStepOverStatus status,
                                 const char* message) {
     if (!controller) return;
-    controller->state = DebugSessionState::Paused;
+    recordStateTransition(controller, DebugSessionState::Paused);
     controller->active = true;
     controller->stopReason = DebugStopReason::Step;
     controller->backendExecutionState = DebugBackendExecutionState::PausedAtStepOver;
@@ -867,7 +920,7 @@ static bool processStepOverInternalTrap(DebugController* controller, const Debug
         userSnapshot.internalBreakpointTrap = false;
         userSnapshot.stopReason = DebugStopReason::Breakpoint;
         userSnapshot.executionState = DebugBackendExecutionState::PausedAtBreakpoint;
-        controller->state = DebugSessionState::Paused;
+        recordStateTransition(controller, DebugSessionState::Paused);
         if (!applyOwnedBreakpointTrap(controller, userSnapshot)) return false;
         clearStepOver(controller, DebugStepOverStatus::Cancelled,
                       "Step over interrupted by a user breakpoint at the return address");
@@ -909,17 +962,24 @@ static bool removeStepOutBreakpoint(DebugController* controller, const DebugBack
                                     const DebugStepOutOperation& operation) {
     if (!controller || !backend.debugCommand || operation.temporaryBreakpointId == 0) return false;
     HostedDebugResult result = {};
-    return backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
+    const bool removed = backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
         controller->debugHandle, controller->sessionGeneration, controller->processId,
         controller->nativeRuntimeId, operation.temporaryBreakpointId, operation.rawReturnAddress,
         controller->target.artifactSha256, 0, 0, false, 0, 0, &result);
+    if (removed) {
+        ++controller->stepCleanupCount;
+        observeBinding(controller, result.bindingId != 0 ? result.bindingId : operation.temporaryBindingId,
+                       operation.rawReturnAddress, result.bindingCount,
+                       result.bindingInstalled || result.bindingCount != 0);
+    }
+    return removed;
 }
 
 static void publishStepOutStop(DebugController* controller, const DebugBackendSnapshot& snapshot,
                                const DebugSourceLocation& location, DebugStepOutStatus status,
                                const char* message) {
     if (!controller) return;
-    controller->state = DebugSessionState::Paused;
+    recordStateTransition(controller, DebugSessionState::Paused);
     controller->active = true;
     controller->stopReason = DebugStopReason::Step;
     controller->backendExecutionState = DebugBackendExecutionState::PausedAtStepOut;
@@ -937,6 +997,8 @@ static void publishStepOutStop(DebugController* controller, const DebugBackendSn
     controller->stoppedContext.stopGeneration = controller->stopGeneration;
     controller->currentLocation = location;
     controller->currentLocation.instructionAddress = controller->currentInstructionAddress;
+    controller->lastStepOperation = DebugStepOperationKind::StepOut;
+    controller->stepCompletionGeneration = controller->stopGeneration;
     clearStepOut(controller, status, message);
     setMessage(controller, message);
     appendEvent(controller, DebugEventKind::StepOutCompleted, controller->state,
@@ -968,15 +1030,20 @@ static bool processStepOutInternalTrap(DebugController* controller, const DebugB
         return false;
     }
     operation.temporaryInstalled = false;
+    controller->lastStepOperation = DebugStepOperationKind::StepOut;
+    controller->stepCompletionGeneration = snapshot.stopGeneration;
     const int userBreakpointIndex = findBreakpointAtAddress(controller, snapshot.targetAddress.value,
                                                              snapshot.breakpointBindingId);
     if (userBreakpointIndex >= 0) {
         DebugBackendSnapshot userSnapshot = snapshot;
         userSnapshot.internalBreakpointTrap = false;
         userSnapshot.internalBreakpointPurpose = static_cast<uint32_t>(HostedDebugInternalBreakpointPurpose::None);
+        userSnapshot.bindingOwnerCount = snapshot.bindingOwnerCount > 0 ? snapshot.bindingOwnerCount - 1 : 0;
+        userSnapshot.bindingInstalled = userSnapshot.bindingOwnerCount != 0;
         userSnapshot.stopReason = DebugStopReason::Breakpoint;
         userSnapshot.executionState = DebugBackendExecutionState::PausedAtBreakpoint;
-        controller->state = DebugSessionState::Paused;
+        recordStateTransition(controller, DebugSessionState::Paused);
+        controller->backendExecutionState = DebugBackendExecutionState::PausedAtBreakpoint;
         if (!applyOwnedBreakpointTrap(controller, userSnapshot)) return false;
         clearStepOut(controller, DebugStepOutStatus::Cancelled,
                      "Step Out stopped by a persistent user breakpoint at the return address");
@@ -1215,6 +1282,16 @@ const char* DebugEventKindName(DebugEventKind kind) {
     return "Unknown";
 }
 
+const char* DebugStepOperationKindName(DebugStepOperationKind kind) {
+    switch (kind) {
+    case DebugStepOperationKind::None: return "None";
+    case DebugStepOperationKind::SourceStep: return "StepInto";
+    case DebugStepOperationKind::StepOver: return "StepOver";
+    case DebugStepOperationKind::StepOut: return "StepOut";
+    }
+    return "Unknown";
+}
+
 bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabilities& right) {
     return left.canLaunch == right.canLaunch && left.canStop == right.canStop &&
         left.canPause == right.canPause && left.canContinue == right.canContinue &&
@@ -1299,6 +1376,10 @@ bool DebugControllerInit(DebugController* controller) {
     for (uint32_t i = 0; i < sizeof(DebugController); ++i) bytes[i] = 0;
     controller->state = DebugSessionState::Idle;
     controller->error = DebugErrorCode::None;
+    controller->lastTransitionSource = DebugSessionState::Idle;
+    controller->lastTransitionDestination = DebugSessionState::Idle;
+    controller->lastRejectedTransition = DebugErrorCode::None;
+    controller->lastStepOperation = DebugStepOperationKind::None;
     controller->nextBreakpointId = 1;
     controller->nextTemporaryBreakpointId = 0x8000000000000001ull;
     controller->nextEventSequence = 1;
@@ -1331,6 +1412,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     }
     if (controller->active || (controller->state != DebugSessionState::Idle &&
         controller->state != DebugSessionState::Exited && controller->state != DebugSessionState::Failed)) {
+        recordRejectedTransition(controller, DebugErrorCode::InvalidTransition);
         if (error) *error = DebugErrorCode::InvalidTransition;
         return false;
     }
@@ -1369,6 +1451,17 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->sourceStep = DebugSourceStepOperation();
     controller->stepOver = DebugStepOverOperation();
     controller->stepOut = DebugStepOutOperation();
+    controller->lastTransitionSource = DebugSessionState::Idle;
+    controller->lastTransitionDestination = DebugSessionState::Launching;
+    controller->lastRejectedTransition = DebugErrorCode::None;
+    controller->transitionSequence = 1;
+    controller->lastStepOperation = DebugStepOperationKind::None;
+    controller->stepCleanupCount = 0;
+    controller->stepCompletionGeneration = 0;
+    controller->lastBindingId = 0;
+    controller->lastBindingAddress = 0;
+    controller->lastBindingOwnerCount = 0;
+    controller->lastBindingInstalled = false;
     setMessage(controller, "Launching debug target");
     appendEvent(controller, DebugEventKind::Launched, DebugSessionState::Launching, DebugStopReason::None, "Debug target launch requested");
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
@@ -1389,7 +1482,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     clearSnapshot(&snapshot);
     snapshot.sessionGeneration = controller->sessionGeneration;
     if (!backend.launch(backend.userData, target, controller->sessionGeneration, &snapshot)) {
-        controller->state = DebugSessionState::Failed;
+        recordStateTransition(controller, DebugSessionState::Failed);
         controller->active = false;
         controller->error = DebugErrorCode::LaunchFailed;
         setMessage(controller, snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend launch failed");
@@ -1502,14 +1595,14 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
     snapshot.sessionGeneration = controller->sessionGeneration;
     if (!backend.poll(backend.userData, controller->sessionGeneration, &snapshot)) {
         controller->error = DebugErrorCode::PollFailed;
-        controller->state = DebugSessionState::Failed;
+        recordStateTransition(controller, DebugSessionState::Failed);
         controller->active = false;
         setMessage(controller, snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend poll failed");
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
     }
     if (!bindAndReleaseIfReady(controller, backend, &snapshot)) {
-        controller->state = DebugSessionState::Failed;
+        recordStateTransition(controller, DebugSessionState::Failed);
         controller->active = false;
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
@@ -1559,7 +1652,7 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
     }
     if (snapshot.executionState == DebugBackendExecutionState::SingleStepPending &&
         controller->stepOut.active) {
-        controller->state = DebugSessionState::Stepping;
+        recordStateTransition(controller, DebugSessionState::Stepping);
         controller->active = true;
         controller->stopReason = DebugStopReason::None;
         controller->backendExecutionState = DebugBackendExecutionState::StepOutPending;
@@ -1623,7 +1716,7 @@ bool DebugControllerRequestStop(DebugController* controller, const DebugBackend&
         setMessage(controller, "Debugger backend stop request failed");
         return false;
     }
-    controller->state = DebugSessionState::Stopping;
+    recordStateTransition(controller, DebugSessionState::Stopping);
     controller->stopReason = DebugStopReason::UserRequested;
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
@@ -1657,6 +1750,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
     if (!controller || !controller->active || controller->state != DebugSessionState::Paused ||
         !DebugRegisterContextIsValid(controller->stoppedContext) ||
         !backend.capabilities.canContinue) {
+        if (controller) recordRejectedTransition(controller, DebugErrorCode::InvalidTransition);
         if (error) *error = DebugErrorCode::CapabilityUnavailable;
         return false;
     }
@@ -1675,7 +1769,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
             setMessage(controller, "Step resume was rejected; target remains paused");
             return false;
         }
-        controller->state = DebugSessionState::Running;
+        recordStateTransition(controller, DebugSessionState::Running);
         controller->stopReason = DebugStopReason::None;
         controller->backendExecutionState = DebugBackendExecutionState::Running;
         clearStoppedContext(controller);
@@ -1796,6 +1890,7 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
         !DebugDwarfMapperIsReady(mapper) || !backend.stepInstruction) {
         if (error) *error = !backend.stepInstruction || !controller || !controller->capabilities.canStepInto ?
             DebugErrorCode::CapabilityUnavailable : DebugErrorCode::SourceStepUnavailable;
+        if (controller) recordRejectedTransition(controller, error ? *error : DebugErrorCode::CapabilityUnavailable);
         return false;
     }
     if (controller->stoppedContext.sessionGeneration != controller->sessionGeneration ||
@@ -1836,6 +1931,7 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
         operation.reinstallBreakpoint = breakpoint.enabled;
     }
     controller->sourceStep = operation;
+    controller->lastStepOperation = DebugStepOperationKind::SourceStep;
     appendEvent(controller, DebugEventKind::StepRequested, DebugSessionState::Stepping,
                 DebugStopReason::Step, "User source-step requested");
     if (!backend.stepInstruction(backend.userData, controller->sessionGeneration, startContext,
@@ -1848,7 +1944,7 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
         setMessage(controller, controller->sourceStep.reason);
         return false;
     }
-    controller->state = DebugSessionState::Stepping;
+    recordStateTransition(controller, DebugSessionState::Stepping);
     controller->stopReason = DebugStopReason::None;
     controller->backendExecutionState = DebugBackendExecutionState::UserSourceStepPending;
     clearStoppedContext(controller);
@@ -1905,6 +2001,7 @@ bool DebugControllerStepOver(DebugController* controller, const DebugBackend& ba
         operation.reinstallBreakpoint = breakpoint.enabled;
     }
     controller->stepOver = operation;
+    controller->lastStepOperation = DebugStepOperationKind::StepOver;
     appendEvent(controller, DebugEventKind::StepOverStarted, DebugSessionState::Stepping,
                 DebugStopReason::Step, "User step over requested");
     uint8_t bytes[kDebugMaxInstructionBytes] = {};
@@ -2069,6 +2166,9 @@ bool DebugControllerStepOut(DebugController* controller, const DebugBackend& bac
     operation.temporaryBindingId = binding.bindingId;
     operation.temporaryInstalled = true;
     controller->stepOut = operation;
+    controller->lastStepOperation = DebugStepOperationKind::StepOut;
+    observeBinding(controller, binding.bindingId, operation.rawReturnAddress,
+                   binding.ownerCount == 0 ? 1 : binding.ownerCount, true);
     appendEvent(controller, DebugEventKind::StepOutStarted, DebugSessionState::Stepping,
                 DebugStopReason::Step, "User Step Out requested");
     if (!backend.stepOutReturn(backend.userData, controller->sessionGeneration,
@@ -2084,7 +2184,7 @@ bool DebugControllerStepOut(DebugController* controller, const DebugBackend& bac
         setMessage(controller, controller->stepOut.reason);
         return false;
     }
-    controller->state = DebugSessionState::Stepping;
+    recordStateTransition(controller, DebugSessionState::Stepping);
     controller->stopReason = DebugStopReason::None;
     controller->backendExecutionState = DebugBackendExecutionState::StepOutPending;
     clearStoppedContext(controller);

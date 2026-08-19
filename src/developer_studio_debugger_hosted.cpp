@@ -97,6 +97,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->targetAddress.valid = true;
             outSnapshot->targetAddress.value = debugResult.targetAddress;
             outSnapshot->breakpointBindingId = debugResult.bindingId;
+            outSnapshot->bindingOwnerCount = debugResult.bindingCount;
+            outSnapshot->bindingInstalled = debugResult.bindingInstalled;
             outSnapshot->originalByte = debugResult.originalByte;
             outSnapshot->installedByte = debugResult.installedByte;
             outSnapshot->originalByteValid = debugResult.originalByteValid;
@@ -229,6 +231,7 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     }
     outBinding->accepted = result.status == 2 && result.bindingInstalled;
     outBinding->bindingId = result.bindingId;
+    outBinding->ownerCount = result.bindingCount;
     outBinding->originalByte = result.originalByte;
     outBinding->installedByte = result.installedByte;
     outBinding->originalByteValid = result.originalByteValid;

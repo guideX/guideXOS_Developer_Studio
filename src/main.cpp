@@ -502,6 +502,9 @@ using guidexos::developer_studio::DebugRelativeSourcePath;
 using guidexos::developer_studio::DebugSessionState;
 using guidexos::developer_studio::DebugStopReason;
 using guidexos::developer_studio::DebugSessionStateName;
+using guidexos::developer_studio::DebugStepOperationKind;
+using guidexos::developer_studio::DebugStepOperationKindName;
+using guidexos::developer_studio::DebugStepOutOperation;
 using guidexos::developer_studio::DebugTarget;
 using guidexos::developer_studio::DebugTargetFromBuild;
 using guidexos::developer_studio::BuildRequestEnableDebugInfo;
@@ -757,6 +760,11 @@ static DebugBackend g_debugBackend = {};
 static bool g_debugWaitingForBuild = false;
 static bool g_debugTerminalReported = false;
 static uint32_t g_debugReportedEventCount = 0;
+static uint64_t g_debugTraceLastBindingId = 0;
+static uint32_t g_debugTraceLastBindingOwnerCount = 0;
+static uint32_t g_debugTraceLastCleanupCount = 0;
+static uint64_t g_debugTraceLastTransitionSequence = 0;
+static char g_debugTraceScratch[4][256] = {};
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
@@ -1074,6 +1082,131 @@ static void writeStudioOutput(const char* message) {
 
 static void logMarker(gx_app_context* ctx, const char* marker) {
     if (ctx && ctx->host && ctx->host->log && marker) ctx->host->log(ctx, marker);
+}
+
+static uint32_t debugTraceUserOwnerCount() {
+    if (g_debugController.lastBindingId == 0) return 0;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint& breakpoint = g_debugController.breakpoints[i];
+        if (!breakpoint.enabled || breakpoint.backendBindingId != g_debugController.lastBindingId) continue;
+        bool addressMatches = breakpoint.location.instructionAddress.valid &&
+                              breakpoint.location.instructionAddress.value == g_debugController.lastBindingAddress;
+        if (!addressMatches) {
+            for (uint32_t mappedIndex = 0; mappedIndex < breakpoint.mappedAddressCount; ++mappedIndex) {
+                if (breakpoint.mappedAddresses[mappedIndex].valid &&
+                    breakpoint.mappedAddresses[mappedIndex].value == g_debugController.lastBindingAddress) {
+                    addressMatches = true;
+                    break;
+                }
+            }
+        }
+        if (addressMatches) ++count;
+    }
+    return count;
+}
+
+static uint32_t debugTraceInternalOwnerCount() {
+    uint32_t count = 0;
+    if (g_debugController.stepOut.active && g_debugController.stepOut.temporaryInstalled &&
+        g_debugController.stepOut.temporaryBindingId == g_debugController.lastBindingId) ++count;
+    if (g_debugController.stepOver.active && g_debugController.stepOver.temporaryInstalled &&
+        g_debugController.stepOver.temporaryBindingId == g_debugController.lastBindingId) ++count;
+    return count;
+}
+
+static void emitDebugLifecycleTrace(gx_app_context* ctx) {
+    // This is intentionally a debug-session diagnostic path. It writes only
+    // to the existing host log and emits at state/binding/cleanup changes;
+    // normal editor and run operation output remains quiet.
+    if (!ctx || !ctx->host || !ctx->host->log || g_debugController.sessionGeneration == 0) return;
+
+    char* sessionMarker = g_debugTraceScratch[0];
+    char* stepMarker = g_debugTraceScratch[1];
+    char* bindingMarker = g_debugTraceScratch[2];
+    char* transitionMarker = g_debugTraceScratch[3];
+
+    copyText(sessionMarker, sizeof(g_debugTraceScratch[0]),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session=");
+    appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.sessionGeneration);
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " process=");
+    appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.processId);
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " runtime=");
+    appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.nativeRuntimeId);
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " thread=");
+    appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.currentThreadId);
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " state=");
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), DebugSessionStateName(g_debugController.state));
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " stop=");
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), DebugStopReasonName(g_debugController.stopReason));
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " stop_gen=");
+    appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.stopGeneration);
+    appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " selected_frame=");
+    appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.callStack.selectedFrameIndex);
+    if (g_debugController.currentLocation.relativePath[0]) {
+        appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), " source=");
+        appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.currentLocation.relativePath);
+        appendText(sessionMarker, sizeof(g_debugTraceScratch[0]), ":");
+        appendUnsigned(sessionMarker, sizeof(g_debugTraceScratch[0]), g_debugController.currentLocation.line);
+    }
+    logMarker(ctx, sessionMarker);
+
+    const DebugStepOperationKind stepKind = g_debugController.lastStepOperation;
+    const DebugStepOutOperation& stepOut = g_debugController.stepOut;
+    copyText(stepMarker, sizeof(g_debugTraceScratch[1]),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step=");
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), DebugStepOperationKindName(stepKind));
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " active=");
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]),
+               stepOut.active || g_debugController.stepOver.active || g_debugController.sourceStep.active ? "TRUE" : "FALSE");
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " generation=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]),
+                   stepOut.active ? stepOut.stopGeneration :
+                   (g_debugController.stepOver.active ? g_debugController.stepOver.stopGeneration :
+                    g_debugController.sourceStep.stopGeneration));
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " completion=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), g_debugController.stepCompletionGeneration);
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " cleanup=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), g_debugController.stepCleanupCount);
+    if (stepOut.rawReturnAddress != 0) {
+        appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " return=");
+        appendHexAddress(stepMarker, sizeof(g_debugTraceScratch[1]), stepOut.rawReturnAddress);
+        appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " lookup=");
+        appendHexAddress(stepMarker, sizeof(g_debugTraceScratch[1]), stepOut.callerLookupAddress);
+    }
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " temp=");
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), stepOut.temporaryInstalled ? "TRUE" : "FALSE");
+    logMarker(ctx, stepMarker);
+
+    const uint32_t userOwners = debugTraceUserOwnerCount();
+    const uint32_t internalOwners = debugTraceInternalOwnerCount();
+    copyText(bindingMarker, sizeof(g_debugTraceScratch[2]),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_binding=id=");
+    appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingId);
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " address=");
+    appendHexAddress(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingAddress);
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " owners=");
+    appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingOwnerCount);
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " user=");
+    appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), userOwners);
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " internal=");
+    appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), internalOwners);
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " shared=");
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), userOwners != 0 && internalOwners != 0 ? "TRUE" : "FALSE");
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " installed=");
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingInstalled ? "TRUE" : "FALSE");
+    logMarker(ctx, bindingMarker);
+
+    copyText(transitionMarker, sizeof(g_debugTraceScratch[3]),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_transition=");
+    appendText(transitionMarker, sizeof(g_debugTraceScratch[3]), DebugSessionStateName(g_debugController.lastTransitionSource));
+    appendText(transitionMarker, sizeof(g_debugTraceScratch[3]), "->");
+    appendText(transitionMarker, sizeof(g_debugTraceScratch[3]), DebugSessionStateName(g_debugController.lastTransitionDestination));
+    appendText(transitionMarker, sizeof(g_debugTraceScratch[3]), " sequence=");
+    appendUnsigned(transitionMarker, sizeof(g_debugTraceScratch[3]), g_debugController.transitionSequence);
+    appendText(transitionMarker, sizeof(g_debugTraceScratch[3]), " rejected=");
+    appendText(transitionMarker, sizeof(g_debugTraceScratch[3]), DebugErrorName(g_debugController.lastRejectedTransition));
+    logMarker(ctx, transitionMarker);
 }
 
 static void markerFailure(gx_app_context* ctx, const char* prefix, const char* reason) {
@@ -3076,6 +3209,7 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->singleStepKind = snapshot.singleStepKind;
     outResult->internalBreakpointTrap = snapshot.internalBreakpointTrap != 0;
     outResult->internalBreakpointId = snapshot.internalBreakpointId;
+    outResult->internalBreakpointPurpose = snapshot.internalBreakpointPurpose;
     outResult->byteCount = snapshot.byteCount;
     for (uint32_t i = 0; i < outResult->byteCount && i < sizeof(outResult->bytes); ++i)
         outResult->bytes[i] = snapshot.bytes[i];
@@ -3593,6 +3727,10 @@ static bool beginDebugSession(gx_app_context* ctx) {
     }
     g_debugTerminalReported = false;
     g_debugReportedEventCount = 0;
+    g_debugTraceLastBindingId = 0;
+    g_debugTraceLastBindingOwnerCount = 0;
+    g_debugTraceLastCleanupCount = 0;
+    g_debugTraceLastTransitionSequence = 0;
     copyText(g_textScratch, sizeof(g_textScratch), "Debug: launching ");
     appendText(g_textScratch, sizeof(g_textScratch), target.projectId);
     reportDebugMessage(ctx, g_textScratch);
@@ -3876,6 +4014,17 @@ static void pollDebug(gx_app_context* ctx) {
             reportDebugMessage(ctx, g_textScratch);
             g_debugTerminalReported = true;
         }
+    }
+    if (g_debugController.state != previous ||
+        g_debugController.lastBindingId != g_debugTraceLastBindingId ||
+        g_debugController.lastBindingOwnerCount != g_debugTraceLastBindingOwnerCount ||
+        g_debugController.stepCleanupCount != g_debugTraceLastCleanupCount ||
+        g_debugController.transitionSequence != g_debugTraceLastTransitionSequence) {
+        emitDebugLifecycleTrace(ctx);
+        g_debugTraceLastBindingId = g_debugController.lastBindingId;
+        g_debugTraceLastBindingOwnerCount = g_debugController.lastBindingOwnerCount;
+        g_debugTraceLastCleanupCount = g_debugController.stepCleanupCount;
+        g_debugTraceLastTransitionSequence = g_debugController.transitionSequence;
     }
     if (!DebugControllerIsActive(&g_debugController) && g_debugController.state == DebugSessionState::Exited)
         g_debugTerminalReported = true;

@@ -194,6 +194,13 @@ enum class DebugEventKind {
     BreakpointConditionError
 };
 
+enum class DebugStepOperationKind {
+    None = 0,
+    SourceStep,
+    StepOver,
+    StepOut
+};
+
 enum class DebugSourceStepStatus {
     None = 0,
     Active,
@@ -459,6 +466,8 @@ struct DebugBackendSnapshot {
     uint64_t instructionPointer;
     DebugAddress targetAddress;
     uint64_t breakpointBindingId;
+    uint32_t bindingOwnerCount;
+    bool bindingInstalled;
     uint8_t originalByte;
     uint8_t installedByte;
     bool originalByteValid;
@@ -480,6 +489,7 @@ struct DebugBackendBinding {
     uint8_t originalByte;
     uint8_t installedByte;
     bool originalByteValid;
+    uint32_t ownerCount;
     char message[kDebugMaxMessageBytes];
 };
 
@@ -666,6 +676,17 @@ struct DebugController {
     DebugSourceStepOperation sourceStep;
     DebugStepOverOperation stepOver;
     DebugStepOutOperation stepOut;
+    DebugSessionState lastTransitionSource;
+    DebugSessionState lastTransitionDestination;
+    DebugErrorCode lastRejectedTransition;
+    uint64_t transitionSequence;
+    DebugStepOperationKind lastStepOperation;
+    uint32_t stepCleanupCount;
+    uint64_t stepCompletionGeneration;
+    uint64_t lastBindingId;
+    uint64_t lastBindingAddress;
+    uint32_t lastBindingOwnerCount;
+    bool lastBindingInstalled;
     DebugBreakpoint breakpoints[kDebugMaxBreakpoints];
     uint32_t breakpointCount;
     DebugEvent events[kDebugMaxEvents];
@@ -683,6 +704,7 @@ const char* DebugBreakpointStateName(DebugBreakpointState state);
 const char* DebugBreakpointConditionEvaluationName(DebugBreakpointConditionEvaluation evaluation);
 const char* DebugStopReasonName(DebugStopReason reason);
 const char* DebugEventKindName(DebugEventKind kind);
+const char* DebugStepOperationKindName(DebugStepOperationKind kind);
 bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabilities& right);
 bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities);
 bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities);

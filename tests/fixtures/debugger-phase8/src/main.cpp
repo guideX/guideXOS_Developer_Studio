@@ -16,8 +16,9 @@ extern "C" __attribute__((noinline)) int level2(int value) {
 }
 
 extern "C" __attribute__((noinline)) int level1(int value) {
-    int result = level2(value + 1);
-    return result;
+    level2(value + 1);
+    volatile int observed = g_result;
+    return observed;
 }
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
