@@ -10,6 +10,8 @@ param(
     [switch]$StepInto,
     [switch]$StepOver,
     [switch]$StepOut,
+    [switch]$RepeatedStepOut,
+    [switch]$ContinueAfterStepOut,
     [switch]$InteractiveWatch
 )
 
@@ -43,7 +45,7 @@ function Add-Delay([System.Collections.Generic.List[string]]$Parts, [int]$Second
 }
 
 function Add-Key([System.Collections.Generic.List[string]]$Parts, [int]$KeyCode, [int]$Modifiers = 0, [bool]$WaitForUi = $false) {
-    Add-ServerLine $Parts "gui.key $KeyCode down $Modifiers"
+    Add-ServerLine $Parts "gui.keyto 1000 $KeyCode down $Modifiers"
     if ($WaitForUi) { Add-ShortDelay $Parts }
 }
 
@@ -77,6 +79,8 @@ function Get-Key([char]$Character, [int]$Modifiers) {
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in Phase 3B fixture exists"
 Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
+Assert-True (-not ($RepeatedStepOut -and $ContinueAfterStepOut)) "Step Out follow-up mode is unambiguous"
+Assert-True ((-not $RepeatedStepOut -and -not $ContinueAfterStepOut) -or $StepOut) "Step Out follow-up requires Step Out mode"
 
 $parts = New-Object 'System.Collections.Generic.List[string]'
 Add-ServerLine $parts 'gui.start'
@@ -89,10 +93,13 @@ Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 
 # Open the checked-in fixture through Developer Studio's real project dialog.
+Add-Mouse $parts 1000 300 180 1 'down' $false
+Add-Mouse $parts 1000 300 180 1 'up' $true
 Add-Key $parts 79 3 $true
 foreach ($character in $FixtureRoot.ToLowerInvariant().ToCharArray()) {
     $key = Get-Key $character 0
     Add-Key $parts $key.Key $key.Modifiers
+    Add-ShortDelay $parts
 }
 Add-Key $parts 13 0 $true
 Add-Delay $parts 10
@@ -159,11 +166,30 @@ if ($ContinueBreakpoint) {
     Add-Key $parts 121 0 $true
     Add-Delay $parts 20
 } elseif ($StepOut) {
-    # Shift+F11 begins the real return-address Step Out operation from the
-    # deepest fixture frame. The controller must ignore Call Stack selection
-    # and stop at the immediate caller's raw return address.
-    Add-Key $parts 122 1 $true
+    # Use the real Debug menu row for the return-address Step Out operation
+    # from the deepest fixture frame. The controller must stop at the
+    # immediate caller's raw return address.
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Mouse $parts 1000 610 30 1 'down' $false
+    Add-Mouse $parts 1000 610 30 1 'up' $true
+    Add-Mouse $parts 1000 620 141 1 'down' $false
+    Add-Mouse $parts 1000 620 141 1 'up' $true
     Add-Delay $parts 20
+    if ($RepeatedStepOut) {
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
+        Add-Mouse $parts 1000 610 30 1 'down' $false
+        Add-Mouse $parts 1000 610 30 1 'up' $true
+        Add-Mouse $parts 1000 620 141 1 'down' $false
+        Add-Mouse $parts 1000 620 141 1 'up' $true
+        Add-Delay $parts 20
+    } elseif ($ContinueAfterStepOut) {
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
+        Add-Key $parts 116 0 $true
+        Add-Delay $parts 20
+    }
 }
 Add-ServerLine $parts 'nativeapp.processes'
 Add-Delay $parts 2
@@ -297,14 +323,21 @@ try {
                         (($StepInto -and $text.Contains('[NativeAppDebugger] user source-step accepted') -and $text.Contains('Debug: step into')) -or
                          ($StepOver -and $text.Contains('Debug: step over')) -or
                          ($StepOut -and $text.Contains('Debug: step out') -and
-                          $text.Contains('Step out return breakpoint observed')))
+                          $text.Contains('Debug: paused | Step | src/main.cpp:14') -and
+                          $text.Contains('[NativeAppDebugger] internal single-step observed') -and
+                          -not ($text -match 'stale_step_over|invalid_transition')))
         if (-not $stepEvidence) {
             Write-Host 'Captured hosted stepping diagnostics:'
             @($text -split "`r?`n" | Where-Object { $_ -match 'F11|step|Step|STEPPING|PAUSED_STEP|EXCEPTION_SINGLE_STEP|Debug:|debug_state|source_navigation|execution_marker' } | Select-Object -Last 260)
         }
         if ($StepInto) { Assert-True $stepEvidence "F11 performs a real hosted source-level Step Into" }
         elseif ($StepOver) { Assert-True $stepEvidence "F10 performs a real hosted source-level Step Over fallback" }
-        else { Assert-True $stepEvidence "Shift+F11 performs a real hosted Step Out to the caller" }
+        else {
+            Assert-True $stepEvidence "the real hosted Debug menu performs Step Out to the caller"
+            if ($RepeatedStepOut) {
+                Assert-True (([regex]::Matches($text, 'Debug: paused \| Step \| src/main.cpp:(14|19)')).Count -ge 2) "a second hosted Step Out reaches the next caller frame"
+            }
+        }
     }
     Assert-True ($text -match 'target-created.*processId=\d+.*nativeRuntimeId=\d+.*gate=closed') "hosted service publishes exact target identity before release"
     if (-not $DiagnosticOnly -and -not $ContinueBreakpoint) {
@@ -319,7 +352,7 @@ try {
             @($text -split "`r?`n" | Where-Object { $_ -match 'close|Close|Debug|debug|run|Run|exit|Exit|process|Process|window|Window|dirty|prompt|confirm|error|Error' } | Select-Object -Last 220)
         }
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS')) "Developer Studio closes cleanly after teardown"
-    } elseif ($ContinueBreakpoint -and $DiagnosticOnly) {
+    } elseif (($ContinueBreakpoint -or $ContinueAfterStepOut) -and $DiagnosticOnly) {
         Assert-True ($text.Contains('Debug: process running')) "the hosted UI remains responsive after Continue"
     } elseif ($ContinueBreakpoint) {
         if (-not ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER run_close=REQUESTED') -or

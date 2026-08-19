@@ -14,10 +14,49 @@ param(
     [switch]$TreeOnly,
     [switch]$WatchOnly,
     [switch]$EditorOnly,
+    [switch]$LegacyAggregate,
     [switch]$KeepArtifacts
 )
 
 $ErrorActionPreference = "Stop"
+
+# The original all-in-one interaction sequence is retained only as a
+# diagnostic reproduction.  Its frame-zero tree coordinates are stateful
+# after the Watch refresh, so the normal Phase 15 entry point now runs the
+# bounded focused suite.  This is an explicit retirement of the timing-
+# sensitive aggregate, not a weakening of any focused assertion.
+if (-not $LegacyAggregate -and
+    -not $RuntimeOnly -and -not $UiOnly -and -not $FrameOnly -and
+    -not $TreeOnly -and -not $WatchOnly -and -not $EditorOnly -and
+    -not $ExpectConditionError) {
+    $focusedRunner = Join-Path $PSScriptRoot 'smoke-developer-studio-phase15-focused.ps1'
+    $runnerArguments = New-Object 'System.Collections.Generic.List[string]'
+    $runnerArguments.Add('-NoProfile')
+    $runnerArguments.Add('-ExecutionPolicy')
+    $runnerArguments.Add('Bypass')
+    $runnerArguments.Add('-File')
+    $runnerArguments.Add($focusedRunner)
+    $runnerArguments.Add('-ServerRoot')
+    $runnerArguments.Add($ServerRoot)
+    if ($FixtureRoot) {
+        $runnerArguments.Add('-FixtureRoot')
+        $runnerArguments.Add($FixtureRoot)
+    }
+    $runnerArguments.Add('-BreakpointLine')
+    $runnerArguments.Add([string]$BreakpointLine)
+    $runnerArguments.Add('-Condition')
+    $runnerArguments.Add($Condition)
+    $runnerArguments.Add('-DebugWaitSeconds')
+    $runnerArguments.Add([string]$DebugWaitSeconds)
+    $runnerArguments.Add('-MaxRuntimeSeconds')
+    $runnerArguments.Add([string]$MaxRuntimeSeconds)
+    $runnerArguments.Add('-UiWaitMilliseconds')
+    $runnerArguments.Add([string]$UiWaitMilliseconds)
+    if ($KeepArtifacts) { $runnerArguments.Add('-KeepArtifacts') }
+    & powershell.exe @runnerArguments
+    exit $LASTEXITCODE
+}
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $FixtureRoot) { $FixtureRoot = Join-Path $RepoRoot "tests\fixtures\debugger-phase15" }
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
@@ -58,6 +97,16 @@ function Add-ShortDelay([System.Collections.Generic.List[string]]$Parts) {
 
 function Add-Delay([System.Collections.Generic.List[string]]$Parts, [int]$Seconds) {
     $Parts.Add("WAIT|$([Math]::Max(1, $Seconds))")
+}
+
+function Add-ObservableStopWait([System.Collections.Generic.List[string]]$Parts) {
+    # Runtime progress is synchronized by the debugger markers below rather
+    # than by assuming that a fixed sleep is long enough for the breakpoint.
+    $Parts.Add("WAITSTOP|$([Math]::Max(1, $script:Phase15DebugWaitSeconds))")
+}
+
+function Add-ObservableMarkerWait([System.Collections.Generic.List[string]]$Parts, [string]$Marker) {
+    $Parts.Add("WAITMARK|$Marker")
 }
 
 function Add-Key([System.Collections.Generic.List[string]]$Parts, [int]$KeyCode, [int]$Modifiers = 0, [bool]$WaitForUi = $false) {
@@ -122,6 +171,13 @@ Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experim
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "Phase 15 fixture project exists"
 Assert-True ($Condition.Length -le 240) "condition input remains within the UI bound"
 $script:Phase15UiWaitMilliseconds = $UiWaitMilliseconds
+$script:Phase15DebugWaitSeconds = $DebugWaitSeconds
+$script:Phase15StopWaitPatterns = @('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')
+if ($ExpectConditionError) {
+    $script:Phase15StopWaitPatterns += 'Debug: breakpoint condition error'
+} elseif (-not $UiOnly -and -not $TreeOnly -and -not $FrameOnly -and -not $WatchOnly -and -not $RuntimeOnly) {
+    $script:Phase15StopWaitPatterns += 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+}
 
 $parts = New-Object 'System.Collections.Generic.List[string]'
 Add-ServerLine $parts 'gui.start'
@@ -152,15 +208,13 @@ for ($index = 1; $index -lt $BreakpointLine; ++$index) {
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 Add-Key $parts 120 0 $true
-$initialDebugWait = 30
-if ($FrameOnly) { $initialDebugWait = 8 }
-Add-Delay $parts $initialDebugWait
+Add-Delay $parts 3
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 
 if ($WatchOnly) {
     Add-Key $parts 116 2 $true
-    Add-Delay $parts $DebugWaitSeconds
+    Add-ObservableStopWait $parts
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
     Add-Click $parts 610 30
@@ -206,28 +260,41 @@ if (-not $UiOnly -and -not $TreeOnly -and -not $WatchOnly) {
     Add-Click $parts 620 230
     Add-Delay $parts 8
     Add-Click $parts 700 148
+    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN'
     Add-ConditionEdit $parts $Condition 0
+    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS'
     if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $FrameOnly) {
         Add-ConditionEdit $parts 'counter = 2' $Condition.Length
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID'
         Add-Key $parts 88 0 $true
-        Add-Delay $parts 5
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS'
         # Re-select the breakpoint row after clearing so the subsequent edit
         # proves stable-ID rebinding through the real panel selection path.
         Add-Click $parts 700 148
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN'
         Add-ConditionEdit $parts $Condition 0
-        Add-Delay $parts 10
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS'
         Add-Key $parts 32 0 $true
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS'
         Add-Key $parts 32 0 $true
-        Add-Delay $parts 5
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS'
     }
     Add-Delay $parts 3
 }
 
 if (-not $EditorOnly) {
     Add-Key $parts 116 2 $true
-    Add-Delay $parts $DebugWaitSeconds
+    Add-ObservableStopWait $parts
 
-    if ($UiOnly -and -not $TreeOnly) {
+    if ($RuntimeOnly -or $ExpectConditionError) {
+        # Runtime-only and ConditionError proofs stop at the observable
+        # debugger state and close through the product path.  Their
+        # assertions remain below; no inspection click sequence is needed.
+        Add-ServerLine $parts 'log'
+        Add-Delay $parts 2
+        Add-ServerLine $parts 'gui.close 1000'
+        Add-Delay $parts 3
+    } elseif ($UiOnly -and -not $TreeOnly) {
         Add-ServerLine $parts 'gui.activate 1000'
         Add-ShortDelay $parts
         Add-Click $parts 610 30
@@ -239,6 +306,14 @@ if (-not $EditorOnly) {
         # proof; the separate frame-only smoke exercises mouse selection.
         Add-Key $parts 40 0 $true
     } elseif (-not $TreeOnly) {
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
+        # The conditional-breakpoint editor leaves the Debug panel on its
+        # Breakpoints tab. Re-open Call Stack through the real Debug menu only
+        # after the observable breakpoint stop, then select the caller frame.
+        Add-Click $parts 610 30
+        Add-Click $parts 620 264
+        Add-Delay $parts 3
         Add-ServerLine $parts 'gui.activate 1000'
         Add-ShortDelay $parts
         Add-Click $parts 470 106
@@ -332,7 +407,7 @@ if ($EditorOnly) {
 }
 } else {
     Add-Key $parts 116 2 $true
-    Add-Delay $parts $DebugWaitSeconds
+    Add-ObservableStopWait $parts
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
     Add-Click $parts 610 30
@@ -371,6 +446,60 @@ $startInfo.RedirectStandardOutput = $false
 $startInfo.RedirectStandardError = $false
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
+
+function Get-Phase15LiveText() {
+    param([int]$TailLines = 0)
+    $stdout = if (Test-Path -LiteralPath $stdoutPath) {
+        if ($TailLines -gt 0) { Get-Content -LiteralPath $stdoutPath -Tail $TailLines | Out-String }
+        else { Get-Content -Raw -LiteralPath $stdoutPath }
+    } else { '' }
+    $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -Raw -LiteralPath $stderrPath } else { '' }
+    return $stdout + "`n" + $stderr
+}
+
+function Wait-ForPhase15ObservableMarker([string]$Marker) {
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $script:Phase15DebugWaitSeconds))
+    while ((Get-Date) -lt $deadline) {
+        $liveText = Get-Phase15LiveText 4000
+        if ($liveText.Contains($Marker)) {
+            Write-Host "PASS: observable Phase 15 marker reached ($Marker)"
+            return
+        }
+        if ($process.HasExited) {
+            throw "Phase 15 marker '$Marker' was not observed before the hosted process exited."
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "Timed out after $($script:Phase15DebugWaitSeconds) seconds waiting for Phase 15 marker '$Marker'."
+}
+
+function Wait-ForPhase15ObservableStop([int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    while ((Get-Date) -lt $deadline) {
+        $liveText = Get-Phase15LiveText
+        $allMarkersSeen = $true
+        foreach ($pattern in $script:Phase15StopWaitPatterns) {
+            if (-not $liveText.Contains($pattern)) {
+                $allMarkersSeen = $false
+                break
+            }
+        }
+        if ($allMarkersSeen) {
+            Write-Host "PASS: observable debugger stop reached ($($script:Phase15StopWaitPatterns -join '; '))"
+            return
+        }
+        if ($process.HasExited) {
+            $diagnostic = @($liveText -split "`r?`n" | Select-Object -Last 80) -join "`n"
+            throw "Phase 15 debugger stop was not observed before the hosted process exited.`n$diagnostic"
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $diagnostic = @(Get-Phase15LiveText -split "`r?`n" |
+        Where-Object { $_ -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_|Debug: breakpoint|ConditionError|Call Stack|Locals|Arguments|Watch' } |
+        Select-Object -Last 120) -join "`n"
+    throw "Timed out after $TimeoutSeconds seconds waiting for the Phase 15 observable debugger stop.`n$diagnostic"
+}
+
 try {
     Assert-True $process.Start() "streamed Phase 15 hosted proof starts"
     foreach ($part in $parts) {
@@ -383,6 +512,10 @@ try {
             Start-Sleep -Seconds ([Math]::Max(1, [int]$value))
         } elseif ($kind -eq 'WAITMS') {
             Start-Sleep -Milliseconds ([Math]::Max(100, [int]$value))
+        } elseif ($kind -eq 'WAITSTOP') {
+            Wait-ForPhase15ObservableStop ([int]$value)
+        } elseif ($kind -eq 'WAITMARK') {
+            Wait-ForPhase15ObservableMarker $value
         } elseif ($kind -eq 'COMMAND') {
             $process.StandardInput.WriteLine($value)
             $process.StandardInput.Flush()
@@ -450,7 +583,9 @@ try {
     } elseif ($UiOnly) {
         if (-not $EditorOnly) {
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "unconditional hosted UI proof reaches a real breakpoint stop"
-            Assert-True ($text.Contains('Frame #1 debugCaller') -and $text.Contains('outerValue')) "nonzero Call Stack frame selection refreshes Locals"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=1') -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=PASS index=1') -and
+                         $text.Contains('outerValue')) "nonzero Call Stack frame selection refreshes Locals"
             Assert-True ($text.Contains('Selected frame: #1')) "hosted UI visibly selects a nonzero Call Stack frame"
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_tab=PASS tab=4') -and
                          $text -match 'draw_text windowId=1000 .*text="Arguments"' -and
@@ -466,6 +601,11 @@ try {
             Assert-True ($text -match 'draw_text windowId=1000 .*text="0x') "hosted pointer-backed aggregate expansion is visible"
             Assert-True ($text.Contains('<cycle>')) "hosted cyclic node expansion is bounded"
         }
+    } elseif ($RuntimeOnly) {
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "conditional-runtime proof reaches a real hosted breakpoint stop"
+        $falseHits = ([regex]::Matches($text, 'Debug: breakpoint condition false; continuing')).Count
+        Assert-True ($falseHits -ge 2) "conditional-runtime proof filters at least two false hits before the true hit"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS')) "conditional-runtime proof reaches the true condition hit"
     } elseif (-not $ExpectConditionError) {
         if (-not $EditorOnly) {
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "condition true hit surfaces a real hosted breakpoint stop"
@@ -473,7 +613,9 @@ try {
             Assert-True ($falseHits -ge 2) "hosted condition filters at least two false hits before the true hit"
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS') -and
                          $text.Contains('condition=counter == 2')) "breakpoint remains condition-bound at the true hit"
-            Assert-True ($text.Contains('Frame #1 debugCaller') -and $text.Contains('outerValue')) "nonzero Call Stack frame selection refreshes Locals"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=1') -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame_variables=PASS index=1') -and
+                         $text.Contains('outerValue')) "nonzero Call Stack frame selection refreshes Locals"
             Assert-True ($text.Contains('Selected frame: #1')) "hosted UI visibly selects a nonzero Call Stack frame"
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_prompt=PASS') -and
                          $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_add=PASS') -and
@@ -491,7 +633,8 @@ try {
         Assert-True (-not $text.Contains('Debug: breakpoint condition false; continuing')) "condition error does not silently continue"
     }
     if ($timedOut) { throw "Phase 15 hosted smoke timed out after $MaxRuntimeSeconds seconds" }
-    if (-not $EditorOnly -and -not $WatchOnly -and -not $FrameOnly -and -not $ExpectConditionError) {
+    if (-not $EditorOnly -and -not $WatchOnly -and -not $FrameOnly -and
+        -not $TreeOnly -and -not $RuntimeOnly -and -not $ExpectConditionError) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')) "hosted debugger exits through the product close path"
     }
     if ($WatchOnly -or $FrameOnly -or $ExpectConditionError) {

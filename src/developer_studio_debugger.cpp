@@ -1529,10 +1529,15 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
             }
             return processPendingBreakpointCondition(controller, backend, mapper);
         }
-        // The physical trap remains held while an internal Step Over stop is
-        // presented to the user. Do not re-publish it on every UI poll.
+        // The physical trap remains held while an internal Step Over or Step
+        // Out stop is presented to the user. Do not re-publish the same trap
+        // on every hosted UI poll. The backend keeps the exception suspended
+        // until Continue/Step/Stop releases it, so this is an idempotent
+        // observation of the already-published stopped state, not a relaxed
+        // transition or ownership check.
         if (controller->state == DebugSessionState::Paused &&
             (controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver ||
+             controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOut ||
              controller->stopReason == DebugStopReason::Breakpoint)) return true;
         controller->error = DebugErrorCode::StaleStepOver;
         setMessage(controller, "Rejected stale internal Step Over trap");
@@ -1656,15 +1661,18 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
         return false;
     }
     if (controller->stopReason == DebugStopReason::Step) {
-        if (controller->backendExecutionState != DebugBackendExecutionState::PausedAtSourceStep ||
-            !backend.resumeExecution) {
+        const bool resumableStepStop =
+            controller->backendExecutionState == DebugBackendExecutionState::PausedAtSourceStep ||
+            controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver ||
+            controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOut;
+        if (!resumableStepStop || !backend.resumeExecution) {
             if (error) *error = DebugErrorCode::CapabilityUnavailable;
             return false;
         }
         if (!backend.resumeExecution(backend.userData, controller->sessionGeneration, controller->stoppedContext)) {
             controller->error = DebugErrorCode::BackendError;
             if (error) *error = controller->error;
-            setMessage(controller, "Source-step resume was rejected; target remains paused");
+            setMessage(controller, "Step resume was rejected; target remains paused");
             return false;
         }
         controller->state = DebugSessionState::Running;
@@ -1672,7 +1680,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
         controller->backendExecutionState = DebugBackendExecutionState::Running;
         clearStoppedContext(controller);
         clearSourceStep(controller, DebugSourceStepStatus::Cancelled, "Source-step context resumed");
-        setMessage(controller, "Source-step stop resumed");
+        setMessage(controller, "Step stop resumed");
         return true;
     }
     if (controller->stopReason != DebugStopReason::Breakpoint ||

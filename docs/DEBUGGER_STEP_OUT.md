@@ -77,3 +77,20 @@ The Phase 8 fixture is `tests/fixtures/debugger-phase8`. Its primary proof is
 `level3 -> level2 -> level1 -> gx_main`; repeated Shift+F11 moves outward one
 physical frame at a time.
 Step Out invalidates Locals/Arguments until the real caller stop is published. The execution marker remains tied to frame #0 while a selected caller frame is inspected.
+
+## Hosted stop cleanup
+
+The controller is the authoritative owner of the logical Step Out state. The
+hosted target may keep the physical single-step trap suspended while the
+controller has already published the caller stop, so a later poll can observe
+the same internal trap again. When the controller is already paused at
+`PausedAtStepOut`, that observation is idempotent and does not publish a second
+stop or remove the temporary owner twice. Continue from `PausedAtStepOut` uses
+the existing hosted resume path, which releases the held trap and clears the
+step-stop context.
+
+The transition validator and its error reporting remain unchanged. Inspection
+refreshes (Call Stack, Locals, Arguments, and Watch) only rebuild stopped
+context; they do not mutate execution state. A persistent user breakpoint at
+the return address remains independently owned when the temporary Step Out
+owner is removed.

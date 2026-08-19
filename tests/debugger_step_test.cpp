@@ -29,6 +29,8 @@ struct StepOutFake {
     uint32_t bindCalls = 0;
     uint32_t removeCalls = 0;
     uint32_t stepOutCalls = 0;
+    uint32_t pollCalls = 0;
+    uint32_t resumeCalls = 0;
     uint64_t returnAddress = 0x201;
     uint64_t bindingId = 600;
     uint64_t temporaryId = 0;
@@ -36,6 +38,7 @@ struct StepOutFake {
 
 static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapshot* snapshot) {
     StepOutFake* fake = static_cast<StepOutFake*>(userData);
+    ++fake->pollCalls;
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
     snapshot->state = DebugSessionState::Paused;
@@ -126,6 +129,12 @@ static bool stepOutReturn(void* userData, uint64_t, const DebugRegisterContext&,
     return true;
 }
 
+static bool stepOutResume(void* userData, uint64_t, const DebugRegisterContext&) {
+    StepOutFake* fake = static_cast<StepOutFake*>(userData);
+    ++fake->resumeCalls;
+    return true;
+}
+
 static DebugBackend makeStepOutBackend(StepOutFake* fake) {
     DebugBackend backend = {};
     backend.userData = fake;
@@ -137,6 +146,7 @@ static DebugBackend makeStepOutBackend(StepOutFake* fake) {
     backend.bindSoftwareBreakpoint = stepOutBind;
     backend.debugCommand = stepOutCommand;
     backend.stepOutReturn = stepOutReturn;
+    backend.resumeExecution = stepOutResume;
     return backend;
 }
 
@@ -473,11 +483,21 @@ int main() {
     assert(outController.callStack.valid && outController.callStack.selectedFrameIndex == 0 &&
            outController.callStack.result.frameCount == 2 && outController.callStack.result.frames[0].current);
     assert(outController.callStack.result.frames[0].instructionAddress == 0x202);
-
+    assert(DebugControllerPoll(&outController, outBackend, &mapper));
+    assert(outController.error == DebugErrorCode::None && outFake.pollCalls == 2 &&
+           outFake.removeCalls == 1 && outController.state == DebugSessionState::Paused &&
+           outController.backendExecutionState == DebugBackendExecutionState::PausedAtStepOut);
     outController.callStack.result.frameCount = 1;
     assert(!DebugControllerCanStepOut(&outController));
     assert(!DebugControllerStepOut(&outController, outBackend, &mapper, &error));
     assert(error == DebugErrorCode::NoCallerFrame);
+
+    outController.callStack.result.frameCount = 2;
+    assert(DebugControllerCanContinue(&outController));
+    assert(DebugControllerContinue(&outController, outBackend, &error));
+    assert(outFake.resumeCalls == 1 && outController.state == DebugSessionState::Running &&
+           outController.stopReason == DebugStopReason::None &&
+           outController.backendExecutionState == DebugBackendExecutionState::Running);
 
     std::cout << "Developer Studio source-step model PASS\n";
     return 0;
