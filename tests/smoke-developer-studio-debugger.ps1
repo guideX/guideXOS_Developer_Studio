@@ -412,7 +412,9 @@ try {
                              $text -match 'debug_binding=id=.*owners=1.*user=1.*internal=0.*shared=FALSE' -and
                              $text.Contains('Debug: paused | Breakpoint | src/main.cpp:14') -and
                              $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING') -and
+                             ([regex]::Matches($text, 'Debug: paused \| Breakpoint \| src/main.cpp:20')).Count -ge 2 -and
                              -not ($text -match 'stale_step_out|stale_step_over')) "overlapping Step Out preserves the user breakpoint and Continue path"
+                Assert-True (([regex]::Matches($text, 'Debug: paused \| Breakpoint \| src/main.cpp:20')).Count -ge 2) "the preserved hosted user breakpoint re-hits after Continue"
             }
         }
     }

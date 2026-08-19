@@ -30,6 +30,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         ctx->host->request_window(ctx, "Debugger Phase 8 Fixture", 640, 360, &g_window);
     if (result != GX_OK) return result;
     int resultValue = level1(1);
+    if (resultValue == 4) {
+        volatile int repeated = level1(1);
+        resultValue = repeated;
+    }
     if (ctx->host->draw_rect)
         ctx->host->draw_rect(ctx, g_window, 0, 0, 640, 360, 0x172238u);
     if (ctx->host->draw_text)
