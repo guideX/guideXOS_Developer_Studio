@@ -17,7 +17,9 @@ param(
     [switch]$MixedLifecycle,
     [switch]$OverlapStepOut,
     [int]$OverlapBreakpointLine = 20,
-    [switch]$InteractiveWatch
+    [switch]$InteractiveWatch,
+    [string]$TraceDirectory = "",
+    [int]$TraceRunIndex = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,7 +40,12 @@ if ($StepOutProof -and $FixtureRoot -match 'debugger-phase8') {
 }
 
 function Assert-True([bool]$Condition, [string]$Message) {
-    if (-not $Condition) { throw "Debugger Phase 3B smoke failed: $Message" }
+    if (-not $Condition) {
+        $failure = "Debugger Phase 3B smoke failed: $Message"
+        $failureContent = if ($text) { $text } else { "" }
+        Write-ShutdownTrace $failure $failureContent
+        throw $failure
+    }
     Write-Host "PASS: $Message"
 }
 
@@ -90,6 +97,101 @@ function Get-Key([char]$Character, [int]$Modifiers) {
     throw "Unsupported fixture path character: $Character"
 }
 
+function Get-LiveHostedText([string]$StdoutPath, [string]$StderrPath) {
+    $stdout = if (Test-Path -LiteralPath $StdoutPath) { Get-Content -LiteralPath $StdoutPath -Raw -ErrorAction SilentlyContinue } else { "" }
+    $stderr = if (Test-Path -LiteralPath $StderrPath) { Get-Content -LiteralPath $StderrPath -Raw -ErrorAction SilentlyContinue } else { "" }
+    return ($stdout + "`n" + $stderr)
+}
+
+function Get-LastShutdownStage([string]$Content) {
+    $stages = @(
+        @{ Name = "complete"; Pattern = "debug_shutdown_complete=PASS|shutdownStage=complete" },
+        @{ Name = "window_release"; Pattern = "debug_window_release=(PASS|REQUESTED)|shutdownStage=window_release" },
+        @{ Name = "session_teardown"; Pattern = "debug_session_teardown=PASS|shutdownStage=session_teardown" },
+        @{ Name = "target_teardown"; Pattern = "debug_target_teardown=PASS|shutdownStage=target_teardown" },
+        @{ Name = "stop_requested"; Pattern = "debug_stop=requested|shutdownStage=stop_requested" },
+        @{ Name = "request"; Pattern = "debug_shutdown_request=|shutdownStage=request" }
+    )
+    foreach ($stage in $stages) {
+        if ($Content -match $stage.Pattern) { return $stage.Name }
+    }
+    return "none"
+}
+
+function Wait-ForShutdown([Diagnostics.Process]$HostedProcess, [string]$StdoutPath, [string]$StderrPath, [int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    $nextStateQuery = Get-Date
+    $requiredMarkers = @(
+        'debug_shutdown_request=targeted_close',
+        'debug_stop=requested',
+        'debug_target_teardown=PASS',
+        'debug_session_teardown=PASS',
+        'debug_window_release=PASS',
+        'debug_shutdown_complete=PASS'
+    )
+    while ((Get-Date) -lt $deadline) {
+        if (-not $HostedProcess.HasExited -and (Get-Date) -ge $nextStateQuery) {
+            $HostedProcess.StandardInput.WriteLine('nativeapp.processes')
+            $HostedProcess.StandardInput.Flush()
+            $nextStateQuery = (Get-Date).AddSeconds(2)
+        }
+        $content = Get-LiveHostedText $StdoutPath $StderrPath
+        $allMarkersPresent = $true
+        foreach ($marker in $requiredMarkers) {
+            if (-not $content.Contains($marker)) { $allMarkersPresent = $false; break }
+        }
+        if ($allMarkersPresent -and $content -match 'shutdownStage=complete' -and $content -match 'state=Exited') {
+            return $content
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    $content = Get-LiveHostedText $StdoutPath $StderrPath
+    $stateLine = @($content -split "`r?`n" | Where-Object { $_ -match 'Native app processes:|runtimeId=.*shutdownStage=|windowCount=|owner' } | Select-Object -Last 8)
+    $markerLine = @($content -split "`r?`n" | Where-Object { $_ -match 'debug_shutdown|debug_stop|debug_target|debug_session|debug_window|shutdownStage=' } | Select-Object -Last 24)
+    $debuggerState = if ($content -match 'debug_state=([^ ]+)') { $Matches[1] } else { 'unknown' }
+    $session = if ($content -match 'debug_session=(\d+)') { $Matches[1] } else { 'unknown' }
+    $target = if ($content -match 'target-created.*processId=(\d+)') { $Matches[1] } else { 'unknown' }
+    $details = @(
+        "WAITSHUTDOWN timeout expected=complete actual=$((Get-LastShutdownStage $content))",
+        "debuggerState=$debuggerState",
+        "session=$session",
+        "target=$target",
+        "state/ownership:",
+        ($stateLine -join "`n"),
+        "recent lifecycle markers:",
+        ($markerLine -join "`n")
+    )
+    throw ($details -join "`n")
+}
+
+function Write-ShutdownTrace([string]$Reason, [string]$Content) {
+    try {
+        $directory = if ($TraceDirectory) { [IO.Path]::GetFullPath($TraceDirectory) } else { Join-Path $RepoRoot "logs" }
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $suffix = if ($TraceRunIndex -gt 0) { "-$TraceRunIndex" } else { "" }
+        $artifact = Join-Path $directory "developer-studio-debugger-shutdown-trace$suffix.log"
+        $lines = @($Content -split "`r?`n")
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:' } | Select-Object -Last 96)
+        $recent = @($lines | Select-Object -Last 80)
+        $serverExitCode = if ($process -and $process.HasExited) { $process.ExitCode } else { 'unknown' }
+        $header = @(
+            "guideXOS Developer Studio hosted shutdown trace",
+            "reason=$Reason",
+            "lastShutdownStage=$(Get-LastShutdownStage $Content)",
+            "serverExitCode=$serverExitCode",
+            "boundedLifecycleMarkerCount=$($lifecycle.Count)",
+            "--- recent bounded lifecycle markers ---"
+        )
+        $body = ($header + $lifecycle + @("--- recent output ---") + $recent) -join "`r`n"
+        if ($body.Length -gt 65536) { $body = $body.Substring($body.Length - 65536) }
+        Set-Content -LiteralPath $artifact -Value $body -Encoding UTF8
+        Write-Host "Shutdown trace artifact: $artifact"
+    } catch {
+        Write-Host "WARNING: unable to write shutdown trace: $($_.Exception.Message)"
+    }
+}
+
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in debugger fixture exists"
 Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
@@ -139,7 +241,7 @@ Add-ShortDelay $parts
 
 # Ctrl+F5 starts the real Developer Studio build -> hosted launch -> bind -> trap path.
 Add-Key $parts 116 2 $true
-Add-Delay $parts $DebugWaitSeconds
+if ($ContinueBreakpoint) { Add-ShortDelay $parts } else { Add-Delay $parts $DebugWaitSeconds }
 
 if ($InteractiveWatch) {
     # Open the product's Debug menu and Watch tab through compositor mouse
@@ -175,7 +277,7 @@ if ($ContinueBreakpoint) {
     # the breakpointed instruction, so the smoke can observe Running without
     # relying on process exit to imply successful continuation.
     Add-Key $parts 116 0 $true
-    Add-Delay $parts 20
+    Add-ShortDelay $parts
 } elseif ($StepInto) {
     # F11 begins the real user source-step operation from the breakpoint stop.
     Add-Key $parts 122 0 $true
@@ -242,48 +344,45 @@ Add-Delay $parts 2
 
 if ($DiagnosticOnly) {
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 2
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
 } elseif ($ContinueBreakpoint) {
-    # After Continue the shared run controller is Running, so closing the
-    # owned Studio window first asks to close the temporary project app; C
-    # requests that close before Studio itself is closed. If the event is
-    # serialized after the debugger modal appears, S handles that variant.
+    # The target is Running after Continue. The owned-window close still uses
+    # the product's targeted shutdown path and requests debugger termination
+    # directly rather than routing C/S through whichever window has focus.
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 3
-    Add-ServerLine $parts 'gui.activate 1000'
-    Add-Key $parts 67 0 $true
-    Add-Delay $parts 10
-    Add-Key $parts 83 0 $true
-    Add-Delay $parts 25
-    Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 12
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
+    Add-ServerLine $parts 'nativeapp.processes'
+    Add-ServerLine $parts 'desktop.windows.owners'
+    Add-ServerLine $parts 'nativeapp.debuglog 64'
 } else {
-    # The original Phase 3B paused-target close path enters the debug-stop
-    # confirmation; S confirms stop.
+    # Targeted gui.close is the authoritative hosted shutdown request. The
+    # app owns the stop/teardown sequence; no focused confirmation keystroke
+    # is part of the successful path.
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 3
-    Add-ServerLine $parts 'gui.activate 1000'
-    Add-Key $parts 83 0 $true
-    Add-Delay $parts 50
-    Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 12
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
+    Add-ServerLine $parts 'nativeapp.processes'
+    Add-ServerLine $parts 'desktop.windows.owners'
+    Add-ServerLine $parts 'nativeapp.debuglog 64'
 }
 Add-ServerLine $parts 'exit'
 
 $startInfo = New-Object Diagnostics.ProcessStartInfo
-$startInfo.FileName = $Executable
+$stdoutPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-debugger-$([Guid]::NewGuid().ToString('N')).out")
+$stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-debugger-$([Guid]::NewGuid().ToString('N')).err")
+$startInfo.FileName = $env:ComSpec
+$startInfo.Arguments = "/d /s /c `"`"$Executable`" 1>`"$stdoutPath`" 2>`"$stderrPath`"`""
 $startInfo.WorkingDirectory = $ServerRoot
 $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
 $startInfo.RedirectStandardInput = $true
-$startInfo.RedirectStandardOutput = $true
-$startInfo.RedirectStandardError = $true
+$startInfo.RedirectStandardOutput = $false
+$startInfo.RedirectStandardError = $false
 $process = New-Object Diagnostics.Process
-    $process.StartInfo = $startInfo
+$process.StartInfo = $startInfo
+$text = ""
+$smokeSucceeded = $false
 try {
     Assert-True $process.Start() "streamed hosted UI proof starts"
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
     foreach ($part in $parts) {
         if ($process.HasExited) { break }
         $separator = $part.IndexOf('|')
@@ -292,6 +391,9 @@ try {
         $value = $part.Substring($separator + 1)
         if ($kind -eq 'WAIT') {
             Start-Sleep -Seconds ([Math]::Max(1, [int]$value))
+        } elseif ($kind -eq 'WAITSHUTDOWN') {
+            Wait-ForShutdown $process $stdoutPath $stderrPath ([int]$value) | Out-Null
+            Write-Host "PASS: WAITSHUTDOWN reached complete (bounded state poll)"
         } elseif ($kind -eq 'COMMAND') {
             $process.StandardInput.WriteLine($value)
             $process.StandardInput.Flush()
@@ -306,9 +408,7 @@ try {
         & taskkill.exe /PID $process.Id /T /F | Out-Null
         $process.WaitForExit()
     }
-    $stdout = $stdoutTask.Result
-    $stderr = $stderrTask.Result
-    $text = $stdout + "`n" + $stderr
+    $text = Get-LiveHostedText $stdoutPath $stderrPath
 
     Assert-True ($text.Contains('Desktop launch successful: com.guidexos.developerstudio')) "Developer Studio launches through the hosted desktop"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS')) "hosted Developer Studio reaches its real initial render"
@@ -431,7 +531,25 @@ try {
         }
     }
     Assert-True ($text -match 'target-created.*processId=\d+.*nativeRuntimeId=\d+.*gate=closed') "hosted service publishes exact target identity before release"
-    if (-not $DiagnosticOnly -and -not $ContinueBreakpoint) {
+    if (-not $DiagnosticOnly) {
+        $shutdownMarkers = @(
+            'debug_shutdown_request=targeted_close',
+            'debug_stop=requested',
+            'debug_target_teardown=PASS',
+            'debug_session_teardown=PASS',
+            'debug_window_release=PASS',
+            'debug_shutdown_complete=PASS'
+        )
+        $previousMarkerPosition = -1
+        foreach ($marker in $shutdownMarkers) {
+            $markerPosition = $text.IndexOf($marker)
+            Assert-True ($markerPosition -ge 0 -and $markerPosition -gt $previousMarkerPosition) "shutdown marker ordering includes $marker"
+            $previousMarkerPosition = $markerPosition
+        }
+        Assert-True ($text -match 'runtimeId=\d+ appId=com\.guidexos\.developerstudio .*state=Exited .*windows=\d+/\d+/0 .*shutdownStage=complete shutdownStageCode=6') "Server durable shutdown state records Exited, released windows, and complete"
+        Assert-True ($text -match 'Native app debug log: \d+') "bounded Server lifecycle log query is available"
+        $debugLogEntryCount = ([regex]::Matches($text, '(?m)^#\d+ runtimeId=')).Count
+        Assert-True ($debugLogEntryCount -le 64) "failure-diagnostic lifecycle log remains bounded to 64 entries"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested')) "the hosted debugger stop is requested through the product close path"
         if (-not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')) {
             Write-Host 'Captured hosted debugger-stop diagnostics:'
@@ -465,7 +583,13 @@ try {
     elseif ($StepOver) { Write-Host 'Developer Studio Debugger Phase 6 end-to-end smoke PASS' }
     elseif ($StepOut) { Write-Host 'Developer Studio Debugger Phase 8 end-to-end smoke PASS' }
     else { Write-Host 'Developer Studio Debugger Phase 3B end-to-end smoke PASS' }
+    $smokeSucceeded = $true
 } finally {
+    if (-not $smokeSucceeded) {
+        $failureText = if ($text) { $text } else { Get-LiveHostedText $stdoutPath $stderrPath }
+        Write-ShutdownTrace "smoke failure" $failureText
+    }
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
     if ($process) { $process.Dispose() }
+    Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
 }

@@ -170,9 +170,39 @@ commands remain disabled.
 
 Ordinary Run remains a separate command and continues to use the existing
 Run controller. Closing a project or Developer Studio while a debug session
-is active is blocked behind the bounded Stop Debugging confirmation. Closing a
-document does not erase breakpoint storage. A project/source-generation
-mismatch is surfaced as Stale rather than silently rebound.
+is active uses the targeted owned-window close event; the hosted app requests
+debug stop directly and completes teardown before releasing its window.
+Keyboard/modal confirmation remains available for non-targeted application
+close paths. Closing a document does not erase breakpoint storage. A
+project/source-generation mismatch is surfaced as Stale rather than silently
+rebound.
+
+## Phase 19 deterministic hosted shutdown
+
+The hosted close contract is focus-independent. `gui.close <windowId>` targets
+Developer Studio's canonical owned window and enters the normal app lifecycle;
+it does not kill the process or route a confirmation key through whichever
+window has focus. The authoritative bounded stages are:
+
+`debug_shutdown_request` -> `debug_stop=requested` ->
+`debug_target_teardown` -> `debug_session_teardown` ->
+`debug_window_release` -> `debug_shutdown_complete`.
+
+The guaranteed partial ordering is request before stop, stop before target and
+session teardown, teardown before window release, and window release before
+shutdown complete. The Server records a monotonic `shutdownStage` and
+`shutdownStageCode` in `nativeapp.processes`; the final release and complete
+markers are emitted by `NativeAppRuntime::Cleanup` after owned windows are
+released. `nativeapp.debuglog [count]` exposes at most 64 recent entries from
+the existing bounded lifecycle ring.
+
+The hosted debugger smoke uses `WAITSHUTDOWN <seconds>` to poll live Server
+output and the durable process-table stage. It reports the expected and
+actual stage, debugger/session/target identity, ownership state, and recent
+markers on timeout. Successful runs print concise PASS lines. A failed run
+writes the bounded `logs/developer-studio-debugger-shutdown-trace[-N].log`
+artifact containing Phase 18 session, stop, step, binding, transition, and
+shutdown diagnostics. Production runs do not enable or print this trace.
 
 ## Phase 2 source mapping and next milestone
 

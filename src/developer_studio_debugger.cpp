@@ -1607,6 +1607,21 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
     }
+    if (controller->state == DebugSessionState::Stopping) {
+        // A stop request owns the remainder of this session lifecycle. The
+        // backend can still report a queued breakpoint/single-step trap while
+        // the target is being terminated; those traps are no longer debugger
+        // operations and must not be reinterpreted as stale Step Over/Out.
+        if (snapshot.state == DebugSessionState::Exited || snapshot.state == DebugSessionState::Failed) {
+            DebugBackendSnapshot shutdownSnapshot = snapshot;
+            shutdownSnapshot.breakpointTrap = false;
+            shutdownSnapshot.internalBreakpointTrap = false;
+            shutdownSnapshot.singleStepTrap = false;
+            shutdownSnapshot.executionState = DebugBackendExecutionState::None;
+            return DebugControllerApplySnapshot(controller, controller->sessionGeneration, shutdownSnapshot);
+        }
+        return true;
+    }
     if (snapshot.breakpointTrap && snapshot.internalBreakpointTrap) {
         if (controller->stepOut.active) {
             if (!processStepOutInternalTrap(controller, backend, mapper, snapshot)) {

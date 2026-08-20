@@ -528,6 +528,7 @@ using guidexos::developer_studio::DebugWatchItem;
 using guidexos::developer_studio::DebugWatchState;
 using guidexos::developer_studio::DebugWatchCollection;
 using guidexos::developer_studio::DebugWatchCollectionInit;
+using guidexos::developer_studio::DebugWatchCollectionMarkStale;
 using guidexos::developer_studio::DebugBreakpointConditionEvaluationName;
 using guidexos::developer_studio::kDebugWatchMaxWatches;
 using guidexos::developer_studio::DebugDwarfVariableKind;
@@ -630,6 +631,16 @@ enum class InputMode {
     ConfirmDebugClose,
     WatchExpression,
     BreakpointCondition
+};
+
+enum class DebugShutdownStage {
+    None = 0,
+    RequestReceived,
+    StopRequested,
+    TargetTeardown,
+    SessionTeardown,
+    WindowReleaseRequested,
+    Complete
 };
 
 struct NativeFileSystemContext {
@@ -760,6 +771,9 @@ static DebugBackend g_debugBackend = {};
 static bool g_debugWaitingForBuild = false;
 static bool g_debugTerminalReported = false;
 static uint32_t g_debugReportedEventCount = 0;
+static bool g_debugShutdownPending = false;
+static DebugShutdownStage g_debugShutdownStage = DebugShutdownStage::None;
+static uint64_t g_debugShutdownSessionGeneration = 0;
 static uint64_t g_debugTraceLastBindingId = 0;
 static uint32_t g_debugTraceLastBindingOwnerCount = 0;
 static uint32_t g_debugTraceLastCleanupCount = 0;
@@ -976,7 +990,9 @@ static void requestDebug(gx_app_context* ctx);
 static void requestDebugStepInto(gx_app_context* ctx);
 static void requestDebugStepOver(gx_app_context* ctx);
 static void requestDebugStepOut(gx_app_context* ctx);
-static void requestDebugStop(gx_app_context* ctx);
+static bool requestDebugStop(gx_app_context* ctx);
+static bool beginDebugShutdown(gx_app_context* ctx, gx_handle requestedWindow);
+static void completeDebugShutdownIfReady(gx_app_context* ctx);
 static bool toggleBreakpointAtCaret(gx_app_context* ctx);
 static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y);
 static void drawDebugPanel(gx_app_context* ctx);
@@ -3765,6 +3781,9 @@ static bool beginDebugSession(gx_app_context* ctx) {
     }
     g_debugTerminalReported = false;
     g_debugReportedEventCount = 0;
+    g_debugShutdownPending = false;
+    g_debugShutdownStage = DebugShutdownStage::None;
+    g_debugShutdownSessionGeneration = 0;
     g_debugTraceLastBindingId = 0;
     g_debugTraceLastBindingOwnerCount = 0;
     g_debugTraceLastCleanupCount = 0;
@@ -3882,20 +3901,110 @@ static void requestDebugStepOut(gx_app_context* ctx) {
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
 }
 
-static void requestDebugStop(gx_app_context* ctx) {
+static bool requestDebugStop(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
         writeStudioOutput("No active debug session");
-        return;
+        return false;
     }
     DebugErrorCode error = DebugErrorCode::None;
     if (!DebugControllerRequestStop(&g_debugController, g_debugBackend, &error)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug stop unavailable: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
-        return;
+        return false;
     }
     reportDebugMessage(ctx, "Debug: stop requested");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested");
+    return true;
+}
+
+static void emitDebugShutdownIdentity(gx_app_context* ctx, const char* marker,
+                                      uint64_t processId, uint64_t runtimeId,
+                                      uint64_t sessionGeneration) {
+    copyText(g_textScratch, sizeof(g_textScratch), marker);
+    appendText(g_textScratch, sizeof(g_textScratch), " process=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), processId);
+    appendText(g_textScratch, sizeof(g_textScratch), " runtime=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), runtimeId);
+    appendText(g_textScratch, sizeof(g_textScratch), " session=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), sessionGeneration);
+    logMarker(ctx, g_textScratch);
+}
+
+static bool beginDebugShutdown(gx_app_context* ctx, gx_handle requestedWindow) {
+    if (g_debugShutdownPending) return true;
+    if (!DebugControllerIsActive(&g_debugController)) return false;
+
+    g_debugShutdownPending = true;
+    g_debugShutdownStage = DebugShutdownStage::RequestReceived;
+    g_debugShutdownSessionGeneration = g_debugController.sessionGeneration;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_shutdown_request=targeted_close window=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), requestedWindow);
+    appendText(g_textScratch, sizeof(g_textScratch), " session=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugShutdownSessionGeneration);
+    logMarker(ctx, g_textScratch);
+
+    // A stop already in flight is still a valid close request. The targeted
+    // window close must not require a second focus-dependent key event.
+    if (g_debugController.state == DebugSessionState::Stopping) {
+        g_debugShutdownStage = DebugShutdownStage::StopRequested;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_shutdown_stage=STOP_REQUESTED");
+        return true;
+    }
+
+    if (!requestDebugStop(ctx)) {
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_shutdown_request=FAIL",
+                      DebugErrorName(g_debugController.error));
+        g_debugShutdownPending = false;
+        g_debugShutdownStage = DebugShutdownStage::None;
+        g_debugShutdownSessionGeneration = 0;
+        return false;
+    }
+    g_debugShutdownStage = DebugShutdownStage::StopRequested;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_shutdown_stage=STOP_REQUESTED");
+    return true;
+}
+
+static void completeDebugShutdownIfReady(gx_app_context* ctx) {
+    if (!g_debugShutdownPending || g_debugController.state != DebugSessionState::Exited ||
+        DebugControllerIsActive(&g_debugController)) return;
+
+    if (g_debugShutdownStage < DebugShutdownStage::TargetTeardown) {
+        emitDebugShutdownIdentity(ctx,
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_target_teardown=PASS state=Exited",
+            g_debugController.processId, g_debugController.nativeRuntimeId,
+            g_debugShutdownSessionGeneration);
+        g_debugShutdownStage = DebugShutdownStage::TargetTeardown;
+    }
+    if (g_debugShutdownStage < DebugShutdownStage::SessionTeardown) {
+        // The hosted RunController has already observed Completed and released
+        // its deployment before the shared debugger publishes Exited here.
+        DebugControllerClearBreakpoints(&g_debugController);
+        DebugWatchCollectionMarkStale(&g_debugWatches);
+        DebugDwarfMapperReset(&g_debugMapper);
+        g_debugPanelOpen = false;
+        g_debugMenuOpen = false;
+        g_inputMode = InputMode::Normal;
+        emitDebugShutdownIdentity(ctx,
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session_teardown=PASS state=Exited",
+            g_debugController.processId, g_debugController.nativeRuntimeId,
+            g_debugShutdownSessionGeneration);
+        g_debugShutdownStage = DebugShutdownStage::SessionTeardown;
+    }
+    if (g_debugShutdownStage < DebugShutdownStage::WindowReleaseRequested) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_window_release=REQUESTED window=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_window);
+        logMarker(ctx, g_textScratch);
+        g_debugShutdownStage = DebugShutdownStage::WindowReleaseRequested;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS");
+    }
+    // The Server emits the PASS/COMPLETE markers from NativeAppRuntime::Cleanup
+    // after this app returns and its owned window is released. Until then the
+    // app remains alive and keeps the lifecycle transport available.
+    g_requestExit = true;
 }
 
 static bool navigateDebugStop(gx_app_context* ctx, bool recordHistory) {
@@ -3948,7 +4057,10 @@ static bool navigateDebugStackFrame(gx_app_context* ctx, uint32_t frameIndex) {
 }
 
 static void pollDebug(gx_app_context* ctx) {
-    if (!DebugControllerIsActive(&g_debugController)) return;
+    if (!DebugControllerIsActive(&g_debugController)) {
+        completeDebugShutdownIfReady(ctx);
+        return;
+    }
     if (!g_controller.model.hasProject || !PathsEqual(g_controller.model.project.projectId, g_debugController.projectId)) {
         if (g_debugController.state != DebugSessionState::Stopping) requestDebugStop(ctx);
         return;
@@ -4075,6 +4187,7 @@ static void pollDebug(gx_app_context* ctx) {
     }
     if (!DebugControllerIsActive(&g_debugController) && g_debugController.state == DebugSessionState::Exited)
         g_debugTerminalReported = true;
+    completeDebugShutdownIfReady(ctx);
 }
 
 static void requestRunClose(gx_app_context* ctx) {
@@ -7763,7 +7876,7 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
     if (g_inputMode == InputMode::ConfirmDebugClose) {
         if (keyCode == 83 || keyCode == 115) {
             g_inputMode = InputMode::Normal;
-            requestDebugStop(ctx);
+            if (!beginDebugShutdown(ctx, g_window)) requestDebugStop(ctx);
         } else if (keyCode == 75 || keyCode == 107 || keyCode == 27) {
             g_inputMode = InputMode::Normal;
             writeStudioOutput("Studio remains open");
@@ -9382,6 +9495,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugWaitingForBuild = false;
     g_debugTerminalReported = false;
     g_debugReportedEventCount = 0;
+    g_debugShutdownPending = false;
+    g_debugShutdownStage = DebugShutdownStage::None;
+    g_debugShutdownSessionGeneration = 0;
     g_debugMenuOpen = false;
     g_debugPanelOpen = false;
     g_debugPanelTab = 0;
@@ -9416,6 +9532,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             pollBuild(ctx);
             pollRun(ctx);
             pollDebug(ctx);
+            if (g_requestExit) {
+                running = false;
+                break;
+            }
             gx_event event;
             clear_event(&event);
             gx_result result = ctx->host->poll_event(ctx, &event,
@@ -9433,8 +9553,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     } else if (g_debugWaitingForBuild) {
                         writeStudioOutput("Debug build in progress; close blocked");
                     } else if (DebugControllerIsActive(&g_debugController)) {
-                        g_inputMode = InputMode::ConfirmDebugClose;
-                        writeStudioOutput("Debug session is active: Stop it before closing Studio");
+                        if (!beginDebugShutdown(ctx, event.window)) {
+                            g_inputMode = InputMode::ConfirmDebugClose;
+                            writeStudioOutput("Debug session is active: Stop it before closing Studio");
+                        } else {
+                            g_inputMode = InputMode::Normal;
+                            writeStudioOutput("Debug session stop requested; closing Studio after teardown");
+                        }
                     } else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
                         g_inputMode = InputMode::ConfirmApplication;
                         writeOutput("Unsaved changes: Save, Discard, or Cancel");
