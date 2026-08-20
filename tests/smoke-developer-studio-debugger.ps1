@@ -22,11 +22,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-if (-not $FixtureRoot) { $FixtureRoot = Join-Path $RepoRoot "tests\fixtures\debugger-phase3b" }
+$StepOutProof = $StepOut -or $RepeatedStepOut -or $ContinueAfterStepOut -or
+                $StepOutThenStepInto -or $StepOutThenStepOver -or $OverlapStepOut
+if (-not $FixtureRoot) {
+    $FixtureRoot = Join-Path $RepoRoot $(if ($StepOutProof) { "tests\fixtures\debugger-phase8" } else { "tests\fixtures\debugger-phase3b" })
+}
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $FixtureRoot = [IO.Path]::GetFullPath($FixtureRoot)
 $Executable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
 $WatchExpression = if ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
+
+if ($StepOutProof -and $FixtureRoot -match 'debugger-phase8') {
+    if ($BreakpointLine -eq 20) { $BreakpointLine = 9 }
+    if ($OverlapStepOut -and $OverlapBreakpointLine -eq 20) { $OverlapBreakpointLine = 15 }
+}
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Debugger Phase 3B smoke failed: $Message" }
@@ -82,20 +91,13 @@ function Get-Key([char]$Character, [int]$Modifiers) {
 }
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
-Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in Phase 3B fixture exists"
+Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in debugger fixture exists"
 Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
 Assert-True (-not ($RepeatedStepOut -and $ContinueAfterStepOut)) "Step Out follow-up mode is unambiguous"
 Assert-True (-not ($StepOutThenStepInto -and $StepOutThenStepOver)) "post-Step Out mode is unambiguous"
 Assert-True (-not ($MixedLifecycle -and ($RepeatedStepOut -or $ContinueAfterStepOut -or $StepOutThenStepInto -or $StepOutThenStepOver))) "mixed lifecycle follow-up mode is unambiguous"
 Assert-True ((-not $RepeatedStepOut -and -not $ContinueAfterStepOut -and -not $StepOutThenStepInto -and -not $StepOutThenStepOver -and -not $MixedLifecycle) -or $StepOut -or $MixedLifecycle) "Step Out follow-up requires Step Out mode"
 Assert-True (-not $OverlapStepOut -or $StepOut) "overlap proof requires Step Out mode"
-if ($OverlapStepOut -and $BreakpointLine -eq 20 -and $OverlapBreakpointLine -eq 20) {
-    # The historical default targets the ordinary Phase 3B line 20. The
-    # overlap variant needs the callee line 14 plus the caller return-site
-    # line 20, so make the no-extra-arguments mode deterministic.
-    $BreakpointLine = 14
-}
-
 $parts = New-Object 'System.Collections.Generic.List[string]'
 Add-ServerLine $parts 'gui.start'
 Add-Delay $parts 8
@@ -359,6 +361,7 @@ try {
                      $text.Contains('EXCEPTION_SINGLE_STEP') -and
                      $text.Contains('rebound=true')) "F5 continues through a real single-step and rebinds the breakpoint"
     } elseif ($StepInto -or $StepOver -or $StepOut -or $MixedLifecycle) {
+        $overlapStop = if ($OverlapStepOut) { "Debug: paused | Breakpoint | src/main.cpp:$OverlapBreakpointLine" } else { "" }
         $stepEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING') -and
                         (($OverlapStepOut -and $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) -or
                          (-not $OverlapStepOut -and $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_STEP'))) -and
@@ -366,16 +369,17 @@ try {
                          (($StepInto -and $text.Contains('[NativeAppDebugger] user source-step accepted') -and $text.Contains('Debug: step into')) -or
                           ($StepOver -and $text.Contains('Debug: step over')) -or
                           ($MixedLifecycle -and $text.Contains('Debug: step into') -and $text.Contains('Debug: step over')) -or
-                         ($OverlapStepOut -and $text.Contains('Debug: step out') -and
-                          ($text.Contains('Debug: paused | Breakpoint | src/main.cpp:10') -or
-                           $text.Contains('Debug: paused | Breakpoint | src/main.cpp:14')) -and
-                          $text.Contains('debug_step=StepOut') -and
-                          $text.Contains('cleanup=1') -and
-                          -not ($text -match 'stale_step_out|stale_step_over')) -or
-                          ($StepOut -and $text.Contains('Debug: step out') -and
-                           $text -match 'Debug: paused \| Step \| src/main.cpp:(14|19|20|21)' -and
-                          $text.Contains('[NativeAppDebugger] internal single-step observed') -and
-                          -not ($text -match 'stale_step_over|invalid_transition')))
+                           ($OverlapStepOut -and $text.Contains('Debug: step out') -and
+                           $text.Contains($overlapStop) -and
+                           $text.Contains('debug_step=StepOut') -and
+                           $text.Contains('cleanup=1') -and
+                           -not ($text -match 'stale_step_out|stale_step_over')) -or
+                           ($StepOut -and $text.Contains('Debug: step out') -and
+                            (($text -match 'Debug: paused \| Step \| src/main.cpp:(14|15|16|19|20|21)' -and
+                              $text.Contains('[NativeAppDebugger] internal single-step observed')) -or
+                             ($StepOutThenStepInto -and $text.Contains('Debug: step into')) -or
+                             ($StepOutThenStepOver -and $text.Contains('Debug: step over'))) -and
+                           -not ($text -match 'stale_step_over|invalid_transition')))
         if (-not $stepEvidence) {
             Write-Host 'Captured hosted stepping diagnostics:'
             @($text -split "`r?`n" | Where-Object { $_ -match 'F11|step|Step|STEPPING|PAUSED_STEP|EXCEPTION_SINGLE_STEP|Debug:|debug_state|source_navigation|execution_marker' } | Select-Object -Last 260)
@@ -391,7 +395,7 @@ try {
         } else {
             Assert-True $stepEvidence "the real hosted Debug menu performs Step Out to the caller"
             if ($RepeatedStepOut) {
-                Assert-True (([regex]::Matches($text, 'Debug: paused \| Step \| src/main.cpp:(14|19|20|21)')).Count -ge 2) "a second hosted Step Out reaches the next caller frame"
+                Assert-True (([regex]::Matches($text, 'Debug: paused \| Step \| src/main.cpp:(14|15|16|19|20|21)')).Count -ge 2) "a second hosted Step Out reaches the next caller frame"
             }
             if ($StepOutThenStepInto) {
                 Assert-True ($text.Contains('Debug: step out') -and $text.Contains('Debug: step into') -and
@@ -406,15 +410,23 @@ try {
                              -not ($text -match 'stale_step_out|stale_step_over')) "Step Out -> Step Over remains valid in one hosted session"
             }
             if ($OverlapStepOut) {
+                $overlapStop = "Debug: paused | Breakpoint | src/main.cpp:$OverlapBreakpointLine"
+                $overlapStopPattern = [regex]::Escape($overlapStop)
                 Write-Host 'Captured overlap lifecycle markers:'
                 @($text -split "`r?`n" | Where-Object { $_ -match 'debug_session|debug_step|debug_binding|debug_transition|Debug: paused|Debug: process' } | Select-Object -Last 120)
+                Assert-True ($text -match 'debug_session=\d+ process=\d+ runtime=\d+ thread=\d+ state=' -and
+                             $text -match 'debug_step=StepOut active=TRUE generation=\d+ session=\d+ completion=\d+ cleanup=\d+ temp_id=\d+ temp_binding=\d+ return=0x[0-9A-Fa-f]+ lookup=0x[0-9A-Fa-f]+ temp=TRUE' -and
+                             $text -match 'debug_step=StepOut active=FALSE generation=\d+ session=\d+ completion=\d+ cleanup=1 temp_id=\d+ temp_binding=\d+ return=0x[0-9A-Fa-f]+ lookup=0x[0-9A-Fa-f]+ temp=FALSE') "lifecycle trace exposes session, Step Out generation, IDs, full addresses, and cleanup"
+                Assert-True ($text -match 'debug_binding=id=\d+ address=0x[0-9A-Fa-f]+ owners=2 refcount=2 user=1 internal=1 shared=TRUE installed=TRUE' -and
+                             $text -match 'debug_binding=id=\d+ address=0x[0-9A-Fa-f]+ owners=1 refcount=1 user=1 internal=0 shared=FALSE installed=TRUE' -and
+                             $text -match 'debug_transition=.*->.* sequence=\d+ rejected=none') "lifecycle trace exposes binding refcounts and validated transitions"
                 Assert-True ($text -match 'debug_binding=id=.*owners=2.*user=1.*internal=1.*shared=TRUE' -and
                              $text -match 'debug_binding=id=.*owners=1.*user=1.*internal=0.*shared=FALSE' -and
-                             $text.Contains('Debug: paused | Breakpoint | src/main.cpp:14') -and
+                             $text.Contains($overlapStop) -and
                              $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING') -and
-                             ([regex]::Matches($text, 'Debug: paused \| Breakpoint \| src/main.cpp:20')).Count -ge 2 -and
+                             ([regex]::Matches($text, $overlapStopPattern)).Count -ge 2 -and
                              -not ($text -match 'stale_step_out|stale_step_over')) "overlapping Step Out preserves the user breakpoint and Continue path"
-                Assert-True (([regex]::Matches($text, 'Debug: paused \| Breakpoint \| src/main.cpp:20')).Count -ge 2) "the preserved hosted user breakpoint re-hits after Continue"
+                Assert-True (([regex]::Matches($text, $overlapStopPattern)).Count -ge 2) "the preserved hosted user breakpoint re-hits after Continue"
             }
         }
     }

@@ -11,7 +11,8 @@ extern "C" __attribute__((noinline)) int level3(int value) {
 }
 
 extern "C" __attribute__((noinline)) int level2(int value) {
-    int result = level3(value + 1);
+    level3(value + 1);
+    volatile int result = g_result;
     return result;
 }
 

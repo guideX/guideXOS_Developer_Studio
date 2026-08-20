@@ -13,6 +13,7 @@ struct StepFake {
     bool pending = false;
     bool wrongThread = false;
     uint32_t stepCalls = 0;
+    uint32_t resumeCalls = 0;
     uint64_t nextRip = 0x104;
     DebugRegisterContext lastContext = {};
 };
@@ -23,6 +24,7 @@ struct StepOverFake {
     uint32_t bindCalls = 0;
     uint32_t removeCalls = 0;
     uint32_t callCalls = 0;
+    uint32_t resumeCalls = 0;
 };
 
 struct StepOutFake {
@@ -207,6 +209,10 @@ static DebugBackend makeBackend(StepFake* fake) {
     backend.capabilities.canContinue = true;
     backend.poll = poll;
     backend.stepInstruction = stepInstruction;
+    backend.resumeExecution = [](void* userData, uint64_t, const DebugRegisterContext&) {
+        ++static_cast<StepFake*>(userData)->resumeCalls;
+        return true;
+    };
     return backend;
 }
 
@@ -281,6 +287,11 @@ static bool overCall(void* userData, uint64_t, const DebugRegisterContext&, uint
     return true;
 }
 
+static bool overResume(void* userData, uint64_t, const DebugRegisterContext&) {
+    ++static_cast<StepOverFake*>(userData)->resumeCalls;
+    return true;
+}
+
 static DebugBackend makeStepOverBackend(StepOverFake* fake) {
     DebugBackend backend = {};
     backend.userData = fake;
@@ -291,6 +302,7 @@ static DebugBackend makeStepOverBackend(StepOverFake* fake) {
     backend.bindSoftwareBreakpoint = overBind;
     backend.debugCommand = overCommand;
     backend.stepOverCall = overCall;
+    backend.resumeExecution = overResume;
     return backend;
 }
 
@@ -418,6 +430,10 @@ int main() {
     assert(controller.stoppedContext.rip == 0x108 && controller.stoppedContext.rflags == 0x202);
     assert(DebugControllerCanStepInto(&controller));
     assert(DebugControllerCanContinue(&controller));
+    assert(DebugControllerContinue(&controller, backend, &error));
+    assert(fake.resumeCalls == 1 && controller.state == DebugSessionState::Running &&
+           controller.stopReason == DebugStopReason::None &&
+           controller.backendExecutionState == DebugBackendExecutionState::Running);
 
     DebugController stale = {};
     preparePausedController(&stale, true);
@@ -445,6 +461,11 @@ int main() {
     assert(overController.currentLocation.line == 11 && overController.currentInstructionAddress.value == 0x108);
     assert(!overController.stepOver.active && overController.stepOver.status == DebugStepOverStatus::Completed);
     assert(overFake.removeCalls == 1);
+    assert(DebugControllerCanContinue(&overController));
+    assert(DebugControllerContinue(&overController, overBackend, &error));
+    assert(overFake.resumeCalls == 1 && overController.state == DebugSessionState::Running &&
+           overController.stopReason == DebugStopReason::None &&
+           overController.backendExecutionState == DebugBackendExecutionState::Running);
 
     StepOutFake outFake;
     DebugBackend outBackend = makeStepOutBackend(&outFake);
@@ -501,6 +522,11 @@ int main() {
            overlapController.backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint &&
            !overlapController.stepOut.active && overlapController.stepCleanupCount == 1 &&
            overlapController.lastBindingOwnerCount == 1 && overlapController.lastBindingInstalled);
+    assert(DebugControllerPoll(&overlapController, overlapBackend, &mapper));
+    assert(overlapFake.removeCalls == 1 && overlapController.stepCleanupCount == 1 &&
+           overlapController.error == DebugErrorCode::None &&
+           overlapController.stopReason == DebugStopReason::Breakpoint &&
+           overlapController.backendExecutionState == DebugBackendExecutionState::PausedAtBreakpoint);
     assert(DebugControllerCanContinue(&overlapController));
     assert(DebugControllerContinue(&overlapController, overlapBackend, &error));
     assert(overlapFake.resumeCalls == 1 &&

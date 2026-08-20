@@ -367,10 +367,11 @@ static bool stepOutReturn(void* userData, uint64_t sessionGeneration,
                           const DebugRegisterContext& context, uint64_t breakpointId,
                           uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint,
                           uint64_t returnAddress, uint64_t temporaryBreakpointId) {
+    (void)breakpointId;
     (void)bindingId;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid ||
-        breakpointId == 0 || targetAddress == 0 || returnAddress == 0 || temporaryBreakpointId == 0) return false;
+        targetAddress == 0 || returnAddress == 0 || temporaryBreakpointId == 0) return false;
     HostedDebugResult result = {};
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepOutReturn,
                                           backend->runController.result.handle, sessionGeneration,

@@ -104,17 +104,25 @@ target memory or add a production output entry:
 * `debug_session` records session generation, process/runtime/thread identity,
   state, stop reason, stop generation, selected frame, and source location.
 * `debug_step` records the last operation (`StepInto`, `StepOver`, or
-  `StepOut`), its stop-generation binding, active flag, Step Out raw return and
-  lookup addresses, completion generation, temporary-owner state, and bounded
-  cleanup count.
+  `StepOut`), its session and stop-generation binding, active flag, temporary
+  breakpoint/binding IDs, Step Out raw return and lookup addresses, completion
+  generation, temporary-owner state, and bounded cleanup count.
 * `debug_binding` records the physical binding ID/address, logical owner count,
-  user/internal owner counts, shared status, and installed state. An overlap
-  therefore has one physical ID, two logical owners during Step Out, and one
-  user owner after cleanup.
+  bounded reference count, user/internal owner counts, shared status, and
+  installed state. An overlap therefore has one physical ID, two logical owners
+  during Step Out, and one user owner after cleanup.
 * `debug_transition` records the authoritative state transition sequence and
   the last rejected transition/status. Strict transition validation remains in
   force; duplicate observation is idempotent only for the already-published
   Step Out trap.
+
+These markers are emitted through the existing hosted debug-session host-log
+diagnostic path only when an authoritative state, binding, operation, cleanup,
+or transition value changes; there is no per-frame or per-poll history. Fixed
+256-byte controller-owned scratch buffers keep formatting bounded and preserve
+the 64 KiB native stack guarantee. The hosted smoke harness synchronizes on
+the existing bounded `WAITSTOP`/`WAITMARK` marker waits rather than adding
+long sleeps to the debugger.
 
 At an overlapping return-address stop, the internal Step Out completion is
 recorded internally but the user-visible reason is `Breakpoint`. Continue then

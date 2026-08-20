@@ -764,6 +764,9 @@ static uint64_t g_debugTraceLastBindingId = 0;
 static uint32_t g_debugTraceLastBindingOwnerCount = 0;
 static uint32_t g_debugTraceLastCleanupCount = 0;
 static uint64_t g_debugTraceLastTransitionSequence = 0;
+static DebugStepOperationKind g_debugTraceLastStepOperation = DebugStepOperationKind::None;
+static uint64_t g_debugTraceLastStepGeneration = 0;
+static uint64_t g_debugTraceLastStepCompletionGeneration = 0;
 static char g_debugTraceScratch[4][256] = {};
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
@@ -1115,6 +1118,36 @@ static uint32_t debugTraceInternalOwnerCount() {
     return count;
 }
 
+static uint64_t debugTraceStepGeneration(DebugStepOperationKind kind) {
+    uint64_t generation = 0;
+    switch (kind) {
+    case DebugStepOperationKind::SourceStep: generation = g_debugController.sourceStep.stopGeneration; break;
+    case DebugStepOperationKind::StepOver: generation = g_debugController.stepOver.stopGeneration; break;
+    case DebugStepOperationKind::StepOut: generation = g_debugController.stepOut.stopGeneration; break;
+    case DebugStepOperationKind::None: break;
+    }
+    return generation != 0 ? generation :
+        (kind == DebugStepOperationKind::None ? 0 : g_debugController.stepCompletionGeneration);
+}
+
+static uint64_t debugTraceTemporaryBreakpointId(DebugStepOperationKind kind) {
+    switch (kind) {
+    case DebugStepOperationKind::StepOver: return g_debugController.stepOver.temporaryBreakpointId;
+    case DebugStepOperationKind::StepOut: return g_debugController.stepOut.temporaryBreakpointId;
+    case DebugStepOperationKind::SourceStep: case DebugStepOperationKind::None: break;
+    }
+    return 0;
+}
+
+static uint64_t debugTraceTemporaryBindingId(DebugStepOperationKind kind) {
+    switch (kind) {
+    case DebugStepOperationKind::StepOver: return g_debugController.stepOver.temporaryBindingId;
+    case DebugStepOperationKind::StepOut: return g_debugController.stepOut.temporaryBindingId;
+    case DebugStepOperationKind::SourceStep: case DebugStepOperationKind::None: break;
+    }
+    return 0;
+}
+
 static void emitDebugLifecycleTrace(gx_app_context* ctx) {
     // This is intentionally a debug-session diagnostic path. It writes only
     // to the existing host log and emits at state/binding/cleanup changes;
@@ -1160,14 +1193,17 @@ static void emitDebugLifecycleTrace(gx_app_context* ctx) {
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]),
                stepOut.active || g_debugController.stepOver.active || g_debugController.sourceStep.active ? "TRUE" : "FALSE");
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " generation=");
-    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]),
-                   stepOut.active ? stepOut.stopGeneration :
-                   (g_debugController.stepOver.active ? g_debugController.stepOver.stopGeneration :
-                    g_debugController.sourceStep.stopGeneration));
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceStepGeneration(stepKind));
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " session=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), g_debugController.sessionGeneration);
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " completion=");
     appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), g_debugController.stepCompletionGeneration);
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " cleanup=");
     appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), g_debugController.stepCleanupCount);
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " temp_id=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceTemporaryBreakpointId(stepKind));
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " temp_binding=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceTemporaryBindingId(stepKind));
     if (stepOut.rawReturnAddress != 0) {
         appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " return=");
         appendHexAddress(stepMarker, sizeof(g_debugTraceScratch[1]), stepOut.rawReturnAddress);
@@ -1186,6 +1222,8 @@ static void emitDebugLifecycleTrace(gx_app_context* ctx) {
     appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " address=");
     appendHexAddress(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingAddress);
     appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " owners=");
+    appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingOwnerCount);
+    appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " refcount=");
     appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), g_debugController.lastBindingOwnerCount);
     appendText(bindingMarker, sizeof(g_debugTraceScratch[2]), " user=");
     appendUnsigned(bindingMarker, sizeof(g_debugTraceScratch[2]), userOwners);
@@ -3731,6 +3769,9 @@ static bool beginDebugSession(gx_app_context* ctx) {
     g_debugTraceLastBindingOwnerCount = 0;
     g_debugTraceLastCleanupCount = 0;
     g_debugTraceLastTransitionSequence = 0;
+    g_debugTraceLastStepOperation = DebugStepOperationKind::None;
+    g_debugTraceLastStepGeneration = 0;
+    g_debugTraceLastStepCompletionGeneration = 0;
     copyText(g_textScratch, sizeof(g_textScratch), "Debug: launching ");
     appendText(g_textScratch, sizeof(g_textScratch), target.projectId);
     reportDebugMessage(ctx, g_textScratch);
@@ -4019,12 +4060,18 @@ static void pollDebug(gx_app_context* ctx) {
         g_debugController.lastBindingId != g_debugTraceLastBindingId ||
         g_debugController.lastBindingOwnerCount != g_debugTraceLastBindingOwnerCount ||
         g_debugController.stepCleanupCount != g_debugTraceLastCleanupCount ||
-        g_debugController.transitionSequence != g_debugTraceLastTransitionSequence) {
+        g_debugController.transitionSequence != g_debugTraceLastTransitionSequence ||
+        g_debugController.lastStepOperation != g_debugTraceLastStepOperation ||
+        debugTraceStepGeneration(g_debugController.lastStepOperation) != g_debugTraceLastStepGeneration ||
+        g_debugController.stepCompletionGeneration != g_debugTraceLastStepCompletionGeneration) {
         emitDebugLifecycleTrace(ctx);
         g_debugTraceLastBindingId = g_debugController.lastBindingId;
         g_debugTraceLastBindingOwnerCount = g_debugController.lastBindingOwnerCount;
         g_debugTraceLastCleanupCount = g_debugController.stepCleanupCount;
         g_debugTraceLastTransitionSequence = g_debugController.transitionSequence;
+        g_debugTraceLastStepOperation = g_debugController.lastStepOperation;
+        g_debugTraceLastStepGeneration = debugTraceStepGeneration(g_debugController.lastStepOperation);
+        g_debugTraceLastStepCompletionGeneration = g_debugController.stepCompletionGeneration;
     }
     if (!DebugControllerIsActive(&g_debugController) && g_debugController.state == DebugSessionState::Exited)
         g_debugTerminalReported = true;
