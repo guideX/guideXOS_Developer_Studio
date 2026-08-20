@@ -1622,6 +1622,24 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         }
         return true;
     }
+    // A hosted breakpoint trap remains visible until the target is resumed.
+    // Once the controller has evaluated that exact stopped context, polling
+    // the same physical trap must not re-arm condition evaluation or publish
+    // duplicate breakpoint hits. A later stop has a new generation or a
+    // different address/binding and therefore continues through the normal
+    // ownership and condition path below.
+    if (snapshot.breakpointTrap && !snapshot.internalBreakpointTrap &&
+        controller->state == DebugSessionState::Paused &&
+        controller->stopReason == DebugStopReason::Breakpoint &&
+        !controller->conditionEvaluationPending &&
+        (snapshot.stopGeneration == 0 ||
+         snapshot.stopGeneration == controller->stopGeneration) &&
+        snapshot.targetAddress.valid && controller->currentInstructionAddress.valid &&
+        snapshot.targetAddress.value == controller->currentInstructionAddress.value &&
+        snapshot.breakpointBindingId != 0 &&
+        snapshot.breakpointBindingId == controller->lastBindingId) {
+        return true;
+    }
     if (snapshot.breakpointTrap && snapshot.internalBreakpointTrap) {
         if (controller->stepOut.active) {
             if (!processStepOutInternalTrap(controller, backend, mapper, snapshot)) {
@@ -1646,7 +1664,9 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         if (controller->state == DebugSessionState::Paused &&
             (controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOver ||
              controller->backendExecutionState == DebugBackendExecutionState::PausedAtStepOut ||
-             controller->stopReason == DebugStopReason::Breakpoint)) return true;
+             (controller->stopReason == DebugStopReason::Breakpoint &&
+              controller->backendExecutionState != DebugBackendExecutionState::SingleStepPending &&
+              controller->backendExecutionState != DebugBackendExecutionState::PreparingBreakpointResume))) return true;
         controller->error = DebugErrorCode::StaleStepOver;
         setMessage(controller, "Rejected stale internal Step Over trap");
         return false;

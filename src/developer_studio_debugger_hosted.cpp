@@ -73,7 +73,17 @@ static bool launch(void* userData, const DebugTarget& target, uint64_t generatio
 
 static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outSnapshot) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
-    if (!backend || !outSnapshot || !RunControllerIsActive(&backend->runController)) return false;
+    if (!backend || !outSnapshot) return false;
+    if (!RunControllerIsActive(&backend->runController)) {
+        // The hosted Server can publish target cleanup and unregister its
+        // debugger runtime one poll before the deployment publishes its final
+        // terminal state. Preserve that durable terminal snapshot so the
+        // controller can complete its shutdown stages instead of reporting a
+        // transient "target runtime is not registered" backend failure.
+        snapshotFromRun(*backend, generation, outSnapshot);
+        return outSnapshot->state == DebugSessionState::Exited ||
+            outSnapshot->state == DebugSessionState::Failed;
+    }
     const uint64_t handle = backend->runController.result.handle;
     if (!RunControllerPoll(&backend->runController, backend->runService)) return false;
     snapshotFromRun(*backend, generation, outSnapshot);
@@ -83,6 +93,14 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
                                               generation, outSnapshot->processId, outSnapshot->nativeRuntimeId,
                                               0, 0, backend->runController.request.artifactSha256, 0, 0, false, 0, 0, &debugResult)) {
+            if (backend->runController.closeRequested) {
+                // Close/cancel owns the remainder of this lifecycle. The
+                // deployment poll remains authoritative while the native
+                // runtime is being torn down, so do not convert a transient
+                // debugger-unregistration race into a terminal controller
+                // failure.
+                return true;
+            }
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }
