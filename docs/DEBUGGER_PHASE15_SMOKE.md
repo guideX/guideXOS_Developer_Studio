@@ -54,7 +54,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke-developer-stud
 ```
 
 It runs Continue, Step Out, Step Out followed by Continue, Step Out followed
-by Step Into, and Watch followed by Continue. Each child uses the established
+by Step Into, and Watch inspection. Each child uses the established
 Phase 19 `gui.close <windowId>` shutdown and lifecycle assertions, including
 target/session teardown, window ownership release, bounded native-app state,
 and Server exit code zero. The child trace index identifies the cycle on
