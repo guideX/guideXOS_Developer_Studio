@@ -9,12 +9,15 @@ using namespace guidexos::developer_studio;
 static Project validProject() {
     Project project = {};
     project.valid = true;
+    project.formatVersion = 1;
     project.kind = ProjectKind::NativeGuiApplication;
     std::strcpy(project.projectId, "com.example.debugger");
     std::strcpy(project.displayName, "Debugger Fixture");
     std::strcpy(project.rootPath, "D:/work/debugger");
     std::strcpy(project.manifestPath, "app/app.json");
     std::strcpy(project.targetProfileId, "guidexos.amd64.hosted.native");
+    std::strcpy(project.sourceRoot, "src");
+    std::strcpy(project.entryPoint, "gx_main");
     std::strcpy(project.architecture, "amd64");
     std::strcpy(project.abi, "guidexos-c-abi-v1");
     std::strcpy(project.outputName, "debugger-fixture");

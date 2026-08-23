@@ -7,7 +7,8 @@ param(
     [switch]$Build,
     [switch]$BuildRecovery,
     [switch]$LongSession,
-    [switch]$Intelligence
+    [switch]$Intelligence,
+    [switch]$Documents
 )
 
 $ErrorActionPreference = 'Stop'
@@ -144,10 +145,13 @@ function Write-Trace([string]$Reason, [string]$Text) {
     if (-not $TraceDirectory) { return }
     $directory = [IO.Path]::GetFullPath($TraceDirectory)
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $markerLines = @($Text -split "`r?`n" | Where-Object { $_ -like '*GUIDEXOS_DEVELOPER_STUDIO_MARKER*' })
     $body = @(
         'guideXOS Developer Studio Phase 22 workflow trace'
         "reason=$Reason"
         "lastInput=$script:LastInput"
+        '--- marker lines ---'
+        @($markerLines | Select-Object -Last 160)
         '--- bounded output ---'
         @($Text -split "`r?`n" | Select-Object -Last 120)
     ) -join "`r`n"
@@ -159,7 +163,7 @@ Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) 'experimental ho
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot 'guidexos.project') -PathType Leaf) 'workflow fixture project exists'
 Assert-True (-not (($Build -and $BuildRecovery) -or
                    ($LongSession -and ($Build -or $BuildRecovery)) -or
-                   ($Intelligence -and ($BuildRecovery -or $LongSession)))) 'workflow mode is unambiguous'
+                   (($Intelligence -or $Documents) -and ($BuildRecovery -or $LongSession)))) 'workflow mode is unambiguous'
 Copy-Item -LiteralPath $FixtureRoot -Destination $TemporaryFixtureRoot -Recurse -Force
 $TemporaryFixtureRoot = [IO.Path]::GetFullPath($TemporaryFixtureRoot)
 
@@ -182,7 +186,7 @@ Add-Click 300 180
 Add-Key 83 3
 Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save=PASS all=TRUE'
 
-if ($Intelligence) {
+if ($Intelligence -or $Documents) {
     # Use the checked-in Phase 15 C++ fixture as a real project-source
     # intelligence target: Rectangle is a named type, and rect.origin is a
     # type-aware member-access context.
@@ -194,6 +198,56 @@ if ($Intelligence) {
     Add-Key 32 2
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_begin=PASS'
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_context=MEMBER_LEXICAL'
+}
+
+if ($Documents) {
+    # Real A/B/A switching through the Explorer and tab strip. The main
+    # document receives an unsaved space before the second source document is
+    # opened; the switch marker carries the document identity and dirty state.
+    Add-Click 320 454
+    Add-Key 32
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_dirty=TRUE'
+    # Keep the dirty-state proof while restoring the fixture text before the
+    # later exact member insertion check.
+    Add-Key 8
+    Add-Click 80 140
+    Add-Key 13
+    Add-Wait 1
+    Add-Click 100 104
+    Add-Key 13
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=PASS name=freestanding_memory.cpp'
+    Add-Click 300 65
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_switch=PASS name=main.cpp dirty=TRUE'
+    Add-Key 83 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save=PASS name=main.cpp'
+    Add-Click 430 65
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_switch=PASS name=freestanding_memory.cpp dirty=FALSE'
+
+    # Rebind and dismiss a completion popup through a document switch, then
+    # open it again and accept the known Point::origin member. The accepted
+    # marker reports the exact insertion text, caret, and document identity.
+    Add-Click 300 65
+    Add-Click 400 214
+    Add-Key 84 6
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=PASS'
+    Add-Key 27
+    Add-Click 392 486
+    Add-Key 32 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_context=MEMBER_LEXICAL'
+    Add-Key 27
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_dismiss=PASS reason=escape'
+    Add-Key 32 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_context=MEMBER_LEXICAL'
+    Add-Click 430 65
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_dismiss=PASS reason=document_changed'
+    Add-Click 300 65
+    Add-Click 392 486
+    Add-Key 32 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_context=MEMBER_LEXICAL'
+    Add-Key 13
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=PASS text=origin caret='
+    Add-Key 83 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save=PASS name=main.cpp'
 }
 
 if ($Build -or $BuildRecovery) {
@@ -322,16 +376,23 @@ try {
         Assert-True ($script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=FAILED'] -ge 1) 'intentional compile failure is reported'
         Assert-True ($script:TextHits['[Build] Error: Build Failed'] -ge 1) 'build failure text is visible in output'
     }
-    if ($Intelligence) {
+    if ($Intelligence -or $Documents) {
         Assert-True ($script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER type_info=PASS'] -ge 1) 'Quick Type Info resolves a real project-source type'
         Assert-True ($script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_begin=PASS'] -ge 1 -and
                      $script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_context=MEMBER_LEXICAL'] -ge 1) 'member completion opens in a real project-source member context'
     }
+    if ($Documents) {
+        Assert-True ($script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER document_switch=PASS name=main.cpp dirty=TRUE'] -ge 1 -and
+                     $script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER document_switch=PASS name=freestanding_memory.cpp dirty=FALSE'] -ge 1) 'A/B document switching preserves identity and dirty state'
+        Assert-True ($script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=PASS text=origin caret='] -ge 1) 'member completion accepts the exact Point::origin insertion'
+        Assert-True ($script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_dismiss=PASS reason=escape'] -ge 1 -and
+                     $script:MarkerHits['GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_dismiss=PASS reason=document_changed'] -ge 1) 'completion dismissal and document rebinding are proven'
+    }
     Assert-True ($script:Process.ExitCode -eq 0) 'hosted Server exits cleanly after workflow smoke'
-    Write-Host 'Developer Studio Phase 22 focused workflow smoke PASS'
+    Write-Host $(if ($Documents) { 'Developer Studio Phase 23 document/completion workflow smoke PASS' } else { 'Developer Studio Phase 22 focused workflow smoke PASS' })
     $succeeded = $true
 } finally {
-    if (-not $succeeded) { Write-Trace 'Phase 22 workflow smoke failure' (Get-LiveText) }
+    if (-not $succeeded) { Write-Trace 'Phase 22 workflow smoke failure' (Get-LiveText -Full) }
     if ($script:Process -and -not $script:Process.HasExited) { $script:Process.Kill(); $script:Process.WaitForExit() }
     if ($script:Process) { $script:Process.Dispose() }
     Remove-Item -LiteralPath $StdoutPath,$StderrPath -Force -ErrorAction SilentlyContinue

@@ -885,11 +885,29 @@ static void parseVariableSegment(ParseContext& context, uint32_t first, uint32_t
 static void parseVariables(ParseContext& context) {
     uint32_t start = 0;
     uint32_t parenDepth = 0;
+    uint32_t initializerBraceDepth = 0;
     for (uint32_t i = 0; i < g_tokenCount; ++i) {
         if (isPunctuation(context.text, g_tokens[i], "(")) ++parenDepth;
         else if (isPunctuation(context.text, g_tokens[i], ")") && parenDepth > 0) --parenDepth;
-        if (isPunctuation(context.text, g_tokens[i], "{")) start = i + 1;
-        else if (isPunctuation(context.text, g_tokens[i], "}")) { start = i + 1; parenDepth = 0; }
+        if (isPunctuation(context.text, g_tokens[i], "{")) {
+            bool startsDeclarationScope = i == 0;
+            if (i > 0 && (isPunctuation(context.text, g_tokens[i - 1], ")") ||
+                         isPunctuation(context.text, g_tokens[i - 1], "]"))) startsDeclarationScope = true;
+            for (uint32_t j = start; !startsDeclarationScope && j < i; ++j) {
+                if (tokenTextEqual(context.text, j, "class") || tokenTextEqual(context.text, j, "struct") ||
+                    tokenTextEqual(context.text, j, "union") || tokenTextEqual(context.text, j, "enum") ||
+                    tokenTextEqual(context.text, j, "namespace")) startsDeclarationScope = true;
+            }
+            // A brace following a declarator is an initializer, not a new
+            // scope. Preserve the declaration segment so bounded type-aware
+            // completion can resolve locals such as `Rectangle rect{}`.
+            if (startsDeclarationScope) start = i + 1;
+            else ++initializerBraceDepth;
+        }
+        else if (isPunctuation(context.text, g_tokens[i], "}")) {
+            if (initializerBraceDepth > 0) --initializerBraceDepth;
+            else { start = i + 1; parenDepth = 0; }
+        }
         else if (isPunctuation(context.text, g_tokens[i], ";") && parenDepth == 0) {
             uint32_t segmentStart = start;
             uint32_t commaDepth = 0;
@@ -1309,14 +1327,20 @@ bool TypeDatabaseIndexProject(TypeDatabase* database, const WorkspaceFileSystem&
     for (uint32_t i = 0; i < SymbolDatabaseDocumentCount(symbolDatabase) && indexed < database->documentCapacity; ++i) {
         const SymbolDocument* document = SymbolDatabaseDocumentAt(symbolDatabase, i);
         if (!document || !document->used || !IsSymbolSourcePath(document->path)) continue;
-        const Document* dirty = nullptr;
+        const Document* openDocument = nullptr;
         for (uint32_t d = 0; d < dirtyDocumentCount; ++d)
-            if (dirtyDocuments && dirtyDocuments[d].used && dirtyDocuments[d].buffer.dirty && equalText(dirtyDocuments[d].path, document->path)) dirty = &dirtyDocuments[d];
+            if (dirtyDocuments && dirtyDocuments[d].used && equalText(dirtyDocuments[d].path, document->path)) {
+                openDocument = &dirtyDocuments[d];
+                break;
+            }
         uint32_t bytes = 0;
-        uint64_t id = document->documentId;
-        uint32_t generation = document->generation;
+        uint64_t id = openDocument ? openDocument->documentId : document->documentId;
+        uint32_t generation = openDocument ? openDocument->buffer.generation : document->generation;
         const char* source = nullptr;
-        if (dirty) { source = dirty->buffer.data; bytes = dirty->buffer.length; id = dirty->documentId; generation = dirty->buffer.generation; }
+        if (openDocument && openDocument->buffer.dirty) {
+            source = openDocument->buffer.data;
+            bytes = openDocument->buffer.length;
+        }
         else {
             FileInfo info = {};
             if (fileSystem.stat && fileSystem.stat(fileSystem.userData, document->path, &info) && info.size > kTypeMaxParserDocumentBytes) { database->truncated = true; continue; }

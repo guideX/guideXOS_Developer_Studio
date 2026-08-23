@@ -3375,8 +3375,10 @@ static void reportDocumentOpen(gx_app_context* ctx, bool success, bool duplicate
                     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER syntax_span_validation=PASS");
             }
         }
-        if (duplicate) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=PASS duplicate=TRUE");
-        else logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=PASS");
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=PASS");
+        appendText(g_textScratch, sizeof(g_textScratch), duplicate ? " duplicate=TRUE name=" : " name=");
+        appendText(g_textScratch, sizeof(g_textScratch), document ? document->name : "unknown");
+        logMarker(ctx, g_textScratch);
     } else {
         outputError("Document open failed");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_open=FAIL", currentError());
@@ -3406,7 +3408,9 @@ static bool saveDocument(gx_app_context* ctx, uint32_t index) {
         return false;
     }
     writeOutput("Document saved");
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save=PASS");
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save=PASS name=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.documents[index].name);
+    logMarker(ctx, g_textScratch);
     if (g_controller.model.hasProject && isProjectMetadataDocument(&g_controller.model.documents[index])) {
         if (WorkspaceControllerReloadProject(&g_controller)) {
             writeOutput("Project metadata valid");
@@ -6391,6 +6395,8 @@ static void dismissCompletion(gx_app_context* ctx, const char* reason, bool show
     g_completionPopupOpen = false;
     if (showStatus && reason) {
         completionSetStatus(reason);
+    }
+    if (reason) {
         copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_dismiss=PASS reason=");
         appendText(g_textScratch, sizeof(g_textScratch), reason);
         logMarker(ctx, g_textScratch);
@@ -6561,6 +6567,10 @@ static bool acceptCompletion(gx_app_context* ctx) {
     keepCaretVisible(document);
     copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER completion_accept=PASS text=");
     appendText(g_textScratch, sizeof(g_textScratch), candidate->insertionText);
+    appendText(g_textScratch, sizeof(g_textScratch), " caret=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), document->buffer.caret);
+    appendText(g_textScratch, sizeof(g_textScratch), " document=");
+    appendText(g_textScratch, sizeof(g_textScratch), document->name);
     logMarker(ctx, g_textScratch);
     CompletionSessionDismiss(&g_completionSession);
     g_completionPopupOpen = false;
@@ -7700,18 +7710,25 @@ static void drawShell(gx_app_context* ctx) {
     drawModal(ctx);
 }
 
-static void selectDocumentTab(int x) {
+static void selectDocumentTab(gx_app_context* ctx, int x) {
     int tabX = 278;
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
         if (!g_controller.model.documents[i].used) continue;
         if (x >= tabX && x < tabX + 126) {
-            dismissCompletion(nullptr, "document_changed", false);
-            dismissSignatureHelp(nullptr, "document_changed", false);
+            dismissCompletion(ctx, "document_changed", false);
+            dismissSignatureHelp(ctx, "document_changed", false);
             if (g_controller.model.activeDocument != i) resetEditorView();
             g_controller.model.activeDocument = i;
             g_editorFocused = true;
             g_outputFocused = false;
             keepCaretVisible(&g_controller.model.documents[i]);
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_switch=PASS name=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.documents[i].name);
+            appendText(g_textScratch, sizeof(g_textScratch), " dirty=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.documents[i].buffer.dirty ? "TRUE" : "FALSE");
+            appendText(g_textScratch, sizeof(g_textScratch), " id=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.documents[i].documentId);
+            logMarker(ctx, g_textScratch);
             return;
         }
         tabX += 130;
@@ -8961,6 +8978,15 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         }
         return;
     }
+    // Document tabs remain an explicit navigation target while a transient
+    // popup is open.  Let tab selection dismiss the popup with the
+    // document_changed reason instead of treating the click as a generic
+    // mouse dismissal.
+    if (y >= 52 && y < 80 && x >= 270) {
+        selectDocumentTab(ctx, x);
+        drawShell(ctx);
+        return;
+    }
     if (g_typePopupOpen) {
         gx_rect bounds = {};
         if (!typePopupBounds(&bounds)) { dismissTypeInfo(ctx, "popup_expired", false); return; }
@@ -9422,7 +9448,6 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (y >= 52 && y < 80 && x >= 270) { selectDocumentTab(x); drawShell(ctx); return; }
     if (x < kExplorerRect.width && y >= kEntryTop - 14 && y < kEntryTop + 20 * kEntryHeight) {
         g_editorFocused = false;
         g_outputFocused = false;

@@ -107,8 +107,13 @@ bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRe
     if (error) *error = RunErrorCode::None;
     if (!request) { if (error) *error = RunErrorCode::InvalidRequest; return false; }
     *request = RunRequest();
+    ProjectErrorCode projectError = ProjectErrorCode::None;
     if (!project.valid || project.kind != ProjectKind::NativeGuiApplication || build.state != BuildState::Succeeded) {
         if (error) *error = RunErrorCode::BuildRequired;
+        return false;
+    }
+    if (!ValidateProjectMetadata(project, &projectError)) {
+        if (error) *error = RunErrorCode::InvalidRequest;
         return false;
     }
     if (!build.artifactValid || !build.artifactEntryPoint || build.artifactSha256[0] == '\0') {

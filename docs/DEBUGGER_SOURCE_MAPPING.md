@@ -183,7 +183,7 @@ Call Stack is documented in [DEBUGGER_CALL_STACK.md](DEBUGGER_CALL_STACK.md).
 Step Out uses this mapper after a real caller return trap: the raw return
 address remains the execution position, while `returnAddress - 1` is used only
 for caller source and symbol attribution. Expressions, locals, watches,
-conditional/data breakpoints, and attach/remote debugging remain future
-milestones. Phase 4 uses the mapping only to identify the exact physical address;
+data breakpoints and attach/remote debugging remain future milestones. Phase 4
+uses the mapping only to identify the exact physical address;
 it does not infer source-level stepping from a single machine instruction.
 Phase 9 reuses the exact ELF artifact identity and stopped-PC policy for DWARF variable lookup. Source mapping and variable lookup remain separate: a source line does not provide a runtime value.

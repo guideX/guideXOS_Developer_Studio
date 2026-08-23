@@ -57,7 +57,10 @@ if ($SkipPackage) {
 } else {
     $packageScript = Join-Path $repoRoot 'build.ps1'
     Invoke-FastChecked 'Developer Studio package build' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $packageScript, '-ServerRoot', $ServerRoot, '-Configuration', 'Debug')
+    $packageAuditScript = Join-Path $repoRoot 'tests\validate-developer-studio-package.ps1'
+    Invoke-FastChecked 'Developer Studio package content/ELF audit' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $packageAuditScript, '-ServerRoot', $ServerRoot)
     Write-Host 'package_build=PASS'
+    Write-Host 'package_audit=PASS'
 }
 
 if ($SkipHosted) {

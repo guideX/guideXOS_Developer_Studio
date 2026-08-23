@@ -73,4 +73,6 @@ Locals and Arguments are rebuilt for every stopped generation. Continue, Step In
 
 This is not a full DWARF evaluator. General C++ expressions, generalized location lists, optimized-variable tracking, register editing, strings, STL/NatVis, and dynamic types remain intentionally deferred. Phase 10 adds bounded object member expansion and explicit pointer dereference in a separate structured-value model. Phase 11 adds the separate bounded read-only Watch grammar documented in [DEBUGGER_WATCHES.md](DEBUGGER_WATCHES.md). The current behavior assumes deterministic unoptimized Clang AMD64 debug builds.
 
-Phase 11 is complete; the next intentionally small milestone is **Debugger Phase 12 — Conditional Breakpoints Foundation**.
+Phase 13 adds bounded comparisons to the same Watch value model and reuses it
+for conditional breakpoints. Data breakpoints, general expression evaluation,
+and optimized-code parity remain outside this contract.

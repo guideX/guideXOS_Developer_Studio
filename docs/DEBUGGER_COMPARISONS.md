@@ -7,7 +7,7 @@ existing unary, postfix, and primary expressions:
 `==`, `!=`, `<`, `<=`, `>`, and `>=`.
 
 Comparison results are debugger Boolean scalars displayed as `true` or `false`
-and are consumed by conditional breakpoints through the existing Phase 12
+and are consumed by conditional breakpoints through the bounded
 truth-conversion path. A comparison Watch has no expandable value node.
 
 Only integral scalars, Boolean/integer-like scalars, pointer equality, and

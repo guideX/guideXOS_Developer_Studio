@@ -1,4 +1,11 @@
-# Debugger Foundation — Phase 7
+# Debugger Foundation — historical phases and current bounded contract
+
+This document preserves the phase-by-phase debugger design record. The current
+contract is broader than the original foundation: hosted AMD64 sessions now
+prove real Continue, Step Into, Step Over, Step Out, Call Stack, read-only
+Locals/Arguments, structured values, read-only Watches, and conditional
+breakpoints. The current package remains an experimental, deterministic
+`-g -O0` Native ELF path rather than a general-purpose debugger.
 
 ## Phase 5 status
 
@@ -53,7 +60,9 @@ The hosted Native ELF backend publishes these capabilities:
   editing remains outside the UI contract.
 - Registers are captured in a bounded read-only stopped context and the session
   panel shows `RIP`, `RSP`, `RBP`, and `RFLAGS` while paused. Memory, thread
-  enumeration, expressions, and register editing remain unavailable.
+  enumeration, arbitrary expressions, and register editing remain unavailable;
+  separate bounded read-only Locals, Arguments, structured-value, Watch, and
+  conditional-breakpoint contracts are documented in their phase records.
 
 The UI keeps ordinary Run on F5. F9 toggles the current editor line because it
 was not occupied by an existing Developer Studio shortcut. Debug commands are
@@ -165,8 +174,9 @@ reported as `Failed`.
 for the backend to report normal exit/cleanup. `Continue` is enabled only when
 the exact stopped context, process/runtime/thread, session generation, stop
 generation, and physical binding are valid. F5 continues such a stop; outside
-debugging it retains ordinary Run behavior. Pause and all user-visible Step
-commands remain disabled.
+debugging it retains ordinary Run behavior. Pause-anywhere remains unavailable;
+the bounded F11/Shift+F11 source-step commands are supported only from a
+genuine owned breakpoint stop.
 
 Ordinary Run remains a separate command and continues to use the existing
 Run controller. Closing a project or Developer Studio while a debug session
@@ -266,9 +276,9 @@ resume or stale identity.
 
 Deferred work includes additional instruction-breakpoint workflows, general
 DWARF expressions beyond the bounded Watch grammar, CFI/`eh_frame` unwinding,
-memory/register editing, conditional/data breakpoints, attach/remote/multiple
-process support, GDB/LLDB/DAP integration, managed/.NET debugging, and
-bare-metal trap implementation.
+memory/register editing, data breakpoints, attach/remote/multiple-process
+support, GDB/LLDB/DAP integration, managed/.NET debugging, and bare-metal trap
+implementation.
 
 ## Phase 8 Step Out
 
@@ -276,10 +286,11 @@ Phase 8 adds real Step Out / Shift+F11 for the bounded hosted AMD64 path. It
 uses the current physical frame, validates the caller return address from the
 fresh Call Stack, arms a temporary internal return breakpoint, and waits for
 the real return-address `EXCEPTION_BREAKPOINT`. See
-[DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). Pause, locals, arguments,
-general expression evaluation beyond Phase 11, DWARF CFI unwinding, and optimized-code full debugging remain
-unsupported. Phase 11 adds the separate bounded Watch expression path; it does
-not change the structured Locals/Arguments contract.
+[DEBUGGER_STEP_OUT.md](DEBUGGER_STEP_OUT.md). Pause-anywhere, general expression
+evaluation beyond the bounded Watch grammar, DWARF CFI unwinding, and
+optimized-code full debugging remain unsupported. Phase 11 adds the separate
+bounded Watch expression path; it does not change the structured
+Locals/Arguments contract.
 ## Phase 9 locals and arguments
 
 The debugger now has a bounded read-only DWARF variable index for simple Native ELF debug builds. Locals and formal arguments are evaluated from the exact stopped register/frame-base/target-memory state. See [DEBUGGER_LOCALS_ARGUMENTS.md](DEBUGGER_LOCALS_ARGUMENTS.md). Phase 11 adds bounded Watch expressions on top of this same value model; arbitrary C++ expression evaluation and full optimized-variable debugging remain outside the contract.

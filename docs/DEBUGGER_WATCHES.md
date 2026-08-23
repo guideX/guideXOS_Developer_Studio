@@ -121,7 +121,7 @@ Assignment syntax is rejected before any target mutation path is reachable.
 ## Deferred work
 
 General C++ evaluation, function/method calls, arithmetic expressions,
-conditional/data breakpoints, casts, pointer arithmetic, dynamic types/RTTI,
+data breakpoints, casts, pointer arithmetic, dynamic types/RTTI,
 STL pretty printers, NatVis, optimized-code reconstruction, and
 memory/register editing remain outside Phase 11. Phase 13 adds the narrowly
 bounded comparison layer shared by Watches and conditional breakpoints; its

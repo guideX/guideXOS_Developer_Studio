@@ -91,6 +91,14 @@ static void testTypeAwareDirectMembers() {
     assert(findCandidate(session, "width") >= 0);
     assert(findCandidate(session, "height") >= 0);
     assert(session.candidates[findCandidate(session, "width")].kind == CompletionCandidateKind::Member);
+
+    const char bracedText[] =
+        "struct Window { int width; int height; };\n"
+        "void draw() { Window window{}; window.";
+    buildMemberSession(bracedText, &session, candidates, &typeDatabase, records, documents,
+                       buckets, memberIndices, &error);
+    assert(session.active && session.context.memberResolution == CompletionMemberResolution::Exact);
+    assert(findCandidate(session, "width") >= 0 && findCandidate(session, "height") >= 0);
 }
 
 static void testTypeAwarePointerReferenceAndParameter() {

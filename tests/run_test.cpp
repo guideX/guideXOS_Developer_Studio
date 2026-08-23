@@ -9,11 +9,18 @@ using namespace guidexos::developer_studio;
 static Project validProject() {
     Project project = {};
     project.valid = true;
+    project.formatVersion = 1;
     project.kind = ProjectKind::NativeGuiApplication;
     std::strcpy(project.projectId, "com.example.run");
+    std::strcpy(project.displayName, "Run Fixture");
     std::strcpy(project.rootPath, "D:/work/run");
     std::strcpy(project.manifestPath, "app/app.json");
     std::strcpy(project.targetProfileId, "guidexos.amd64.hosted.native");
+    std::strcpy(project.sourceRoot, "src");
+    std::strcpy(project.entryPoint, "gx_main");
+    std::strcpy(project.abi, "guidexos-c-abi-v1");
+    std::strcpy(project.architecture, "amd64");
+    std::strcpy(project.outputName, "run-fixture");
     return project;
 }
 
@@ -75,6 +82,15 @@ int main() {
     assert(RunRequestFromBuild(project, build, &request, &error));
     assert(std::strcmp(request.manifestPath, "app/app.json") == 0);
     assert(std::strcmp(request.artifactPath, "build/bin/amd64/run.elf") == 0);
+
+    Project invalidArchitecture = project;
+    std::strcpy(invalidArchitecture.architecture, "i386");
+    assert(!RunRequestFromBuild(invalidArchitecture, build, &request, &error));
+    assert(error == RunErrorCode::InvalidRequest);
+    BuildResult missingArtifact = build;
+    missingArtifact.artifactValid = false;
+    assert(!RunRequestFromBuild(project, missingArtifact, &request, &error));
+    assert(error == RunErrorCode::ArtifactInvalid);
 
     FakeRun fake;
     HostedDevelopmentRunService service = { &fake, prepareRun, startRun, pollRun, closeRun, releaseRun, nullptr };

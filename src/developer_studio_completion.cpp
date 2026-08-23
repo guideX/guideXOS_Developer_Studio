@@ -1358,8 +1358,15 @@ bool CompletionSessionTextMatches(const CompletionSession* session, const Docume
         return false;
     }
     const uint32_t length = session->context.replacementEnd - session->context.replacementStart;
-    if (length != textLength(session->context.prefix, sizeof(session->context.prefix) - 1) ||
-        !equalText(document.buffer.data + session->context.replacementStart, session->context.prefix, false)) {
+    const uint32_t prefixLength = textLength(session->context.prefix, sizeof(session->context.prefix) - 1);
+    bool matches = length == prefixLength;
+    for (uint32_t i = 0; matches && i < prefixLength; ++i) {
+        // TextBuffer storage is bounded rather than NUL-terminated at every
+        // token boundary; compare the validated replacement range directly.
+        if (document.buffer.data[session->context.replacementStart + i] != session->context.prefix[i])
+            matches = false;
+    }
+    if (!matches) {
         if (error) *error = CompletionErrorCode::ExpectedTextMismatch;
         return false;
     }

@@ -16,7 +16,7 @@ The current bounded phase proves the first useful source workflow:
 - Type-Aware Member Completion uses that shared type layer for bounded direct members after `.` and `->`; see [docs/CODE_COMPLETION.md](docs/CODE_COMPLETION.md).
 - deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, bounded lexical Go To Definition (`F12`/`Alt+Left`), project-local Declaration–Definition Relationships (`F12`/`Ctrl+F12`/`Alt+F12`), bounded project-local Find All References (`Shift+F12`), manually invoked lightweight lexical Code Completion (`Ctrl+Space`), bounded lexical Signature Help (`Ctrl+Shift+Space`), and a project-local bounded Include Graph (`Ctrl+Shift+I`).
 
-The Debugger Foundation provides generation-safe hosted Native ELF session supervision, F9 source-breakpoint storage and markers, capability-gated Debug commands, and Breakpoints/Debug Session inspection; see [docs/DEBUGGER_FOUNDATION.md](docs/DEBUGGER_FOUNDATION.md). Instruction-level breakpoints, pause/continue, stepping, source-to-address mapping, and value inspection remain deferred. Additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
+The hosted Native ELF debugger provides generation-safe session supervision, F9 source breakpoints, real Continue, Step Into/Over/Out, DWARF source mapping, a bounded Call Stack, read-only Locals/Arguments, structured variable expansion, read-only Watches, and conditional breakpoints; see [docs/DEBUGGER_FOUNDATION.md](docs/DEBUGGER_FOUNDATION.md) and [docs/DEBUGGER_STEPPING.md](docs/DEBUGGER_STEPPING.md). Pause-anywhere, instruction-breakpoint editing, memory/register editing, attach/remote debugging, optimized-code parity, and general C++ expression evaluation remain outside the contract. Additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
 The repository-native validation tiers and bounded hosted debugger soak are documented in [docs/VALIDATION_TIERS.md](docs/VALIDATION_TIERS.md).
 
@@ -107,6 +107,8 @@ For a valid Native GUI Application project, use `Build -> Build Project` or `Ctr
 
 The service is hosted-development only. It does not accept arbitrary commands or metadata-defined executables, supports one build at a time, caps output at 64 KiB and 32 retained lines of 255 bytes, and stops a build after five minutes. SDK/toolchain resolution uses the hosted Server `sdk/include` and fixed LLVM locations, with `GUIDEXOS_SDK_ROOT` and `GUIDEXOS_TOOLCHAIN_ROOT` overrides.
 
+The package recipe removes the previous staged `developerstudio.elf` before compiling, validates the new staged image, and moves it into the package only after validation. The deterministic package audit checks the exact two-file runtime payload, canonical manifest identity, ELF64 little-endian AMD64 `ET_EXEC` headers, the required `.symtab`, and the absence of `.debug_*` sections. Run the fast validation tier for the complete local command sequence; it does not claim remote CI execution.
+
 ## Run Project
 
 For the supported Native GUI Application, use the Build menu's `Run Project (F5)` item or press `F5`. Every run rebuilds the active project first; dirty documents go through the existing Save All/Cancel gate so a stale artifact is not launched.
@@ -134,6 +136,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke-workspace.ps1
 It creates and removes only its own temporary fixture and verifies enumeration, editing, saving, duplicate-tab prevention, safe binary/size rejection, and Save/Discard/Cancel close behavior.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the integration audit, boundaries, and intentionally deferred work.
+See [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) for the current Phase 23 capabilities, failure-path contract, package audit, reproducibility expectations, and validation evidence.
 See [docs/BUILD_PROJECT.md](docs/BUILD_PROJECT.md) for the Build Project contract and diagnostics.
 See [docs/OUTPUT_AND_DIAGNOSTICS.md](docs/OUTPUT_AND_DIAGNOSTICS.md) for the unified Output and Problems architecture, bounded limits, supported diagnostic formats, and navigation behavior.
 See [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md) for lexical tokenization, multiline state, incremental cache behavior, limits, palette, and known limitations.
