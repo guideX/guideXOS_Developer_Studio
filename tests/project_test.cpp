@@ -134,6 +134,11 @@ int main(int argc, char** argv) {
     assert(targetPosition != std::string::npos);
     unknownTarget.replace(targetPosition, targetValue.size(), "guidexos.amd64.unknown");
     assert(!ParseProjectMetadata(unknownTarget.data(), static_cast<uint32_t>(unknownTarget.size()), &parsed, &error) && error == ProjectErrorCode::UnknownTargetProfile);
+    std::string unknownField(serialized, serializedBytes);
+    const size_t objectEnd = unknownField.rfind("\n}");
+    assert(objectEnd != std::string::npos);
+    unknownField.insert(objectEnd, ",\n  \"futureMetadata\": true");
+    assert(!ParseProjectMetadata(unknownField.data(), static_cast<uint32_t>(unknownField.size()), &parsed, &error) && error == ProjectErrorCode::UnknownField);
     const char duplicateJson[] = "{\"formatVersion\":1,\"formatVersion\":1}";
     assert(!ParseProjectMetadata(duplicateJson, sizeof(duplicateJson) - 1, &parsed, &error) && error == ProjectErrorCode::DuplicateField);
     assert(!ParseProjectMetadata("{\"formatVersion\":2}", 19, &parsed, &error) && error == ProjectErrorCode::MissingField);

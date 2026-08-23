@@ -99,7 +99,73 @@ int main(int argc, char** argv) {
     assert(!document->buffer.dirty);
     std::ifstream saved(root / "sample.cpp", std::ios::binary);
     std::string savedText((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    saved.close();
     assert(savedText.find("// saved") != std::string::npos);
+
+    // Two open dirty documents must remain independent through Save All.
+    assert(WorkspaceControllerOpenDocument(&controller, "subdirectory/config.json"));
+    Document* secondDocument = WorkspaceControllerActiveDocument(&controller);
+    assert(secondDocument && secondDocument->name[0] != '\0');
+    const uint32_t secondDocumentIndex = controller.model.activeDocument;
+    TextBufferEnd(&secondDocument->buffer);
+    const char secondEdit[] = "// second-save-all\n";
+    assert(TextBufferInsert(&secondDocument->buffer, secondEdit, static_cast<uint32_t>(std::strlen(secondEdit))));
+    assert(WorkspaceControllerOpenDocument(&controller, "sample.cpp"));
+    document = WorkspaceControllerActiveDocument(&controller);
+    assert(document && std::strcmp(document->name, "sample.cpp") == 0);
+    TextBufferEnd(&document->buffer);
+    const char firstEdit[] = "// first-save-all\n";
+    assert(TextBufferInsert(&document->buffer, firstEdit, static_cast<uint32_t>(std::strlen(firstEdit))));
+    assert(WorkspaceControllerSaveAll(&controller));
+    assert(!document->buffer.dirty && !secondDocument->buffer.dirty);
+    std::ifstream savedFirst(root / "sample.cpp", std::ios::binary);
+    std::string savedFirstText((std::istreambuf_iterator<char>(savedFirst)), std::istreambuf_iterator<char>());
+    savedFirst.close();
+    std::ifstream savedSecond(root / "subdirectory" / "config.json", std::ios::binary);
+    std::string savedSecondText((std::istreambuf_iterator<char>(savedSecond)), std::istreambuf_iterator<char>());
+    savedSecond.close();
+    assert(savedFirstText.find("// first-save-all") != std::string::npos);
+    assert(savedSecondText.find("// second-save-all") != std::string::npos);
+    assert(WorkspaceControllerCloseDocument(&controller, secondDocumentIndex, CloseDecision::Discard));
+    assert(usedDocuments(controller.model) == 1);
+    assert(WorkspaceControllerOpenDocument(&controller, "sample.cpp"));
+    document = WorkspaceControllerActiveDocument(&controller);
+
+    // Refresh does not merge external disk changes into a dirty buffer. The
+    // live buffer remains authoritative, and Save writes to its normalized path.
+    TextBufferEnd(&document->buffer);
+    const char editorEdit[] = "// editor-authoritative\n";
+    assert(TextBufferInsert(&document->buffer, editorEdit, static_cast<uint32_t>(std::strlen(editorEdit))));
+    std::ofstream externallyChanged(root / "sample.cpp", std::ios::binary | std::ios::trunc);
+    externallyChanged << "int external_only = 7;\n";
+    externallyChanged.close();
+    assert(WorkspaceControllerRefresh(&controller));
+    assert(document->buffer.dirty);
+    assert(std::strstr(document->buffer.data, "// editor-authoritative") != nullptr);
+    assert(WorkspaceControllerSaveActive(&controller));
+    assert(!document->buffer.dirty);
+    std::ifstream afterExternalChange(root / "sample.cpp", std::ios::binary);
+    std::string afterExternalChangeText((std::istreambuf_iterator<char>(afterExternalChange)), std::istreambuf_iterator<char>());
+    afterExternalChange.close();
+    assert(afterExternalChangeText.find("// editor-authoritative") != std::string::npos);
+    assert(afterExternalChangeText.find("external_only") == std::string::npos);
+
+    // A dirty document whose disk file is removed can be saved back to the
+    // same path; no alternate or stale target is selected.
+    TextBufferEnd(&document->buffer);
+    const char recreateEdit[] = "// recreate-removed-file\n";
+    assert(TextBufferInsert(&document->buffer, recreateEdit, static_cast<uint32_t>(std::strlen(recreateEdit))));
+    std::error_code removalError;
+    fs::remove(root / "sample.cpp", removalError);
+    assert(!fs::exists(root / "sample.cpp"));
+    assert(WorkspaceControllerRefresh(&controller));
+    assert(document->buffer.dirty);
+    assert(WorkspaceControllerSaveActive(&controller));
+    assert(fs::exists(root / "sample.cpp"));
+    std::ifstream recreated(root / "sample.cpp", std::ios::binary);
+    std::string recreatedText((std::istreambuf_iterator<char>(recreated)), std::istreambuf_iterator<char>());
+    recreated.close();
+    assert(recreatedText.find("// recreate-removed-file") != std::string::npos);
 
     assert(TextBufferInsert(&document->buffer, "cancel", 6));
     uint32_t documentIndex = controller.model.activeDocument;

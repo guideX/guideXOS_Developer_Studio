@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $TempRoot = Join-Path $ServerRoot "tmp"
-$Fixture = Join-Path $TempRoot ("developer-studio-workflow-" + [Guid]::NewGuid().ToString("N"))
+$Fixture = Join-Path $TempRoot ("developer studio workflow " + [Guid]::NewGuid().ToString("N"))
 $TestBinary = Join-Path $TempRoot "developer-studio-workflow-test.exe"
 
 function Assert-True([bool]$Condition, [string]$Message) {

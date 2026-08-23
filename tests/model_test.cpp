@@ -22,11 +22,24 @@ int main() {
     char normalized[kMaxPathBytes];
     assert(NormalizePath("D:\\work\\guidexos\\.\\studio", normalized, sizeof(normalized)));
     assert(std::strcmp(normalized, "d:/work/guidexos/studio") == 0);
+    assert(NormalizePath("D:\\work\\guide XOS\\src\\\\main.cpp", normalized, sizeof(normalized)));
+    assert(std::strcmp(normalized, "d:/work/guide XOS/src/main.cpp") == 0);
+    assert(PathsEqual("D:/work/guide XOS/src/./main.cpp", "d:/WORK/guide XOS/src/main.cpp"));
     assert(PathsEqual("/workspace/src/./sample.cpp", "/workspace/src/sample.cpp"));
     assert(PathContainsTraversal("sub/../sample.cpp"));
     assert(!JoinWorkspacePath("/workspace", "../outside.txt", normalized, sizeof(normalized)));
     assert(JoinWorkspacePath("/workspace", "src/sample.cpp", normalized, sizeof(normalized)));
     assert(std::strcmp(normalized, "/workspace/src/sample.cpp") == 0);
+    assert(JoinWorkspacePath("D:/work/guide XOS", "src/main.cpp", normalized, sizeof(normalized)));
+    assert(std::strcmp(normalized, "d:/work/guide XOS/src/main.cpp") == 0);
+    char longPath[kMaxPathBytes] = "D:/work/guide XOS";
+    for (uint32_t i = 0; i < 15; ++i) {
+        char segment[16] = {};
+        std::snprintf(segment, sizeof(segment), "/segment%02u", i);
+        std::strcat(longPath, segment);
+    }
+    assert(std::strlen(longPath) > 160 && std::strlen(longPath) < kMaxPathBytes);
+    assert(NormalizePath(longPath, normalized, sizeof(normalized)));
 
     assert(IsSupportedTextPath("sample.cpp"));
     assert(IsSupportedTextPath("README.MD"));

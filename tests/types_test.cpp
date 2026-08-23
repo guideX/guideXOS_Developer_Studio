@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 using namespace guidexos::developer_studio;
 
@@ -65,6 +66,8 @@ int main() {
         "struct Renderer {};\n"
         "struct Widget {};\n"
         "struct Frame {};\n"
+        "struct Rectangle { int width; };\n"
+        "struct RectangleExtra { int extra; };\n"
         "struct Window { int width; Renderer* renderer; };\n"
         "typedef unsigned int LegacyId;\n"
         "using WindowId = uint32_t;\n"
@@ -103,6 +106,10 @@ int main() {
     assert(frame.available && frame.type.referenceKind == TypeReferenceKind::LValue);
     TypeInspection width = inspect(database, document, "width");
     assert(width.available && width.declarationKind == TypeDeclarationKind::Member);
+    TypeInspection rectangle = inspect(database, document, "Rectangle");
+    TypeInspection rectangleExtra = inspect(database, document, "RectangleExtra");
+    assert(rectangle.available && rectangle.type.spelling[0] == 'R');
+    assert(rectangleExtra.available && strcmp(rectangleExtra.type.spelling, "RectangleExtra") == 0);
 
     TypeInspection parameter = inspect(database, document, "value", 2);
     assert(parameter.available && parameter.declarationKind == TypeDeclarationKind::Parameter);

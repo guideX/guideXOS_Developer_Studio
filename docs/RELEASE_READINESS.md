@@ -35,7 +35,11 @@ installing it in the workspace controller. A failed candidate therefore does
 not replace the previously active project, root, or document. Opening a
 missing document returns a read error without adding a phantom editor buffer;
 external deletion is detected on refresh and a later open recovers after the
-file is restored.
+file is restored. Refresh does not merge external disk edits into an already
+dirty buffer: the live editor buffer remains authoritative, and Save writes
+that buffer back to the document's normalized path. If the disk file was
+removed, Save recreates that same path; there is no conflict-merge subsystem
+in this release candidate.
 
 Build and Run reject invalid project metadata, unsupported targets, failed
 builds, invalid or stale artifacts, and invalid artifact identity. A package
