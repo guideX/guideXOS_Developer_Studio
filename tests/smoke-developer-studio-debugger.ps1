@@ -19,7 +19,8 @@ param(
     [int]$OverlapBreakpointLine = 20,
     [switch]$InteractiveWatch,
     [string]$TraceDirectory = "",
-    [int]$TraceRunIndex = 0
+    [int]$TraceRunIndex = 0,
+    [string]$TraceArtifactName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -170,7 +171,8 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
         $directory = if ($TraceDirectory) { [IO.Path]::GetFullPath($TraceDirectory) } else { Join-Path $RepoRoot "logs" }
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $suffix = if ($TraceRunIndex -gt 0) { "-$TraceRunIndex" } else { "" }
-        $artifact = Join-Path $directory "developer-studio-debugger-shutdown-trace$suffix.log"
+        $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
+        $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
         $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:' } | Select-Object -Last 96)
         $recent = @($lines | Select-Object -Last 80)
@@ -241,7 +243,10 @@ Add-ShortDelay $parts
 
 # Ctrl+F5 starts the real Developer Studio build -> hosted launch -> bind -> trap path.
 Add-Key $parts 116 2 $true
-if ($ContinueBreakpoint) { Add-ShortDelay $parts } else { Add-Delay $parts $DebugWaitSeconds }
+# The Continue variant still has to let the hosted target reach its real
+# breakpoint before issuing F5; a short fixed delay makes the soak race the
+# launch/stop transition on slower hosts.
+Add-Delay $parts $DebugWaitSeconds
 
 if ($InteractiveWatch) {
     # Open the product's Debug menu and Watch tab through compositor mouse

@@ -7,6 +7,9 @@ param(
     [int]$DebugWaitSeconds = 90,
     [int]$MaxRuntimeSeconds = 300,
     [int]$UiWaitMilliseconds = 700,
+    [string]$TraceDirectory = '',
+    [int]$TraceRunIndex = 0,
+    [string]$TraceArtifactName = '',
     [switch]$KeepArtifacts
 )
 
@@ -31,6 +34,8 @@ function Invoke-Phase20Case([string]$CaseName, [int]$TraceRunIndex) {
     $arguments.Add('-DebugWaitSeconds'); $arguments.Add([string]$DebugWaitSeconds)
     $arguments.Add('-MaxRuntimeSeconds'); $arguments.Add([string]$MaxRuntimeSeconds)
     $arguments.Add('-TraceRunIndex'); $arguments.Add([string]$TraceRunIndex)
+    if ($TraceDirectory) { $arguments.Add('-TraceDirectory'); $arguments.Add($TraceDirectory) }
+    if ($TraceArtifactName) { $arguments.Add('-TraceArtifactName'); $arguments.Add($TraceArtifactName) }
     if ($KeepArtifacts) { $arguments.Add('-KeepArtifacts') }
     & powershell.exe @arguments
     if ($LASTEXITCODE -ne 0) { throw "Phase 20 focused smoke failed: $CaseName" }
@@ -55,6 +60,18 @@ $common.Add('-MaxRuntimeSeconds')
 $common.Add([string]$MaxRuntimeSeconds)
 $common.Add('-UiWaitMilliseconds')
 $common.Add([string]$UiWaitMilliseconds)
+if ($TraceDirectory) {
+    $common.Add('-TraceDirectory')
+    $common.Add($TraceDirectory)
+}
+if ($TraceRunIndex -gt 0) {
+    $common.Add('-TraceRunIndex')
+    $common.Add([string]$TraceRunIndex)
+}
+if ($TraceArtifactName) {
+    $common.Add('-TraceArtifactName')
+    $common.Add($TraceArtifactName)
+}
 if ($KeepArtifacts) { $common.Add('-KeepArtifacts') }
 
 $cases = @(

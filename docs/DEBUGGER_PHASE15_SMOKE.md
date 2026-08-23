@@ -1,5 +1,9 @@
 # Phase 15 hosted debugger smoke
 
+Phase 21 validation tiers, the authoritative required command, the bounded
+hosted soak, and CI limitations are documented in
+[VALIDATION_TIERS.md](VALIDATION_TIERS.md).
+
 The normal Phase 15 command is now the deterministic focused suite:
 
 ```powershell

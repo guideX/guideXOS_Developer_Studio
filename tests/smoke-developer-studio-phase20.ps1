@@ -9,6 +9,7 @@ param(
     [int]$MaxRuntimeSeconds = 300,
     [string]$TraceDirectory = '',
     [int]$TraceRunIndex = 0,
+    [string]$TraceArtifactName = '',
     [switch]$KeepArtifacts
 )
 
@@ -286,7 +287,7 @@ function Wait-MarkerFresh([string]$Marker, [int]$TimeoutSeconds = $DebugWaitSeco
         Start-Sleep -Milliseconds 500
     }
     $content = Get-LiveText
-    throw "Timed out waiting for fresh marker: $Marker`n$(Get-RecentDiagnostic $content)"
+    throw "Timed out waiting for fresh marker: $Marker baseline=$baseline actualCount=$(Get-MarkerCount $Marker) windowId=$script:WindowId lastInput=$script:LastInput`n$(Get-RecentDiagnostic $content)"
 }
 
 function Get-LastShutdownStage([string]$Content) {
@@ -337,7 +338,8 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
         $directory = if ($TraceDirectory) { [IO.Path]::GetFullPath($TraceDirectory) } else { Join-Path $RepoRoot 'logs' }
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $suffix = if ($TraceRunIndex -gt 0) { "-$TraceRunIndex" } else { '' }
-        $artifact = Join-Path $directory "developer-studio-debugger-shutdown-trace$suffix.log"
+        $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
+        $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
         $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_condition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:' } | Select-Object -Last 96)
         $recent = @($lines | Select-Object -Last 80)

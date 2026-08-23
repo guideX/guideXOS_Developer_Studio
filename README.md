@@ -18,6 +18,8 @@ The current bounded phase proves the first useful source workflow:
 
 The Debugger Foundation provides generation-safe hosted Native ELF session supervision, F9 source-breakpoint storage and markers, capability-gated Debug commands, and Breakpoints/Debug Session inspection; see [docs/DEBUGGER_FOUNDATION.md](docs/DEBUGGER_FOUNDATION.md). Instruction-level breakpoints, pause/continue, stepping, source-to-address mapping, and value inspection remain deferred. Additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
 
+The repository-native validation tiers and bounded hosted debugger soak are documented in [docs/VALIDATION_TIERS.md](docs/VALIDATION_TIERS.md).
+
 ## Workspace versus project
 
 A workspace is any directory that Developer Studio can browse and edit. It does not need metadata. A project is a validated guideXOS application workspace with a `guidexos.project` file, identity, target profile, source root, and App Model manifest. The shell labels these states as `Workspace:` and `Project:` respectively; opening a project never upgrades or modifies an arbitrary workspace.

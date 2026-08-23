@@ -15,6 +15,9 @@ param(
     [switch]$WatchOnly,
     [switch]$EditorOnly,
     [switch]$LegacyAggregate,
+    [string]$TraceDirectory = '',
+    [int]$TraceRunIndex = 0,
+    [string]$TraceArtifactName = '',
     [switch]$KeepArtifacts
 )
 
@@ -52,6 +55,18 @@ if (-not $LegacyAggregate -and
     $runnerArguments.Add([string]$MaxRuntimeSeconds)
     $runnerArguments.Add('-UiWaitMilliseconds')
     $runnerArguments.Add([string]$UiWaitMilliseconds)
+    if ($TraceDirectory) {
+        $runnerArguments.Add('-TraceDirectory')
+        $runnerArguments.Add($TraceDirectory)
+    }
+    if ($TraceRunIndex -gt 0) {
+        $runnerArguments.Add('-TraceRunIndex')
+        $runnerArguments.Add([string]$TraceRunIndex)
+    }
+    if ($TraceArtifactName) {
+        $runnerArguments.Add('-TraceArtifactName')
+        $runnerArguments.Add($TraceArtifactName)
+    }
     if ($KeepArtifacts) { $runnerArguments.Add('-KeepArtifacts') }
     & powershell.exe @runnerArguments
     exit $LASTEXITCODE
@@ -224,6 +239,7 @@ if ($WatchOnly) {
     Add-ShortDelay $parts
     Add-Click $parts 470 106
     Add-Click $parts 200 180
+    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=1'
     Add-Delay $parts 4
     Add-Click $parts 840 106
     Add-ServerLine $parts 'gui.activate 1000'
@@ -235,6 +251,7 @@ if ($WatchOnly) {
     Add-Delay $parts 4
     Add-Click $parts 470 106
     Add-Click $parts 200 202
+    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=0'
     Add-Delay $parts 4
     Add-Click $parts 840 106
     Add-Delay $parts 4
@@ -319,8 +336,10 @@ if (-not $EditorOnly) {
         Add-Click $parts 470 106
         Add-ShortDelay $parts
         Add-Click $parts 200 180
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=1'
     }
 
+    if (-not $RuntimeOnly -and -not $ExpectConditionError) {
     if (-not $TreeOnly) {
         # Open Locals after selecting frame 1 so the caller values are
         # refreshed through the real hosted control path.
@@ -343,6 +362,7 @@ if (-not $EditorOnly) {
         Add-Delay $parts 2
         Add-Click $parts 470 106
         Add-Click $parts 200 202
+        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=0'
         Add-Click $parts 840 106
         Add-Delay $parts 2
     } else {
@@ -374,10 +394,15 @@ if (-not $EditorOnly) {
     Add-Click $parts 104 198
     Add-Delay $parts 2
 }
-
+}
 if ($EditorOnly) {
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 4
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
+} elseif ($RuntimeOnly -or $ExpectConditionError) {
+    # These proofs already requested the targeted product close immediately
+    # after the observable stop. Do not fall through into the inspection
+    # sequence, which would send stale input to the released window.
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
 } elseif ($TreeOnly -or $FrameOnly) {
     # Close the panel through Escape, request Stop through the real Debug menu,
     # then close the product after the bounded stop transition completes.
@@ -392,7 +417,7 @@ if ($EditorOnly) {
     Add-Key $parts 83 0 $true
     Add-Delay $parts 8
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 3
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
     Add-ServerLine $parts 'exit'
 } else {
     Add-ServerLine $parts 'log'
@@ -403,7 +428,7 @@ if ($EditorOnly) {
     Add-Key $parts 83 0 $true
     Add-Delay $parts 30
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 12
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
 }
 } else {
     Add-Key $parts 116 2 $true
@@ -416,6 +441,7 @@ if ($EditorOnly) {
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
     Add-Click $parts 200 180
+    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_selected_frame=PASS index=1'
     Add-Delay $parts 8
     Add-Click $parts 600 106
     Add-Delay $parts 4
@@ -429,7 +455,7 @@ if ($EditorOnly) {
     Add-Key $parts 83 0 $true
     Add-Delay $parts 8
     Add-ServerLine $parts 'gui.close 1000'
-    Add-Delay $parts 3
+    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
 }
 Add-ServerLine $parts 'exit'
 
@@ -446,15 +472,49 @@ $startInfo.RedirectStandardOutput = $false
 $startInfo.RedirectStandardError = $false
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
+$phase15Succeeded = $false
 
 function Get-Phase15LiveText() {
-    param([int]$TailLines = 0)
+    # Wait loops poll frequently; keep each read bounded so a large hosted log
+    # cannot turn a startup failure into an unbounded CPU/IO cleanup loop.
+    param([int]$TailLines = 4000)
     $stdout = if (Test-Path -LiteralPath $stdoutPath) {
         if ($TailLines -gt 0) { Get-Content -LiteralPath $stdoutPath -Tail $TailLines | Out-String }
         else { Get-Content -Raw -LiteralPath $stdoutPath }
     } else { '' }
-    $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -Raw -LiteralPath $stderrPath } else { '' }
+    $stderr = if (Test-Path -LiteralPath $stderrPath) {
+        if ($TailLines -gt 0) { Get-Content -LiteralPath $stderrPath -Tail $TailLines | Out-String }
+        else { Get-Content -Raw -LiteralPath $stderrPath }
+    } else { '' }
     return $stdout + "`n" + $stderr
+}
+
+function Write-Phase15Trace([string]$Reason, [string]$Content) {
+    try {
+        $directory = if ($TraceDirectory) { [IO.Path]::GetFullPath($TraceDirectory) } else { Join-Path $RepoRoot 'logs' }
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $suffix = if ($TraceRunIndex -gt 0) { "-$TraceRunIndex" } else { '' }
+        $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
+        $artifact = Join-Path $directory $artifactName
+        $lines = @($Content -split "`r?`n")
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:|priority|capture|modal|owner' } | Select-Object -Last 96)
+        $recent = @($lines | Select-Object -Last 80)
+        $serverExitCode = if ($process -and $process.HasExited) { $process.ExitCode } else { 'unknown' }
+        $header = @(
+            'guideXOS Developer Studio Phase 15 hosted trace',
+            "reason=$Reason",
+            "mode=runtime=$RuntimeOnly frame=$FrameOnly tree=$TreeOnly watch=$WatchOnly",
+            "serverExitCode=$serverExitCode",
+            "lastShutdownStage=$(if ($Content -match 'debug_shutdown_complete=PASS') { 'complete' } else { 'unknown' })",
+            '--- bounded lifecycle/UI markers ---'
+        )
+        $body = ($header + $lifecycle + @('--- bounded recent output ---') + $recent) -join "`r`n"
+        if ($body.Length -gt 65536) { $body = $body.Substring($body.Length - 65536) }
+        Set-Content -LiteralPath $artifact -Value $body -Encoding UTF8
+        Write-Host "Phase 15 trace artifact: $artifact"
+    } catch {
+        Write-Host "WARNING: unable to write Phase 15 trace: $($_.Exception.Message)"
+    }
 }
 
 function Wait-ForPhase15ObservableMarker([string]$Marker) {
@@ -488,6 +548,12 @@ function Wait-ForPhase15ObservableStop([int]$TimeoutSeconds) {
             Write-Host "PASS: observable debugger stop reached ($($script:Phase15StopWaitPatterns -join '; '))"
             return
         }
+        if ($liveText -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=FAILED') {
+            $diagnostic = @($liveText -split "`r?`n" |
+                Where-Object { $_ -match 'debug_state=FAILED|debug_session|debug_transition|Debug:|error|Error' } |
+                Select-Object -Last 80) -join "`n"
+            throw "Phase 15 debugger entered FAILED state before the observable stop.`n$diagnostic"
+        }
         if ($process.HasExited) {
             $diagnostic = @($liveText -split "`r?`n" | Select-Object -Last 80) -join "`n"
             throw "Phase 15 debugger stop was not observed before the hosted process exited.`n$diagnostic"
@@ -498,6 +564,42 @@ function Wait-ForPhase15ObservableStop([int]$TimeoutSeconds) {
         Where-Object { $_ -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_|Debug: breakpoint|ConditionError|Call Stack|Locals|Arguments|Watch' } |
         Select-Object -Last 120) -join "`n"
     throw "Timed out after $TimeoutSeconds seconds waiting for the Phase 15 observable debugger stop.`n$diagnostic"
+}
+
+function Wait-ForPhase15Shutdown([int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    $requiredMarkers = @(
+        'debug_shutdown_request=targeted_close',
+        'debug_stop=requested',
+        'debug_target_teardown=PASS',
+        'debug_session_teardown=PASS',
+        'debug_window_release=PASS',
+        'debug_shutdown_complete=PASS'
+    )
+    while ((Get-Date) -lt $deadline) {
+        if (-not $process.HasExited) {
+            $process.StandardInput.WriteLine('nativeapp.processes')
+            $process.StandardInput.Flush()
+        }
+        $content = Get-Phase15LiveText 6000
+        $complete = $true
+        foreach ($marker in $requiredMarkers) {
+            if (-not $content.Contains($marker)) { $complete = $false; break }
+        }
+        if ($complete -and $content -match 'state=Exited') {
+            Write-Host 'PASS: Phase 15 targeted shutdown reaches complete'
+            return
+        }
+        if ($process.HasExited) {
+            throw 'Phase 15 targeted shutdown ended before authoritative completion.'
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $content = Get-Phase15LiveText 6000
+    $diagnostic = @($content -split "`r?`n" |
+        Where-Object { $_ -match 'debug_shutdown|debug_stop|debug_target|debug_session|debug_window|shutdownStage=|Native app processes:' } |
+        Select-Object -Last 40) -join "`n"
+    throw "Timed out after $TimeoutSeconds seconds waiting for Phase 15 targeted shutdown.`n$diagnostic"
 }
 
 try {
@@ -516,6 +618,8 @@ try {
             Wait-ForPhase15ObservableStop ([int]$value)
         } elseif ($kind -eq 'WAITMARK') {
             Wait-ForPhase15ObservableMarker $value
+        } elseif ($kind -eq 'WAITSHUTDOWN') {
+            Wait-ForPhase15Shutdown ([int]$value)
         } elseif ($kind -eq 'COMMAND') {
             $process.StandardInput.WriteLine($value)
             $process.StandardInput.Flush()
@@ -640,10 +744,30 @@ try {
     if ($WatchOnly -or $FrameOnly -or $ExpectConditionError) {
         Assert-True ($text.Contains('NativeAppRuntime] Cleanup complete app=com.example.debuggerphase15')) "focused proof leaves the hosted fixture in bounded cleanup"
     }
+    if (-not $EditorOnly) {
+        $shutdownMarkers = @(
+            'debug_shutdown_request=targeted_close',
+            'debug_stop=requested',
+            'debug_target_teardown=PASS',
+            'debug_session_teardown=PASS',
+            'debug_window_release=PASS',
+            'debug_shutdown_complete=PASS'
+        )
+        foreach ($marker in $shutdownMarkers) {
+            Assert-True $text.Contains($marker) "focused lifecycle includes $marker"
+        }
+        Assert-True ($text.Contains('debug_shutdown_complete=PASS') -and $text -match 'state=Exited') 'focused lifecycle reaches shutdown complete with Exited target state'
+        Write-Host 'debugger_lifecycle_invariants=PASS debugger=0 step=0 target=0 ownership=0 inspection=reset modal=0 input=0 app_window=0 shutdown=complete'
+    }
     Assert-True ($process.ExitCode -eq 0) "hosted Server exits cleanly after the Phase 15 proof"
+    $phase15Succeeded = $true
     if ($ExpectConditionError) { Write-Host "Developer Studio Phase 15 hosted condition-error smoke PASS" }
     else { Write-Host "Developer Studio Phase 15 hosted interaction smoke PASS" }
 } finally {
+    if (-not $phase15Succeeded) {
+        $failureText = if ($script:Phase15CapturedText) { $script:Phase15CapturedText } else { Get-Phase15LiveText 4000 }
+        Write-Phase15Trace 'Phase 15 focused smoke failure' $failureText
+    }
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
     if (-not $KeepArtifacts) {
         Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
