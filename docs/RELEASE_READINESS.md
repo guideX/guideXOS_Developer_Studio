@@ -102,3 +102,15 @@ That hosted flow edits document A, switches to document B, saves A, restores
 focus to A, invokes member completion, accepts the exact `origin` member, and
 checks both Escape dismissal and document-change dismissal. All waits and
 cleanup are bounded; failures retain a bounded trace artifact.
+
+## Phase 25 release-candidate sign-off
+
+The Phase 25 manual distribution rehearsal froze the Phase 24 baseline commits,
+rebuilt the package twice, staged it outside both repositories, installed it by
+allowlisted file copy, launched it through the real App Model, exercised the
+document/build/debug workflows, and performed corrupt-package rejection and
+reinstallation checks. The final classification is **RELEASE CANDIDATE SIGNED
+OFF WITH MINOR LIMITATIONS**. See [RELEASE_CANDIDATE_STATUS.md](RELEASE_CANDIDATE_STATUS.md)
+for the exact package hashes, evidence location, validation results, runtime
+and build dependencies, and remaining boundaries; use [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)
+to repeat the rehearsal.

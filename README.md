@@ -136,7 +136,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke-workspace.ps1
 It creates and removes only its own temporary fixture and verifies enumeration, editing, saving, duplicate-tab prevention, safe binary/size rejection, and Save/Discard/Cancel close behavior.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the integration audit, boundaries, and intentionally deferred work.
-See [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) for the current Phase 23 capabilities, failure-path contract, package audit, reproducibility expectations, and validation evidence.
+See [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) for the current capabilities, failure-path contract, package audit, reproducibility expectations, and validation evidence. The Phase 25 release-candidate record is in [docs/RELEASE_CANDIDATE_STATUS.md](docs/RELEASE_CANDIDATE_STATUS.md), with the repeatable sign-off steps in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 See [docs/BUILD_PROJECT.md](docs/BUILD_PROJECT.md) for the Build Project contract and diagnostics.
 See [docs/OUTPUT_AND_DIAGNOSTICS.md](docs/OUTPUT_AND_DIAGNOSTICS.md) for the unified Output and Problems architecture, bounded limits, supported diagnostic formats, and navigation behavior.
 See [docs/SYNTAX_HIGHLIGHTING.md](docs/SYNTAX_HIGHLIGHTING.md) for lexical tokenization, multiline state, incremental cache behavior, limits, palette, and known limitations.
