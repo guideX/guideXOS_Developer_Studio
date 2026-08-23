@@ -950,6 +950,12 @@ static void compose(char* output, uint32_t size, const char* prefix, const char*
 static void stopProjectSearch(gx_app_context* ctx);
 static uint32_t captureDirtyProjectSearchDocuments();
 static void stopReferenceSearch(gx_app_context* ctx);
+static void closeFindBar();
+static void closeSymbolSearch();
+static void closeDefinitionPicker();
+static void closeReferencePicker();
+static void dismissWorkspaceTransientUi(gx_app_context* ctx);
+static void resetProjectSessionUi();
 static void keepCaretVisible(const Document* document);
 static bool startRenameSearchWithTarget(gx_app_context* ctx, const ReferenceTarget& target);
 static void dismissCompletion(gx_app_context* ctx, const char* reason, bool showStatus);
@@ -1023,6 +1029,13 @@ static uint32_t lengthOf(const char* text, uint32_t limit) {
     uint32_t length = 0;
     while (length < limit && text[length] != '\0') ++length;
     return length;
+}
+
+static void resetEditorView() {
+    g_editorScrollLine = 0;
+    g_editorScrollColumn = 0;
+    g_outlineSelected = 0;
+    g_outlineScroll = 0;
 }
 
 static void copyText(char* output, uint32_t outputSize, const char* input) {
@@ -3346,6 +3359,7 @@ static void reportDocumentOpen(gx_app_context* ctx, bool success, bool duplicate
     if (success) {
         writeOutput(duplicate ? "Document already open" : "Document opened");
         Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        if (document && !duplicate) resetEditorView();
         if (document && !duplicate) {
             const char* languageMarker = document->syntax.language == guidexos::developer_studio::SyntaxLanguage::Cpp ? "CPP" :
                 (document->syntax.language == guidexos::developer_studio::SyntaxLanguage::C ? "C" : "NONE");
@@ -4215,7 +4229,9 @@ static void showWorkspacePrompt() {
     g_inputMode = InputMode::WorkspacePath;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
-    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
     g_workspaceSwitchPending = true;
     copyText(g_prompt, sizeof(g_prompt), "");
 }
@@ -4227,6 +4243,9 @@ static void showOpenProjectPrompt() {
     g_inputMode = InputMode::ProjectPath;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
     g_workspaceSwitchPending = false;
     copyText(g_prompt, sizeof(g_prompt), "");
 }
@@ -4248,6 +4267,9 @@ static void showNewProjectPrompt(gx_app_context* ctx) {
     g_inputMode = InputMode::ProjectCreate;
     g_fileMenuOpen = false;
     g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_request=PASS");
 }
 
@@ -4283,6 +4305,7 @@ static void reportProjectFailure(gx_app_context* ctx, const char* marker, Projec
 }
 
 static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
+    dismissWorkspaceTransientUi(ctx);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
     if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
     g_includeGraphPanelOpen = false;
@@ -4297,7 +4320,9 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
         reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL", g_controller.lastProjectError);
         return false;
     }
+    resetProjectSessionUi();
     DebugControllerClearBreakpoints(&g_debugController);
+    DebugWatchCollectionMarkStale(&g_debugWatches);
     g_debugPanelOpen = false;
     writeOutput("Project created");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
@@ -4337,6 +4362,7 @@ static void commitNewProject(gx_app_context* ctx) {
 }
 
 static void commitProjectOpen(gx_app_context* ctx) {
+    dismissWorkspaceTransientUi(ctx);
     dismissCompletion(ctx, "project_changed", false);
     dismissSignatureHelp(ctx, "project_changed", false);
     dismissTypeInfo(ctx, "project_changed", false);
@@ -4347,7 +4373,9 @@ static void commitProjectOpen(gx_app_context* ctx) {
     g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
+        resetProjectSessionUi();
         DebugControllerClearBreakpoints(&g_debugController);
+        DebugWatchCollectionMarkStale(&g_debugWatches);
         g_debugPanelOpen = false;
         writeOutput("Project opened");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
@@ -4366,6 +4394,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
 }
 
 static bool commitWorkspaceOpen(gx_app_context* ctx) {
+    dismissWorkspaceTransientUi(ctx);
     dismissCompletion(ctx, "workspace_changed", false);
     dismissSignatureHelp(ctx, "workspace_changed", false);
     dismissTypeInfo(ctx, "workspace_changed", false);
@@ -4377,7 +4406,9 @@ static bool commitWorkspaceOpen(gx_app_context* ctx) {
     stopProjectSearch(ctx);
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     if (success) {
+        resetProjectSessionUi();
         DebugControllerClearBreakpoints(&g_debugController);
+        DebugWatchCollectionMarkStale(&g_debugWatches);
         g_debugPanelOpen = false;
     }
     reportWorkspaceOpen(ctx, success);
@@ -5247,6 +5278,52 @@ static void closeFindBar() {
     g_findReplaceMode = false;
     g_editorFocused = true;
     findSetStatus("");
+}
+
+static void dismissWorkspaceTransientUi(gx_app_context* ctx) {
+    // Search, navigation, and intelligence surfaces retain document and
+    // project generations. Close them before WorkspaceModelSetRoot replaces
+    // those identities so no old result can remain actionable in the new
+    // workspace.
+    closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    closeReferencePicker();
+    stopReferenceSearch(ctx);
+    stopProjectSearch(ctx);
+    g_projectSearchPanelOpen = false;
+    g_projectSearchResultsFocused = false;
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_renamePanelOpen = false;
+    g_renameSearchPending = false;
+    g_renameTargetPickerPending = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
+}
+
+static void resetProjectSessionUi() {
+    // A successful project/workspace transition starts a new user-facing
+    // session. Keep the Developer Studio channel, but do not present an old
+    // project's build/run records or terminal state as current.
+    OutputServiceClearChannel(&g_outputService, OutputChannel::Build);
+    OutputServiceClearChannel(&g_outputService, OutputChannel::Run);
+    OutputServiceClearChannel(&g_outputService, OutputChannel::DeveloperStudio);
+    OutputServiceSelectActiveChannel(&g_outputService, OutputChannel::All);
+    BuildControllerInit(&g_buildController);
+    g_buildTerminalReported = false;
+    RunControllerInit(&g_runController);
+    g_runWaitingForBuild = false;
+    g_lastRunState = RunState::Idle;
+    g_runTerminalReported = false;
+    g_runOperationId = 0;
+    g_outputScroll = 0;
+    g_outputFollowTail = true;
+    g_problemSelected = 0;
+    resetEditorView();
+    NavigationHistoryInit(&g_navigationHistory);
+    DebugDwarfMapperReset(&g_debugMapper);
+    DebugWatchCollectionMarkStale(&g_debugWatches);
 }
 
 static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex, uint32_t matchIndex) {
@@ -7587,15 +7664,15 @@ static void drawShell(gx_app_context* ctx) {
     drawOwnershipPanel(ctx);
     drawDebugPanel(ctx);
     if (g_fileMenuOpen) {
-        drawPanel(ctx, { 8, 42, 270, 202 }, 0x34496Au);
-        drawText(ctx, 20, 64, "New Project");
-        drawText(ctx, 20, 86, "Open Project");
-        drawText(ctx, 20, 108, "Open Workspace");
-        drawText(ctx, 20, 130, "Close Document");
-        drawText(ctx, 20, 152, "Close Workspace");
-        drawText(ctx, 20, 174, "Switch Header / Source (Alt+O)");
-        drawText(ctx, 20, 196, "File Ownership (Alt+Shift+O)");
-        drawText(ctx, 20, 218, "Exit");
+        drawPanel(ctx, { 270, 42, 270, 202 }, 0x34496Au);
+        drawText(ctx, 282, 64, "New Project");
+        drawText(ctx, 282, 86, "Open Project");
+        drawText(ctx, 282, 108, "Open Workspace");
+        drawText(ctx, 282, 130, "Close Document");
+        drawText(ctx, 282, 152, "Close Workspace");
+        drawText(ctx, 282, 174, "Switch Header / Source (Alt+O)");
+        drawText(ctx, 282, 196, "File Ownership (Alt+Shift+O)");
+        drawText(ctx, 282, 218, "Exit");
     }
     if (g_buildMenuOpen) {
         drawPanel(ctx, { 300, 42, 260, 92 }, 0x34496Au);
@@ -7630,8 +7707,10 @@ static void selectDocumentTab(int x) {
         if (x >= tabX && x < tabX + 126) {
             dismissCompletion(nullptr, "document_changed", false);
             dismissSignatureHelp(nullptr, "document_changed", false);
+            if (g_controller.model.activeDocument != i) resetEditorView();
             g_controller.model.activeDocument = i;
             g_editorFocused = true;
+            g_outputFocused = false;
             keepCaretVisible(&g_controller.model.documents[i]);
             return;
         }
@@ -7716,6 +7795,7 @@ static void handleOutputKey(gx_app_context* ctx, int keyCode) {
         navigateSelectedProblem(ctx);
     } else if (keyCode == 27) {
         g_outputFocused = false;
+        g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
     }
 }
 
@@ -7956,13 +8036,16 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
     } else if (g_inputMode == InputMode::ConfirmWorkspace) {
         logMarker(ctx, save ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=SAVE" : "GUIDEXOS_DEVELOPER_STUDIO_MARKER unsaved_close=DISCARD");
         if (save && !saveAll(ctx)) return;
+        dismissWorkspaceTransientUi(ctx);
         stopProjectSearch(ctx);
         dismissSignatureHelp(ctx, "workspace_changed", false);
         dismissTypeInfo(ctx, "workspace_changed", false);
         if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
         g_ownershipPanelOpen = false;
         if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
+            resetProjectSessionUi();
             DebugControllerClearBreakpoints(&g_debugController);
+            DebugWatchCollectionMarkStale(&g_debugWatches);
             DebugDwarfMapperReset(&g_debugMapper);
             g_debugPanelOpen = false;
         }
@@ -9144,9 +9227,12 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             else g_outputScroll = g_outputScroll + 2 < maximum ? g_outputScroll + 2 : maximum;
             g_outputFollowTail = g_outputScroll >= maximum;
             g_outputFocused = true;
+            g_editorFocused = false;
             drawShell(ctx);
         } else if (x >= kEditorRect.x && y >= kEditorRect.y && y < kEditorRect.y + kEditorRect.height) {
             int delta = event.param4 > 0 ? -3 : 3;
+            g_editorFocused = true;
+            g_outputFocused = false;
             if (delta < 0) g_editorScrollLine = g_editorScrollLine > static_cast<uint32_t>(-delta) ? g_editorScrollLine - static_cast<uint32_t>(-delta) : 0;
             else g_editorScrollLine += static_cast<uint32_t>(delta);
             drawShell(ctx);
@@ -9196,6 +9282,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (button != GX_MOUSE_BUTTON_LEFT || (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
     if (y >= kOutputRect.y && y < kOutputRect.y + kOutputRect.height) {
         g_outputFocused = true;
+        g_editorFocused = false;
         if (y < 546) {
             if (x >= 104 && x < 168) { g_outputProblemsTab = false; g_problemSelected = 0; }
             else if (x >= 168 && x < 250) { g_outputProblemsTab = true; g_problemSelected = 0; }
@@ -9228,10 +9315,13 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (y < 48 && x >= 8 && x < 70) { g_fileMenuOpen = !g_fileMenuOpen; g_buildMenuOpen = false; drawShell(ctx); return; }
-    if (y < 48 && x >= 70 && x < 130) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
-    if (y < 48 && x >= 130 && x < 220) { saveAll(ctx); drawShell(ctx); return; }
-    if (y < 48 && x >= 220 && x < 300) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
+    // Keep the hit regions aligned with the labels drawn in drawShell.  The
+    // old regions belonged to the pre-toolbar layout and made the visible
+    // Save/Save All/Refresh commands inert.
+    if (y < 48 && x >= 270 && x < 330) { g_fileMenuOpen = !g_fileMenuOpen; g_buildMenuOpen = false; g_debugMenuOpen = false; g_editorFocused = false; g_outputFocused = false; drawShell(ctx); return; }
+    if (y < 48 && x >= 330 && x < 390) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
+    if (y < 48 && x >= 390 && x < 480) { saveAll(ctx); drawShell(ctx); return; }
+    if (y < 48 && x >= 480 && x < 560) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
     if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 374) {
@@ -9284,7 +9374,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (g_fileMenuOpen && x >= 8 && x < 278 && y >= 42 && y < 244) {
+    if (g_fileMenuOpen && x >= 270 && x < 540 && y >= 42 && y < 244) {
         if (y < 68) showNewProjectPrompt(ctx);
         else if (y < 92) showOpenProjectPrompt();
         else if (y < 116) showWorkspacePrompt();
@@ -9308,7 +9398,9 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 g_includeTargetPickerOpen = false;
                 g_ownershipPanelOpen = false;
                 if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
+                    resetProjectSessionUi();
                     DebugControllerClearBreakpoints(&g_debugController);
+                    DebugWatchCollectionMarkStale(&g_debugWatches);
                     DebugDwarfMapperReset(&g_debugMapper);
                     g_debugPanelOpen = false;
                 }
@@ -9332,6 +9424,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     }
     if (y >= 52 && y < 80 && x >= 270) { selectDocumentTab(x); drawShell(ctx); return; }
     if (x < kExplorerRect.width && y >= kEntryTop - 14 && y < kEntryTop + 20 * kEntryHeight) {
+        g_editorFocused = false;
+        g_outputFocused = false;
         int row = (y - (kEntryTop - 14)) / kEntryHeight;
         if (row >= 0 && static_cast<uint32_t>(row) < g_controller.model.entryCount) {
             uint64_t now = gx_get_ticks_ms(ctx);
@@ -9351,6 +9445,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     }
     if (x >= kEditorRect.x && y >= kEditorTop && y < kEditorRect.y + kEditorRect.height) {
         g_editorFocused = true;
+        g_outputFocused = false;
         if (x < kEditorTextX && (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
             if (toggleBreakpointAtMouse(ctx, x, y)) drawShell(ctx);
             return;
@@ -9644,6 +9739,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     }
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
+                    else if (gx_event_is_escape_down(&event) && (g_fileMenuOpen || g_buildMenuOpen || g_debugMenuOpen)) {
+                        g_fileMenuOpen = false;
+                        g_buildMenuOpen = false;
+                        g_debugMenuOpen = false;
+                        g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+                    }
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
                              !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen && !g_debugPanelOpen) {

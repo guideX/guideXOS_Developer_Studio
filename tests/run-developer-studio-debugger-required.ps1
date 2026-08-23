@@ -42,7 +42,13 @@ function New-SuiteParameters {
     )
     $parameters = @{}
     foreach ($key in $common.Keys) { $parameters[$key] = $common[$key] }
-    if (-not $IncludeBreakpointLine) { $parameters.Remove('BreakpointLine') }
+    if (-not $IncludeBreakpointLine) {
+        $parameters.Remove('BreakpointLine')
+        # Phase 16 owns its fixture through Phase 15's default and does not
+        # expose a FixtureRoot parameter. Do not forward the common project
+        # argument to that child.
+        $parameters.Remove('FixtureRoot')
+    }
     foreach ($key in $Additional.Keys) { $parameters[$key] = $Additional[$key] }
     $parameters.TraceRunIndex = $TraceIndex
     $parameters.TraceArtifactName = $ChildTraceName
