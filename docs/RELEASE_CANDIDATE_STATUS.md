@@ -10,13 +10,18 @@ remains an experimental, hosted-development Native ELF studio; this is not a
 
 ## Source baseline
 
-- Developer Studio: `main`, commit `715a29df535103d1d281c7181219b5f986b41f7c`,
-  tracking `origin/main`, initially clean and `0/0` ahead/behind.
+- Developer Studio release source baseline: `main`, commit
+  `715a29df535103d1d281c7181219b5f986b41f7c`, tracking `origin/main`.
+- Phase 25 rehearsal checkout: `main`, commit
+  `bb66e11c38dffae21514384f73b1920b53ac64fe` (`Sign off Developer Studio
+  release candidate`), tracking `origin/main`, initially clean and `0/0`
+  ahead/behind. This commit is documentation/evidence-only and has the Phase
+  24 source baseline as its parent.
 - Paired Server: `v0.5_DEVELOPER_STUDIO`, commit
   `fb71e36c77866cdabf20873e6ad3de0ddc3bbe02`, tracking
   `origin/v0.5_DEVELOPER_STUDIO`, initially clean and `0/0` ahead/behind.
-- These are the Phase 24 baseline commits and were treated as feature-frozen;
-  no product feature or history rewrite was made during the rehearsal.
+- The Phase 24 source and Server commits were treated as feature-frozen; no
+  product feature or history rewrite was made during the rehearsal.
 
 ## Runtime package
 
