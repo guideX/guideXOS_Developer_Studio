@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,7 +24,7 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
 #endif
@@ -56,6 +56,17 @@ static bool equalText(const char* left, const char* right)
     return left[i] == right[i];
 }
 
+static uint64_t hashText(const char* input)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    if (!input) return hash;
+    for (uint32_t i = 0; input[i] != '\0'; ++i) {
+        hash ^= static_cast<uint8_t>(input[i]);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 static const gx_host_calls* host()
 {
     return g_context ? g_context->host : nullptr;
@@ -65,7 +76,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -78,7 +89,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -268,7 +279,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -489,7 +500,102 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27F_APP)
+#if defined(GXOS_PHASE27G_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27g_run_backend=PASS", "phase27g_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    if (!WorkspaceControllerOpenProject(&g_workspace, "/P27G") ||
+        !WorkspaceControllerOpenDocument(&g_workspace, "src/main.cpp")) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_workspace);
+    const char sourceA[] =
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int x = 20;\n"
+        "    int y = 22;\n"
+        "    int result = x + y;\n"
+        "    log(ctx, \"Calculating inside guideXOS...\");\n"
+        "    log(ctx, \"Done.\");\n"
+        "    return result;\n"
+        "}\n";
+    const char sourceB[] =
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int x = 7;\n"
+        "    int y = 6;\n"
+        "    int result = x * y;\n"
+        "    log(ctx, \"Recompiled expression program.\");\n"
+        "    return result - 1;\n"
+        "}\n";
+    const char unknownSource[] =
+        "int gx_main(gx_app_context* ctx) {\n    return missing + 1;\n}\n";
+    const char duplicateSource[] =
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int x = 1;\n    int x = 2;\n    return x;\n}\n";
+
+    const uint64_t sourceHashA = hashText(sourceA);
+    const uint64_t sourceHashB = hashText(sourceB);
+    uint64_t operationA = 0;
+    const bool editA = editSource(document, sourceA, sizeof(sourceA) - 1);
+    const bool firstRun = editA && runBuildBeforeRun(42, "Calculating inside guideXOS...", &operationA, nullptr) &&
+        outputHas(operationA, "Done.");
+    char artifactHashA[sizeof(g_build.result.artifactSha256)] = {};
+    copyText(artifactHashA, sizeof(artifactHashA), g_build.result.artifactSha256);
+    marker("phase27g_multiple_host_calls=PASS", "phase27g_multiple_host_calls=FAIL", firstRun);
+    marker("phase27g_ide_program=PASS", "phase27g_ide_program=FAIL", firstRun && g_run.result.exitCode == 42);
+
+    uint64_t operationB = 0;
+    const bool editB = editSource(document, sourceB, sizeof(sourceB) - 1);
+    const bool secondRun = editB && runBuildBeforeRun(41, "Recompiled expression program.", &operationB, nullptr);
+    char artifactHashB[sizeof(g_build.result.artifactSha256)] = {};
+    copyText(artifactHashB, sizeof(artifactHashB), g_build.result.artifactSha256);
+    const bool sourceEdit = secondRun && sourceHashA != sourceHashB && !equalText(artifactHashA, artifactHashB) &&
+        outputHas(operationB, "Recompiled expression program.") && g_run.result.exitCode == 41;
+    marker("phase27g_source_edit=PASS", "phase27g_source_edit=FAIL", sourceEdit);
+
+    uint64_t deterministicOperation = 0;
+    const bool deterministicRun = secondRun &&
+        runBuildBeforeRun(41, "Recompiled expression program.", &deterministicOperation, nullptr) &&
+        equalText(artifactHashB, g_build.result.artifactSha256);
+    marker("phase27g_deterministic=PASS", "phase27g_deterministic=FAIL", deterministicRun);
+
+    bool unknownBuildFailed = false;
+    uint64_t unknownOperation = 0;
+    const bool editedUnknown = editSource(document, unknownSource, sizeof(unknownSource) - 1);
+    const bool unknownRejected = editedUnknown && !runBuildBeforeRun(0, "", &unknownOperation, &unknownBuildFailed) &&
+        unknownBuildFailed && g_build.result.errorCount != 0 && !RunControllerIsActive(&g_run);
+    marker("phase27g_unknown_identifier=PASS", "phase27g_unknown_identifier=FAIL", unknownRejected);
+
+    bool duplicateBuildFailed = false;
+    uint64_t duplicateOperation = 0;
+    const bool editedDuplicate = editSource(document, duplicateSource, sizeof(duplicateSource) - 1);
+    const bool duplicateRejected = editedDuplicate && !runBuildBeforeRun(0, "", &duplicateOperation, &duplicateBuildFailed) &&
+        duplicateBuildFailed && g_build.result.errorCount != 0 && !RunControllerIsActive(&g_run);
+    marker("phase27g_duplicate_local=PASS", "phase27g_duplicate_local=FAIL", duplicateRejected);
+
+    uint64_t recoveryOperation = 0;
+    const bool restored = editSource(document, sourceA, sizeof(sourceA) - 1);
+    const bool recovered = restored && runBuildBeforeRun(42, "Calculating inside guideXOS...", &recoveryOperation, nullptr) &&
+        outputHas(recoveryOperation, "Done.") && !RunControllerIsActive(&g_run);
+    marker("phase27g_failure_recovery=PASS", "phase27g_failure_recovery=FAIL", recovered);
+
+    FileInfo sourceInfo = {};
+    FileInfo artifactInfo = {};
+    char sourcePath[kMaxPathBytes] = {};
+    char artifactPath[kMaxPathBytes] = {};
+    const bool survival = JoinWorkspacePath("/P27G", "src/main.cpp", sourcePath, sizeof(sourcePath)) &&
+        JoinWorkspacePath("/P27G", g_build.result.artifactPath, artifactPath, sizeof(artifactPath)) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, sourcePath, &sourceInfo) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, artifactPath, &artifactInfo) &&
+        sourceInfo.kind == FileInfoKind::RegularFile && artifactInfo.kind == FileInfoKind::RegularFile &&
+        artifactInfo.size == g_build.result.artifactSize && !RunControllerIsActive(&g_run);
+    marker("phase27g_kernel_survival=PASS", "phase27g_kernel_survival=FAIL", survival);
+    const bool allPassed = firstRun && sourceEdit && deterministicRun && unknownRejected &&
+        duplicateRejected && recovered && survival;
+    marker("phase27g=PASS", "phase27g=FAIL", allPassed);
+    return allPassed;
+#elif defined(GXOS_PHASE27F_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);
