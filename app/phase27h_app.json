@@ -1,0 +1,9 @@
+{
+  "id": "com.guidexos.developer-studio.phase27h",
+  "displayName": "Developer Studio Phase 27H Conditional Language Proof",
+  "architecture": "amd64",
+  "abi": "guidexos-c-abi-v1",
+  "entryPoint": "gx_main",
+  "path": "bin/amd64/p27h.elf",
+  "capabilities": ["bare-metal-vfs", "bare-metal-compiler", "bare-metal-run", "application-output"]
+}
