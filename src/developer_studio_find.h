@@ -7,10 +7,17 @@ namespace developer_studio {
 
 // Find and editor offsets are UTF-8 byte offsets.  Matching is deliberately
 // literal and byte-oriented; case folding only affects ASCII A-Z bytes.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kFindMaxQueryBytes = 256u;
+static const uint32_t kFindMaxReplacementBytes = 1024u;
+static const uint32_t kFindMaxRetainedMatches = 256u;
+static const uint32_t kFindMaxSearchableDocumentBytes = 16u * 1024u;
+#else
 static const uint32_t kFindMaxQueryBytes = 1024u;
 static const uint32_t kFindMaxReplacementBytes = 16384u;
 static const uint32_t kFindMaxRetainedMatches = 20000u;
 static const uint32_t kFindMaxSearchableDocumentBytes = 8u * 1024u * 1024u;
+#endif
 
 enum class FindDirection {
     Forward = 0,

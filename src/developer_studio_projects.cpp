@@ -7,6 +7,7 @@ namespace {
 static const char kProjectFileName[] = "guidexos.project";
 static const char kNativeGuiKind[] = "native-gui-application";
 static const char kTargetId[] = "guidexos.amd64.hosted.native";
+static const char kBareMetalTargetId[] = "guidexos.amd64.baremetal.bootstrap.native";
 static const char kAbi[] = "guidexos-c-abi-v1";
 static const char kArchitecture[] = "amd64";
 
@@ -246,7 +247,7 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
     if (!expect(cursor, '{')) return false;
     uint32_t fields = 0;
     bool closed = false;
-    const uint32_t allFields = (1u << 11) - 1u;
+    const uint32_t requiredFields = (1u << 11) - 1u;
     skipWhitespace(cursor);
     if (cursor.position < cursor.length && cursor.bytes[cursor.position] == '}') { cursor.error = ProjectErrorCode::MissingField; return false; }
     while (cursor.position < cursor.length) {
@@ -264,6 +265,7 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
         else if (equalText(key, "abi")) bit = 1u << 8;
         else if (equalText(key, "architecture")) bit = 1u << 9;
         else if (equalText(key, "outputName")) bit = 1u << 10;
+        else if (equalText(key, "sourceEntry")) bit = 1u << 11;
         else { cursor.error = ProjectErrorCode::UnknownField; return false; }
         if ((fields & bit) != 0) { cursor.error = ProjectErrorCode::DuplicateField; return false; }
         fields |= bit;
@@ -296,6 +298,15 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
             if (!parseJsonString(cursor, project->architecture, sizeof(project->architecture))) return false;
         } else if (bit == (1u << 10)) {
             if (!parseJsonString(cursor, project->outputName, sizeof(project->outputName))) return false;
+        } else if (bit == (1u << 11)) {
+            char value[kMaxProjectPathBytes] = {};
+            char normalized[kMaxProjectPathBytes] = {};
+            if (!parseJsonString(cursor, value, sizeof(value)) ||
+                !isSafeRelativePath(value, normalized, sizeof(normalized)) ||
+                !copyText(project->sourceEntry, sizeof(project->sourceEntry), normalized)) {
+                cursor.error = ProjectErrorCode::InvalidRelativePath;
+                return false;
+            }
         }
         skipWhitespace(cursor);
         if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ',') { ++cursor.position; continue; }
@@ -304,7 +315,7 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
         return false;
     }
     if (!closed) { cursor.error = ProjectErrorCode::MalformedJson; return false; }
-    if (fields != allFields) { cursor.error = ProjectErrorCode::MissingField; return false; }
+    if ((fields & requiredFields) != requiredFields) { cursor.error = ProjectErrorCode::MissingField; return false; }
     skipWhitespace(cursor);
     return cursor.position == cursor.length;
 }
@@ -620,6 +631,18 @@ static bool generateReadme(const Project& project, char* output, uint32_t output
 static bool generateMain(const Project& project, char* output, uint32_t outputSize, uint32_t* outBytes) {
     uint32_t length = 0;
     output[0] = '\0';
+    if (equalText(project.targetProfileId, kBareMetalTargetId)) {
+        static const char kBareMetalSource[] =
+            "// Bare-metal bootstrap compiler source.\n"
+            "int gx_main(void* ctx) {\n"
+            "    return 42;\n"
+            "}\n";
+        const uint32_t bytes = lengthOf(kBareMetalSource, sizeof(kBareMetalSource));
+        if (bytes + 1 > outputSize) return false;
+        for (uint32_t i = 0; i <= bytes; ++i) output[i] = kBareMetalSource[i];
+        if (outBytes) *outBytes = bytes;
+        return true;
+    }
     if (!appendText(output, outputSize, length, "#include <guidexos/ui.h>\n\nnamespace {\nstatic gx_handle g_window = 0;\n\nstatic void clearEvent(gx_event* event) {\n    if (!event) return;\n    event->size = 0; event->type = GX_EVENT_NONE; event->window = 0;\n    event->param1 = 0; event->param2 = 0; event->param3 = 0; event->param4 = 0;\n}\n\nstatic void drawWelcome(gx_app_context* ctx) {\n    if (!ctx || !ctx->host) return;\n    if (ctx->host->draw_rect) ctx->host->draw_rect(ctx, g_window, 0, 0, 640, 360, 0x151B28u);\n    if (ctx->host->draw_text) {\n        ctx->host->draw_text(ctx, g_window, 24, 40, ") ||
         !appendCppString(output, outputSize, length, project.displayName) ||
         !appendText(output, outputSize, length, ");\n        ctx->host->draw_text(ctx, g_window, 24, 90, ") ||
@@ -815,10 +838,14 @@ bool ValidateProjectMetadata(const Project& project, ProjectErrorCode* error) {
     else {
         char normalizedSource[kMaxProjectPathBytes] = {};
         char normalizedManifest[kMaxProjectPathBytes] = {};
+        char normalizedEntry[kMaxProjectPathBytes] = {};
         if (!isSafeRelativePath(project.sourceRoot, normalizedSource, sizeof(normalizedSource)) ||
             !isSafeRelativePath(project.manifestPath, normalizedManifest, sizeof(normalizedManifest)) ||
             !equalText(project.sourceRoot, normalizedSource) || !equalText(project.manifestPath, normalizedManifest)) local = ProjectErrorCode::InvalidRelativePath;
-        if (local == ProjectErrorCode::None && !equalText(project.targetProfileId, InitialTargetProfile().id)) local = ProjectErrorCode::UnknownTargetProfile;
+        if (local == ProjectErrorCode::None && project.sourceEntry[0] != '\0' &&
+            (!isSafeRelativePath(project.sourceEntry, normalizedEntry, sizeof(normalizedEntry)) ||
+             !equalText(project.sourceEntry, normalizedEntry))) local = ProjectErrorCode::InvalidRelativePath;
+        if (local == ProjectErrorCode::None && !IsKnownTargetProfileId(project.targetProfileId)) local = ProjectErrorCode::UnknownTargetProfile;
         else if (local == ProjectErrorCode::None && !equalText(project.abi, kAbi)) local = ProjectErrorCode::InvalidAbi;
         else if (local == ProjectErrorCode::None && !equalText(project.architecture, kArchitecture)) local = ProjectErrorCode::InvalidArchitecture;
         else if (local == ProjectErrorCode::None && !isSafeOutputName(project.outputName)) local = ProjectErrorCode::InvalidOutputName;
@@ -865,8 +892,15 @@ bool SerializeProjectMetadata(const Project& project, char* output, uint32_t out
         !appendProjectField(output, outputSize, length, "projectKind", kNativeGuiKind, first) || !appendProjectField(output, outputSize, length, "sourceRoot", project.sourceRoot, first) ||
         !appendProjectField(output, outputSize, length, "applicationManifest", project.manifestPath, first) || !appendProjectField(output, outputSize, length, "defaultTargetProfile", project.targetProfileId, first) ||
         !appendProjectField(output, outputSize, length, "entryPoint", project.entryPoint, first) || !appendProjectField(output, outputSize, length, "abi", project.abi, first) ||
-        !appendProjectField(output, outputSize, length, "architecture", project.architecture, first) || !appendProjectField(output, outputSize, length, "outputName", project.outputName, first) ||
-        !appendText(output, outputSize, length, "\n}\n")) { if (error) *error = ProjectErrorCode::ProjectFileTooLarge; return false; }
+        !appendProjectField(output, outputSize, length, "architecture", project.architecture, first) || !appendProjectField(output, outputSize, length, "outputName", project.outputName, first)) {
+        if (error) *error = ProjectErrorCode::ProjectFileTooLarge;
+        return false;
+    }
+    if (project.sourceEntry[0] != '\0' && !appendProjectField(output, outputSize, length, "sourceEntry", project.sourceEntry, first)) {
+        if (error) *error = ProjectErrorCode::ProjectFileTooLarge;
+        return false;
+    }
+    if (!appendText(output, outputSize, length, "\n}\n")) { if (error) *error = ProjectErrorCode::ProjectFileTooLarge; return false; }
     if (outBytes) *outBytes = length;
     return true;
 }
@@ -879,6 +913,7 @@ bool ValidateProjectCreateRequest(const ProjectCreateRequest& request, ProjectEr
     if (!IsSupportedProjectKind(request.kind)) local = ProjectErrorCode::InvalidProjectKind;
     else if (!ValidateProjectDisplayName(request.displayName)) local = ProjectErrorCode::InvalidDisplayName;
     else if (!ValidateProjectId(request.projectId)) local = ProjectErrorCode::InvalidProjectId;
+    else if (request.targetProfileId[0] != '\0' && !IsKnownTargetProfileId(request.targetProfileId)) local = ProjectErrorCode::InvalidTargetProfile;
     else if (!isAbsolutePath(request.parentPath) || PathContainsTraversal(request.parentPath) || !NormalizePath(request.parentPath, normalized, sizeof(normalized))) local = ProjectErrorCode::InvalidParentPath;
     else if (request.folderName[0] != '\0' && !ValidateProjectFolderName(request.folderName)) local = ProjectErrorCode::InvalidFolderName;
     else if (request.folderName[0] == '\0' && !DeriveProjectFolderName(request.displayName, folder, sizeof(folder))) local = ProjectErrorCode::InvalidFolderName;
@@ -924,10 +959,11 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
     copyText(project.rootPath, sizeof(project.rootPath), root);
     copyText(project.sourceRoot, sizeof(project.sourceRoot), "src");
     copyText(project.manifestPath, sizeof(project.manifestPath), "app/app.json");
-    copyText(project.targetProfileId, sizeof(project.targetProfileId), kTargetId);
+    copyText(project.targetProfileId, sizeof(project.targetProfileId), request.targetProfileId[0] != '\0' ? request.targetProfileId : kTargetId);
     copyText(project.entryPoint, sizeof(project.entryPoint), "gx_main");
     copyText(project.abi, sizeof(project.abi), kAbi);
     copyText(project.architecture, sizeof(project.architecture), kArchitecture);
+    copyText(project.sourceEntry, sizeof(project.sourceEntry), "main.cpp");
     DeriveProjectOutputName(folder, project.outputName, sizeof(project.outputName));
     project.loadState = ProjectLoadState::Loaded;
     project.validationState = ProjectValidationState::Valid;

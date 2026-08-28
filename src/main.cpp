@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <guidexos/ui.h>
 
 #include "developer_studio_models.h"
@@ -29,6 +30,7 @@ using guidexos::developer_studio::BuildControllerIsActive;
 using guidexos::developer_studio::BuildControllerPoll;
 using guidexos::developer_studio::BuildControllerStart;
 using guidexos::developer_studio::BuildDirtyDecision;
+using guidexos::developer_studio::BuildBackendKind;
 using guidexos::developer_studio::BuildErrorCode;
 using guidexos::developer_studio::BuildErrorName;
 using guidexos::developer_studio::BuildResult;
@@ -112,6 +114,7 @@ using guidexos::developer_studio::FileInfo;
 using guidexos::developer_studio::FileInfoKind;
 using guidexos::developer_studio::FileListEntry;
 using guidexos::developer_studio::InitialTargetProfile;
+using guidexos::developer_studio::BareMetalTargetProfile;
 using guidexos::developer_studio::IsSupportedTextPath;
 using guidexos::developer_studio::IsSymbolSourcePath;
 using guidexos::developer_studio::IsValidTargetProfile;
@@ -2928,9 +2931,13 @@ static bool startProjectSearch(gx_app_context* ctx) {
 
 static bool fsStat(void* userData, const char* path, FileInfo* outInfo) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !context->app->host->file_stat || !outInfo) return false;
+    if (!context || !context->app || !context->app->host || !outInfo) return false;
     gx_file_info info = {};
-    if (context->app->host->file_stat(context->app, path, &info) != GX_OK) return false;
+    const gx_host_calls* host = context->app->host;
+    const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_stat) + sizeof(host->bare_metal_file_stat) && host->bare_metal_file_stat;
+    const bool ok = bare ? host->bare_metal_file_stat(context->app, path, &info) == GX_OK :
+        (host->file_stat && host->file_stat(context->app, path, &info) == GX_OK);
+    if (!ok) return false;
     outInfo->kind = info.type == GX_FILE_TYPE_DIRECTORY ? FileInfoKind::Directory :
         (info.type == GX_FILE_TYPE_REGULAR ? FileInfoKind::RegularFile : FileInfoKind::Unknown);
     outInfo->size = info.size;
@@ -2941,13 +2948,17 @@ static bool fsList(void* userData, const char* path, FileListEntry* entries, uin
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     if (outCount) *outCount = 0;
     if (outTruncated) *outTruncated = false;
-    if (!context || !context->app || !context->app->host || !context->app->host->file_list || !entries || capacity == 0 || !outCount) return false;
+    if (!context || !context->app || !context->app->host || !entries || capacity == 0 || !outCount) return false;
     if (capacity > kMaxWorkspaceEntries) capacity = kMaxWorkspaceEntries;
     gx_file_entry* nativeEntries = g_fsListEntries;
     for (uint32_t i = 0; i < kMaxWorkspaceEntries; ++i) nativeEntries[i] = {};
     uint32_t count = 0;
     uint32_t truncated = 0;
-    if (context->app->host->file_list(context->app, path, nativeEntries, capacity, &count, &truncated) != GX_OK) return false;
+    const gx_host_calls* host = context->app->host;
+    const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_list) + sizeof(host->bare_metal_file_list) && host->bare_metal_file_list;
+    const gx_result listResult = bare ? host->bare_metal_file_list(context->app, path, nativeEntries, capacity, &count, &truncated) :
+        (host->file_list ? host->file_list(context->app, path, nativeEntries, capacity, &count, &truncated) : GX_ERROR_UNSUPPORTED);
+    if (listResult != GX_OK) return false;
     for (uint32_t i = 0; i < count && i < capacity; ++i) {
         copyText(entries[i].name, sizeof(entries[i].name), nativeEntries[i].name);
         entries[i].kind = nativeEntries[i].type == GX_FILE_TYPE_DIRECTORY ? FileInfoKind::Directory :
@@ -2961,26 +2972,38 @@ static bool fsList(void* userData, const char* path, FileListEntry* entries, uin
 
 static bool fsRead(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !context->app->host->file_read_workspace || !buffer || !outBytes) return false;
-    return context->app->host->file_read_workspace(context->app, path, buffer, capacity, outBytes) == GX_OK;
+    if (!context || !context->app || !context->app->host || !buffer || !outBytes) return false;
+    const gx_host_calls* host = context->app->host;
+    const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_read_workspace) + sizeof(host->bare_metal_file_read_workspace) && host->bare_metal_file_read_workspace;
+    return (bare ? host->bare_metal_file_read_workspace(context->app, path, buffer, capacity, outBytes) :
+        (host->file_read_workspace ? host->file_read_workspace(context->app, path, buffer, capacity, outBytes) : GX_ERROR_UNSUPPORTED)) == GX_OK;
 }
 
 static bool fsWrite(void* userData, const char* path, const char* buffer, uint32_t bytes, uint32_t* outBytes) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !context->app->host->file_write_all || !buffer || !outBytes) return false;
-    return context->app->host->file_write_all(context->app, path, buffer, bytes, outBytes) == GX_OK;
+    if (!context || !context->app || !context->app->host || !buffer || !outBytes) return false;
+    const gx_host_calls* host = context->app->host;
+    const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_write_all) + sizeof(host->bare_metal_file_write_all) && host->bare_metal_file_write_all;
+    return (bare ? host->bare_metal_file_write_all(context->app, path, buffer, bytes, outBytes) :
+        (host->file_write_all ? host->file_write_all(context->app, path, buffer, bytes, outBytes) : GX_ERROR_UNSUPPORTED)) == GX_OK;
 }
 
 static bool fsCreateDirectory(void* userData, const char* path) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !context->app->host->file_create_directory) return false;
-    return context->app->host->file_create_directory(context->app, path) == GX_OK;
+    if (!context || !context->app || !context->app->host) return false;
+    const gx_host_calls* host = context->app->host;
+    const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_create_directory) + sizeof(host->bare_metal_file_create_directory) && host->bare_metal_file_create_directory;
+    return (bare ? host->bare_metal_file_create_directory(context->app, path) :
+        (host->file_create_directory ? host->file_create_directory(context->app, path) : GX_ERROR_UNSUPPORTED)) == GX_OK;
 }
 
 static bool fsRemovePath(void* userData, const char* path) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !context->app->host->file_remove) return false;
-    return context->app->host->file_remove(context->app, path) == GX_OK;
+    if (!context || !context->app || !context->app->host) return false;
+    const gx_host_calls* host = context->app->host;
+    const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_remove) + sizeof(host->bare_metal_file_remove) && host->bare_metal_file_remove;
+    return (bare ? host->bare_metal_file_remove(context->app, path) :
+        (host->file_remove ? host->file_remove(context->app, path) : GX_ERROR_UNSUPPORTED)) == GX_OK;
 }
 
 static BuildErrorCode mapBuildError(uint32_t error) {
@@ -3000,6 +3023,9 @@ static BuildErrorCode mapBuildError(uint32_t error) {
     case GX_BUILD_ERROR_ENTRY_POINT_MISSING: return BuildErrorCode::EntryPointMissing;
     case GX_BUILD_ERROR_MANIFEST_ARTIFACT_MISMATCH: return BuildErrorCode::ManifestArtifactMismatch;
     case GX_BUILD_ERROR_OUTPUT_TRUNCATED: return BuildErrorCode::OutputTruncated;
+    case GX_BUILD_ERROR_COMPILER_FAILED: return BuildErrorCode::ProcessFailed;
+    case GX_BUILD_ERROR_SOURCE_SELECTION: return BuildErrorCode::InvalidRequest;
+    case GX_BUILD_ERROR_UNSUPPORTED_PROJECT: return BuildErrorCode::UnsupportedTarget;
     case GX_BUILD_ERROR_BUSY: return BuildErrorCode::AlreadyRunning;
     case GX_BUILD_ERROR_INVALID_REQUEST: return BuildErrorCode::InvalidRequest;
     default: return BuildErrorCode::ServiceError;
@@ -3078,12 +3104,106 @@ static bool hostBuildRelease(void* userData, uint64_t handle) {
     return context->app->host->build_project_release(context->app, handle) == GX_OK;
 }
 
+static bool bareMetalBuildStart(void* userData, const guidexos::developer_studio::BuildRequest& request, uint64_t* outHandle, BuildErrorCode* error) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (error) *error = BuildErrorCode::None;
+    if (!context || !context->app || !context->app->host || !outHandle) {
+        if (error) *error = BuildErrorCode::HostUnavailable;
+        return false;
+    }
+    const gx_host_calls* host = context->app->host;
+    if (host->size < offsetof(gx_host_calls, bare_metal_build_project_start) + sizeof(host->bare_metal_build_project_start) || !host->bare_metal_build_project_start) {
+        if (error) *error = BuildErrorCode::HostUnavailable;
+        return false;
+    }
+    gx_build_request nativeRequest = {};
+    nativeRequest.size = sizeof(nativeRequest);
+    nativeRequest.version = GX_BUILD_API_VERSION;
+    nativeRequest.projectRoot = request.projectRoot;
+    nativeRequest.projectId = request.projectId;
+    nativeRequest.projectKind = request.projectKind;
+    nativeRequest.targetProfile = request.targetProfile;
+    nativeRequest.buildSystem = request.buildSystem;
+    nativeRequest.buildScript = request.buildScript;
+    nativeRequest.expectedArtifact = request.expectedArtifact;
+    nativeRequest.configuration = request.configuration;
+    const gx_result result = host->bare_metal_build_project_start(context->app, &nativeRequest, outHandle);
+    if (result != GX_OK) {
+        if (error) *error = result == GX_ERROR_BUSY ? BuildErrorCode::AlreadyRunning : BuildErrorCode::ServiceError;
+        return false;
+    }
+    return true;
+}
+
+static bool bareMetalBuildPoll(void* userData, uint64_t handle, BuildResult* result, bool* completed, BuildErrorCode* error) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (error) *error = BuildErrorCode::None;
+    if (completed) *completed = false;
+    if (!context || !context->app || !context->app->host || !result || !completed) {
+        if (error) *error = BuildErrorCode::HostUnavailable;
+        return false;
+    }
+    const gx_host_calls* host = context->app->host;
+    if (host->size < offsetof(gx_host_calls, bare_metal_build_project_poll) + sizeof(host->bare_metal_build_project_poll) || !host->bare_metal_build_project_poll) {
+        if (error) *error = BuildErrorCode::HostUnavailable;
+        return false;
+    }
+    gx_build_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_BUILD_API_VERSION;
+    if (host->bare_metal_build_project_poll(context->app, handle, &snapshot) != GX_OK) {
+        if (error) *error = BuildErrorCode::ServiceError;
+        return false;
+    }
+    *result = BuildResult();
+    result->state = snapshot.state <= GX_BUILD_CANCELLED ? static_cast<BuildState>(snapshot.state) : BuildState::Failed;
+    result->exitCode = snapshot.processExitCode;
+    result->error = mapBuildError(snapshot.errorCode);
+    result->elapsedMilliseconds = snapshot.elapsedMilliseconds;
+    result->warningCount = snapshot.warningCount;
+    result->errorCount = snapshot.errorCount;
+    result->outputTruncated = snapshot.outputTruncated != 0;
+    result->artifactSize = snapshot.artifactSize;
+    result->artifactValid = snapshot.artifactValid != 0;
+    result->artifactEntryPoint = snapshot.artifactEntryPoint != 0;
+    copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
+    copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
+    copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);
+    copyText(result->errorMessage, sizeof(result->errorMessage), snapshot.errorMessage);
+    result->outputCount = snapshot.outputCount > guidexos::developer_studio::kMaxBuildLines ? guidexos::developer_studio::kMaxBuildLines : snapshot.outputCount;
+    for (uint32_t i = 0; i < result->outputCount; ++i) {
+        result->output[i].standardError = snapshot.output[i].stream == 2;
+        copyText(result->output[i].text, sizeof(result->output[i].text), snapshot.output[i].text);
+    }
+    *completed = result->state == BuildState::Succeeded || result->state == BuildState::Failed || result->state == BuildState::Cancelled;
+    return true;
+}
+
+static bool bareMetalBuildRelease(void* userData, uint64_t handle) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (!context || !context->app || !context->app->host) return false;
+    const gx_host_calls* host = context->app->host;
+    return host->size >= offsetof(gx_host_calls, bare_metal_build_project_release) + sizeof(host->bare_metal_build_project_release) &&
+        host->bare_metal_build_project_release && host->bare_metal_build_project_release(context->app, handle) == GX_OK;
+}
+
 static HostedBuildService buildService() {
     HostedBuildService service = {};
     service.userData = &g_fileSystemContext;
-    service.start = hostBuildStart;
-    service.poll = hostBuildPoll;
-    service.release = hostBuildRelease;
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    const bool bare = host && host->size >= offsetof(gx_host_calls, bare_metal_build_project_release) + sizeof(host->bare_metal_build_project_release) &&
+        host->bare_metal_build_project_start && host->bare_metal_build_project_poll && host->bare_metal_build_project_release;
+    if (bare) {
+        service.start = bareMetalBuildStart;
+        service.poll = bareMetalBuildPoll;
+        service.release = bareMetalBuildRelease;
+        service.backend = BuildBackendKind::BareMetal;
+    } else {
+        service.start = hostBuildStart;
+        service.poll = hostBuildPoll;
+        service.release = hostBuildRelease;
+        service.backend = BuildBackendKind::Hosted;
+    }
     return service;
 }
 
@@ -3596,6 +3716,92 @@ static void pollBuild(gx_app_context* ctx) {
         }
     }
 }
+
+#if defined(GXOS_PHASE27E_SMOKE)
+static void phase27e_marker(gx_app_context* ctx, const char* marker, bool pass)
+{
+    if (pass) logMarker(ctx, marker);
+    else markerFailure(ctx, marker, "bare-metal IDE build proof");
+}
+
+static bool phase27e_edit_document(Document* document, const char* source, uint32_t bytes)
+{
+    if (!document || !TextBufferSet(&document->buffer, source, bytes)) return false;
+    document->buffer.caret = document->buffer.length;
+    if (!TextBufferInsert(&document->buffer, " ", 1) || !TextBufferBackspace(&document->buffer)) return false;
+    return document->buffer.dirty;
+}
+
+// This proof intentionally enters through Developer Studio's real workspace,
+// document-save, BuildController, and OutputService paths. The compiler is
+// reached only through the advertised bare-metal host callbacks.
+static bool runPhase27eSmoke(gx_app_context* ctx)
+{
+    bool allPassed = true;
+    const bool bareBackend = buildService().backend == BuildBackendKind::BareMetal;
+    phase27e_marker(ctx, "phase27e_build_backend=PASS", bareBackend);
+    allPassed = bareBackend && allPassed;
+    if (!bareBackend || !WorkspaceControllerOpenProject(&g_controller, "/P27E") ||
+        !WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) {
+        phase27e_marker(ctx, "phase27e_ide_build=PASS", false);
+        phase27e_marker(ctx, "phase27e=PASS", false);
+        return false;
+    }
+
+    const bool initialStarted = beginBuild(ctx, BuildDirtyDecision::SaveAll);
+    if (initialStarted) pollBuild(ctx);
+    const bool initialBuild = initialStarted && g_buildController.result.state == BuildState::Succeeded &&
+                              g_buildController.result.artifactValid;
+    char initialHash[guidexos::developer_studio::kMaxBuildArtifactSha256Bytes] = {};
+    copyText(initialHash, sizeof(initialHash), g_buildController.result.artifactSha256);
+    phase27e_marker(ctx, "phase27e_ide_build=PASS", initialBuild);
+    allPassed = initialBuild && allPassed;
+
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    const char invalidSource[] = "int gx_main(void* ctx) {\n    return banana;\n}\n";
+    const bool dirtyEdit = phase27e_edit_document(document, invalidSource, sizeof(invalidSource) - 1);
+    const bool invalidStarted = dirtyEdit && beginBuild(ctx, BuildDirtyDecision::SaveAll);
+    if (invalidStarted) pollBuild(ctx);
+    const OutputRecord* problem = OutputServiceProblemAt(&g_outputService, "dev.guidexos.phase27e", 0);
+    const bool diagnostic = invalidStarted && g_buildController.result.state == BuildState::Failed &&
+        g_buildController.result.errorCount != 0 && problem && problem->hasLocation &&
+        problem->line == 2 && problem->column != 0;
+    bool savedInvalid = false;
+    char sourcePath[kMaxPathBytes] = {};
+    if (JoinWorkspacePath("/P27E", "src/main.cpp", sourcePath, sizeof(sourcePath))) {
+        char saved[256] = {};
+        uint32_t savedBytes = 0;
+        savedInvalid = g_controller.fileSystem.read && g_controller.fileSystem.read(g_controller.fileSystem.userData,
+            sourcePath, saved, sizeof(saved), &savedBytes) && savedBytes == sizeof(invalidSource) - 1;
+        for (uint32_t i = 0; savedInvalid && i < savedBytes; ++i) savedInvalid = saved[i] == invalidSource[i];
+    }
+    phase27e_marker(ctx, "phase27e_source_edit_build=PASS", dirtyEdit && invalidStarted && savedInvalid);
+    phase27e_marker(ctx, "phase27e_ide_diagnostics=PASS", diagnostic);
+    allPassed = dirtyEdit && invalidStarted && savedInvalid && diagnostic && allPassed;
+
+    const char validSource[] = "int gx_main(void* ctx) {\n    return 41;\n}\n";
+    const bool validEdit = phase27e_edit_document(document, validSource, sizeof(validSource) - 1);
+    const bool rebuildStarted = validEdit && beginBuild(ctx, BuildDirtyDecision::SaveAll);
+    if (rebuildStarted) pollBuild(ctx);
+    const bool rebuilt = rebuildStarted && g_buildController.result.state == BuildState::Succeeded &&
+        g_buildController.result.artifactValid && g_buildController.result.artifactSha256[0] != '\0' &&
+        !PathsEqual(initialHash, g_buildController.result.artifactSha256);
+    phase27e_marker(ctx, "phase27e_rebuild_after_failure=PASS", rebuilt);
+    allPassed = rebuilt && allPassed;
+
+    FileInfo artifactInfo = {};
+    char artifactPath[kMaxPathBytes] = {};
+    const bool artifactPathOk = JoinWorkspacePath("/P27E", g_buildController.result.artifactPath,
+                                                   artifactPath, sizeof(artifactPath));
+    const bool kernelSurvival = artifactPathOk && g_controller.fileSystem.stat &&
+        g_controller.fileSystem.stat(g_controller.fileSystem.userData, artifactPath, &artifactInfo) &&
+        artifactInfo.kind == FileInfoKind::RegularFile && artifactInfo.size == g_buildController.result.artifactSize;
+    phase27e_marker(ctx, "phase27e_kernel_survival=PASS", kernelSurvival);
+    allPassed = kernelSurvival && allPassed;
+    phase27e_marker(ctx, "phase27e=PASS", allPassed);
+    return allPassed;
+}
+#endif
 
 static void requestBuild(gx_app_context* ctx) {
     dismissSignatureHelp(ctx, "build", false);
@@ -4354,6 +4560,9 @@ static void commitNewProject(gx_app_context* ctx) {
     copyText(request.projectId, sizeof(request.projectId), g_projectDialog.projectId);
     copyText(request.displayName, sizeof(request.displayName), g_projectDialog.displayName);
     request.kind = ProjectKind::NativeGuiApplication;
+    if (buildService().backend == BuildBackendKind::BareMetal) {
+        copyText(request.targetProfileId, sizeof(request.targetProfileId), BareMetalTargetProfile().id);
+    }
     ProjectOperationResult result;
     if (!WorkspaceControllerCreateProject(&g_controller, request, &result)) {
         if (result.rollbackAttempted && result.rollbackSucceeded) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_rollback=PASS");
@@ -9484,7 +9693,9 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!ctx || !ctx->host) return GX_ERROR_INVALID_ARGUMENT;
-    if (!ctx->host->get_api_version || !ctx->host->log || !ctx->host->request_window) return GX_ERROR_UNSUPPORTED;
+    const bool hasBareBuildCallbacks = ctx->host->size >= offsetof(gx_host_calls, bare_metal_build_project_release) + sizeof(ctx->host->bare_metal_build_project_release) &&
+        ctx->host->bare_metal_build_project_start && ctx->host->bare_metal_build_project_poll && ctx->host->bare_metal_build_project_release;
+    if (!ctx->host->get_api_version || !ctx->host->log || (!ctx->host->request_window && !hasBareBuildCallbacks)) return GX_ERROR_UNSUPPORTED;
     const guidexos::developer_studio::TargetProfile& target = InitialTargetProfile();
     if (!IsValidTargetProfile(target)) return GX_ERROR_FAILED;
 
@@ -9691,6 +9902,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugPanelTab = 0;
     g_debugSelectedBreakpoint = 0;
     writeOutput("Ready");
+
+#if defined(GXOS_PHASE27E_SMOKE)
+    if (hasBareBuildCallbacks) return runPhase27eSmoke(ctx) ? GX_OK : GX_ERROR_FAILED;
+#endif
 
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER target_profile=guidexos.amd64.hosted.native maturity=experimental");

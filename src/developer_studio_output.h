@@ -8,9 +8,15 @@ namespace developer_studio {
 /* The output store deliberately uses fixed-size storage.  These limits are
  * part of the hosted-development contract and keep the Native ELF image
  * independent of an allocator or an unbounded process log. */
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kMaxOutputRecords = 64;
+static const uint32_t kMaxOutputRecordsPerOperation = 32;
+static const uint32_t kMaxOutputOperations = 4;
+#else
 static const uint32_t kMaxOutputRecords = 512;
 static const uint32_t kMaxOutputRecordsPerOperation = 128;
 static const uint32_t kMaxOutputOperations = 20;
+#endif
 static const uint32_t kMaxOutputTextBytes = 512;
 static const uint32_t kMaxOutputProjectIdBytes = 96;
 static const uint32_t kMaxOutputPathBytes = 160;

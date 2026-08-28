@@ -51,16 +51,27 @@ enum class SyntaxErrorCode {
     RenderSpanInvalid
 };
 
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kSyntaxMaxHighlightedDocumentBytes = 16u * 1024u;
+static const uint32_t kSyntaxMaxHighlightedLineCount = 2048u;
+static const uint32_t kSyntaxMaxTokenizableLineBytes = 2048u;
+static const uint32_t kSyntaxMaxTokensPerLine = 256u;
+#else
 static const uint32_t kSyntaxMaxHighlightedDocumentBytes = 2u * 1024u * 1024u;
 static const uint32_t kSyntaxMaxHighlightedLineCount = 100000u;
 static const uint32_t kSyntaxMaxTokenizableLineBytes = 32u * 1024u;
 static const uint32_t kSyntaxMaxTokensPerLine = 4096u;
+#endif
 
 // The current native editor has eight embedded document slots.  A 65,536-span
 // per-document cap keeps the embedded cache bounded while leaving room for
 // ordinary generated and hand-written source.  A document that exceeds this
 // cap remains editable and is rendered as plain text.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kSyntaxMaxCachedTokenSpans = 4096u;
+#else
 static const uint32_t kSyntaxMaxCachedTokenSpans = 65536u;
+#endif
 static const uint32_t kSyntaxMaxRawStringDelimiterBytes = 4u;
 static const uint32_t kSyntaxTabWidth = 4u;
 

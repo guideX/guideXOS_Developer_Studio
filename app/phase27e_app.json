@@ -1,0 +1,9 @@
+{
+  "id": "com.guidexos.developer-studio.phase27e",
+  "displayName": "Developer Studio Phase 27E Build Proof",
+  "architecture": "amd64",
+  "abi": "guidexos-c-abi-v1",
+  "entryPoint": "gx_main",
+  "path": "bin/amd64/p27e.elf",
+  "capabilities": ["bare-metal-vfs", "bare-metal-compiler", "build-integration"]
+}

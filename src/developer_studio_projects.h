@@ -43,6 +43,9 @@ struct ProjectCreateRequest {
     char projectId[kMaxProjectIdBytes];
     char displayName[kMaxProjectDisplayNameBytes];
     ProjectKind kind;
+    // Empty selects the existing hosted target. Bare-metal project creation
+    // supplies the append-only target id when that capability is advertised.
+    char targetProfileId[kMaxNameBytes];
 };
 
 struct ProjectOperationResult {

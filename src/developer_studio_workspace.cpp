@@ -86,6 +86,10 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
 
 void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, SymbolDatabase* database) {
     if (!controller) return;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+    (void)database;
+    controller->symbolDatabase = nullptr;
+#else
     controller->symbolDatabase = database;
     if (database) {
         SymbolDatabaseClear(database);
@@ -94,6 +98,7 @@ void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, Sy
                                         controller->model.documents, kMaxOpenDocuments,
                                         controller->model.projectGeneration);
     }
+#endif
 }
 
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path) {
@@ -109,7 +114,9 @@ bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const cha
     if (info.kind != FileInfoKind::Directory) { setControllerError(controller, ModelErrorCode::NotDirectory); return false; }
     const char* name = BaseName(normalized);
     if (!WorkspaceModelSetRoot(&controller->model, normalized, name[0] ? name : normalized)) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
+#endif
     if (!WorkspaceControllerRefresh(controller)) return false;
     return true;
 }
@@ -136,14 +143,18 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
     controller->model.hasProject = true;
     controller->model.project = result.project;
     controller->lastProjectError = ProjectErrorCode::None;
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
+#endif
     if (!WorkspaceControllerRefresh(controller)) {
         setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
         return false;
     }
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase)
         SymbolDatabaseIndexProject(controller->symbolDatabase, controller->fileSystem, controller->model.rootPath,
                                     controller->model.documents, kMaxOpenDocuments, controller->model.projectGeneration);
+#endif
     return true;
 }
 
@@ -191,9 +202,11 @@ bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
     controller->model.hasProject = true;
     WorkspaceModelAdvanceProjectGeneration(&controller->model);
     controller->lastProjectError = ProjectErrorCode::None;
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase)
         SymbolDatabaseIndexProject(controller->symbolDatabase, controller->fileSystem, controller->model.rootPath,
                                     controller->model.documents, kMaxOpenDocuments, controller->model.projectGeneration);
+#endif
     return true;
 }
 
@@ -282,18 +295,26 @@ bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char
     bool duplicate = false;
     if (!WorkspaceModelAddDocument(&controller->model, normalized, bytes, count, &error, &duplicate)) { setControllerError(controller, error); return false; }
     controller->lastError = duplicate ? ModelErrorCode::DuplicateDocument : ModelErrorCode::None;
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase) WorkspaceControllerUpdateDocumentSymbols(
         controller, static_cast<uint32_t>(FindOpenDocument(&controller->model, normalized)));
+#endif
     return true;
 }
 
 bool WorkspaceControllerUpdateDocumentSymbols(WorkspaceController* controller, uint32_t documentIndex) {
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+    (void)controller;
+    (void)documentIndex;
+    return false;
+#else
     if (!controller || !controller->symbolDatabase || documentIndex >= kMaxOpenDocuments ||
         !controller->model.documents[documentIndex].used) return false;
     const Document& document = controller->model.documents[documentIndex];
     return SymbolDatabaseIndexDocument(controller->symbolDatabase, document.path, document.documentId,
                                        document.buffer.generation, document.buffer.dirty,
                                        document.buffer.data, document.buffer.length);
+#endif
 }
 
 bool WorkspaceControllerSetCaretPosition(WorkspaceController* controller, uint32_t documentIndex, uint32_t line, uint32_t column,
@@ -365,7 +386,9 @@ bool WorkspaceControllerSaveDocument(WorkspaceController* controller, uint32_t d
     bool ok = controller->fileSystem.write(controller->fileSystem.userData, document.path, document.buffer.data, document.buffer.length, &written) && written == document.buffer.length;
     ModelErrorCode error = ModelErrorCode::None;
     if (!WorkspaceModelMarkSaved(&controller->model, documentIndex, ok, &error)) { setControllerError(controller, error); return false; }
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (ok) WorkspaceControllerUpdateDocumentSymbols(controller, documentIndex);
+#endif
     setControllerError(controller, ModelErrorCode::None);
     return true;
 }
@@ -416,11 +439,13 @@ bool WorkspaceControllerCloseDocument(WorkspaceController* controller, uint32_t 
     ModelErrorCode error = ModelErrorCode::None;
     bool ok = WorkspaceModelCloseDocument(&controller->model, documentIndex, decision, decision != CloseDecision::Save || !controller->model.documents[documentIndex].buffer.dirty, &error);
     if (!ok) setControllerError(controller, error);
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     else if (controller->symbolDatabase && controller->model.hasProject)
         SymbolDatabaseIndexDiskDocument(controller->symbolDatabase, controller->fileSystem, closedPath,
                                         controller->model.projectGeneration);
     else if (ok && controller->symbolDatabase)
         SymbolDatabaseRemoveDocument(controller->symbolDatabase, closedPath);
+#endif
     return ok;
 }
 
@@ -431,7 +456,9 @@ bool WorkspaceControllerCloseWorkspace(WorkspaceController* controller, CloseDec
         if (decision == CloseDecision::Save && !WorkspaceControllerSaveAll(controller)) return false;
     }
     WorkspaceModelInit(&controller->model);
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
+#endif
     controller->lastError = ModelErrorCode::None;
     controller->listingTruncated = false;
     return true;

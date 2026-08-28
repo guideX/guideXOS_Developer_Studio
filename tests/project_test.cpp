@@ -175,6 +175,15 @@ int main(int argc, char** argv) {
     longDisplay.push_back('a');
     assert(!ValidateProjectDisplayName(longDisplay.c_str()));
 
+    Project bareProject = makeProject();
+    std::strcpy(bareProject.targetProfileId, BareMetalTargetProfile().id);
+    std::strcpy(bareProject.sourceEntry, "main.cpp");
+    assert(SerializeProjectMetadata(bareProject, serialized, sizeof(serialized), &serializedBytes, &error));
+    assert(std::string(serialized, serializedBytes).find("\"sourceEntry\": \"main.cpp\"") != std::string::npos);
+    assert(ParseProjectMetadata(serialized, serializedBytes, &parsed, &error));
+    assert(std::strcmp(parsed.targetProfileId, BareMetalTargetProfile().id) == 0);
+    assert(std::strcmp(parsed.sourceEntry, "main.cpp") == 0);
+
     const fs::path testRoot = fs::absolute(fs::path("tmp") / "developer-studio-project-test-8");
     std::error_code ec;
     const bool preserve = argc > 1 && std::strcmp(argv[1], "--preserve") == 0;

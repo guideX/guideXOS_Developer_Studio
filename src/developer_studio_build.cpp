@@ -5,6 +5,7 @@ namespace developer_studio {
 namespace {
 
 static const char kBuildSystem[] = "guidexos-native-build-script-v1";
+static const char kBareMetalBuildSystem[] = "guidexos-native-baremetal-bootstrap-v1";
 static const char kNativeGuiProjectKind[] = "native-gui-application";
 static const char kBuildScript[] = "build.ps1";
 static const char kBuildConfiguration[] = "Debug";
@@ -154,7 +155,8 @@ const char* BuildErrorName(BuildErrorCode error) {
     return "unknown";
 }
 
-bool BuildRequestFromProject(const Project& project, BuildRequest* request, BuildErrorCode* error) {
+bool BuildRequestFromProject(const Project& project, BuildRequest* request, BuildErrorCode* error,
+                             BuildBackendKind backend) {
     if (error) *error = BuildErrorCode::None;
     if (!request) { if (error) *error = BuildErrorCode::InvalidRequest; return false; }
     *request = BuildRequest();
@@ -164,9 +166,10 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
         return false;
     }
     if (!IsSupportedProjectKind(project.kind)) { if (error) *error = BuildErrorCode::UnsupportedProjectKind; return false; }
-    if (!IsValidTargetProfile(InitialTargetProfile()) ||
-        project.targetProfileId[0] == '\0' ||
-        !PathsEqual(project.targetProfileId, InitialTargetProfile().id)) {
+    const TargetProfile& target = backend == BuildBackendKind::BareMetal
+        ? BareMetalTargetProfile() : InitialTargetProfile();
+    if (!IsValidTargetProfile(target) || project.targetProfileId[0] == '\0' ||
+        !PathsEqual(project.targetProfileId, target.id)) {
         if (error) *error = BuildErrorCode::UnsupportedTarget;
         return false;
     }
@@ -174,8 +177,8 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
         !copyText(request->projectId, sizeof(request->projectId), project.projectId) ||
         !copyText(request->projectKind, sizeof(request->projectKind), kNativeGuiProjectKind) ||
         !copyText(request->targetProfile, sizeof(request->targetProfile), project.targetProfileId) ||
-        !copyText(request->buildSystem, sizeof(request->buildSystem), kBuildSystem) ||
-        !copyText(request->buildScript, sizeof(request->buildScript), kBuildScript) ||
+        !copyText(request->buildSystem, sizeof(request->buildSystem), backend == BuildBackendKind::BareMetal ? kBareMetalBuildSystem : kBuildSystem) ||
+        !copyText(request->buildScript, sizeof(request->buildScript), backend == BuildBackendKind::BareMetal ? "" : kBuildScript) ||
         !copyText(request->configuration, sizeof(request->configuration), kBuildConfiguration) ||
         !appendArtifactPath(project, request->expectedArtifact, sizeof(request->expectedArtifact))) {
         if (error) *error = BuildErrorCode::InvalidRequest;
@@ -212,7 +215,7 @@ bool BuildControllerStart(BuildController* controller, WorkspaceController* work
         if (dirtyDecision == BuildDirtyDecision::Cancel) local = BuildErrorCode::UserCancelled;
         else if (!WorkspaceControllerSaveAllProjectDocuments(workspace)) local = BuildErrorCode::SaveFailed;
     }
-    if (local == BuildErrorCode::None && !BuildRequestFromProject(workspace->model.project, &controller->request, &local)) {
+    if (local == BuildErrorCode::None && !BuildRequestFromProject(workspace->model.project, &controller->request, &local, service.backend)) {
         if (local == BuildErrorCode::None) local = BuildErrorCode::InvalidRequest;
     }
     if (local == BuildErrorCode::None && debugInfo && !BuildRequestEnableDebugInfo(&controller->request))

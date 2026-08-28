@@ -10,7 +10,15 @@ static const Capability kInitialCapabilities[] = {
     { "hosted-native-runner", "Hosted Native ELF runner", true, CapabilityMaturity::Experimental },
     { "workspace-model", "Workspace and document model", true, CapabilityMaturity::Partial },
     { "filesystem-workspace", "Bounded hosted workspace filesystem", true, CapabilityMaturity::Experimental },
-    { "build-integration", "Project build integration", false, CapabilityMaturity::Unavailable }
+    { "build-integration", "Project build integration", true, CapabilityMaturity::Experimental }
+};
+
+static const Capability kBareMetalCapabilities[] = {
+    { "native-gui", "Native GUI application", true, CapabilityMaturity::Supported },
+    { "app-model-manifest", "App Model manifest registration", true, CapabilityMaturity::Supported },
+    { "bare-metal-vfs", "Kernel VFS workspace", true, CapabilityMaturity::Experimental },
+    { "bare-metal-compiler", "In-kernel bootstrap compiler", true, CapabilityMaturity::Experimental },
+    { "build-integration", "Project build integration", true, CapabilityMaturity::Experimental }
 };
 
 static const TargetProfile kInitialTargetProfile = {
@@ -24,6 +32,20 @@ static const TargetProfile kInitialTargetProfile = {
     "guideXOS Hosted Native ELF Runtime",
     kInitialCapabilities,
     sizeof(kInitialCapabilities) / sizeof(kInitialCapabilities[0]),
+    CapabilityMaturity::Experimental
+};
+
+static const TargetProfile kBareMetalTargetProfile = {
+    "guidexos.amd64.baremetal.bootstrap.native",
+    "guideXOS AMD64 Bare-Metal - Bootstrap Native",
+    "amd64",
+    "guidexos-c-abi-v1",
+    "guideXOS kernel NativeElf runtime",
+    "guideXOS kernel VFS compiler subset",
+    "in-kernel bootstrap compiler",
+    "guideXOS bare-metal NativeElf runtime",
+    kBareMetalCapabilities,
+    sizeof(kBareMetalCapabilities) / sizeof(kBareMetalCapabilities[0]),
     CapabilityMaturity::Experimental
 };
 
@@ -232,6 +254,15 @@ static bool entryBefore(const WorkspaceEntry& left, const WorkspaceEntry& right)
 
 const TargetProfile& InitialTargetProfile() {
     return kInitialTargetProfile;
+}
+
+const TargetProfile& BareMetalTargetProfile() {
+    return kBareMetalTargetProfile;
+}
+
+bool IsKnownTargetProfileId(const char* id) {
+    return equalText(id, kInitialTargetProfile.id, false) ||
+           equalText(id, kBareMetalTargetProfile.id, false);
 }
 
 bool IsValidTargetProfile(const TargetProfile& profile) {

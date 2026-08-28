@@ -75,9 +75,17 @@ enum class CapabilityMaturity {
 
 static const uint32_t kMaxPathBytes = 768;
 static const uint32_t kMaxNameBytes = 128;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+// The embedded Phase 27E proof keeps the same model/controller APIs while
+// selecting bounded capacities appropriate for a NativeElf application.
+static const uint32_t kMaxWorkspaceEntries = 32;
+static const uint32_t kMaxOpenDocuments = 2;
+static const uint32_t kMaxEditorBytes = 16u * 1024u;
+#else
 static const uint32_t kMaxWorkspaceEntries = 128;
 static const uint32_t kMaxOpenDocuments = 8;
 static const uint32_t kMaxEditorBytes = 256u * 1024u;
+#endif
 static const uint32_t kMaxWorkspaceDepth = 8;
 static const uint32_t kMaxProjectFileBytes = 16u * 1024u;
 static const uint32_t kMaxProjectIdBytes = 96;
@@ -121,6 +129,9 @@ struct Project {
     char abi[kMaxNameBytes];
     char architecture[32];
     char outputName[kMaxNameBytes];
+    // Optional deterministic compiler entry. Empty preserves the original
+    // project-file shape; when present it is relative to sourceRoot.
+    char sourceEntry[kMaxProjectPathBytes];
     ProjectLoadState loadState;
     ProjectValidationState validationState;
     ProjectErrorCode error;
@@ -218,6 +229,8 @@ struct Workspace {
 };
 
 const TargetProfile& InitialTargetProfile();
+const TargetProfile& BareMetalTargetProfile();
+bool IsKnownTargetProfileId(const char* id);
 bool IsValidTargetProfile(const TargetProfile& profile);
 const char* ToString(ProjectKind kind);
 const char* ToString(CapabilityMaturity maturity);

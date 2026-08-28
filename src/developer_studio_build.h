@@ -57,6 +57,11 @@ enum class BuildDirtyDecision {
     Cancel
 };
 
+enum class BuildBackendKind {
+    Hosted = 0,
+    BareMetal
+};
+
 struct BuildOutputLine {
     bool standardError;
     char text[kMaxBuildLineBytes];
@@ -97,6 +102,9 @@ struct HostedBuildService {
     bool (*start)(void* userData, const BuildRequest& request, uint64_t* outHandle, BuildErrorCode* error);
     bool (*poll)(void* userData, uint64_t handle, BuildResult* result, bool* completed, BuildErrorCode* error);
     bool (*release)(void* userData, uint64_t handle);
+    // Appended after the original callback shape so existing aggregate
+    // initializers and hosted adapters remain source-compatible.
+    BuildBackendKind backend;
 };
 
 struct BuildController {
@@ -114,7 +122,8 @@ struct BuildController {
 
 const char* BuildStateName(BuildState state);
 const char* BuildErrorName(BuildErrorCode error);
-bool BuildRequestFromProject(const Project& project, BuildRequest* request, BuildErrorCode* error);
+bool BuildRequestFromProject(const Project& project, BuildRequest* request, BuildErrorCode* error,
+                            BuildBackendKind backend = BuildBackendKind::Hosted);
 bool BuildRequestEnableDebugInfo(BuildRequest* request);
 bool BuildControllerInit(BuildController* controller);
 bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output = nullptr, bool debugInfo = false);
