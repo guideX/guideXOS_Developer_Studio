@@ -43,14 +43,14 @@ static void appendRunText(RunController* controller, OutputSeverity severity, co
 static void publishTerminal(RunController* controller) {
     if (!controller || controller->terminalPublished || !controller->output || controller->operationId == 0) return;
     char text[256] = {};
-    copyText(text, sizeof(text), controller->result.state == RunState::Completed && controller->result.exitCode == 0 ? "Run Succeeded" : "Run Failed");
+    copyText(text, sizeof(text), controller->result.state == RunState::Completed ? "Run Succeeded" : "Run Failed");
     const uint32_t offset = textLength(text, sizeof(text));
     if (offset + 1 < sizeof(text)) { text[offset] = ' '; text[offset + 1] = '\0'; }
     const uint32_t next = textLength(text, sizeof(text));
     if (next + 10 < sizeof(text)) copyText(text + next, sizeof(text) - next, "exit_code=");
     appendUnsigned(text, sizeof(text), controller->result.exitCode);
     OutputServiceCompleteOperation(controller->output, controller->operationId,
-                                   controller->result.state == RunState::Completed && controller->result.exitCode == 0,
+                                   controller->result.state == RunState::Completed,
                                    text, nullptr);
     controller->terminalPublished = true;
 }
@@ -130,6 +130,9 @@ bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRe
         if (error) *error = RunErrorCode::InvalidRequest;
         return false;
     }
+    request->artifactSize = build.artifactSize;
+    copyText(request->artifactArchitecture, sizeof(request->artifactArchitecture), build.artifactArchitecture);
+    copyText(request->artifactAbi, sizeof(request->artifactAbi), project.abi);
     return true;
 }
 
@@ -182,6 +185,7 @@ bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunS
     }
     controller->handle = handle;
     controller->result = result;
+    controller->publishedOutputCount = 0;
     controller->state = result.state == RunState::Registered ? RunState::Prepared : result.state;
     controller->result.state = controller->state;
     controller->active = true;
@@ -231,6 +235,23 @@ bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunServ
     const RunState previous = controller->state;
     controller->result = result;
     controller->state = result.state;
+    if (controller->output && controller->operationId != 0) {
+        const uint32_t count = result.outputCount > kMaxRunOutputLines ? kMaxRunOutputLines : result.outputCount;
+        const uint32_t start = controller->publishedOutputCount <= count ? controller->publishedOutputCount : 0;
+        for (uint32_t i = start; i < count; ++i) {
+            OutputServiceAppendText(controller->output, controller->operationId, OutputSource::Application,
+                                    OutputSeverity::Information, OutputCategory::ApplicationOutput,
+                                    OutputStream::StandardOutput, result.output[i].text,
+                                    controller->request.projectId, nullptr);
+        }
+        controller->publishedOutputCount = count;
+        if (result.outputTruncated && count == kMaxRunOutputLines) {
+            OutputServiceAppendText(controller->output, controller->operationId, OutputSource::Runtime,
+                                    OutputSeverity::Warning, OutputCategory::RuntimeDiagnostic,
+                                    OutputStream::Unknown, "Application output was truncated by the runtime.",
+                                    controller->request.projectId, nullptr);
+        }
+    }
     if (previous != result.state) {
         if (result.state == RunState::Running) appendRunText(controller, OutputSeverity::Information, "Application running");
         else if (result.state == RunState::Exited) appendRunText(controller, OutputSeverity::Information, "Application exited");

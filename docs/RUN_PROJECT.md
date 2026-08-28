@@ -1,19 +1,23 @@
 # Run Project vertical slice
 
-Run Project is a hosted-development-only path for the supported
-`native-gui-application` targeting `guidexos.amd64.hosted.native`.
+Run Project supports the hosted development target and the bare-metal
+bootstrap target for the supported `native-gui-application` project shape.
+The Server capability table selects the backend; the Studio controller and
+build-before-run contract are shared by both paths.
 
 ```text
 F5 / Run Project
   -> active-project and dirty-document gate
-  -> Build Project
+  -> Build Project (selected capability backend)
   -> artifact and SHA-256 validation
   -> development_run_prepare
-  -> temporary in-memory AppRegistry entry
-  -> DesktopService + Native ELF launch pipeline
-  -> process/window polling
+  -> hosted: temporary in-memory AppRegistry entry
+  -> hosted: DesktopService + Native ELF launch pipeline
+  -> bare: NativeElfRunService + nested NativeElf launch
+  -> bounded application-output bridge
+  -> process/runtime polling
   -> close request or application exit
-  -> owned-window cleanup, unregister, release
+  -> owned-window/runtime cleanup, unregister or release
 ```
 
 Build-before-run is unconditional. The Studio controller never trusts a
@@ -37,8 +41,12 @@ snapshot, and valid ELF64 AMD64 `ET_EXEC` containing `gx_main`.
 The temporary App Model record is held only in the Server process. It is not
 written to package storage, recent programs, pinned items, or desktop state.
 Installed IDs are rejected and privileged manifest claims are rejected.
-Launching uses the normal AppRegistry/AppLaunchResolver/DesktopService path and
-the existing NativeElfImageLoader/NativeAppRuntime/NativeElfExecutor path.
+Hosted launching uses the normal AppRegistry/AppLaunchResolver/DesktopService
+path and the existing NativeElfImageLoader/NativeAppRuntime/NativeElfExecutor
+path. Bare-metal launching targets the exact capability
+`guidexos.amd64.baremetal.bootstrap.native`, validates the freshly built
+artifact identity again at Start, and executes it through the NativeElf nested
+runtime path with a separate fixed application stack.
 
 ## States and close behavior
 
@@ -57,8 +65,16 @@ Run lifecycle messages use the same Output Service as Build, but retain a
 separate Run operation and channel. Build-before-Run remains a separate Build
 operation; Build compiler Problems are not copied into Run and ordinary Run
 lifecycle messages are not Problems. Run publishes one terminal structured
-record and keeps bounded prior history. Native application output capture is
-deferred because the current ABI has no safe development logging function.
+record and keeps bounded prior history. Bare-metal NativeElf `log` output is
+bridged as bounded Application/Standard Output lines (16 lines, 256 bytes per
+line), with an explicit truncation flag; hosted application output remains on
+the hosted runtime path.
+
+Bare-metal Run is intentionally synchronous in this phase: one active runtime
+operation is allowed, and close/cancel after launch reports the explicit
+unsupported error. A nonzero application return value is still a successful
+Run when the lifecycle reaches `Completed`; the exit code is retained in the
+terminal result.
 
 Stable markers are:
 
@@ -73,6 +89,7 @@ run_application_state=RUNNING|EXITED
 run_close=REQUESTED|FAIL|CANCEL
 run_cleanup=START|PASS
 run_complete=SUCCEEDED|FAILED reason=<bounded-code>
+phase27f=PASS
 ```
 
 The Studio controller test is `developer_studio_run_test`; the Server ABI test
@@ -85,4 +102,6 @@ cmd /c .\build-native-experimental.bat
 
 The existing hosted smoke proves the real App Model launch and clean Studio
 teardown. Interactive F5/close-driving requires a compositor input harness;
-report that separately from automated controller, ABI, and package evidence.
+report that separately from automated controller, ABI, package, and bare-metal
+QEMU evidence. Phase 27F details and exact commands are in
+`DEVELOPER_STUDIO_PHASE27F_BARE_METAL_RUN_INTEGRATION.md`.

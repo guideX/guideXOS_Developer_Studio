@@ -12,6 +12,9 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
+#if defined(GXOS_PHASE27F_APP)
+#include "developer_studio_run.h"
+#endif
 
 namespace guidexos {
 namespace developer_studio {
@@ -21,6 +24,10 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
+#if defined(GXOS_PHASE27F_APP)
+static RunController g_run = {};
+static bool g_identityProof = true;
+#endif
 
 static bool copyText(char* output, uint32_t capacity, const char* input)
 {
@@ -57,14 +64,26 @@ static const gx_host_calls* host()
 static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
-    const size_t end = offsetof(gx_host_calls, bare_metal_file_remove) +
-                       sizeof(calls->bare_metal_file_remove);
+    const size_t end =
+#if defined(GXOS_PHASE27F_APP)
+        offsetof(gx_host_calls, bare_metal_development_run_release) +
+        sizeof(calls->bare_metal_development_run_release);
+#else
+        offsetof(gx_host_calls, bare_metal_file_remove) +
+        sizeof(calls->bare_metal_file_remove);
+#endif
     return calls && calls->size >= end && calls->version == GX_API_VERSION &&
         calls->bare_metal_build_project_start && calls->bare_metal_build_project_poll &&
         calls->bare_metal_build_project_release && calls->bare_metal_file_stat &&
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
-        calls->bare_metal_file_remove;
+        calls->bare_metal_file_remove
+#if defined(GXOS_PHASE27F_APP)
+        && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
+        calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
+        calls->bare_metal_development_run_release
+#endif
+        ;
 }
 
 static bool fsStat(void*, const char* path, FileInfo* output)
@@ -249,6 +268,188 @@ static HostedBuildService buildService()
     return service;
 }
 
+#if defined(GXOS_PHASE27F_APP)
+static RunErrorCode mapRunError(uint32_t error)
+{
+    switch (error) {
+    case GX_DEVELOPMENT_RUN_ERROR_NONE: return RunErrorCode::None;
+    case GX_DEVELOPMENT_RUN_ERROR_DEPLOYMENT_ALREADY_ACTIVE:
+    case GX_DEVELOPMENT_RUN_ERROR_RUNTIME_BUSY: return RunErrorCode::AlreadyActive;
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_CHANGED:
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_SIZE_CHANGED:
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_INVALID: return RunErrorCode::ArtifactInvalid;
+    case GX_DEVELOPMENT_RUN_ERROR_UNSUPPORTED_TARGET: return RunErrorCode::ServiceUnavailable;
+    case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_FAILED: return RunErrorCode::LaunchFailed;
+    default: return RunErrorCode::InvalidRequest;
+    }
+}
+
+static void mapRunSnapshot(const gx_development_run_snapshot& native, RunResult* result)
+{
+    if (!result) return;
+    *result = RunResult();
+    result->state = static_cast<RunState>(native.state);
+    result->error = mapRunError(native.errorCode);
+    result->handle = native.handle;
+    result->processId = native.processId;
+    result->nativeRuntimeId = native.nativeRuntimeId;
+    result->windowCount = native.windowCount;
+    result->createdWindowCount = native.createdWindowCount;
+    result->exitCode = native.exitCode;
+    result->cleanupComplete = native.cleanupComplete != 0;
+    copyText(result->applicationId, sizeof(result->applicationId), native.applicationId);
+    copyText(result->displayName, sizeof(result->displayName), native.displayName);
+    copyText(result->artifactSha256, sizeof(result->artifactSha256), native.artifactSha256);
+    copyText(result->errorMessage, sizeof(result->errorMessage), native.errorMessage);
+    result->outputCount = native.outputCount > kMaxRunOutputLines ? kMaxRunOutputLines : native.outputCount;
+    result->outputTruncated = native.outputTruncated != 0 || native.outputCount > kMaxRunOutputLines;
+    for (uint32_t i = 0; i < result->outputCount; ++i)
+        copyText(result->output[i].text, sizeof(result->output[i].text), native.output[i].text);
+}
+
+static bool runPrepare(void*, const RunRequest& request, uint64_t* outHandle, RunResult* outResult)
+{
+    const gx_host_calls* calls = host();
+    if (outHandle) *outHandle = 0;
+    if (outResult) *outResult = RunResult();
+    if (!calls || !outHandle || !outResult || !calls->bare_metal_development_run_prepare) return false;
+    gx_development_run_request nativeRequest = {};
+    nativeRequest.size = sizeof(nativeRequest);
+    nativeRequest.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    nativeRequest.projectRoot = request.projectRoot;
+    nativeRequest.projectId = request.projectId;
+    nativeRequest.projectKind = request.projectKind;
+    nativeRequest.targetProfile = request.targetProfile;
+    nativeRequest.manifestPath = request.manifestPath;
+    nativeRequest.artifactPath = request.artifactPath;
+    nativeRequest.artifactSha256 = request.artifactSha256;
+    nativeRequest.artifactSize = request.artifactSize;
+    nativeRequest.artifactArchitecture = request.artifactArchitecture;
+    nativeRequest.artifactAbi = request.artifactAbi;
+    nativeRequest.flags = request.debugControlled ? GX_DEVELOPMENT_RUN_FLAG_DEBUG_CONTROLLED : 0;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    const gx_result status = calls->bare_metal_development_run_prepare(g_context, &nativeRequest, outHandle, &snapshot);
+    mapRunSnapshot(snapshot, outResult);
+    return status == GX_OK;
+}
+
+static bool runStart(void*, uint64_t handle, RunResult* outResult)
+{
+    const gx_host_calls* calls = host();
+    if (!calls || !outResult || handle == 0 || !calls->bare_metal_development_run_start ||
+        calls->bare_metal_development_run_start(g_context, handle) != GX_OK) return false;
+    outResult->handle = handle;
+    outResult->state = RunState::Launching;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    if (!calls->bare_metal_development_run_poll ||
+        calls->bare_metal_development_run_poll(g_context, handle, &snapshot) != GX_OK) return false;
+    mapRunSnapshot(snapshot, outResult);
+    return true;
+}
+
+static bool runPoll(void*, uint64_t handle, RunResult* outResult)
+{
+    const gx_host_calls* calls = host();
+    if (!calls || !outResult || handle == 0 || !calls->bare_metal_development_run_poll) return false;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    if (calls->bare_metal_development_run_poll(g_context, handle, &snapshot) != GX_OK) return false;
+    mapRunSnapshot(snapshot, outResult);
+    return true;
+}
+
+static bool runClose(void*, uint64_t handle)
+{
+    const gx_host_calls* calls = host();
+    return calls && handle != 0 && calls->bare_metal_development_run_request_close &&
+        calls->bare_metal_development_run_request_close(g_context, handle) == GX_OK;
+}
+
+static bool runRelease(void*, uint64_t handle)
+{
+    const gx_host_calls* calls = host();
+    return calls && handle != 0 && calls->bare_metal_development_run_release &&
+        calls->bare_metal_development_run_release(g_context, handle) == GX_OK;
+}
+
+static HostedDevelopmentRunService runService()
+{
+    HostedDevelopmentRunService service = {};
+    service.prepare = runPrepare;
+    service.start = runStart;
+    service.poll = runPoll;
+    service.requestClose = runClose;
+    service.release = runRelease;
+    service.backend = RunBackendKind::BareMetal;
+    return service;
+}
+
+static bool outputHas(uint64_t operationId, const char* text)
+{
+    for (uint32_t i = 0; i < OutputServiceRecordCount(&g_output); ++i) {
+        const OutputRecord* record = OutputServiceRecordAt(&g_output, i);
+        if (record && record->operationId == operationId && record->source == OutputSource::Application &&
+            equalText(record->text, text)) return true;
+    }
+    return false;
+}
+
+static bool outputLacks(uint64_t operationId, const char* text)
+{
+    return !outputHas(operationId, text);
+}
+
+static bool runBuildBeforeRun(int32_t expectedExit, const char* expectedOutput,
+                              uint64_t* outputOperationId, bool* buildFailed)
+{
+    if (outputOperationId) *outputOperationId = 0;
+    if (buildFailed) *buildFailed = false;
+    const uint64_t operationId = OutputServiceBeginOperation(&g_output, OutputOperationType::Run,
+                                                               g_workspace.model.project.projectId);
+    if (outputOperationId) *outputOperationId = operationId;
+    RunControllerAttachOutput(&g_run, &g_output, operationId);
+    BuildErrorCode buildError = BuildErrorCode::None;
+    const bool started = BuildControllerStart(&g_build, &g_workspace, buildService(),
+                                              BuildDirtyDecision::SaveAll, &buildError, &g_output);
+    const bool built = started && BuildControllerPoll(&g_build, buildService()) &&
+        !BuildControllerIsActive(&g_build) && g_build.result.state == BuildState::Succeeded;
+    if (!built) {
+        if (buildFailed) *buildFailed = true;
+        OutputServiceCompleteOperation(&g_output, operationId, false,
+                                       "Build failed | Run skipped", nullptr);
+        return false;
+    }
+
+    RunRequest request = {};
+    RunErrorCode runError = RunErrorCode::None;
+    if (!RunRequestFromBuild(g_workspace.model.project, g_build.result, &request, &runError)) {
+        OutputServiceCompleteOperation(&g_output, operationId, false,
+                                       "Build succeeded | Run request rejected", nullptr);
+        return false;
+    }
+    const bool identity = request.artifactSize == g_build.result.artifactSize &&
+        equalText(request.artifactPath, g_build.result.artifactPath) &&
+        equalText(request.artifactSha256, g_build.result.artifactSha256) &&
+        equalText(request.artifactArchitecture, g_build.result.artifactArchitecture) &&
+        equalText(request.artifactAbi, g_workspace.model.project.abi);
+    g_identityProof = g_identityProof && identity;
+    RunErrorCode prepareError = RunErrorCode::None;
+    if (!RunControllerPrepare(&g_run, runService(), request, &prepareError) ||
+        !RunControllerStart(&g_run, runService(), &prepareError)) return false;
+    uint32_t polls = 0;
+    while (RunControllerIsActive(&g_run) && polls++ < 4) RunControllerPoll(&g_run, runService());
+    const RunResult result = g_run.result;
+    if (!identity || result.state != RunState::Completed || !result.cleanupComplete ||
+        result.exitCode != expectedExit || !outputHas(operationId, expectedOutput)) return false;
+    return true;
+}
+#endif
+
 static void marker(const char* passMarker, const char* failMarker, bool pass)
 {
     const gx_host_calls* calls = host();
@@ -288,6 +489,75 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
+#if defined(GXOS_PHASE27F_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27f_run_backend=PASS", "phase27f_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    if (!WorkspaceControllerOpenProject(&g_workspace, "/P27F") ||
+        !WorkspaceControllerOpenDocument(&g_workspace, "src/main.cpp")) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_workspace);
+    const char sourceA[] = "int gx_main(gx_app_context* ctx) {\n    log(ctx, \"Built and run from Developer Studio!\");\n    return 42;\n}\n";
+    const char sourceB[] = "int gx_main(gx_app_context* ctx) {\n    log(ctx, \"Phase 27F edited run\");\n    return 41;\n}\n";
+    const char invalid[] = "int gx_main(gx_app_context* ctx) {\n    return banana;\n}\n";
+    uint64_t operationA = 0;
+    const bool editA = editSource(document, sourceA, sizeof(sourceA) - 1);
+    const bool firstRun = editA && runBuildBeforeRun(42, "Built and run from Developer Studio!", &operationA, nullptr);
+    marker("phase27f_ide_run=PASS", "phase27f_ide_run=FAIL", firstRun);
+    marker("phase27f_exit_code=PASS", "phase27f_exit_code=FAIL", firstRun && g_run.result.exitCode == 42);
+
+    uint64_t operationB = 0;
+    const bool editB = editSource(document, sourceB, sizeof(sourceB) - 1);
+    const bool secondRun = editB && runBuildBeforeRun(41, "Phase 27F edited run", &operationB, nullptr);
+    marker("phase27f_source_edit_run=PASS", "phase27f_source_edit_run=FAIL", secondRun);
+    const bool isolated = secondRun && outputHas(operationB, "Phase 27F edited run") &&
+        outputLacks(operationB, "Built and run from Developer Studio!");
+    marker("phase27f_output_isolation=PASS", "phase27f_output_isolation=FAIL", isolated);
+    marker("phase27f_artifact_identity=PASS", "phase27f_artifact_identity=FAIL", g_identityProof);
+
+    bool blockedByBuildFailure = false;
+    const bool editInvalid = editSource(document, invalid, sizeof(invalid) - 1);
+    uint64_t invalidOperation = 0;
+    const bool invalidRun = editInvalid &&
+        runBuildBeforeRun(41, "Phase 27F edited run", &invalidOperation, &blockedByBuildFailure);
+    const bool noLaunchOnFailure = editInvalid && blockedByBuildFailure && !invalidRun &&
+        !outputHas(invalidOperation, "Phase 27F edited run") && !RunControllerIsActive(&g_run);
+    marker("phase27f_build_failure_blocks_run=PASS", "phase27f_build_failure_blocks_run=FAIL", noLaunchOnFailure);
+
+    uint64_t recoveryOperation = 0;
+    const bool recoveredEdit = editSource(document, sourceB, sizeof(sourceB) - 1);
+    const bool recovered = recoveredEdit &&
+        runBuildBeforeRun(41, "Phase 27F edited run", &recoveryOperation, nullptr);
+    marker("phase27f_recovery=PASS", "phase27f_recovery=FAIL", recovered);
+    marker("phase27f_run_recovery=PASS", "phase27f_run_recovery=FAIL", recovered);
+
+    bool repeated = recovered;
+    for (uint32_t i = 0; i < 3; ++i) {
+        uint64_t operation = 0;
+        repeated = repeated && runBuildBeforeRun(41, "Phase 27F edited run", &operation, nullptr) &&
+            outputHas(operation, "Phase 27F edited run") && !RunControllerIsActive(&g_run);
+    }
+    marker("phase27f_repeat=PASS", "phase27f_repeat=FAIL", repeated);
+    marker("phase27f_repeat_run=PASS", "phase27f_repeat_run=FAIL", repeated);
+    FileInfo sourceInfo = {};
+    FileInfo artifactInfo = {};
+    char sourcePath[kMaxPathBytes] = {};
+    char artifactPath[kMaxPathBytes] = {};
+    const bool survival = JoinWorkspacePath("/P27F", "src/main.cpp", sourcePath, sizeof(sourcePath)) &&
+        JoinWorkspacePath("/P27F", g_build.result.artifactPath, artifactPath, sizeof(artifactPath)) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, sourcePath, &sourceInfo) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, artifactPath, &artifactInfo) &&
+        sourceInfo.kind == FileInfoKind::RegularFile && artifactInfo.kind == FileInfoKind::RegularFile &&
+        artifactInfo.size == g_build.result.artifactSize && !RunControllerIsActive(&g_run);
+    marker("phase27f_kernel_survival=PASS", "phase27f_kernel_survival=FAIL", survival);
+    const bool allPassed = firstRun && secondRun && isolated && g_identityProof && noLaunchOnFailure &&
+        recovered && repeated && survival;
+    marker("phase27f=PASS", "phase27f=FAIL", allPassed);
+    return allPassed;
+#else
     const bool backend = hasBareHost();
     marker("phase27e_build_backend=PASS", "phase27e_build_backend=FAIL", backend);
     if (!backend) return false;
@@ -346,6 +616,7 @@ static bool runSmoke()
     const bool allPassed = initialBuild && savedInvalid && diagnostic && rebuilt && kernelSurvival;
     marker("phase27e=PASS", "phase27e=FAIL", allPassed);
     return allPassed;
+#endif
 }
 
 } // namespace

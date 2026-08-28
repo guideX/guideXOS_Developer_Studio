@@ -9,6 +9,8 @@ static const uint32_t kMaxRunApplicationIdBytes = 96;
 static const uint32_t kMaxRunDisplayNameBytes = 96;
 static const uint32_t kMaxRunArtifactSha256Bytes = 65;
 static const uint32_t kMaxRunErrorBytes = 128;
+static const uint32_t kMaxRunOutputLines = 16;
+static const uint32_t kMaxRunOutputLineBytes = 256;
 
 enum class RunState {
     Idle = 0,
@@ -37,6 +39,11 @@ enum class RunErrorCode {
     UserCancelled
 };
 
+enum class RunBackendKind {
+    Hosted = 0,
+    BareMetal
+};
+
 struct RunRequest {
     char projectRoot[kMaxPathBytes];
     char projectId[kMaxProjectIdBytes];
@@ -45,7 +52,14 @@ struct RunRequest {
     char manifestPath[kMaxPathBytes];
     char artifactPath[kMaxProjectPathBytes];
     char artifactSha256[kMaxRunArtifactSha256Bytes];
+    uint64_t artifactSize;
+    char artifactArchitecture[32];
+    char artifactAbi[64];
     bool debugControlled;
+};
+
+struct RunOutputLine {
+    char text[kMaxRunOutputLineBytes];
 };
 
 struct RunResult {
@@ -62,6 +76,9 @@ struct RunResult {
     char displayName[kMaxRunDisplayNameBytes];
     char artifactSha256[kMaxRunArtifactSha256Bytes];
     char errorMessage[kMaxRunErrorBytes];
+    uint32_t outputCount;
+    bool outputTruncated;
+    RunOutputLine output[kMaxRunOutputLines];
 };
 
 enum class HostedDebugCommand {
@@ -163,8 +180,9 @@ struct HostedDevelopmentRunService {
                          uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
                          uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
-                         uint64_t auxiliaryAddress, uint32_t readByteCount,
+    uint64_t auxiliaryAddress, uint32_t readByteCount,
                          HostedDebugResult* outResult);
+    RunBackendKind backend;
 };
 
 struct RunController {
@@ -174,6 +192,7 @@ struct RunController {
     bool terminalPublished;
     uint64_t handle;
     uint64_t operationId;
+    uint32_t publishedOutputCount;
     OutputService* output;
     RunRequest request;
     RunResult result;

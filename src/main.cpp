@@ -38,6 +38,7 @@ using guidexos::developer_studio::BuildState;
 using guidexos::developer_studio::BuildStateName;
 using guidexos::developer_studio::HostedBuildService;
 using guidexos::developer_studio::HostedDevelopmentRunService;
+using guidexos::developer_studio::RunBackendKind;
 using guidexos::developer_studio::RunController;
 using guidexos::developer_studio::RunControllerInit;
 using guidexos::developer_studio::RunControllerIsActive;
@@ -3226,6 +3227,10 @@ static RunErrorCode mapRunError(uint32_t error) {
     case GX_DEVELOPMENT_RUN_ERROR_STALE_DEPLOYMENT: return RunErrorCode::StaleDeployment;
     case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_FAILED:
     case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_UNAVAILABLE: return RunErrorCode::LaunchFailed;
+    case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_SIZE_CHANGED: return RunErrorCode::ArtifactInvalid;
+    case GX_DEVELOPMENT_RUN_ERROR_RUNTIME_BUSY: return RunErrorCode::AlreadyActive;
+    case GX_DEVELOPMENT_RUN_ERROR_CANCEL_UNSUPPORTED: return RunErrorCode::ServiceUnavailable;
+    case GX_DEVELOPMENT_RUN_ERROR_CANCELLED: return RunErrorCode::UserCancelled;
     case GX_DEVELOPMENT_RUN_ERROR_INVALID_REQUEST: return RunErrorCode::InvalidRequest;
     default: return RunErrorCode::ServiceUnavailable;
     }
@@ -3247,6 +3252,10 @@ static void copyRunSnapshot(const gx_development_run_snapshot& snapshot, RunResu
     copyText(result->displayName, sizeof(result->displayName), snapshot.displayName);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->errorMessage, sizeof(result->errorMessage), snapshot.errorMessage);
+    result->outputCount = snapshot.outputCount > guidexos::developer_studio::kMaxRunOutputLines ? guidexos::developer_studio::kMaxRunOutputLines : snapshot.outputCount;
+    result->outputTruncated = snapshot.outputTruncated != 0 || snapshot.outputCount > guidexos::developer_studio::kMaxRunOutputLines;
+    for (uint32_t i = 0; i < result->outputCount; ++i)
+        copyText(result->output[i].text, sizeof(result->output[i].text), snapshot.output[i].text);
 }
 
 static bool hostRunPrepare(void* userData, const guidexos::developer_studio::RunRequest& request, uint64_t* outHandle, RunResult* outResult) {
@@ -3268,6 +3277,9 @@ static bool hostRunPrepare(void* userData, const guidexos::developer_studio::Run
     nativeRequest.artifactPath = request.artifactPath;
     nativeRequest.artifactSha256 = request.artifactSha256;
     nativeRequest.flags = request.debugControlled ? GX_DEVELOPMENT_RUN_FLAG_DEBUG_CONTROLLED : 0u;
+    nativeRequest.artifactSize = request.artifactSize;
+    nativeRequest.artifactArchitecture = request.artifactArchitecture[0] != '\0' ? request.artifactArchitecture : nullptr;
+    nativeRequest.artifactAbi = request.artifactAbi[0] != '\0' ? request.artifactAbi : nullptr;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
@@ -3339,6 +3351,108 @@ static bool hostRunRelease(void* userData, uint64_t handle) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     return context && context->app && context->app->host && context->app->host->development_run_release && handle != 0 &&
         context->app->host->development_run_release(context->app, handle) == GX_OK;
+}
+
+static bool bareMetalRunPrepare(void* userData, const guidexos::developer_studio::RunRequest& request, uint64_t* outHandle, RunResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    if (outHandle) *outHandle = 0;
+    if (outResult) *outResult = RunResult();
+    const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
+    const size_t end = offsetof(gx_host_calls, bare_metal_development_run_release) + sizeof(host->bare_metal_development_run_release);
+    if (!host || host->size < end || !host->bare_metal_development_run_prepare || !outHandle || !outResult) {
+        if (outResult) outResult->error = RunErrorCode::ServiceUnavailable;
+        return false;
+    }
+    gx_development_run_request nativeRequest = {};
+    nativeRequest.size = sizeof(nativeRequest);
+    nativeRequest.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    nativeRequest.projectRoot = request.projectRoot;
+    nativeRequest.projectId = request.projectId;
+    nativeRequest.projectKind = request.projectKind;
+    nativeRequest.targetProfile = request.targetProfile;
+    nativeRequest.manifestPath = request.manifestPath;
+    nativeRequest.artifactPath = request.artifactPath;
+    nativeRequest.artifactSha256 = request.artifactSha256;
+    nativeRequest.flags = request.debugControlled ? GX_DEVELOPMENT_RUN_FLAG_DEBUG_CONTROLLED : 0u;
+    nativeRequest.artifactSize = request.artifactSize;
+    nativeRequest.artifactArchitecture = request.artifactArchitecture;
+    nativeRequest.artifactAbi = request.artifactAbi;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    const gx_result status = host->bare_metal_development_run_prepare(context->app, &nativeRequest, outHandle, &snapshot);
+    copyRunSnapshot(snapshot, outResult);
+    if (status != GX_OK) {
+        outResult->error = mapRunError(snapshot.errorCode);
+        if (outResult->error == RunErrorCode::None) outResult->error = RunErrorCode::ServiceUnavailable;
+        return false;
+    }
+    return true;
+}
+
+static bool bareMetalRunPoll(void* userData, uint64_t handle, RunResult* outResult);
+
+static bool bareMetalRunStart(void* userData, uint64_t handle, RunResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
+    if (!host || host->size < offsetof(gx_host_calls, bare_metal_development_run_start) + sizeof(host->bare_metal_development_run_start) ||
+        !host->bare_metal_development_run_start || !outResult || handle == 0) {
+        if (outResult) copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "bare-metal Run start capability is unavailable");
+        return false;
+    }
+    if (host->bare_metal_development_run_start(context->app, handle) != GX_OK) {
+        outResult->error = RunErrorCode::LaunchFailed;
+        outResult->state = RunState::Failed;
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "bare-metal Run start returned an error");
+        return false;
+    }
+    outResult->state = RunState::Launching;
+    outResult->handle = handle;
+    // The bootstrap runtime is synchronous today, but keep the controller's
+    // poll contract and fetch the completed result through the normal route.
+    RunResult completed = *outResult;
+    if (!bareMetalRunPoll(userData, handle, &completed)) {
+        if (completed.errorMessage[0] == '\0') copyText(completed.errorMessage, sizeof(completed.errorMessage), "bare-metal Run poll failed after start");
+        *outResult = completed;
+        return false;
+    }
+    *outResult = completed;
+    return true;
+}
+
+static bool bareMetalRunPoll(void* userData, uint64_t handle, RunResult* outResult) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
+    if (!host || host->size < offsetof(gx_host_calls, bare_metal_development_run_poll) + sizeof(host->bare_metal_development_run_poll) ||
+        !host->bare_metal_development_run_poll || !outResult || handle == 0) return false;
+    gx_development_run_snapshot snapshot = {};
+    snapshot.size = sizeof(snapshot);
+    snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
+    const gx_result status = host->bare_metal_development_run_poll(context->app, handle, &snapshot);
+    if (status != GX_OK) {
+        outResult->state = RunState::Failed;
+        outResult->error = RunErrorCode::ServiceUnavailable;
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "bare-metal Run poll returned an error");
+        return false;
+    }
+    copyRunSnapshot(snapshot, outResult);
+    return true;
+}
+
+static bool bareMetalRunRequestClose(void* userData, uint64_t handle) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
+    return host && host->size >= offsetof(gx_host_calls, bare_metal_development_run_request_close) + sizeof(host->bare_metal_development_run_request_close) &&
+        host->bare_metal_development_run_request_close && handle != 0 &&
+        host->bare_metal_development_run_request_close(context->app, handle) == GX_OK;
+}
+
+static bool bareMetalRunRelease(void* userData, uint64_t handle) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
+    return host && host->size >= offsetof(gx_host_calls, bare_metal_development_run_release) + sizeof(host->bare_metal_development_run_release) &&
+        host->bare_metal_development_run_release && handle != 0 &&
+        host->bare_metal_development_run_release(context->app, handle) == GX_OK;
 }
 
 static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_t handle,
@@ -3437,12 +3551,27 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
 static HostedDevelopmentRunService developmentRunService() {
     HostedDevelopmentRunService service = {};
     service.userData = &g_fileSystemContext;
-    service.prepare = hostRunPrepare;
-    service.start = hostRunStart;
-    service.poll = hostRunPoll;
-    service.requestClose = hostRunRequestClose;
-    service.release = hostRunRelease;
-    service.debugCommand = hostDebugCommand;
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    const bool bare = host && host->size >= offsetof(gx_host_calls, bare_metal_development_run_release) + sizeof(host->bare_metal_development_run_release) &&
+        host->bare_metal_development_run_prepare && host->bare_metal_development_run_start &&
+        host->bare_metal_development_run_poll && host->bare_metal_development_run_request_close &&
+        host->bare_metal_development_run_release;
+    if (bare) {
+        service.prepare = bareMetalRunPrepare;
+        service.start = bareMetalRunStart;
+        service.poll = bareMetalRunPoll;
+        service.requestClose = bareMetalRunRequestClose;
+        service.release = bareMetalRunRelease;
+        service.backend = RunBackendKind::BareMetal;
+    } else {
+        service.prepare = hostRunPrepare;
+        service.start = hostRunStart;
+        service.poll = hostRunPoll;
+        service.requestClose = hostRunRequestClose;
+        service.release = hostRunRelease;
+        service.debugCommand = hostDebugCommand;
+        service.backend = RunBackendKind::Hosted;
+    }
     return service;
 }
 
@@ -3637,7 +3766,7 @@ static void completeRunWithoutDeployment(const char* message) {
 static void reportRunTerminal(gx_app_context* ctx) {
     if (g_runTerminalReported) return;
     const RunResult& result = g_runController.result;
-    if (result.state == RunState::Completed && result.exitCode == 0) {
+    if (result.state == RunState::Completed) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=SUCCEEDED");
     } else {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(result.error));

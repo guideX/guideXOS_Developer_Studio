@@ -29,6 +29,7 @@ struct FakeRun {
     bool closeRequested = false;
     bool released = false;
     bool startFails = false;
+    bool emitOutput = false;
 };
 
 static bool prepareRun(void* userData, const RunRequest&, uint64_t* handle, RunResult* result) {
@@ -54,7 +55,15 @@ static bool pollRun(void* userData, uint64_t, RunResult* result) {
     FakeRun* fake = static_cast<FakeRun*>(userData);
     *result = RunResult();
     if (fake->polls++ == 0) result->state = RunState::Running;
-    else { result->state = RunState::Completed; result->cleanupComplete = true; result->exitCode = 0; }
+    else {
+        result->state = RunState::Completed;
+        result->cleanupComplete = true;
+        result->exitCode = 0;
+        if (fake->emitOutput) {
+            result->outputCount = 1;
+            std::strcpy(result->output[0].text, "child output");
+        }
+    }
     return true;
 }
 
@@ -93,7 +102,8 @@ int main() {
     assert(error == RunErrorCode::ArtifactInvalid);
 
     FakeRun fake;
-    HostedDevelopmentRunService service = { &fake, prepareRun, startRun, pollRun, closeRun, releaseRun, nullptr };
+    fake.emitOutput = true;
+    HostedDevelopmentRunService service = { &fake, prepareRun, startRun, pollRun, closeRun, releaseRun, nullptr, RunBackendKind::Hosted };
     RunController controller = {};
     assert(RunControllerInit(&controller));
     static OutputService output;
@@ -111,6 +121,14 @@ int main() {
     assert(controller.state == RunState::Completed && !RunControllerIsActive(&controller));
     assert(fake.released);
     assert(OutputServiceProblemCount(&output, project.projectId) == 0);
+    bool sawApplicationOutput = false;
+    for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) {
+        const OutputRecord* record = OutputServiceRecordAt(&output, i);
+        if (record && record->category == OutputCategory::ApplicationOutput && std::strcmp(record->text, "child output") == 0) {
+            sawApplicationOutput = true;
+        }
+    }
+    assert(sawApplicationOutput);
     uint32_t terminalCount = 0;
     for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
     assert(terminalCount == 1);
