@@ -1,0 +1,9 @@
+{
+  "id": "com.guidexos.developer-studio.phase27k",
+  "displayName": "Developer Studio Phase 27K Break Continue",
+  "architecture": "amd64",
+  "abi": "guidexos-c-abi-v1",
+  "entryPoint": "gx_main",
+  "path": "bin/amd64/p27k.elf",
+  "capabilities": ["bare-metal-vfs", "bare-metal-compiler", "bare-metal-run", "application-output"]
+}
