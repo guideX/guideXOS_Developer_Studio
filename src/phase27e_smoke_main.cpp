@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,7 +24,7 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
 #endif
@@ -76,7 +76,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -89,7 +89,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -279,7 +279,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -508,7 +508,123 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27I_APP)
+#if defined(GXOS_PHASE27J_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27j_run_backend=PASS", "phase27j_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpen = WorkspaceControllerOpenProject(&g_workspace, "/P27J");
+    marker("phase27j_project_open=PASS", "phase27j_project_open=FAIL", projectOpen);
+    if (!projectOpen) return false;
+    const bool documentOpen = WorkspaceControllerOpenDocument(&g_workspace, "src/main.cpp");
+    marker("phase27j_document_open=PASS", "phase27j_document_open=FAIL", documentOpen);
+    if (!documentOpen) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_workspace);
+
+    const char sourceA[] =
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int total = 0;\n"
+        "    int i = 1;\n"
+        "\n"
+        "    log(ctx, \"Starting loop.\");\n"
+        "\n"
+        "    while (i <= 6)\n"
+        "    {\n"
+        "        total = total + i;\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "\n"
+        "    log(ctx, \"Loop complete.\");\n"
+        "\n"
+        "    return total * 2;\n"
+        "}\n";
+    const char sourceB[] =
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int total = 0;\n"
+        "    int i = 1;\n"
+        "\n"
+        "    log(ctx, \"Starting loop.\");\n"
+        "\n"
+        "    while (i <= 5)\n"
+        "    {\n"
+        "        total = total + i;\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "\n"
+        "    log(ctx, \"Loop complete.\");\n"
+        "\n"
+        "    return total;\n"
+        "}\n";
+    const char invalid[] =
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    while () {\n"
+        "        return 42;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n";
+    const uint64_t sourceHashA = hashText(sourceA);
+    const uint64_t sourceHashB = hashText(sourceB);
+
+    uint64_t operationA = 0;
+    const bool firstEdit = editSource(document, sourceA, sizeof(sourceA) - 1);
+    const bool firstRun = firstEdit && runBuildBeforeRun(42, "Starting loop.", &operationA, nullptr) &&
+        outputHas(operationA, "Loop complete.") && g_run.result.exitCode == 42;
+    char artifactHashA[sizeof(g_build.result.artifactSha256)] = {};
+    copyText(artifactHashA, sizeof(artifactHashA), g_build.result.artifactSha256);
+    marker("phase27j_ide_program=PASS", "phase27j_ide_program=FAIL", firstRun);
+
+    uint64_t operationB = 0;
+    const bool secondEdit = editSource(document, sourceB, sizeof(sourceB) - 1);
+    const bool secondRun = secondEdit && runBuildBeforeRun(15, "Starting loop.", &operationB, nullptr) &&
+        outputHas(operationB, "Loop complete.") && g_run.result.exitCode == 15;
+    char artifactHashB[sizeof(g_build.result.artifactSha256)] = {};
+    copyText(artifactHashB, sizeof(artifactHashB), g_build.result.artifactSha256);
+    const bool sourceEdit = secondRun && sourceHashA != sourceHashB &&
+        !equalText(artifactHashA, artifactHashB) && g_run.result.exitCode == 15;
+    marker("phase27j_source_edit=PASS", "phase27j_source_edit=FAIL", sourceEdit);
+
+    uint64_t deterministicOperation = 0;
+    OutputServiceInit(&g_output);
+    const bool deterministicRun = secondRun &&
+        runBuildBeforeRun(15, "Starting loop.", &deterministicOperation, nullptr) &&
+        outputHas(deterministicOperation, "Loop complete.") &&
+        equalText(artifactHashB, g_build.result.artifactSha256);
+    marker("phase27j_deterministic=PASS", "phase27j_deterministic=FAIL", deterministicRun);
+
+    bool invalidBuildFailed = false;
+    uint64_t invalidOperation = 0;
+    const bool invalidEdit = editSource(document, invalid, sizeof(invalid) - 1);
+    const bool invalidRun = invalidEdit &&
+        runBuildBeforeRun(0, "Starting loop.", &invalidOperation, &invalidBuildFailed);
+    const bool blocked = invalidEdit && !invalidRun && invalidBuildFailed &&
+        g_build.result.errorCount != 0 && !outputHas(invalidOperation, "Starting loop.") &&
+        !RunControllerIsActive(&g_run);
+    const bool recovered = editSource(document, sourceA, sizeof(sourceA) - 1) &&
+        runBuildBeforeRun(42, "Starting loop.", nullptr, nullptr) &&
+        outputHas(g_run.operationId, "Loop complete.") && g_run.result.exitCode == 42 &&
+        !RunControllerIsActive(&g_run);
+    marker("phase27j_invalid_while=PASS", "phase27j_invalid_while=FAIL", blocked);
+    marker("phase27j_failure_recovery=PASS", "phase27j_failure_recovery=FAIL", blocked && recovered);
+
+    FileInfo sourceInfo = {};
+    FileInfo artifactInfo = {};
+    char sourcePath[kMaxPathBytes] = {};
+    char artifactPath[kMaxPathBytes] = {};
+    const bool survival = JoinWorkspacePath("/P27J", "src/main.cpp", sourcePath, sizeof(sourcePath)) &&
+        JoinWorkspacePath("/P27J", g_build.result.artifactPath, artifactPath, sizeof(artifactPath)) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, sourcePath, &sourceInfo) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, artifactPath, &artifactInfo) &&
+        sourceInfo.kind == FileInfoKind::RegularFile && artifactInfo.kind == FileInfoKind::RegularFile &&
+        artifactInfo.size == g_build.result.artifactSize && !RunControllerIsActive(&g_run) &&
+        g_run.result.state == RunState::Completed && g_run.result.cleanupComplete;
+    marker("phase27j_kernel_survival=PASS", "phase27j_kernel_survival=FAIL", survival);
+    const bool allPassed = firstRun && sourceEdit && deterministicRun && blocked && recovered && survival;
+    marker("phase27j=PASS", "phase27j=FAIL", allPassed);
+    return allPassed;
+#elif defined(GXOS_PHASE27I_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);
