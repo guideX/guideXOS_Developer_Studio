@@ -184,6 +184,25 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
         if (error) *error = BuildErrorCode::InvalidRequest;
         return false;
     }
+    if (backend == BuildBackendKind::BareMetal && project.sourceEntry[0] != '\0') {
+        uint32_t length = 0;
+        if (!copyText(request->sourceFiles[0], sizeof(request->sourceFiles[0]), project.sourceRoot)) {
+            if (error) *error = BuildErrorCode::InvalidRequest;
+            return false;
+        }
+        while (request->sourceFiles[0][length] != '\0') ++length;
+        if (length + 1 >= sizeof(request->sourceFiles[0])) {
+            if (error) *error = BuildErrorCode::InvalidRequest;
+            return false;
+        }
+        request->sourceFiles[0][length++] = '/';
+        if (!copyText(request->sourceFiles[0] + length, sizeof(request->sourceFiles[0]) - length,
+                      project.sourceEntry)) {
+            if (error) *error = BuildErrorCode::InvalidRequest;
+            return false;
+        }
+        request->sourceCount = 1;
+    }
     return true;
 }
 
@@ -217,6 +236,18 @@ bool BuildControllerStart(BuildController* controller, WorkspaceController* work
     }
     if (local == BuildErrorCode::None && !BuildRequestFromProject(workspace->model.project, &controller->request, &local, service.backend)) {
         if (local == BuildErrorCode::None) local = BuildErrorCode::InvalidRequest;
+    }
+    if (local == BuildErrorCode::None && service.backend == BuildBackendKind::BareMetal &&
+        controller->request.sourceCount == 0) {
+        ProjectSourceFile files[kMaxBuildSources] = {};
+        uint32_t sourceCount = 0;
+        if (!WorkspaceControllerEnumerateProjectSources(workspace, files, kMaxBuildSources, &sourceCount)) {
+            local = BuildErrorCode::InvalidRequest;
+        } else {
+            controller->request.sourceCount = sourceCount;
+            for (uint32_t i = 0; i < sourceCount; ++i)
+                copyText(controller->request.sourceFiles[i], sizeof(controller->request.sourceFiles[i]), files[i].relativePath);
+        }
     }
     if (local == BuildErrorCode::None && debugInfo && !BuildRequestEnableDebugInfo(&controller->request))
         local = BuildErrorCode::InvalidRequest;

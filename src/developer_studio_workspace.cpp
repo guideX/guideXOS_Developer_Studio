@@ -72,6 +72,25 @@ static bool equalIdentifier(const char* left, const char* right) {
     return left[index] == right[index];
 }
 
+static bool sourceExtension(const char* name) {
+    if (!name) return false;
+    uint32_t length = 0;
+    while (length < kMaxNameBytes && name[length] != '\0') ++length;
+    if (length >= 2 && name[length - 2] == '.' &&
+        (name[length - 1] == 'c' || name[length - 1] == 'C')) return true;
+    return length >= 4 && name[length - 4] == '.' &&
+        (name[length - 3] == 'c' || name[length - 3] == 'C') &&
+        (name[length - 2] == 'p' || name[length - 2] == 'P') &&
+        (name[length - 1] == 'p' || name[length - 1] == 'P');
+}
+
+static bool pathBefore(const char* left, const char* right) {
+    uint32_t i = 0;
+    while (left && right && left[i] && right[i] && left[i] == right[i]) ++i;
+    return static_cast<unsigned char>(left && left[i] ? left[i] : 0) <
+           static_cast<unsigned char>(right && right[i] ? right[i] : 0);
+}
+
 } // namespace
 
 void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFileSystem& fileSystem) {
@@ -251,6 +270,74 @@ bool WorkspaceControllerRefresh(WorkspaceController* controller) {
     controller->model.selectedEntry = controller->model.entryCount == 0 ? 0 :
         (controller->model.selectedEntry < controller->model.entryCount ? controller->model.selectedEntry : 0);
     setControllerError(controller, ModelErrorCode::None);
+    return true;
+}
+
+bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* controller,
+                                                ProjectSourceFile* files,
+                                                uint32_t capacity,
+                                                uint32_t* outCount) {
+    if (outCount) *outCount = 0;
+    if (!controller || !files || capacity == 0 || capacity > kMaxProjectSourceFiles || !outCount ||
+        !controller->model.open || !controller->model.hasProject ||
+        !controller->fileSystem.stat || !controller->fileSystem.list) return false;
+    const Project& project = controller->model.project;
+    if (project.sourceEntry[0] != '\0') {
+        if (PathContainsTraversal(project.sourceEntry)) return false;
+        char relative[kMaxProjectPathBytes] = {};
+        if (!copyEntryName(relative, sizeof(relative), project.sourceRoot) ||
+            relative[0] == '\0') return false;
+        uint32_t length = 0;
+        while (relative[length] != '\0') ++length;
+        if (length + 1 >= sizeof(relative)) return false;
+        relative[length++] = '/';
+        if (!copyEntryName(relative + length, sizeof(relative) - length, project.sourceEntry)) return false;
+        char absolute[kMaxPathBytes] = {};
+        if (!JoinWorkspacePath(project.rootPath, relative, absolute, sizeof(absolute))) return false;
+        FileInfo info = {};
+        if (!controller->fileSystem.stat(controller->fileSystem.userData, absolute, &info) ||
+            info.kind != FileInfoKind::RegularFile) return false;
+        copyEntryName(files[0].relativePath, sizeof(files[0].relativePath), relative);
+        files[0].size = info.size;
+        *outCount = 1;
+        return true;
+    }
+
+    char directory[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(project.rootPath, project.sourceRoot, directory, sizeof(directory))) return false;
+    FileListEntry entries[kMaxWorkspaceEntries] = {};
+    uint32_t entryCount = 0;
+    bool truncated = false;
+    if (!controller->fileSystem.list(controller->fileSystem.userData, directory, entries,
+                                     kMaxWorkspaceEntries, &entryCount, &truncated) || truncated) return false;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < entryCount; ++i) {
+        if (entries[i].kind != FileInfoKind::RegularFile || !sourceExtension(entries[i].name)) continue;
+        if (count >= capacity) return false;
+        ProjectSourceFile& file = files[count];
+        file = {};
+        uint32_t rootLength = 0;
+        while (project.sourceRoot[rootLength] != '\0') ++rootLength;
+        if (!copyEntryName(file.relativePath, sizeof(file.relativePath), project.sourceRoot) ||
+            rootLength + 1 >= sizeof(file.relativePath)) return false;
+        file.relativePath[rootLength++] = '/';
+        if (!copyEntryName(file.relativePath + rootLength, sizeof(file.relativePath) - rootLength, entries[i].name)) return false;
+        file.size = entries[i].size;
+        ++count;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        for (uint32_t j = i + 1; j < count; ++j) {
+            if (pathBefore(files[j].relativePath, files[i].relativePath)) {
+                ProjectSourceFile swap = files[i];
+                files[i] = files[j];
+                files[j] = swap;
+            }
+        }
+        if (i != 0 && !pathBefore(files[i - 1].relativePath, files[i].relativePath) &&
+            !pathBefore(files[i].relativePath, files[i - 1].relativePath)) return false;
+    }
+    if (count == 0) return false;
+    *outCount = count;
     return true;
 }
 

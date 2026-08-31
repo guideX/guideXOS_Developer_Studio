@@ -7,6 +7,13 @@
 namespace guidexos {
 namespace developer_studio {
 
+static const uint32_t kMaxProjectSourceFiles = 16;
+
+struct ProjectSourceFile {
+    char relativePath[kMaxProjectPathBytes];
+    uint64_t size;
+};
+
 struct WorkspaceController {
     WorkspaceModel model;
     WorkspaceFileSystem fileSystem;
@@ -23,6 +30,10 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
 bool WorkspaceControllerCreateProject(WorkspaceController* controller, const ProjectCreateRequest& request, ProjectOperationResult* result);
 bool WorkspaceControllerReloadProject(WorkspaceController* controller);
 bool WorkspaceControllerRefresh(WorkspaceController* controller);
+bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* controller,
+                                                ProjectSourceFile* files,
+                                                uint32_t capacity,
+                                                uint32_t* outCount);
 bool WorkspaceControllerEnterSelected(WorkspaceController* controller);
 bool WorkspaceControllerGoUp(WorkspaceController* controller);
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path);

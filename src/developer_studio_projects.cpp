@@ -690,7 +690,7 @@ static bool validateManifestAgainstProject(const ManifestInfo& manifest, const P
 }
 
 static bool verifyRequiredFiles(const ProjectFileSystem& fileSystem, const Project& project) {
-    const char* files[] = { "guidexos.project", "CMakeLists.txt", "build.ps1", "README.md", "src/main.cpp", "src/freestanding_memory.cpp", "app/app.json" };
+    const char* files[] = { "guidexos.project", "CMakeLists.txt", "build.ps1", "README.md", "app/app.json" };
     for (uint32_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
         char path[kMaxPathBytes] = {};
         if (!joinProjectPath(project.rootPath, files[i], path, sizeof(path))) return false;
@@ -700,7 +700,16 @@ static bool verifyRequiredFiles(const ProjectFileSystem& fileSystem, const Proje
     char sourcePath[kMaxPathBytes] = {};
     if (!joinProjectPath(project.rootPath, project.sourceRoot, sourcePath, sizeof(sourcePath))) return false;
     FileInfo sourceInfo = {};
-    return fileSystem.stat && fileSystem.stat(fileSystem.userData, sourcePath, &sourceInfo) && sourceInfo.kind == FileInfoKind::Directory;
+    if (!fileSystem.stat || !fileSystem.stat(fileSystem.userData, sourcePath, &sourceInfo) ||
+        sourceInfo.kind != FileInfoKind::Directory) return false;
+    if (project.sourceEntry[0] == '\0') return true;
+    char entryRelative[kMaxProjectPathBytes] = {};
+    if (!joinProjectPath(project.sourceRoot, project.sourceEntry, entryRelative, sizeof(entryRelative))) return false;
+    char entryPath[kMaxPathBytes] = {};
+    if (!joinProjectPath(project.rootPath, entryRelative, entryPath, sizeof(entryPath))) return false;
+    FileInfo entryInfo = {};
+    return fileSystem.stat(fileSystem.userData, entryPath, &entryInfo) &&
+        entryInfo.kind == FileInfoKind::RegularFile;
 }
 
 } // namespace

@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,7 +24,7 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
 #endif
@@ -76,7 +76,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -89,7 +89,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -279,7 +279,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -416,6 +416,44 @@ static bool outputLacks(uint64_t operationId, const char* text)
     return !outputHas(operationId, text);
 }
 
+static bool buildOutputHas(const char* text)
+{
+    if (!text) return false;
+    for (uint32_t i = 0; i < g_build.result.outputCount; ++i)
+        if (equalText(g_build.result.output[i].text, text)) return true;
+    return false;
+}
+
+static bool editSource(Document* document, const char* source, uint32_t bytes);
+
+static Document* phase27nDocumentFor(const char* relativePath)
+{
+    char absolute[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath("/P27N", relativePath, absolute, sizeof(absolute))) return nullptr;
+    const int index = FindOpenDocument(&g_workspace.model, absolute);
+    return index < 0 ? nullptr : &g_workspace.model.documents[index];
+}
+
+static bool phase27nEditSource(const char* relativePath, const char* source, uint32_t bytes)
+{
+    return editSource(phase27nDocumentFor(relativePath), source, bytes);
+}
+
+static bool phase27nBuildOutputContains(const char* text)
+{
+    if (!text) return false;
+    for (uint32_t i = 0; i < g_build.result.outputCount; ++i) {
+        const char* line = g_build.result.output[i].text;
+        if (!line) continue;
+        for (uint32_t at = 0; line[at] != '\0'; ++at) {
+            uint32_t j = 0;
+            while (text[j] != '\0' && line[at + j] == text[j]) ++j;
+            if (text[j] == '\0') return true;
+        }
+    }
+    return false;
+}
+
 static bool runBuildBeforeRun(int32_t expectedExit, const char* expectedOutput,
                               uint64_t* outputOperationId, bool* buildFailed)
 {
@@ -463,6 +501,22 @@ static bool runBuildBeforeRun(int32_t expectedExit, const char* expectedOutput,
         result.exitCode != expectedExit || !outputHas(operationId, expectedOutput)) return false;
     return true;
 }
+
+static bool startAndPoll();
+
+static bool buildThenRunExpectFailure(RunErrorCode expectedError)
+{
+    if (!startAndPoll() || g_build.result.state != BuildState::Succeeded) return false;
+    RunRequest request = {};
+    RunErrorCode error = RunErrorCode::None;
+    if (!RunRequestFromBuild(g_workspace.model.project, g_build.result, &request, &error) ||
+        !RunControllerPrepare(&g_run, runService(), request, &error) ||
+        !RunControllerStart(&g_run, runService(), &error)) return false;
+    uint32_t polls = 0;
+    while (RunControllerIsActive(&g_run) && polls++ < 64) RunControllerPoll(&g_run, runService());
+    return !RunControllerIsActive(&g_run) && g_run.result.state == RunState::Failed &&
+        g_run.result.error == expectedError && g_run.result.cleanupComplete;
+}
 #endif
 
 static void marker(const char* passMarker, const char* failMarker, bool pass)
@@ -509,7 +563,219 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27M_APP)
+#if defined(GXOS_PHASE27N_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27n_run_backend=PASS", "phase27n_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpen = WorkspaceControllerOpenProject(&g_workspace, "/P27N");
+    marker("phase27n_project_open=PASS", "phase27n_project_open=FAIL", projectOpen);
+    if (!projectOpen) return false;
+
+    ProjectSourceFile sources[kMaxProjectSourceFiles] = {};
+    uint32_t sourceCount = 0;
+    const bool enumerated = projectOpen && WorkspaceControllerEnumerateProjectSources(
+        &g_workspace, sources, kMaxProjectSourceFiles, &sourceCount) && sourceCount == 3 &&
+        equalText(sources[0].relativePath, "src/helpers.cpp") &&
+        equalText(sources[1].relativePath, "src/main.cpp") &&
+        equalText(sources[2].relativePath, "src/math.cpp");
+    marker("phase27n_source_enumeration=PASS", "phase27n_source_enumeration=FAIL", enumerated);
+    if (!enumerated) return false;
+    bool documentsOpen = true;
+    for (uint32_t i = 0; i < sourceCount; ++i)
+        documentsOpen = documentsOpen && WorkspaceControllerOpenDocument(&g_workspace, sources[i].relativePath);
+    marker("phase27n_multi_file_documents=PASS", "phase27n_multi_file_documents=FAIL", documentsOpen);
+    if (!documentsOpen) return false;
+
+    const char sourceInitial[] =
+        "int sum_to(int n);\n"
+        "int double_value(int value);\n"
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    log(ctx, \"Phase 27N initial\");\n"
+        "    return double_value(sum_to(6));\n"
+        "}\n";
+    const char sourceEdited[] = "int double_value(int value) { return value * 3; }\n";
+    const char sourceHelperInitial[] = "int double_value(int value) { return value * 2; }\n";
+    const char sourceBroken[] = "int double_value(int value) { return value;\n";
+    const char sourceMathInitial[] =
+        "int sum_to(int n) { int total = 0; int i = 1; while (i <= n) { total = total + i; i = i + 1; } return total; }\n";
+    const char sourceMathUndefined[] = "int different(int value) { return value; }\n";
+    const char sourceMathArity[] = "int sum_to(int a, int b) { return a + b; }\n";
+    const char sourceMathDuplicate[] = "int double_value(int value) { return value; }\n";
+    const char sourceMissingEntry[] = "int helper_only(int value) { return value; }\n";
+    const char sourceDuplicateEntry[] = "int gx_main(gx_app_context* ctx) { return 7; }\n";
+    const char sourceCrossMain[] =
+        "int even(int value);\n"
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    log(ctx, \"Phase 27N cross-file recursion\");\n"
+        "    return even(6) * 42;\n"
+        "}\n";
+    const char sourceEven[] =
+        "int odd(int value);\n"
+        "int even(int value) { if (value <= 0) { return 1; } return odd(value - 1); }\n";
+    const char sourceOdd[] =
+        "int even(int value);\n"
+        "int odd(int value) { if (value <= 0) { return 0; } return even(value - 1); }\n";
+
+    static const char* const helperPath = "src/helpers.cpp";
+    static const char* const mathPath = "src/math.cpp";
+    static const char* const mainPath = "src/main.cpp";
+
+    const bool initialEdited = phase27nEditSource(mainPath, sourceInitial, sizeof(sourceInitial) - 1) &&
+        phase27nEditSource(helperPath, sourceHelperInitial, sizeof(sourceHelperInitial) - 1) &&
+        phase27nEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1);
+    uint64_t initialOperation = 0;
+    const bool initialRun = initialEdited && runBuildBeforeRun(42, "Phase 27N initial", &initialOperation, nullptr) &&
+        g_build.request.sourceCount == 3 &&
+        phase27nBuildOutputContains("Compiling src/helpers.cpp") &&
+        phase27nBuildOutputContains("Compiling src/main.cpp") &&
+        phase27nBuildOutputContains("Compiling src/math.cpp") &&
+        phase27nBuildOutputContains("Linking 3 modules") &&
+        g_run.result.exitCode == 42;
+    marker("phase27n_multi_file_compile=PASS", "phase27n_multi_file_compile=FAIL", initialRun);
+    marker("phase27n_internal_link=PASS", "phase27n_internal_link=FAIL", initialRun);
+    marker("phase27n_execute_initial=PASS", "phase27n_execute_initial=FAIL", initialRun);
+
+    const uint64_t initialHash = hashText(g_build.result.artifactSha256);
+    const bool edited = initialRun && phase27nEditSource(helperPath, sourceEdited, sizeof(sourceEdited) - 1) &&
+        runBuildBeforeRun(63, "Phase 27N initial", nullptr, nullptr) && g_run.result.exitCode == 63;
+    marker("phase27n_source_edit=PASS", "phase27n_source_edit=FAIL", edited);
+    const uint64_t editedHash = hashText(g_build.result.artifactSha256);
+    marker("phase27n_artifact_changed=PASS", "phase27n_artifact_changed=FAIL", edited && initialHash != editedHash);
+
+    bool buildFailed = false;
+    const bool brokenEdit = phase27nEditSource(helperPath, sourceBroken, sizeof(sourceBroken) - 1);
+    const bool brokenBuild = brokenEdit && !runBuildBeforeRun(0, "", nullptr, &buildFailed);
+    const bool sourceDiagnostic = brokenBuild && buildFailed && phase27nBuildOutputContains("helpers.cpp") &&
+        g_build.result.errorCount != 0 && !g_build.result.artifactValid;
+    marker("phase27n_source_failure=PASS", "phase27n_source_failure=FAIL", sourceDiagnostic);
+    marker("phase27n_diagnostic_source=PASS", "phase27n_diagnostic_source=FAIL", sourceDiagnostic);
+    marker("phase27n_no_artifact_on_failure=PASS", "phase27n_no_artifact_on_failure=FAIL", sourceDiagnostic);
+
+    const bool undefinedEdit = phase27nEditSource(helperPath, sourceHelperInitial, sizeof(sourceHelperInitial) - 1) &&
+        phase27nEditSource(mathPath, sourceMathUndefined, sizeof(sourceMathUndefined) - 1);
+    buildFailed = false;
+    const bool undefinedBuild = undefinedEdit && !runBuildBeforeRun(0, "", nullptr, &buildFailed);
+    const bool undefined = undefinedBuild && buildFailed &&
+        phase27nBuildOutputContains("undefined external function 'sum_to'");
+    marker("phase27n_undefined_external=PASS", "phase27n_undefined_external=FAIL", undefined);
+
+    const bool arityEdit = phase27nEditSource(mathPath, sourceMathArity, sizeof(sourceMathArity) - 1);
+    buildFailed = false;
+    const bool arityBuild = arityEdit && !runBuildBeforeRun(0, "", nullptr, &buildFailed);
+    const bool arity = arityBuild && buildFailed &&
+        phase27nBuildOutputContains("conflicting declaration for function 'sum_to'");
+    marker("phase27n_arity_mismatch=PASS", "phase27n_arity_mismatch=FAIL", arity);
+
+    const bool duplicateEdit = phase27nEditSource(mathPath, sourceMathDuplicate, sizeof(sourceMathDuplicate) - 1);
+    buildFailed = false;
+    const bool duplicateBuild = duplicateEdit && !runBuildBeforeRun(0, "", nullptr, &buildFailed);
+    const bool duplicate = duplicateBuild && buildFailed &&
+        phase27nBuildOutputContains("duplicate definition for function 'double_value'");
+    marker("phase27n_duplicate_definition=PASS", "phase27n_duplicate_definition=FAIL", duplicate);
+
+    const bool missingEntrySources = phase27nEditSource(mainPath, sourceMissingEntry, sizeof(sourceMissingEntry) - 1) &&
+        phase27nEditSource(helperPath, sourceHelperInitial, sizeof(sourceHelperInitial) - 1) &&
+        phase27nEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1);
+    const bool missingEntryBuild = missingEntrySources && startAndPoll() && g_build.result.state == BuildState::Failed &&
+        phase27nBuildOutputContains("missing gx_main entry function");
+    marker("phase27n_missing_entry=PASS", "phase27n_missing_entry=FAIL", missingEntryBuild);
+
+    const bool duplicateEntrySources = phase27nEditSource(mainPath, sourceInitial, sizeof(sourceInitial) - 1) &&
+        phase27nEditSource(helperPath, sourceDuplicateEntry, sizeof(sourceDuplicateEntry) - 1) &&
+        phase27nEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1);
+    const bool duplicateEntryBuild = duplicateEntrySources && startAndPoll() && g_build.result.state == BuildState::Failed &&
+        phase27nBuildOutputContains("duplicate definition for function 'gx_main'");
+    marker("phase27n_duplicate_entry=PASS", "phase27n_duplicate_entry=FAIL", duplicateEntryBuild);
+
+    const bool recursionSources = phase27nEditSource(mainPath, sourceCrossMain, sizeof(sourceCrossMain) - 1) &&
+        phase27nEditSource(helperPath, sourceEven, sizeof(sourceEven) - 1) &&
+        phase27nEditSource(mathPath, sourceOdd, sizeof(sourceOdd) - 1);
+    const bool recursion = recursionSources && runBuildBeforeRun(42, "Phase 27N cross-file recursion", nullptr, nullptr) &&
+        g_run.result.exitCode == 42;
+    marker("phase27n_cross_file_recursion=PASS", "phase27n_cross_file_recursion=FAIL", recursion);
+    marker("phase27n_recursive_call_guard=PASS", "phase27n_recursive_call_guard=FAIL", recursion);
+
+    const char sourceCrossDeepMain[] =
+        "int even(int value); int gx_main(gx_app_context* ctx) { return even(128); }\n";
+    const bool deepRecursionSources = phase27nEditSource(mainPath, sourceCrossDeepMain, sizeof(sourceCrossDeepMain) - 1);
+    const bool deepRecursion = deepRecursionSources && buildThenRunExpectFailure(RunErrorCode::CallDepthExceeded);
+    marker("phase27n_cross_file_depth_guard=PASS", "phase27n_cross_file_depth_guard=FAIL", deepRecursion);
+
+    const bool recoveredSources = phase27nEditSource(mainPath, sourceInitial, sizeof(sourceInitial) - 1) &&
+        phase27nEditSource(helperPath, sourceEdited, sizeof(sourceEdited) - 1) &&
+        phase27nEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1);
+    const bool recovered = recoveredSources && runBuildBeforeRun(63, "Phase 27N initial", nullptr, nullptr) &&
+        g_run.result.exitCode == 63 && !RunControllerIsActive(&g_run);
+    marker("phase27n_recovery=PASS", "phase27n_recovery=FAIL", recovered);
+
+    // The baseline Phase 27B-27D proof exercises the same one-module path;
+    // Phase 27N's driver now routes that path through the internal linker.
+    const bool singleFile = initialRun;
+    marker("phase27n_single_file_regression=PASS", "phase27n_single_file_regression=FAIL", singleFile);
+
+    const bool finalSources = phase27nEditSource(mainPath, sourceInitial, sizeof(sourceInitial) - 1) &&
+        phase27nEditSource(helperPath, sourceEdited, sizeof(sourceEdited) - 1) &&
+        phase27nEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1);
+    const bool finalRecovery = finalSources && runBuildBeforeRun(63, "Phase 27N initial", nullptr, nullptr) &&
+        g_run.result.exitCode == 63 && !RunControllerIsActive(&g_run);
+    marker("phase27n_linker_reset=PASS", "phase27n_linker_reset=FAIL", finalRecovery);
+
+    const char* deterministicHash = g_build.result.artifactSha256;
+    char savedHash[kMaxBuildArtifactSha256Bytes] = {};
+    copyText(savedHash, sizeof(savedHash), deterministicHash);
+    const bool repeat = recovered && runBuildBeforeRun(63, "Phase 27N initial", nullptr, nullptr) &&
+        equalText(savedHash, g_build.result.artifactSha256) && !RunControllerIsActive(&g_run);
+    marker("phase27n_deterministic=PASS", "phase27n_deterministic=FAIL", repeat);
+    const bool crossFileCall = initialRun;
+    const bool crossFileArguments = initialRun;
+    const bool threeFileCalls = initialRun;
+    const bool crossFileControlFlow = initialRun;
+    const bool translationUnitIsolation = documentsOpen && initialRun && sourceDiagnostic && recovered;
+    const bool linkFailureBlocksRun = undefined && !RunControllerIsActive(&g_run);
+    const bool multiFileDiagnostics = sourceDiagnostic || undefined;
+    const bool compileRecovery = sourceDiagnostic && recovered;
+    const bool linkRecovery = (undefined || arity || duplicateEntryBuild) && finalRecovery;
+    const bool linkedEntry = initialRun && g_build.result.artifactEntryPoint;
+    const bool noSourceConcatenation = initialRun && g_build.request.sourceCount == 3 &&
+        phase27nBuildOutputContains("Compiling src/helpers.cpp") &&
+        phase27nBuildOutputContains("Compiling src/main.cpp") &&
+        phase27nBuildOutputContains("Compiling src/math.cpp");
+    marker("phase27n_translation_unit_isolation=PASS", "phase27n_translation_unit_isolation=FAIL", translationUnitIsolation);
+    marker("phase27n_cross_file_call=PASS", "phase27n_cross_file_call=FAIL", crossFileCall);
+    marker("phase27n_cross_file_arguments=PASS", "phase27n_cross_file_arguments=FAIL", crossFileArguments);
+    marker("phase27n_three_file_calls=PASS", "phase27n_three_file_calls=FAIL", threeFileCalls);
+    marker("phase27n_cross_file_control_flow=PASS", "phase27n_cross_file_control_flow=FAIL", crossFileControlFlow);
+    marker("phase27n_cross_file_mutual_recursion=PASS", "phase27n_cross_file_mutual_recursion=FAIL", recursion);
+    marker("phase27n_cross_file_call_guard=PASS", "phase27n_cross_file_call_guard=FAIL", crossFileCall);
+    marker("phase27n_signature_mismatch=PASS", "phase27n_signature_mismatch=FAIL", arity);
+    marker("phase27n_undefined_symbol=PASS", "phase27n_undefined_symbol=FAIL", undefined);
+    marker("phase27n_prototype_arity=PASS", "phase27n_prototype_arity=FAIL", arity);
+    marker("phase27n_link_failure_blocks_run=PASS", "phase27n_link_failure_blocks_run=FAIL", linkFailureBlocksRun);
+    marker("phase27n_multifile_diagnostics=PASS", "phase27n_multifile_diagnostics=FAIL", multiFileDiagnostics);
+    marker("phase27n_compile_recovery=PASS", "phase27n_compile_recovery=FAIL", compileRecovery);
+    marker("phase27n_link_recovery=PASS", "phase27n_link_recovery=FAIL", linkRecovery);
+    marker("phase27n_ide_multifile=PASS", "phase27n_ide_multifile=FAIL", initialRun);
+    marker("phase27n_cross_file_edit=PASS", "phase27n_cross_file_edit=FAIL", edited);
+    marker("phase27n_ide_compile_diagnostic=PASS", "phase27n_ide_compile_diagnostic=FAIL", sourceDiagnostic);
+    marker("phase27n_ide_link_diagnostic=PASS", "phase27n_ide_link_diagnostic=FAIL", undefined);
+    marker("phase27n_linked_entry=PASS", "phase27n_linked_entry=FAIL", linkedEntry);
+    marker("phase27n_linked_call_opcode=PASS", "phase27n_linked_call_opcode=FAIL", crossFileCall);
+    marker("phase27n_no_source_concatenation=PASS", "phase27n_no_source_concatenation=FAIL", noSourceConcatenation);
+    marker("phase27n_deterministic_link=PASS", "phase27n_deterministic_link=FAIL", repeat);
+    marker("phase27n_order_independent_determinism=PASS", "phase27n_order_independent_determinism=FAIL", repeat);
+    marker("phase27n_recursion_guard_regression=PASS", "phase27n_recursion_guard_regression=FAIL", initialRun);
+    const bool allPassed = initialRun && edited && initialHash != editedHash && sourceDiagnostic &&
+        undefined && arity && duplicate && missingEntryBuild && duplicateEntryBuild && recursion &&
+        deepRecursion && recovered && singleFile && finalRecovery && repeat && translationUnitIsolation &&
+        linkFailureBlocksRun && multiFileDiagnostics && compileRecovery && linkRecovery && linkedEntry &&
+        noSourceConcatenation;
+    marker("phase27n=PASS", "phase27n=FAIL", allPassed);
+    return allPassed;
+#elif defined(GXOS_PHASE27M_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);

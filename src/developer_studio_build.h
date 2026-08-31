@@ -11,6 +11,7 @@ static const uint32_t kMaxBuildLineBytes = 256;
 static const uint32_t kMaxBuildSystemBytes = 64;
 static const uint32_t kMaxBuildConfigurationBytes = 32;
 static const uint32_t kMaxBuildArtifactSha256Bytes = 65;
+static const uint32_t kMaxBuildSources = kMaxProjectSourceFiles;
 
 enum class BuildState {
     Idle = 0,
@@ -76,6 +77,10 @@ struct BuildRequest {
     char buildScript[kMaxProjectPathBytes];
     char expectedArtifact[kMaxProjectPathBytes];
     char configuration[kMaxBuildConfigurationBytes];
+    // Metadata for bounded multi-file backends. Native adapters that derive
+    // sources from the project file may ignore this copied request view.
+    uint32_t sourceCount;
+    char sourceFiles[kMaxBuildSources][kMaxProjectPathBytes];
 };
 
 struct BuildResult {

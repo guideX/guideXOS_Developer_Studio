@@ -63,6 +63,13 @@ target_link_libraries(developer_studio_build_test PRIVATE developer_studio_model
 set_target_properties(developer_studio_build_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_build_test COMMAND developer_studio_build_test)
 
+add_executable(developer_studio_source_enumeration_test
+    tests/source_enumeration_test.cpp
+)
+target_link_libraries(developer_studio_source_enumeration_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_source_enumeration_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_source_enumeration_test COMMAND developer_studio_source_enumeration_test)
+
 add_executable(developer_studio_run_test
     tests/run_test.cpp
 )

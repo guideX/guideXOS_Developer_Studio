@@ -79,7 +79,7 @@ static const uint32_t kMaxNameBytes = 128;
 // The embedded Phase 27E proof keeps the same model/controller APIs while
 // selecting bounded capacities appropriate for a NativeElf application.
 static const uint32_t kMaxWorkspaceEntries = 32;
-static const uint32_t kMaxOpenDocuments = 2;
+static const uint32_t kMaxOpenDocuments = 4;
 static const uint32_t kMaxEditorBytes = 16u * 1024u;
 #else
 static const uint32_t kMaxWorkspaceEntries = 128;

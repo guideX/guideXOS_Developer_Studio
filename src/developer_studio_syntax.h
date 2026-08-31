@@ -63,7 +63,7 @@ static const uint32_t kSyntaxMaxTokenizableLineBytes = 32u * 1024u;
 static const uint32_t kSyntaxMaxTokensPerLine = 4096u;
 #endif
 
-// The current native editor has eight embedded document slots.  A 65,536-span
+// The current native editor has four embedded document slots.  A 65,536-span
 // per-document cap keeps the embedded cache bounded while leaving room for
 // ordinary generated and hand-written source.  A document that exceeds this
 // cap remains editable and is rendered as plain text.
