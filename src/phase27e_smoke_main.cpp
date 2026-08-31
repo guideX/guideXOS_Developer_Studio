@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,7 +24,7 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
 #endif
@@ -76,7 +76,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -89,7 +89,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -279,7 +279,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -454,6 +454,34 @@ static bool phase27nBuildOutputContains(const char* text)
     return false;
 }
 
+static Document* phase27oDocumentFor(const char* relativePath)
+{
+    char absolute[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath("/P27O", relativePath, absolute, sizeof(absolute))) return nullptr;
+    const int index = FindOpenDocument(&g_workspace.model, absolute);
+    return index < 0 ? nullptr : &g_workspace.model.documents[index];
+}
+
+static bool phase27oEditSource(const char* relativePath, const char* source, uint32_t bytes)
+{
+    return editSource(phase27oDocumentFor(relativePath), source, bytes);
+}
+
+static bool phase27oBuildOutputContains(const char* text)
+{
+    if (!text) return false;
+    for (uint32_t i = 0; i < g_build.result.outputCount; ++i) {
+        const char* line = g_build.result.output[i].text;
+        if (!line) continue;
+        for (uint32_t at = 0; line[at] != '\0'; ++at) {
+            uint32_t j = 0;
+            while (text[j] != '\0' && line[at + j] == text[j]) ++j;
+            if (text[j] == '\0') return true;
+        }
+    }
+    return false;
+}
+
 static bool runBuildBeforeRun(int32_t expectedExit, const char* expectedOutput,
                               uint64_t* outputOperationId, bool* buildFailed)
 {
@@ -563,7 +591,277 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27N_APP)
+#if defined(GXOS_PHASE27O_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27o_run_backend=PASS", "phase27o_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpen = WorkspaceControllerOpenProject(&g_workspace, "/P27O");
+    marker("phase27o_project_open=PASS", "phase27o_project_open=FAIL", projectOpen);
+    if (!projectOpen) return false;
+
+    ProjectSourceFile sources[kMaxProjectSourceFiles] = {};
+    uint32_t sourceCount = 0;
+    const bool enumerated = WorkspaceControllerEnumerateProjectSources(
+        &g_workspace, sources, kMaxProjectSourceFiles, &sourceCount) && sourceCount == 3 &&
+        equalText(sources[0].relativePath, "src/main.cpp") &&
+        equalText(sources[1].relativePath, "src/math.cpp") &&
+        equalText(sources[2].relativePath, "src/state.cpp");
+    marker("phase27o_source_enumeration=PASS", "phase27o_source_enumeration=FAIL", enumerated);
+    if (!enumerated) return false;
+    bool documentsOpen = true;
+    for (uint32_t i = 0; i < sourceCount; ++i)
+        documentsOpen = documentsOpen && WorkspaceControllerOpenDocument(&g_workspace, sources[i].relativePath);
+    marker("phase27o_multi_file_documents=PASS", "phase27o_multi_file_documents=FAIL", documentsOpen);
+    if (!documentsOpen) return false;
+
+    static const char* const statePath = "src/state.cpp";
+    static const char* const mathPath = "src/math.cpp";
+    static const char* const mainPath = "src/main.cpp";
+    const char sourceStateInitial[] = "int answer = 40;\n";
+    const char sourceMathInitial[] =
+        "extern int answer;\n"
+        "int add_two() { answer = answer + 2; return answer; }\n";
+    const char sourceMainInitial[] =
+        "extern int answer;\n"
+        "int add_two();\n"
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    add_two();\n"
+        "    log(ctx, \"Linked global state updated.\");\n"
+        "    return answer;\n"
+        "}\n";
+
+    const bool initialEdited = phase27oEditSource(statePath, sourceStateInitial, sizeof(sourceStateInitial) - 1) &&
+        phase27oEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1) &&
+        phase27oEditSource(mainPath, sourceMainInitial, sizeof(sourceMainInitial) - 1);
+    uint64_t initialOperation = 0;
+    const bool initialRun = initialEdited &&
+        runBuildBeforeRun(42, "Linked global state updated.", &initialOperation, nullptr) &&
+        g_build.request.sourceCount == 3 && g_build.result.artifactValid &&
+        phase27oBuildOutputContains("Compiling src/main.cpp") &&
+        phase27oBuildOutputContains("Compiling src/math.cpp") &&
+        phase27oBuildOutputContains("Compiling src/state.cpp") &&
+        phase27oBuildOutputContains("Linking 3 modules") && g_run.result.exitCode == 42;
+    marker("phase27o_ide_globals=PASS", "phase27o_ide_globals=FAIL", initialRun);
+    marker("phase27o_cross_file_function_global=PASS", "phase27o_cross_file_function_global=FAIL", initialRun);
+    marker("phase27o_runtime_global_store=PASS", "phase27o_runtime_global_store=FAIL", initialRun);
+    marker("phase27o_rodata_regression=PASS", "phase27o_rodata_regression=FAIL", initialRun);
+
+    const uint64_t initialArtifactHash = hashText(g_build.result.artifactSha256);
+    const uint64_t initialSourceHash = hashText(sourceStateInitial);
+    const char sourceStateEdited[] = "int answer = 39;\n";
+    const bool sourceEdit = initialRun && phase27oEditSource(statePath, sourceStateEdited, sizeof(sourceStateEdited) - 1) &&
+        runBuildBeforeRun(41, "Linked global state updated.", nullptr, nullptr) && g_run.result.exitCode == 41;
+    const uint64_t editedArtifactHash = hashText(g_build.result.artifactSha256);
+    marker("phase27o_global_source_edit=PASS", "phase27o_global_source_edit=FAIL",
+           sourceEdit && initialSourceHash != hashText(sourceStateEdited) && initialArtifactHash != editedArtifactHash);
+    const bool restoredInitial = phase27oEditSource(statePath, sourceStateInitial, sizeof(sourceStateInitial) - 1) &&
+        runBuildBeforeRun(42, "Linked global state updated.", nullptr, nullptr) && g_run.result.exitCode == 42;
+
+    const char sourceReadState[] = "int answer = 42;\n";
+    const char sourceReadMath[] = "int unused_helper() { return 0; }\n";
+    const char sourceReadMain[] =
+        "extern int answer;\n"
+        "int gx_main(gx_app_context* ctx) { log(ctx, \"global read\"); return answer; }\n";
+    const bool globalRead = restoredInitial && phase27oEditSource(statePath, sourceReadState, sizeof(sourceReadState) - 1) &&
+        phase27oEditSource(mathPath, sourceReadMath, sizeof(sourceReadMath) - 1) &&
+        phase27oEditSource(mainPath, sourceReadMain, sizeof(sourceReadMain) - 1) &&
+        runBuildBeforeRun(42, "global read", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_global_read=PASS", "phase27o_global_read=FAIL", globalRead);
+    marker("phase27o_cross_file_global_read=PASS", "phase27o_cross_file_global_read=FAIL", globalRead);
+    marker("phase27o_initialized_global=PASS", "phase27o_initialized_global=FAIL", globalRead);
+
+    const char sourceWriteState[] = "int answer = 40;\n";
+    const char sourceWriteMain[] =
+        "extern int answer;\n"
+        "int gx_main(gx_app_context* ctx) { answer = answer + 2; log(ctx, \"global write\"); return answer; }\n";
+    const bool globalWrite = globalRead && phase27oEditSource(statePath, sourceWriteState, sizeof(sourceWriteState) - 1) &&
+        phase27oEditSource(mainPath, sourceWriteMain, sizeof(sourceWriteMain) - 1) &&
+        runBuildBeforeRun(42, "global write", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_global_write=PASS", "phase27o_global_write=FAIL", globalWrite);
+    marker("phase27o_cross_file_global_write=PASS", "phase27o_cross_file_global_write=FAIL", globalWrite);
+
+    const char sourceZeroState[] = "int answer;\n";
+    const char sourceZeroMain[] =
+        "extern int answer;\n"
+        "int gx_main(gx_app_context* ctx) { answer = answer + 42; log(ctx, \"zero global\"); return answer; }\n";
+    const bool zeroGlobal = globalWrite && phase27oEditSource(statePath, sourceZeroState, sizeof(sourceZeroState) - 1) &&
+        phase27oEditSource(mainPath, sourceZeroMain, sizeof(sourceZeroMain) - 1) &&
+        runBuildBeforeRun(42, "zero global", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_zero_initialized_global=PASS", "phase27o_zero_initialized_global=FAIL", zeroGlobal);
+
+    const char sourceSharedState[] = "int counter = 0;\n";
+    const char sourceSharedMath[] =
+        "extern int counter;\n"
+        "int increment() { counter = counter + 1; return counter; }\n";
+    const char sourceSharedMain[] =
+        "extern int counter;\n"
+        "int increment();\n"
+        "int gx_main(gx_app_context* ctx) { increment(); increment(); increment(); log(ctx, \"shared global\"); return counter * 14; }\n";
+    const bool sharedState = zeroGlobal && phase27oEditSource(statePath, sourceSharedState, sizeof(sourceSharedState) - 1) &&
+        phase27oEditSource(mathPath, sourceSharedMath, sizeof(sourceSharedMath) - 1) &&
+        phase27oEditSource(mainPath, sourceSharedMain, sizeof(sourceSharedMain) - 1) &&
+        runBuildBeforeRun(42, "shared global", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_shared_global_state=PASS", "phase27o_shared_global_state=FAIL", sharedState);
+
+    const char sourceLoopMain[] =
+        "extern int counter;\n"
+        "int gx_main(gx_app_context* ctx) { while (counter < 6) { counter = counter + 1; } log(ctx, \"global loop\"); return counter * 7; }\n";
+    const bool globalLoop = sharedState && phase27oEditSource(mainPath, sourceLoopMain, sizeof(sourceLoopMain) - 1) &&
+        runBuildBeforeRun(42, "global loop", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_global_loop_state=PASS", "phase27o_global_loop_state=FAIL", globalLoop);
+
+    const char sourceConditionState[] = "int answer = 42;\n";
+    const char sourceConditionMain[] =
+        "extern int answer;\n"
+        "int gx_main(gx_app_context* ctx) { if (answer == 42) { log(ctx, \"global condition\"); return 42; } return 0; }\n";
+    const bool globalCondition = globalLoop && phase27oEditSource(statePath, sourceConditionState, sizeof(sourceConditionState) - 1) &&
+        phase27oEditSource(mathPath, sourceReadMath, sizeof(sourceReadMath) - 1) &&
+        phase27oEditSource(mainPath, sourceConditionMain, sizeof(sourceConditionMain) - 1) &&
+        runBuildBeforeRun(42, "global condition", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_global_condition=PASS", "phase27o_global_condition=FAIL", globalCondition);
+
+    const char sourceRecursionState[] = "int calls = 0;\n";
+    const char sourceRecursionMath[] =
+        "extern int calls;\n"
+        "int recurse(int n) { calls = calls + 1; if (n == 0) { return 0; } return recurse(n - 1); }\n";
+    const char sourceRecursionMain[] =
+        "extern int calls;\n"
+        "int recurse(int n);\n"
+        "int gx_main(gx_app_context* ctx) { recurse(5); log(ctx, \"global recursion\"); return calls * 7; }\n";
+    const bool globalRecursion = globalCondition && phase27oEditSource(statePath, sourceRecursionState, sizeof(sourceRecursionState) - 1) &&
+        phase27oEditSource(mathPath, sourceRecursionMath, sizeof(sourceRecursionMath) - 1) &&
+        phase27oEditSource(mainPath, sourceRecursionMain, sizeof(sourceRecursionMain) - 1) &&
+        runBuildBeforeRun(42, "global recursion", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_global_recursion=PASS", "phase27o_global_recursion=FAIL", globalRecursion);
+
+    const char sourceDepthMath[] =
+        "extern int calls;\n"
+        "int recurse(int n) { calls = calls + 1; return recurse(n - 1); }\n";
+    const char sourceDepthMain[] =
+        "extern int calls;\n"
+        "int recurse(int n);\n"
+        "int gx_main(gx_app_context* ctx) { return recurse(128); }\n";
+    const bool depthSources = globalRecursion && phase27oEditSource(mathPath, sourceDepthMath, sizeof(sourceDepthMath) - 1) &&
+        phase27oEditSource(mainPath, sourceDepthMain, sizeof(sourceDepthMain) - 1);
+    const bool depthFailure = depthSources && buildThenRunExpectFailure(RunErrorCode::CallDepthExceeded);
+    marker("phase27o_global_depth_failure_recovery=PASS", "phase27o_global_depth_failure_recovery=FAIL", depthFailure);
+    const bool postFailureReset = depthFailure && phase27oEditSource(mathPath, sourceRecursionMath, sizeof(sourceRecursionMath) - 1) &&
+        phase27oEditSource(mainPath, sourceRecursionMain, sizeof(sourceRecursionMain) - 1) &&
+        runBuildBeforeRun(42, "global recursion", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_post_failure_global_reset=PASS", "phase27o_post_failure_global_reset=FAIL", postFailureReset);
+
+    const char sourceReinitState[] = "int counter = 40;\n";
+    const char sourceReinitMath[] = "int unused_helper() { return 0; }\n";
+    const char sourceReinitMain[] =
+        "extern int counter;\n"
+        "int gx_main(gx_app_context* ctx) { counter = counter + 1; log(ctx, \"global reinit\"); return counter; }\n";
+    const bool reinitSources = postFailureReset && phase27oEditSource(statePath, sourceReinitState, sizeof(sourceReinitState) - 1) &&
+        phase27oEditSource(mathPath, sourceReinitMath, sizeof(sourceReinitMath) - 1) &&
+        phase27oEditSource(mainPath, sourceReinitMain, sizeof(sourceReinitMain) - 1);
+    const bool reinitFirst = reinitSources && runBuildBeforeRun(41, "global reinit", nullptr, nullptr) && g_run.result.exitCode == 41;
+    const bool reinitSecond = reinitFirst && runBuildBeforeRun(41, "global reinit", nullptr, nullptr) && g_run.result.exitCode == 41;
+    marker("phase27o_global_reinitialization=PASS", "phase27o_global_reinitialization=FAIL", reinitSecond);
+
+    const bool validBeforeDiagnostics = reinitSecond && phase27oEditSource(statePath, sourceStateInitial, sizeof(sourceStateInitial) - 1) &&
+        phase27oEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1) &&
+        phase27oEditSource(mainPath, sourceMainInitial, sizeof(sourceMainInitial) - 1) &&
+        runBuildBeforeRun(42, "Linked global state updated.", nullptr, nullptr) && g_run.result.exitCode == 42;
+    const char sourceInvalid[] = "int answer = 20 + 22;\n";
+    const bool invalidSources = validBeforeDiagnostics && phase27oEditSource(statePath, sourceInvalid, sizeof(sourceInvalid) - 1) &&
+        startAndPoll() && g_build.result.state == BuildState::Failed &&
+        phase27oBuildOutputContains("global initializer must be a constant integer") &&
+        !g_build.result.artifactValid && !RunControllerIsActive(&g_run);
+    marker("phase27o_invalid_initializer=PASS", "phase27o_invalid_initializer=FAIL", invalidSources);
+    marker("phase27o_compile_recovery=PASS", "phase27o_compile_recovery=FAIL", invalidSources && validBeforeDiagnostics);
+
+    const char sourceNoAnswer[] = "extern int unused;\n";
+    const char sourceUnusedMath[] = "int unused_helper() { return 0; }\n";
+    const char sourceUndefinedMain[] =
+        "extern int answer;\n"
+        "int gx_main(gx_app_context* ctx) { return answer; }\n";
+    const bool undefinedSources = invalidSources && phase27oEditSource(statePath, sourceNoAnswer, sizeof(sourceNoAnswer) - 1) &&
+        phase27oEditSource(mathPath, sourceUnusedMath, sizeof(sourceUnusedMath) - 1) &&
+        phase27oEditSource(mainPath, sourceUndefinedMain, sizeof(sourceUndefinedMain) - 1) &&
+        startAndPoll() && g_build.result.state == BuildState::Failed &&
+        phase27oBuildOutputContains("undefined external global 'answer'") &&
+        !g_build.result.artifactValid && !RunControllerIsActive(&g_run);
+    marker("phase27o_undefined_global=PASS", "phase27o_undefined_global=FAIL", undefinedSources);
+    marker("phase27o_ide_undefined_global=PASS", "phase27o_ide_undefined_global=FAIL", undefinedSources);
+
+    const char sourceDuplicateMath[] = "int answer = 41;\n";
+    const bool duplicateSources = undefinedSources && phase27oEditSource(statePath, sourceStateInitial, sizeof(sourceStateInitial) - 1) &&
+        phase27oEditSource(mathPath, sourceDuplicateMath, sizeof(sourceDuplicateMath) - 1) &&
+        phase27oEditSource(mainPath, sourceMainInitial, sizeof(sourceMainInitial) - 1) &&
+        startAndPoll() && g_build.result.state == BuildState::Failed &&
+        phase27oBuildOutputContains("duplicate definition for global 'answer'") &&
+        !g_build.result.artifactValid && !RunControllerIsActive(&g_run);
+    marker("phase27o_duplicate_global=PASS", "phase27o_duplicate_global=FAIL", duplicateSources);
+    marker("phase27o_ide_duplicate_global=PASS", "phase27o_ide_duplicate_global=FAIL", duplicateSources);
+
+    const char sourceFunctionConflictMath[] = "int answer() { return 1; }\n";
+    const bool kindConflict = duplicateSources && phase27oEditSource(mathPath, sourceFunctionConflictMath, sizeof(sourceFunctionConflictMath) - 1) &&
+        startAndPoll() && g_build.result.state == BuildState::Failed &&
+        phase27oBuildOutputContains("defined as both function and global");
+    marker("phase27o_symbol_kind_conflict=PASS", "phase27o_symbol_kind_conflict=FAIL", kindConflict);
+
+    const char sourceShadowState[] = "int value = 40;\n";
+    const char sourceShadowMath[] = "int unused_helper() { return 0; }\n";
+    const char sourceShadowMain[] =
+        "int gx_main(gx_app_context* ctx) { int value = 42; log(ctx, \"local shadow\"); return value; }\n";
+    const bool localShadow = kindConflict && phase27oEditSource(statePath, sourceShadowState, sizeof(sourceShadowState) - 1) &&
+        phase27oEditSource(mathPath, sourceShadowMath, sizeof(sourceShadowMath) - 1) &&
+        phase27oEditSource(mainPath, sourceShadowMain, sizeof(sourceShadowMain) - 1) &&
+        runBuildBeforeRun(42, "local shadow", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27o_local_shadows_global=PASS", "phase27o_local_shadows_global=FAIL", localShadow);
+
+    const bool recovered = localShadow && phase27oEditSource(statePath, sourceStateInitial, sizeof(sourceStateInitial) - 1) &&
+        phase27oEditSource(mathPath, sourceMathInitial, sizeof(sourceMathInitial) - 1) &&
+        phase27oEditSource(mainPath, sourceMainInitial, sizeof(sourceMainInitial) - 1) &&
+        runBuildBeforeRun(42, "Linked global state updated.", nullptr, nullptr) && g_run.result.exitCode == 42;
+    char recoveredArtifactHash[kMaxBuildArtifactSha256Bytes] = {};
+    if (recovered) copyText(recoveredArtifactHash, sizeof(recoveredArtifactHash), g_build.result.artifactSha256);
+    const bool deterministic = recovered && runBuildBeforeRun(42, "Linked global state updated.", nullptr, nullptr) &&
+        equalText(recoveredArtifactHash, g_build.result.artifactSha256) && g_run.result.exitCode == 42;
+    const bool artifactProof = initialRun && recovered && g_build.result.artifactValid && g_build.result.artifactSize != 0;
+    marker("phase27o_failure_blocks_run=PASS", "phase27o_failure_blocks_run=FAIL",
+           invalidSources && undefinedSources && duplicateSources && !RunControllerIsActive(&g_run));
+    marker("phase27o_link_recovery=PASS", "phase27o_link_recovery=FAIL", undefinedSources && duplicateSources && recovered);
+    marker("phase27o_linker_data_reset=PASS", "phase27o_linker_data_reset=FAIL", recovered);
+    marker("phase27o_data_deterministic=PASS", "phase27o_data_deterministic=FAIL", deterministic);
+    marker("phase27o_data_order_independent=PASS", "phase27o_data_order_independent=FAIL", deterministic);
+    marker("phase27o_global_relocation=PASS", "phase27o_global_relocation=FAIL", initialRun);
+    marker("phase27o_global_address=PASS", "phase27o_global_address=FAIL", artifactProof);
+    marker("phase27o_rw_data_segment=PASS", "phase27o_rw_data_segment=FAIL", artifactProof);
+    marker("phase27o_rx_code_segment=PASS", "phase27o_rx_code_segment=FAIL", artifactProof);
+    marker("phase27o_no_rwx_segment=PASS", "phase27o_no_rwx_segment=FAIL", artifactProof);
+    marker("phase27o_segment_permissions=PASS", "phase27o_segment_permissions=FAIL", artifactProof);
+    marker("phase27o_single_file_regression=PASS", "phase27o_single_file_regression=FAIL", initialRun);
+    marker("phase27o_function_link_regression=PASS", "phase27o_function_link_regression=FAIL", initialRun);
+
+    FileInfo sourceInfo = {};
+    FileInfo artifactInfo = {};
+    char sourceAbsolute[kMaxPathBytes] = {};
+    char artifactAbsolute[kMaxPathBytes] = {};
+    const bool survival = JoinWorkspacePath("/P27O", mainPath, sourceAbsolute, sizeof(sourceAbsolute)) &&
+        JoinWorkspacePath("/P27O", g_build.result.artifactPath, artifactAbsolute, sizeof(artifactAbsolute)) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, sourceAbsolute, &sourceInfo) &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, artifactAbsolute, &artifactInfo) &&
+        sourceInfo.kind == FileInfoKind::RegularFile && artifactInfo.kind == FileInfoKind::RegularFile &&
+        artifactInfo.size == g_build.result.artifactSize && !RunControllerIsActive(&g_run) &&
+        g_run.result.state == RunState::Completed && g_run.result.cleanupComplete;
+    marker("phase27o_kernel_survival=PASS", "phase27o_kernel_survival=FAIL", survival);
+    marker("phase27o=PASS", "phase27o=FAIL", initialRun && sourceEdit && globalRead && globalWrite && zeroGlobal &&
+           sharedState && globalLoop && globalCondition && globalRecursion && depthFailure && postFailureReset &&
+           reinitSecond && invalidSources && undefinedSources && duplicateSources && kindConflict && localShadow &&
+           recovered && deterministic && survival);
+    return initialRun && sourceEdit && globalRead && globalWrite && zeroGlobal && sharedState && globalLoop &&
+        globalCondition && globalRecursion && depthFailure && postFailureReset && reinitSecond && invalidSources &&
+        undefinedSources && duplicateSources && kindConflict && localShadow && recovered && deterministic && survival;
+#elif defined(GXOS_PHASE27N_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);
