@@ -97,6 +97,7 @@ const char* RunErrorName(RunErrorCode error) {
     case RunErrorCode::OwnerMismatch: return "owner_mismatch";
     case RunErrorCode::StaleDeployment: return "stale_deployment";
     case RunErrorCode::LaunchFailed: return "launch_failed";
+    case RunErrorCode::CallDepthExceeded: return "call_depth_exceeded";
     case RunErrorCode::ApplicationExited: return "application_exited";
     case RunErrorCode::UserCancelled: return "user_cancelled";
     }
@@ -258,6 +259,12 @@ bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunServ
         else if (result.state == RunState::CleaningUp) appendRunText(controller, OutputSeverity::Information, "Deployment cleanup started");
     }
     if (isTerminal(result.state) && result.cleanupComplete) {
+        if (result.errorMessage[0] != '\0' && controller->output && controller->operationId != 0) {
+            OutputServiceAppendText(controller->output, controller->operationId, OutputSource::Runtime,
+                                    OutputSeverity::Error, OutputCategory::RuntimeDiagnostic,
+                                    OutputStream::Unknown, result.errorMessage,
+                                    controller->request.projectId, nullptr);
+        }
         controller->active = false;
         if (service.release) service.release(service.userData, controller->handle);
         controller->handle = 0;

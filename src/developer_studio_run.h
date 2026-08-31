@@ -35,6 +35,7 @@ enum class RunErrorCode {
     OwnerMismatch,
     StaleDeployment,
     LaunchFailed,
+    CallDepthExceeded,
     ApplicationExited,
     UserCancelled
 };

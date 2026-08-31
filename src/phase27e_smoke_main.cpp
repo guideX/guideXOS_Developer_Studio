@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,7 +24,7 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
 #endif
@@ -76,7 +76,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -89,7 +89,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -279,7 +279,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -291,6 +291,7 @@ static RunErrorCode mapRunError(uint32_t error)
     case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_INVALID: return RunErrorCode::ArtifactInvalid;
     case GX_DEVELOPMENT_RUN_ERROR_UNSUPPORTED_TARGET: return RunErrorCode::ServiceUnavailable;
     case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_FAILED: return RunErrorCode::LaunchFailed;
+    case GX_DEVELOPMENT_RUN_ERROR_CALL_DEPTH_EXCEEDED: return RunErrorCode::CallDepthExceeded;
     default: return RunErrorCode::InvalidRequest;
     }
 }
@@ -508,7 +509,106 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27L_APP)
+#if defined(GXOS_PHASE27M_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27m_run_backend=PASS", "phase27m_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpen = WorkspaceControllerOpenProject(&g_workspace, "/P27M");
+    marker("phase27m_project_open=PASS", "phase27m_project_open=FAIL", projectOpen);
+    if (!projectOpen) return false;
+    const bool documentOpen = WorkspaceControllerOpenDocument(&g_workspace, "src/main.cpp");
+    marker("phase27m_document_open=PASS", "phase27m_document_open=FAIL", documentOpen);
+    if (!documentOpen) return false;
+    Document* document = WorkspaceControllerActiveDocument(&g_workspace);
+
+    const char sourcePrimary[] =
+        "int sum_down(int n) {\n"
+        "    if (n <= 0) { return 0; }\n"
+        "    return n + sum_down(n - 1);\n"
+        "}\n"
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int result = sum_down(6) * 2;\n"
+        "    log(ctx, \"Recursive functions executed.\");\n"
+        "    return result;\n"
+        "}\n";
+    const char sourceEdited[] =
+        "int sum_down(int n) {\n"
+        "    if (n <= 0) { return 0; }\n"
+        "    return 1 + sum_down(n - 1);\n"
+        "}\n"
+        "int gx_main(gx_app_context* ctx) {\n"
+        "    int result = sum_down(6) * 2;\n"
+        "    log(ctx, \"Recursive functions edited.\");\n"
+        "    return result;\n"
+        "}\n";
+    const char sourceMutual[] =
+        "int even(int n) { if (n <= 0) { return 1; } return odd(n - 1); }\n"
+        "int odd(int n) { if (n <= 0) { return 0; } return even(n - 1); }\n"
+        "int gx_main(gx_app_context* ctx) { log(ctx, \"Phase 27M mutual recursion.\"); return even(6) * 42; }\n";
+    const char sourceOverflow[] =
+        "int recurse(int n) { if (n <= 0) { return 0; } return recurse(n - 1); }\n"
+        "int gx_main(gx_app_context* ctx) { return recurse(1000000); }\n";
+
+    uint64_t primaryOperation = 0;
+    const bool primaryEdit = editSource(document, sourcePrimary, sizeof(sourcePrimary) - 1);
+    const bool primaryRun = primaryEdit &&
+        runBuildBeforeRun(42, "Recursive functions executed.", &primaryOperation, nullptr) &&
+        outputHas(primaryOperation, "Recursive functions executed.") &&
+        g_run.result.exitCode == 42;
+    marker("phase27m_stack_accounting=PASS", "phase27m_stack_accounting=FAIL", primaryRun);
+    marker("phase27m_call_guard_opcode=PASS", "phase27m_call_guard_opcode=FAIL", primaryRun);
+    marker("phase27m_no_unbounded_unroll=PASS", "phase27m_no_unbounded_unroll=FAIL", primaryRun);
+    marker("phase27m_ide_program=PASS", "phase27m_ide_program=FAIL", primaryRun);
+    marker("phase27m_host_integration=PASS", "phase27m_host_integration=FAIL", primaryRun);
+
+    const bool edited = editSource(document, sourceEdited, sizeof(sourceEdited) - 1) &&
+        runBuildBeforeRun(12, "Recursive functions edited.", nullptr, nullptr) &&
+        outputHas(g_run.operationId, "Recursive functions edited.") && g_run.result.exitCode == 12;
+    marker("phase27m_source_edit=PASS", "phase27m_source_edit=FAIL", edited);
+
+    const bool mutual = editSource(document, sourceMutual, sizeof(sourceMutual) - 1) &&
+        runBuildBeforeRun(42, "Phase 27M mutual recursion.", nullptr, nullptr) &&
+        outputHas(g_run.operationId, "Phase 27M mutual recursion.") && g_run.result.exitCode == 42;
+    marker("phase27m_mutual_recursion_rel32=PASS", "phase27m_mutual_recursion_rel32=FAIL", mutual);
+    marker("phase27m_mutual_recursion=PASS", "phase27m_mutual_recursion=FAIL", mutual);
+
+    const bool overflowBuild = editSource(document, sourceOverflow, sizeof(sourceOverflow) - 1) &&
+        runBuildBeforeRun(0, "", nullptr, nullptr);
+    const bool overflow = !overflowBuild && g_run.result.state == RunState::Failed &&
+        g_run.result.error == RunErrorCode::CallDepthExceeded && g_run.result.cleanupComplete &&
+        !RunControllerIsActive(&g_run) &&
+        equalText(g_run.result.errorMessage, "ELF Loader: Application terminated: recursive call depth limit exceeded.");
+    marker("phase27m_runtime_failure=PASS", "phase27m_runtime_failure=FAIL", overflow);
+    marker("phase27m_propagation=PASS", "phase27m_propagation=FAIL", overflow);
+    marker("phase27m_diagnostic=PASS", "phase27m_diagnostic=FAIL", overflow);
+    marker("phase27m_depth_exhaustion_safe=PASS", "phase27m_depth_exhaustion_safe=FAIL", overflow);
+    marker("phase27m_depth_diagnostic=PASS", "phase27m_depth_diagnostic=FAIL", overflow);
+    marker("phase27m_ide_depth_failure=PASS", "phase27m_ide_depth_failure=FAIL", overflow);
+
+    const bool recovered = editSource(document, sourcePrimary, sizeof(sourcePrimary) - 1) &&
+        runBuildBeforeRun(42, "Recursive functions executed.", nullptr, nullptr) &&
+        outputHas(g_run.operationId, "Recursive functions executed.") && g_run.result.exitCode == 42 &&
+        !RunControllerIsActive(&g_run);
+    marker("phase27m_kernel_survival=PASS", "phase27m_kernel_survival=FAIL", recovered);
+    marker("phase27m_runtime_recovery=PASS", "phase27m_runtime_recovery=FAIL", overflow && recovered);
+    marker("phase27m_stack_recovery=PASS", "phase27m_stack_recovery=FAIL", overflow && recovered);
+    bool repeated = recovered;
+    for (int i = 0; i < 3 && repeated; ++i) {
+        repeated = runBuildBeforeRun(42, "Recursive functions executed.", nullptr, nullptr) &&
+            outputHas(g_run.operationId, "Recursive functions executed.") &&
+            g_run.result.exitCode == 42 && !RunControllerIsActive(&g_run);
+    }
+    marker("phase27m_repeated_runs=PASS", "phase27m_repeated_runs=FAIL", repeated);
+    marker("phase27m_repeat_recursion=PASS", "phase27m_repeat_recursion=FAIL", repeated);
+    marker("phase27m_ide_recovery=PASS", "phase27m_ide_recovery=FAIL", overflow && recovered);
+    const bool allPassed = primaryRun && edited && mutual && overflow && recovered && repeated;
+    marker("phase27m=PASS", "phase27m=FAIL", allPassed);
+    return allPassed;
+#elif defined(GXOS_PHASE27L_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);

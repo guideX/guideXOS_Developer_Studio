@@ -3227,6 +3227,7 @@ static RunErrorCode mapRunError(uint32_t error) {
     case GX_DEVELOPMENT_RUN_ERROR_STALE_DEPLOYMENT: return RunErrorCode::StaleDeployment;
     case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_FAILED:
     case GX_DEVELOPMENT_RUN_ERROR_LAUNCH_UNAVAILABLE: return RunErrorCode::LaunchFailed;
+    case GX_DEVELOPMENT_RUN_ERROR_CALL_DEPTH_EXCEEDED: return RunErrorCode::CallDepthExceeded;
     case GX_DEVELOPMENT_RUN_ERROR_ARTIFACT_SIZE_CHANGED: return RunErrorCode::ArtifactInvalid;
     case GX_DEVELOPMENT_RUN_ERROR_RUNTIME_BUSY: return RunErrorCode::AlreadyActive;
     case GX_DEVELOPMENT_RUN_ERROR_CANCEL_UNSUPPORTED: return RunErrorCode::ServiceUnavailable;
