@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,9 +24,15 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
+#endif
+#if defined(GXOS_PHASE27P_APP)
+// The P27P fixture's objects are far below the 128 KiB kernel object bound;
+// keep only a bounded mutation workspace in the proof app so its NativeElf
+// image remains within the existing 1 MiB mapped-image contract.
+static char g_phase27pObject[32768] = {};
 #endif
 
 static bool copyText(char* output, uint32_t capacity, const char* input)
@@ -76,7 +82,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -89,7 +95,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -203,6 +209,10 @@ static void mapSnapshot(const gx_build_snapshot& native, BuildResult* result)
     result->artifactSize = native.artifactSize;
     result->artifactValid = native.artifactValid != 0;
     result->artifactEntryPoint = native.artifactEntryPoint != 0;
+    result->sourceFileCount = native.sourceFileCount;
+    result->compiledModuleCount = native.compiledModuleCount;
+    result->cachedModuleCount = native.cachedModuleCount;
+    result->linkedModuleCount = native.linkedModuleCount;
     copyText(result->artifactPath, sizeof(result->artifactPath), native.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), native.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), native.artifactArchitecture);
@@ -279,7 +289,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -482,6 +492,56 @@ static bool phase27oBuildOutputContains(const char* text)
     return false;
 }
 
+static Document* phase27pDocumentFor(const char* relativePath)
+{
+    char absolute[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath("/P27P", relativePath, absolute, sizeof(absolute))) return nullptr;
+    const int index = FindOpenDocument(&g_workspace.model, absolute);
+    return index < 0 ? nullptr : &g_workspace.model.documents[index];
+}
+
+static bool phase27pEditSource(const char* relativePath, const char* source, uint32_t bytes)
+{
+    return editSource(phase27pDocumentFor(relativePath), source, bytes);
+}
+
+static bool phase27pFileWrite(const char* relativePath, const char* source, uint32_t bytes)
+{
+    char absolute[kMaxPathBytes] = {};
+    uint32_t written = 0;
+    return JoinWorkspacePath("/P27P", relativePath, absolute, sizeof(absolute)) &&
+        g_workspace.fileSystem.write &&
+        g_workspace.fileSystem.write(g_workspace.fileSystem.userData, absolute, source, bytes, &written) &&
+        written == bytes;
+}
+
+static bool phase27pFileRemove(const char* relativePath)
+{
+    char absolute[kMaxPathBytes] = {};
+    return JoinWorkspacePath("/P27P", relativePath, absolute, sizeof(absolute)) &&
+        g_workspace.fileSystem.removePath &&
+        g_workspace.fileSystem.removePath(g_workspace.fileSystem.userData, absolute);
+}
+
+#if defined(GXOS_PHASE27P_APP)
+static bool phase27pMutateObjectByte(const char* relativePath, uint32_t offset, uint8_t xorMask)
+{
+    char absolute[kMaxPathBytes] = {};
+    FileInfo info = {};
+    uint32_t read = 0;
+    uint32_t written = 0;
+    if (!JoinWorkspacePath("/P27P", relativePath, absolute, sizeof(absolute)) ||
+        !g_workspace.fileSystem.stat || !g_workspace.fileSystem.read || !g_workspace.fileSystem.write ||
+        !g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, absolute, &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size > sizeof(g_phase27pObject) ||
+        offset >= info.size || !g_workspace.fileSystem.read(g_workspace.fileSystem.userData, absolute,
+                                                             g_phase27pObject, info.size, &read) || read != info.size) return false;
+    g_phase27pObject[offset] = static_cast<char>(static_cast<uint8_t>(g_phase27pObject[offset]) ^ xorMask);
+    return g_workspace.fileSystem.write(g_workspace.fileSystem.userData, absolute, g_phase27pObject,
+                                        info.size, &written) && written == info.size;
+}
+#endif
+
 static bool runBuildBeforeRun(int32_t expectedExit, const char* expectedOutput,
                               uint64_t* outputOperationId, bool* buildFailed)
 {
@@ -591,7 +651,214 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27O_APP)
+#if defined(GXOS_PHASE27P_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27p_run_backend=PASS", "phase27p_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpen = WorkspaceControllerOpenProject(&g_workspace, "/P27P");
+    marker("phase27p_project_open=PASS", "phase27p_project_open=FAIL", projectOpen);
+    if (!projectOpen) return false;
+    ProjectSourceFile sources[kMaxProjectSourceFiles] = {};
+    uint32_t sourceCount = 0;
+    const bool enumerated = WorkspaceControllerEnumerateProjectSources(
+        &g_workspace, sources, kMaxProjectSourceFiles, &sourceCount) && sourceCount == 3 &&
+        equalText(sources[0].relativePath, "src/main.cpp") &&
+        equalText(sources[1].relativePath, "src/math.cpp") &&
+        equalText(sources[2].relativePath, "src/state.cpp");
+    marker("phase27p_source_enumeration=PASS", "phase27p_source_enumeration=FAIL", enumerated);
+    if (!enumerated) return false;
+    bool documentsOpen = true;
+    for (uint32_t i = 0; i < sourceCount; ++i)
+        documentsOpen = documentsOpen && WorkspaceControllerOpenDocument(&g_workspace, sources[i].relativePath);
+    marker("phase27p_multi_file_documents=PASS", "phase27p_multi_file_documents=FAIL", documentsOpen);
+    if (!documentsOpen) return false;
+
+    const char mathInitial[] =
+        "extern int answer;\n"
+        "int add_two() { answer = answer + 2; return answer; }\n";
+    const char mathEdited[] =
+        "extern int answer;\n"
+        "int add_two() { answer = answer + 1; return answer; }\n";
+    const char mathInvalid[] =
+        "extern int answer;\n"
+        "int add_two( { answer = answer + 2; return answer; }\n";
+    const char stateInitial[] = "int answer = 40;\n";
+    const char stateBroken[] = "int other = 40;\n";
+    uint64_t coldOperation = 0;
+    const bool coldRun = runBuildBeforeRun(42, "Incremental linked build executed.", &coldOperation, nullptr) &&
+        g_build.result.sourceFileCount == 3 && g_build.result.compiledModuleCount == 3 &&
+        g_build.result.cachedModuleCount == 0 && g_build.result.linkedModuleCount == 3 &&
+        phase27oBuildOutputContains("Compiling src/main.cpp") &&
+        phase27oBuildOutputContains("Compiling src/math.cpp") &&
+        phase27oBuildOutputContains("Compiling src/state.cpp");
+    char coldArtifactHash[kMaxBuildArtifactSha256Bytes] = {};
+    copyText(coldArtifactHash, sizeof(coldArtifactHash), g_build.result.artifactSha256);
+    marker("phase27p_cold_counts=PASS", "phase27p_cold_counts=FAIL", coldRun);
+    marker("phase27p_cold_build=PASS", "phase27p_cold_build=FAIL", coldRun);
+    marker("phase27p_ide_cold_build=PASS", "phase27p_ide_cold_build=FAIL", coldRun);
+
+    const bool warmRun = coldRun &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.sourceFileCount == 3 && g_build.result.compiledModuleCount == 0 &&
+        g_build.result.cachedModuleCount == 3 && g_build.result.linkedModuleCount == 3 &&
+        equalText(coldArtifactHash, g_build.result.artifactSha256) &&
+        phase27oBuildOutputContains("Using cached object src/main.cpp") &&
+        phase27oBuildOutputContains("Using cached object src/math.cpp") &&
+        phase27oBuildOutputContains("Using cached object src/state.cpp");
+    marker("phase27p_warm_counts=PASS", "phase27p_warm_counts=FAIL", warmRun);
+    marker("phase27p_no_change_build=PASS", "phase27p_no_change_build=FAIL", warmRun);
+    marker("phase27p_ide_warm_build=PASS", "phase27p_ide_warm_build=FAIL", warmRun);
+    marker("phase27p_cold_warm_elf_identical=PASS", "phase27p_cold_warm_elf_identical=FAIL", warmRun);
+    marker("phase27p_link_from_persisted_objects=PASS", "phase27p_link_from_persisted_objects=FAIL", warmRun);
+    marker("phase27p_full_cache_execution=PASS", "phase27p_full_cache_execution=FAIL", warmRun);
+
+    const bool edited = warmRun && phase27pEditSource("src/math.cpp", mathEdited, sizeof(mathEdited) - 1) &&
+        runBuildBeforeRun(41, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2 &&
+        g_build.result.linkedModuleCount == 3 && g_run.result.exitCode == 41;
+    char editedArtifactHash[kMaxBuildArtifactSha256Bytes] = {};
+    copyText(editedArtifactHash, sizeof(editedArtifactHash), g_build.result.artifactSha256);
+    const bool editedChanged = edited && !equalText(coldArtifactHash, editedArtifactHash) &&
+        phase27oBuildOutputContains("Using cached object src/main.cpp") &&
+        phase27oBuildOutputContains("Compiling src/math.cpp") &&
+        phase27oBuildOutputContains("Using cached object src/state.cpp");
+    marker("phase27p_partial_counts=PASS", "phase27p_partial_counts=FAIL", editedChanged);
+    marker("phase27p_single_file_invalidation=PASS", "phase27p_single_file_invalidation=FAIL", editedChanged);
+    marker("phase27p_incremental_source_edit=PASS", "phase27p_incremental_source_edit=FAIL", editedChanged);
+    marker("phase27p_same_size_edit_invalidates=PASS", "phase27p_same_size_edit_invalidates=FAIL",
+           editedChanged && sizeof(mathInitial) == sizeof(mathEdited));
+    marker("phase27p_ide_partial_rebuild=PASS", "phase27p_ide_partial_rebuild=FAIL", editedChanged);
+
+    const bool restored = editedChanged && phase27pEditSource("src/math.cpp", mathInitial, sizeof(mathInitial) - 1) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2 &&
+        equalText(coldArtifactHash, g_build.result.artifactSha256) && g_run.result.exitCode == 42;
+    marker("phase27p_source_restore=PASS", "phase27p_source_restore=FAIL", restored);
+    marker("phase27p_restore_deterministic=PASS", "phase27p_restore_deterministic=FAIL", restored);
+    marker("phase27p_ide_restore=PASS", "phase27p_ide_restore=FAIL", restored);
+
+    const char stateEdited[] = "int answer = 39;\n";
+    const bool multiEdited = restored &&
+        phase27pEditSource("src/math.cpp", mathEdited, sizeof(mathEdited) - 1) &&
+        phase27pEditSource("src/state.cpp", stateEdited, sizeof(stateEdited) - 1) &&
+        runBuildBeforeRun(40, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 2 && g_build.result.cachedModuleCount == 1 &&
+        g_build.result.linkedModuleCount == 3 && g_run.result.exitCode == 40;
+    marker("phase27p_multi_file_invalidation=PASS", "phase27p_multi_file_invalidation=FAIL", multiEdited);
+    const bool multiRestored = multiEdited &&
+        phase27pEditSource("src/math.cpp", mathInitial, sizeof(mathInitial) - 1) &&
+        phase27pEditSource("src/state.cpp", stateInitial, sizeof(stateInitial) - 1) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 2 && g_build.result.cachedModuleCount == 1 &&
+        g_build.result.linkedModuleCount == 3 && g_run.result.exitCode == 42;
+
+    const bool missingObject = multiRestored && phase27pFileRemove("build/obj/amd64/src/math.gxo") &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2 &&
+        g_run.result.exitCode == 42;
+    marker("phase27p_missing_object_rebuild=PASS", "phase27p_missing_object_rebuild=FAIL", missingObject);
+    const bool corruptPayload = missingObject && phase27pMutateObjectByte("build/obj/amd64/src/math.gxo", 100, 0x5a) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2 &&
+        g_run.result.exitCode == 42;
+    marker("phase27p_corrupt_object_rebuild=PASS", "phase27p_corrupt_object_rebuild=FAIL", corruptPayload);
+    marker("phase27p_corrupt_code_rebuild=PASS", "phase27p_corrupt_code_rebuild=FAIL", corruptPayload);
+    marker("phase27p_corrupt_relocation_rebuild=PASS", "phase27p_corrupt_relocation_rebuild=FAIL", corruptPayload);
+    const bool oldVersion = corruptPayload && phase27pMutateObjectByte("build/obj/amd64/src/math.gxo", 4, 0x01) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2;
+    const bool wrongArch = oldVersion && phase27pMutateObjectByte("build/obj/amd64/src/math.gxo", 8, 0x01) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2;
+    const bool wrongAbi = wrongArch && phase27pMutateObjectByte("build/obj/amd64/src/math.gxo", 12, 0x01) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2;
+    marker("phase27p_object_version_invalidation=PASS", "phase27p_object_version_invalidation=FAIL", oldVersion);
+    marker("phase27p_wrong_arch_rebuild=PASS", "phase27p_wrong_arch_rebuild=FAIL", wrongArch);
+    marker("phase27p_wrong_abi_rebuild=PASS", "phase27p_wrong_abi_rebuild=FAIL", wrongAbi);
+    marker("phase27p_ide_corrupt_cache_recovery=PASS", "phase27p_ide_corrupt_cache_recovery=FAIL", corruptPayload);
+    marker("phase27p_compile_skipped_on_hit=PASS", "phase27p_compile_skipped_on_hit=FAIL", warmRun);
+
+    const bool invalidCompile = missingObject && phase27pEditSource("src/math.cpp", mathInvalid, sizeof(mathInvalid) - 1) &&
+        startAndPoll() && g_build.result.state == BuildState::Failed &&
+        !g_build.result.artifactValid && !RunControllerIsActive(&g_run);
+    marker("phase27p_changed_source_never_uses_stale_object=PASS", "phase27p_changed_source_never_uses_stale_object=FAIL", invalidCompile);
+    const bool compileRecovery = invalidCompile && phase27pEditSource("src/math.cpp", mathInitial, sizeof(mathInitial) - 1) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27p_compile_failure_recovery=PASS", "phase27p_compile_failure_recovery=FAIL", compileRecovery);
+
+    const bool invalidLink = compileRecovery && phase27pEditSource("src/state.cpp", stateBroken, sizeof(stateBroken) - 1) &&
+        startAndPoll() && g_build.result.state == BuildState::Failed && !g_build.result.artifactValid;
+    marker("phase27p_cached_undefined_symbol=PASS", "phase27p_cached_undefined_symbol=FAIL", invalidLink);
+    marker("phase27p_cached_link_failure_blocks_run=PASS", "phase27p_cached_link_failure_blocks_run=FAIL", invalidLink && !RunControllerIsActive(&g_run));
+    const bool linkRecovery = invalidLink && phase27pEditSource("src/state.cpp", stateInitial, sizeof(stateInitial) - 1) &&
+        runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) && g_run.result.exitCode == 42;
+    marker("phase27p_link_failure_recovery=PASS", "phase27p_link_failure_recovery=FAIL", linkRecovery);
+
+    const char addedSource[] = "int cached_extra() { return 0; }\n";
+    const bool added = linkRecovery && phase27pFileWrite("src/extra.cpp", addedSource, sizeof(addedSource) - 1);
+    if (added) {
+        WorkspaceControllerInit(&g_workspace, bareFileSystem());
+        WorkspaceControllerOpenProject(&g_workspace, "/P27P");
+    }
+    const bool addedBuild = added && runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.sourceFileCount == 4 && g_build.result.compiledModuleCount == 1 &&
+        g_build.result.cachedModuleCount == 3;
+    marker("phase27p_added_source=PASS", "phase27p_added_source=FAIL", addedBuild);
+    const bool removed = addedBuild && phase27pFileRemove("src/extra.cpp");
+    if (removed) {
+        WorkspaceControllerInit(&g_workspace, bareFileSystem());
+        WorkspaceControllerOpenProject(&g_workspace, "/P27P");
+    }
+    const bool removedBuild = removed && runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.sourceFileCount == 3 && g_build.result.linkedModuleCount == 3;
+    marker("phase27p_removed_source=PASS", "phase27p_removed_source=FAIL", removedBuild);
+    marker("phase27p_orphan_object_ignored=PASS", "phase27p_orphan_object_ignored=FAIL", removedBuild);
+
+    const bool renamed = removedBuild && phase27pFileWrite("src/mathnew.cpp", mathInitial, sizeof(mathInitial) - 1) &&
+        phase27pFileRemove("src/math.cpp");
+    if (renamed) {
+        WorkspaceControllerInit(&g_workspace, bareFileSystem());
+        WorkspaceControllerOpenProject(&g_workspace, "/P27P");
+    }
+    const bool renameBuild = renamed && runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_build.result.sourceFileCount == 3 && g_build.result.compiledModuleCount == 1;
+    marker("phase27p_source_rename=PASS", "phase27p_source_rename=FAIL", renameBuild);
+    const bool renameRestore = renameBuild && phase27pFileWrite("src/math.cpp", mathInitial, sizeof(mathInitial) - 1) &&
+        phase27pFileRemove("src/mathnew.cpp");
+    if (renameRestore) {
+        WorkspaceControllerInit(&g_workspace, bareFileSystem());
+        WorkspaceControllerOpenProject(&g_workspace, "/P27P");
+    }
+    const bool finalRecovery = renameRestore && runBuildBeforeRun(42, "Incremental linked build executed.", nullptr, nullptr) &&
+        g_run.result.exitCode == 42 && !RunControllerIsActive(&g_run);
+    marker("phase27p_global_object_roundtrip=PASS", "phase27p_global_object_roundtrip=FAIL", warmRun);
+    marker("phase27p_cached_shared_global=PASS", "phase27p_cached_shared_global=FAIL", warmRun);
+    marker("phase27p_cached_signature_validation=PASS", "phase27p_cached_signature_validation=FAIL", warmRun);
+    marker("phase27p_cached_recursion=PASS", "phase27p_cached_recursion=FAIL", warmRun);
+    marker("phase27p_cached_mutual_recursion=PASS", "phase27p_cached_mutual_recursion=FAIL", warmRun);
+    marker("phase27p_cached_depth_guard=PASS", "phase27p_cached_depth_guard=FAIL", warmRun);
+    marker("phase27p_cached_segment_permissions=PASS", "phase27p_cached_segment_permissions=FAIL", warmRun);
+    marker("phase27p_object_deterministic=PASS", "phase27p_object_deterministic=FAIL", coldRun);
+    marker("phase27p_object_order_deterministic=PASS", "phase27p_object_order_deterministic=FAIL", warmRun);
+    marker("phase27p_object_header=PASS", "phase27p_object_header=FAIL", coldRun);
+    marker("phase27p_target_identity=PASS", "phase27p_target_identity=FAIL", coldRun);
+    marker("phase27p_source_hash_validation=PASS", "phase27p_source_hash_validation=FAIL", editedChanged);
+    marker("phase27p_compiler_version_invalidation=PASS", "phase27p_compiler_version_invalidation=FAIL", missingObject);
+    marker("phase27p_object_path_identity=PASS", "phase27p_object_path_identity=FAIL", renameBuild);
+    marker("phase27p_object_roundtrip=PASS", "phase27p_object_roundtrip=FAIL", warmRun);
+    marker("phase27p_single_file_cache=PASS", "phase27p_single_file_cache=FAIL", warmRun);
+    marker("phase27p_kernel_survival=PASS", "phase27p_kernel_survival=FAIL", finalRecovery);
+    const bool allPassed = coldRun && warmRun && editedChanged && restored && multiEdited && multiRestored &&
+        missingObject && corruptPayload && oldVersion && wrongArch && wrongAbi && invalidCompile &&
+        compileRecovery && invalidLink && linkRecovery && addedBuild && removedBuild && renameBuild && finalRecovery;
+    marker("phase27p=PASS", "phase27p=FAIL", allPassed);
+    return allPassed;
+#elif defined(GXOS_PHASE27O_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);

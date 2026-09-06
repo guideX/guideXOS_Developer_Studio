@@ -100,6 +100,10 @@ struct BuildResult {
     char artifactArchitecture[32];
     char errorMessage[128];
     BuildOutputLine output[kMaxBuildLines];
+    uint32_t sourceFileCount;
+    uint32_t compiledModuleCount;
+    uint32_t cachedModuleCount;
+    uint32_t linkedModuleCount;
 };
 
 struct HostedBuildService {

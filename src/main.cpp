@@ -3086,6 +3086,10 @@ static bool hostBuildPoll(void* userData, uint64_t handle, BuildResult* result, 
     result->artifactSize = snapshot.artifactSize;
     result->artifactValid = snapshot.artifactValid != 0;
     result->artifactEntryPoint = snapshot.artifactEntryPoint != 0;
+    result->sourceFileCount = snapshot.sourceFileCount;
+    result->compiledModuleCount = snapshot.compiledModuleCount;
+    result->cachedModuleCount = snapshot.cachedModuleCount;
+    result->linkedModuleCount = snapshot.linkedModuleCount;
     copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);
@@ -3715,6 +3719,18 @@ static void reportBuildResult(gx_app_context* ctx) {
     logMarker(ctx, marker);
     copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_error_count=");
     appendUnsigned(marker, sizeof(marker), result.errorCount);
+    logMarker(ctx, marker);
+    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_source_files=");
+    appendUnsigned(marker, sizeof(marker), result.sourceFileCount);
+    logMarker(ctx, marker);
+    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_compiled_modules=");
+    appendUnsigned(marker, sizeof(marker), result.compiledModuleCount);
+    logMarker(ctx, marker);
+    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_cached_modules=");
+    appendUnsigned(marker, sizeof(marker), result.cachedModuleCount);
+    logMarker(ctx, marker);
+    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_linked_modules=");
+    appendUnsigned(marker, sizeof(marker), result.linkedModuleCount);
     logMarker(ctx, marker);
     g_buildTerminalReported = true;
 }
