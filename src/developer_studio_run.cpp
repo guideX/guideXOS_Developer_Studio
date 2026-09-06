@@ -98,6 +98,7 @@ const char* RunErrorName(RunErrorCode error) {
     case RunErrorCode::StaleDeployment: return "stale_deployment";
     case RunErrorCode::LaunchFailed: return "launch_failed";
     case RunErrorCode::CallDepthExceeded: return "call_depth_exceeded";
+    case RunErrorCode::ArrayBoundsExceeded: return "array_bounds_exceeded";
     case RunErrorCode::ApplicationExited: return "application_exited";
     case RunErrorCode::UserCancelled: return "user_cancelled";
     }

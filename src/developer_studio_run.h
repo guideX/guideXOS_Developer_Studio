@@ -36,6 +36,7 @@ enum class RunErrorCode {
     StaleDeployment,
     LaunchFailed,
     CallDepthExceeded,
+    ArrayBoundsExceeded,
     ApplicationExited,
     UserCancelled
 };
