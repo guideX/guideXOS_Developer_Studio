@@ -2504,6 +2504,38 @@ static bool runSmoke()
         recovered && repeated && survival;
     marker("phase27f=PASS", "phase27f=FAIL", allPassed);
     return allPassed;
+#elif defined(GXOS_PHASE27T_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    const bool backend = hasBareHost();
+    marker("phase27t_ide_backend=PASS", "phase27t_ide_backend=FAIL", backend);
+    if (!backend) return false;
+
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpened = WorkspaceControllerOpenProject(&g_workspace, "/P27T");
+    marker("phase27t_ide_project=PASS", "phase27t_ide_project=FAIL", projectOpened);
+    if (!projectOpened) return false;
+    const bool documentOpened = WorkspaceControllerOpenDocument(&g_workspace, "src/main.cpp");
+    marker("phase27t_ide_document=PASS", "phase27t_ide_document=FAIL", documentOpened);
+    if (!documentOpened) return false;
+
+    const bool built = startAndPoll() && g_build.result.state == BuildState::Succeeded &&
+        g_build.result.artifactValid && g_build.result.artifactEntryPoint &&
+        g_build.result.sourceFileCount == 3 && g_build.result.linkedModuleCount == 3;
+    marker("phase27t_ide_build=PASS", "phase27t_ide_build=FAIL", built);
+
+    FileInfo artifact = {};
+    char artifactPath[kMaxPathBytes] = {};
+    const bool artifactPathOk = built &&
+        JoinWorkspacePath("/P27T", g_build.result.artifactPath, artifactPath, sizeof(artifactPath));
+    const bool kernelSurvival = artifactPathOk && g_workspace.fileSystem.stat &&
+        g_workspace.fileSystem.stat(g_workspace.fileSystem.userData, artifactPath, &artifact) &&
+        artifact.kind == FileInfoKind::RegularFile && artifact.size == g_build.result.artifactSize;
+    marker("phase27t_ide_kernel_survival=PASS", "phase27t_ide_kernel_survival=FAIL", kernelSurvival);
+
+    const bool allPassed = built && kernelSurvival;
+    marker("phase27t_ide=PASS", "phase27t_ide=FAIL", allPassed);
+    return allPassed;
 #else
     const bool backend = hasBareHost();
     marker("phase27e_build_backend=PASS", "phase27e_build_backend=FAIL", backend);
