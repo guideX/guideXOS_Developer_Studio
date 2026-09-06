@@ -100,6 +100,7 @@ const char* RunErrorName(RunErrorCode error) {
     case RunErrorCode::CallDepthExceeded: return "call_depth_exceeded";
     case RunErrorCode::ArrayBoundsExceeded: return "array_bounds_exceeded";
     case RunErrorCode::InvalidPointerDereference: return "invalid_pointer_dereference";
+    case RunErrorCode::PointerOutOfBounds: return "pointer_out_of_bounds";
     case RunErrorCode::ApplicationExited: return "application_exited";
     case RunErrorCode::UserCancelled: return "user_cancelled";
     }

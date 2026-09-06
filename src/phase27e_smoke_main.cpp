@@ -12,7 +12,7 @@
 #include "developer_studio_build.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP) || defined(GXOS_PHASE27S_APP)
 #include "developer_studio_run.h"
 #endif
 
@@ -24,7 +24,7 @@ static gx_app_context* g_context = nullptr;
 static WorkspaceController g_workspace = {};
 static OutputService g_output = {};
 static BuildController g_build = {};
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP) || defined(GXOS_PHASE27S_APP)
 static RunController g_run = {};
 static bool g_identityProof = true;
 #endif
@@ -82,7 +82,7 @@ static bool hasBareHost()
 {
     const gx_host_calls* calls = host();
     const size_t end =
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP) || defined(GXOS_PHASE27S_APP)
         offsetof(gx_host_calls, bare_metal_development_run_release) +
         sizeof(calls->bare_metal_development_run_release);
 #else
@@ -95,7 +95,7 @@ static bool hasBareHost()
         calls->bare_metal_file_read_workspace && calls->bare_metal_file_list &&
         calls->bare_metal_file_write_all && calls->bare_metal_file_create_directory &&
         calls->bare_metal_file_remove
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP) || defined(GXOS_PHASE27S_APP)
         && calls->bare_metal_development_run_prepare && calls->bare_metal_development_run_start &&
         calls->bare_metal_development_run_poll && calls->bare_metal_development_run_request_close &&
         calls->bare_metal_development_run_release
@@ -289,7 +289,7 @@ static HostedBuildService buildService()
     return service;
 }
 
-#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP)
+#if defined(GXOS_PHASE27F_APP) || defined(GXOS_PHASE27G_APP) || defined(GXOS_PHASE27H_APP) || defined(GXOS_PHASE27I_APP) || defined(GXOS_PHASE27J_APP) || defined(GXOS_PHASE27K_APP) || defined(GXOS_PHASE27L_APP) || defined(GXOS_PHASE27M_APP) || defined(GXOS_PHASE27N_APP) || defined(GXOS_PHASE27O_APP) || defined(GXOS_PHASE27P_APP) || defined(GXOS_PHASE27Q_APP) || defined(GXOS_PHASE27R_APP) || defined(GXOS_PHASE27S_APP)
 static RunErrorCode mapRunError(uint32_t error)
 {
     switch (error) {
@@ -304,6 +304,7 @@ static RunErrorCode mapRunError(uint32_t error)
     case GX_DEVELOPMENT_RUN_ERROR_CALL_DEPTH_EXCEEDED: return RunErrorCode::CallDepthExceeded;
     case GX_DEVELOPMENT_RUN_ERROR_ARRAY_BOUNDS_EXCEEDED: return RunErrorCode::ArrayBoundsExceeded;
     case GX_DEVELOPMENT_RUN_ERROR_INVALID_POINTER_DEREFERENCE: return RunErrorCode::InvalidPointerDereference;
+    case GX_DEVELOPMENT_RUN_ERROR_POINTER_OUT_OF_BOUNDS: return RunErrorCode::PointerOutOfBounds;
     default: return RunErrorCode::InvalidRequest;
     }
 }
@@ -564,6 +565,35 @@ static bool phase27rBuildOutputContains(const char* text)
     return false;
 }
 
+static Document* phase27sDocumentFor(const char* relativePath)
+{
+    char absolute[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath("/P27S", relativePath, absolute, sizeof(absolute))) return nullptr;
+    const int index = FindOpenDocument(&g_workspace.model, absolute);
+    return index < 0 ? nullptr : &g_workspace.model.documents[index];
+}
+
+static bool phase27sEditSource(const char* relativePath, const char* source, uint32_t bytes)
+{
+    if (!relativePath || !WorkspaceControllerOpenDocument(&g_workspace, relativePath)) return false;
+    return editSource(phase27sDocumentFor(relativePath), source, bytes);
+}
+
+static bool phase27sBuildOutputContains(const char* text)
+{
+    if (!text) return false;
+    for (uint32_t i = 0; i < g_build.result.outputCount; ++i) {
+        const char* line = g_build.result.output[i].text;
+        if (!line) continue;
+        for (uint32_t at = 0; line[at] != '\0'; ++at) {
+            uint32_t j = 0;
+            while (text[j] != '\0' && line[at + j] == text[j]) ++j;
+            if (text[j] == '\0') return true;
+        }
+    }
+    return false;
+}
+
 static bool phase27pFileWrite(const char* relativePath, const char* source, uint32_t bytes)
 {
     char absolute[kMaxPathBytes] = {};
@@ -710,7 +740,97 @@ static bool editSource(Document* document, const char* source, uint32_t bytes)
 
 static bool runSmoke()
 {
-#if defined(GXOS_PHASE27R_APP)
+#if defined(GXOS_PHASE27S_APP)
+    OutputServiceInit(&g_output);
+    BuildControllerInit(&g_build);
+    RunControllerInit(&g_run);
+    const bool backend = hasBareHost();
+    marker("phase27s_run_backend=PASS", "phase27s_run_backend=FAIL", backend);
+    if (!backend) return false;
+    WorkspaceControllerInit(&g_workspace, bareFileSystem());
+    const bool projectOpen = WorkspaceControllerOpenProject(&g_workspace, "/P27S");
+    marker("phase27s_project_open=PASS", "phase27s_project_open=FAIL", projectOpen);
+    if (!projectOpen) return false;
+    ProjectSourceFile sources[kMaxProjectSourceFiles] = {};
+    uint32_t sourceCount = 0;
+    const bool enumerated = WorkspaceControllerEnumerateProjectSources(
+        &g_workspace, sources, kMaxProjectSourceFiles, &sourceCount) && sourceCount == 3 &&
+        equalText(sources[0].relativePath, "src/main.cpp") &&
+        equalText(sources[1].relativePath, "src/math.cpp") &&
+        equalText(sources[2].relativePath, "src/state.cpp");
+    marker("phase27s_source_enumeration=PASS", "phase27s_source_enumeration=FAIL", enumerated);
+    if (!enumerated) return false;
+    bool documentsOpen = true;
+    for (uint32_t i = 0; i < sourceCount; ++i)
+        documentsOpen = documentsOpen && WorkspaceControllerOpenDocument(&g_workspace, sources[i].relativePath);
+    marker("phase27s_multi_file_documents=PASS", "phase27s_multi_file_documents=FAIL", documentsOpen);
+    if (!documentsOpen) return false;
+
+    const char mathInitial[] =
+        "extern int values[4];\n\n"
+        "int fill_values() { values[0] = 10; values[1] = 11; values[2] = 12; values[3] = 9; return 0; }\n"
+        "int sum_pointer(int* p) { int total = 0; int i = 0; while (i < 4) { total = total + *p; p = p + 1; i = i + 1; } return total; }\n";
+    const char mathEdited[] =
+        "extern int values[4];\n\n"
+        "int fill_values() { values[0] = 10; values[1] = 11; values[2] = 12; values[3] = 8; return 0; }\n"
+        "int sum_pointer(int* p) { int total = 0; int i = 0; while (i < 4) { total = total + *p; p = p + 1; i = i + 1; } return total; }\n";
+    const char mathSignatureBroken[] =
+        "extern int values[4];\n"
+        "int fill_values() { values[0] = 10; values[1] = 11; values[2] = 12; values[3] = 9; return 0; }\n"
+        "int sum_pointer(int p) { return p; }\n";
+    const char mainInitial[] =
+        "extern int values[4];\nint fill_values();\nint sum_pointer(int* p);\n\n"
+        "int gx_main(gx_app_context* ctx) { fill_values(); int result = sum_pointer(&values[0]); "
+        "log(ctx, \"Pointer traversal completed.\"); return result; }\n";
+    const char mainInvalidPointer[] =
+        "extern int values[4];\nint gx_main(gx_app_context* ctx) { int* p = &values[0]; p = p + 5; return *p; }\n";
+
+    const bool cold = runBuildBeforeRun(42, "Pointer traversal completed.", nullptr, nullptr) &&
+        g_build.result.sourceFileCount == 3 && g_build.result.compiledModuleCount == 3 &&
+        g_build.result.cachedModuleCount == 0 && g_build.result.linkedModuleCount == 3;
+    marker("phase27s_ide_cold_pointer=PASS", "phase27s_ide_cold_pointer=FAIL", cold);
+    marker("phase27s_cross_file_global_pointer=PASS", "phase27s_cross_file_global_pointer=FAIL", cold);
+    marker("phase27s_cross_file_pointer_walk=PASS", "phase27s_cross_file_pointer_walk=FAIL", cold);
+    const bool warm = cold && runBuildBeforeRun(42, "Pointer traversal completed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 0 && g_build.result.cachedModuleCount == 3 &&
+        g_build.result.linkedModuleCount == 3;
+    marker("phase27s_ide_warm_pointer=PASS", "phase27s_ide_warm_pointer=FAIL", warm);
+    const bool partial = warm && phase27sEditSource("src/math.cpp", mathEdited, sizeof(mathEdited) - 1) &&
+        runBuildBeforeRun(41, "Pointer traversal completed.", nullptr, nullptr) &&
+        g_build.result.compiledModuleCount == 1 && g_build.result.cachedModuleCount == 2 &&
+        g_run.result.exitCode == 41;
+    marker("phase27s_ide_partial_pointer=PASS", "phase27s_ide_partial_pointer=FAIL", partial);
+    const bool restored = partial && phase27sEditSource("src/math.cpp", mathInitial, sizeof(mathInitial) - 1) &&
+        runBuildBeforeRun(42, "Pointer traversal completed.", nullptr, nullptr) && g_run.result.exitCode == 42;
+    const bool invalidEdited = restored && phase27sEditSource("src/main.cpp", mainInvalidPointer,
+                                                               sizeof(mainInvalidPointer) - 1);
+    const bool pointerFailure = invalidEdited && buildThenRunExpectFailure(RunErrorCode::PointerOutOfBounds);
+    marker("phase27s_ide_pointer_failure=PASS", "phase27s_ide_pointer_failure=FAIL", pointerFailure);
+    const bool failureRecovery = pointerFailure && phase27sEditSource("src/main.cpp", mainInitial,
+        sizeof(mainInitial) - 1) && runBuildBeforeRun(42, "Pointer traversal completed.", nullptr, nullptr) &&
+        g_run.result.exitCode == 42 && !RunControllerIsActive(&g_run);
+    marker("phase27s_pointer_failure_recovery=PASS", "phase27s_pointer_failure_recovery=FAIL", failureRecovery);
+    marker("phase27s_runtime_status_recovery=PASS", "phase27s_runtime_status_recovery=FAIL", failureRecovery);
+
+    const bool signatureEdited = failureRecovery && phase27sEditSource("src/math.cpp", mathSignatureBroken,
+                                                                         sizeof(mathSignatureBroken) - 1);
+    const bool signatureFailure = signatureEdited &&
+        !runBuildBeforeRun(42, "Pointer traversal completed.", nullptr, nullptr) &&
+        g_build.result.errorCount != 0 && phase27sBuildOutputContains("conflicting declaration for function");
+    marker("phase27s_pointer_signature_validation=PASS", "phase27s_pointer_signature_validation=FAIL", signatureFailure);
+    marker("phase27s_cached_pointer_signature=PASS", "phase27s_cached_pointer_signature=FAIL", signatureFailure);
+    marker("phase27s_pointer_failure_blocks_run=PASS", "phase27s_pointer_failure_blocks_run=FAIL", signatureFailure);
+    const bool signatureRecovery = signatureFailure && phase27sEditSource("src/math.cpp", mathInitial,
+        sizeof(mathInitial) - 1) && runBuildBeforeRun(42, "Pointer traversal completed.", nullptr, nullptr) &&
+        g_run.result.exitCode == 42;
+    marker("phase27s_pointer_linker_reset=PASS", "phase27s_pointer_linker_reset=FAIL", signatureRecovery);
+    marker("phase27s_ide_warm_pointer=PASS", "phase27s_ide_warm_pointer=FAIL", warm);
+    const bool allPassed = backend && projectOpen && enumerated && documentsOpen && cold && warm && partial &&
+        restored && pointerFailure && failureRecovery && signatureFailure && signatureRecovery;
+    marker("phase27s_kernel_survival=PASS", "phase27s_kernel_survival=FAIL", allPassed);
+    marker("phase27s=PASS", "phase27s=FAIL", allPassed);
+    return allPassed;
+#elif defined(GXOS_PHASE27R_APP)
     OutputServiceInit(&g_output);
     BuildControllerInit(&g_build);
     RunControllerInit(&g_run);

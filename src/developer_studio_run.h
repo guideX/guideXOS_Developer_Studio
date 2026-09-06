@@ -38,6 +38,7 @@ enum class RunErrorCode {
     CallDepthExceeded,
     ArrayBoundsExceeded,
     InvalidPointerDereference,
+    PointerOutOfBounds,
     ApplicationExited,
     UserCancelled
 };
