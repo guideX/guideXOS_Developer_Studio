@@ -32,7 +32,12 @@ function Test-DeveloperStudioManifest {
     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
     if ($manifest.id -ne 'com.guidexos.developerstudio') { throw 'Manifest id is not canonical.' }
     if ($manifest.kind -ne 'NativeElf') { throw 'Manifest kind is not NativeElf.' }
-    if ($manifest.entries.Count -ne 1 -or $manifest.entries[0].path -notmatch '^bin/amd64/developerstudio\.elf$') { throw 'Manifest executable resolver path is invalid.' }
+    if ((@($manifest.supportedArchitectures) -join ',') -ne 'amd64,arm64') { throw 'Manifest must advertise amd64 and arm64.' }
+    if (@($manifest.entries).Count -ne 2) { throw 'Manifest must contain both executable entries.' }
+    foreach ($architecture in @('amd64', 'arm64')) {
+        $entry = @($manifest.entries | Where-Object { $_.architecture -eq $architecture })
+        if ($entry.Count -ne 1 -or $entry[0].path -ne "bin/$architecture/developerstudio.elf") { throw "Manifest executable resolver path is invalid for $architecture." }
+    }
     Write-Host 'manifest_resolver=PASS'
 }
 
@@ -56,7 +61,9 @@ if ($SkipPackage) {
     Write-Host 'package_build=NOT RUN'
 } else {
     $packageScript = Join-Path $repoRoot 'build.ps1'
-    Invoke-FastChecked 'Developer Studio package build' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $packageScript, '-ServerRoot', $ServerRoot, '-Configuration', 'Debug')
+    foreach ($architecture in @('amd64', 'arm64')) {
+        Invoke-FastChecked "Developer Studio package build ($architecture)" 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $packageScript, '-ServerRoot', $ServerRoot, '-Configuration', 'Debug', '-TargetArchitecture', $architecture)
+    }
     $packageAuditScript = Join-Path $repoRoot 'tests\validate-developer-studio-package.ps1'
     Invoke-FastChecked 'Developer Studio package content/ELF audit' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $packageAuditScript, '-ServerRoot', $ServerRoot)
     Write-Host 'package_build=PASS'

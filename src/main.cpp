@@ -23,6 +23,14 @@
 
 namespace {
 
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+static const char kProjectTargetMarker[] = "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.arm64.hosted.native";
+static const char kTargetProfileMarker[] = "GUIDEXOS_DEVELOPER_STUDIO_MARKER target_profile=guidexos.arm64.hosted.native maturity=experimental";
+#else
+static const char kProjectTargetMarker[] = "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.amd64.hosted.native";
+static const char kTargetProfileMarker[] = "GUIDEXOS_DEVELOPER_STUDIO_MARKER target_profile=guidexos.amd64.hosted.native maturity=experimental";
+#endif
+
 using guidexos::developer_studio::CloseDecision;
 using guidexos::developer_studio::BuildController;
 using guidexos::developer_studio::BuildControllerInit;
@@ -4685,7 +4693,7 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
     writeOutput("Project created");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.amd64.hosted.native");
+    logMarker(ctx, kProjectTargetMarker);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_template=native-gui-application");
     if (!WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) {
         reportDocumentOpen(ctx, false, false);
@@ -4741,7 +4749,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
         writeOutput("Project opened");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS");
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_target=guidexos.amd64.hosted.native");
+        logMarker(ctx, kProjectTargetMarker);
         if (!WorkspaceControllerOpenDocument(&g_controller, "src/main.cpp")) {
             reportDocumentOpen(ctx, false, false);
         } else {
@@ -10056,7 +10064,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 #endif
 
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS");
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER target_profile=guidexos.amd64.hosted.native maturity=experimental");
+    logMarker(ctx, kTargetProfileMarker);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER filesystem_api=workspace_extensions");
 
     gx_result windowResult = GX_ERROR_FAILED;

@@ -6,6 +6,16 @@
 
 using namespace guidexos::developer_studio;
 
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+static const char kTargetId[] = "guidexos.arm64.hosted.native";
+static const char kArchitecture[] = "arm64";
+static const char kArtifactPath[] = "build/bin/arm64/hello-guidexos.elf";
+#else
+static const char kTargetId[] = "guidexos.amd64.hosted.native";
+static const char kArchitecture[] = "amd64";
+static const char kArtifactPath[] = "build/bin/amd64/hello-guidexos.elf";
+#endif
+
 static Project validProject() {
     Project project = {};
     project.valid = true;
@@ -16,10 +26,10 @@ static Project validProject() {
     std::strcpy(project.rootPath, "D:/work/hello");
     std::strcpy(project.sourceRoot, "src");
     std::strcpy(project.manifestPath, "app/app.json");
-    std::strcpy(project.targetProfileId, "guidexos.amd64.hosted.native");
+    std::strcpy(project.targetProfileId, kTargetId);
     std::strcpy(project.entryPoint, "gx_main");
     std::strcpy(project.abi, "guidexos-c-abi-v1");
-    std::strcpy(project.architecture, "amd64");
+    std::strcpy(project.architecture, kArchitecture);
     std::strcpy(project.outputName, "hello-guidexos");
     return project;
 }
@@ -43,7 +53,7 @@ static bool pollBuild(void* userData, uint64_t, BuildResult* result, bool* compl
     result->state = fake->polls++ == 0 ? BuildState::Running : BuildState::Succeeded;
     result->exitCode = 0;
     result->artifactValid = result->state == BuildState::Succeeded;
-    std::strcpy(result->artifactPath, "build/bin/amd64/hello-guidexos.elf");
+    std::strcpy(result->artifactPath, kArtifactPath);
     *completed = result->state == BuildState::Succeeded;
     return true;
 }
@@ -61,7 +71,7 @@ int main() {
     assert(std::strcmp(request.projectKind, "native-gui-application") == 0);
     assert(std::strcmp(request.buildSystem, "guidexos-native-build-script-v1") == 0);
     assert(std::strcmp(request.buildScript, "build.ps1") == 0);
-    assert(std::strcmp(request.expectedArtifact, "build/bin/amd64/hello-guidexos.elf") == 0);
+    assert(std::strcmp(request.expectedArtifact, kArtifactPath) == 0);
     assert(std::strcmp(request.configuration, "Debug") == 0);
     assert(BuildRequestEnableDebugInfo(&request));
     assert(std::strcmp(request.configuration, "DebugSymbols") == 0);
@@ -71,7 +81,7 @@ int main() {
     assert(BuildRequestFromProject(bareProject, &request, &error, BuildBackendKind::BareMetal));
     assert(std::strcmp(request.buildSystem, "guidexos-native-baremetal-bootstrap-v1") == 0);
     assert(std::strcmp(request.buildScript, "") == 0);
-    assert(std::strcmp(request.expectedArtifact, "build/bin/amd64/hello-guidexos.elf") == 0);
+    assert(std::strcmp(request.expectedArtifact, kArtifactPath) == 0);
     assert(!BuildRequestFromProject(bareProject, &request, &error, BuildBackendKind::Hosted) &&
            error == BuildErrorCode::UnsupportedTarget);
     project.kind = ProjectKind::ConsoleApplication;

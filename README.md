@@ -9,14 +9,14 @@ The current bounded phase proves the first useful source workflow:
 - runtime-neutral Workspace, Project, Target Profile, Capability, and maturity models;
 - open workspace, browse, open, edit, save, switch, and safely close document behavior;
 - version 1 `guidexos.project` metadata, Native GUI Application creation, and project loading;
-- a truthful AMD64 hosted guideXOS target profile; and
+- truthful AMD64 and ARM64 hosted/bare-metal target profiles with target-aware Native ELF recipes; and
 - bounded project-local Header / Source Ownership with `Alt+O` switching and
   `Alt+Shift+O` File Ownership inspection; see [docs/HEADER_SOURCE_OWNERSHIP.md](docs/HEADER_SOURCE_OWNERSHIP.md).
 - bounded, generation-aware Lightweight Type Intelligence with Quick Type Info via `Ctrl+Alt+T`; see [docs/LIGHTWEIGHT_TYPE_INTELLIGENCE.md](docs/LIGHTWEIGHT_TYPE_INTELLIGENCE.md).
 - Type-Aware Member Completion uses that shared type layer for bounded direct members after `.` and `->`; see [docs/CODE_COMPLETION.md](docs/CODE_COMPLETION.md).
 - deterministic model, filesystem-workflow, package, hosted App Model, bounded Build Project, temporary hosted Run Project, bounded C/C++ lexical highlighting, active-document Find/Replace, project-scoped Find in Files, lexical Document Outline/Project Symbol Index coverage, bounded lexical Go To Definition (`F12`/`Alt+Left`), project-local Declaration–Definition Relationships (`F12`/`Ctrl+F12`/`Alt+F12`), bounded project-local Find All References (`Shift+F12`), manually invoked lightweight lexical Code Completion (`Ctrl+Space`), bounded lexical Signature Help (`Ctrl+Shift+Space`), and a project-local bounded Include Graph (`Ctrl+Shift+I`).
 
-The hosted Native ELF debugger provides generation-safe session supervision, F9 source breakpoints, real Continue, Step Into/Over/Out, DWARF source mapping, a bounded Call Stack, read-only Locals/Arguments, structured variable expansion, read-only Watches, and conditional breakpoints; see [docs/DEBUGGER_FOUNDATION.md](docs/DEBUGGER_FOUNDATION.md) and [docs/DEBUGGER_STEPPING.md](docs/DEBUGGER_STEPPING.md). Pause-anywhere, instruction-breakpoint editing, memory/register editing, attach/remote debugging, optimized-code parity, and general C++ expression evaluation remain outside the contract. Additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration remain deferred.
+The hosted Native ELF debugger provides generation-safe session supervision, F9 source breakpoints, real Continue, Step Into/Over/Out, DWARF source mapping, a bounded Call Stack, read-only Locals/Arguments, structured variable expansion, read-only Watches, and conditional breakpoints; see [docs/DEBUGGER_FOUNDATION.md](docs/DEBUGGER_FOUNDATION.md) and [docs/DEBUGGER_STEPPING.md](docs/DEBUGGER_STEPPING.md). Pause-anywhere, instruction-breakpoint editing, memory/register editing, attach/remote debugging, optimized-code parity, and general C++ expression evaluation remain outside the contract. Additional project templates, semantic analysis, IntelliSense, Git integration, visual design tools, and multi-architecture orchestration beyond the explicit AMD64/ARM64 target selection remain deferred.
 
 The repository-native validation tiers and bounded hosted debugger soak are documented in [docs/VALIDATION_TIERS.md](docs/VALIDATION_TIERS.md).
 
@@ -50,7 +50,7 @@ The authoritative metadata file is `guidexos.project`. It is bounded to 16 KiB, 
 }
 ```
 
-String limits are 96 bytes for project IDs and display names, 160 bytes for project-relative paths, 96 bytes for output names, and 128 bytes for model names. Display names are non-empty, printable, and cannot contain `/`, `\\`, control bytes, or leading/trailing spaces. IDs are lowercase reverse-domain identities with at least two non-empty segments; each segment starts with `a-z` and continues with `a-z`, digits, or `-`, with no repeated dots or trailing hyphen. User-created projects cannot claim the reserved `com.guidexos` namespace. Relative paths use `/`, reject absolute forms, empty segments, `.`, and `..`. Entry points are bounded C identifiers. The only accepted kind in this phase is `native-gui-application`; the only accepted target is `guidexos.amd64.hosted.native`, with `amd64` and `guidexos-c-abi-v1`.
+String limits are 96 bytes for project IDs and display names, 160 bytes for project-relative paths, 96 bytes for output names, and 128 bytes for model names. Display names are non-empty, printable, and cannot contain `/`, `\\`, control bytes, or leading/trailing spaces. IDs are lowercase reverse-domain identities with at least two non-empty segments; each segment starts with `a-z` and continues with `a-z`, digits, or `-`, with no repeated dots or trailing hyphen. User-created projects cannot claim the reserved `com.guidexos` namespace. Relative paths use `/`, reject absolute forms, empty segments, `.`, and `..`. Entry points are bounded C identifiers. The only accepted kind in this phase is `native-gui-application`; accepted hosted targets are `guidexos.amd64.hosted.native` and `guidexos.arm64.hosted.native`, with matching `amd64`/`arm64` architecture strings and `guidexos-c-abi-v1`.
 
 ## Generated Native GUI Application
 
@@ -69,13 +69,15 @@ The generated layout is:
         freestanding_memory.cpp
 ```
 
-`main.cpp` exports `extern "C" gx_result GX_CALL gx_main(...)`, creates a centered resizable Native ELF window titled with the project display name, renders `Welcome to <Project Display Name>`, handles close/Escape, and emits deterministic `GUIDEXOS_NATIVE_TEMPLATE_MARKER` messages. It does not auto-launch. `app/app.json` uses `NativeElf`, the validated application ID, `bin/amd64/<outputName>.elf`, `gx_main`, `guidexos-c-abi-v1`, and manual-launch permissions.
+`main.cpp` exports `extern "C" gx_result GX_CALL gx_main(...)`, creates a centered resizable Native ELF window titled with the project display name, renders `Welcome to <Project Display Name>`, handles close/Escape, and emits deterministic `GUIDEXOS_NATIVE_TEMPLATE_MARKER` messages. It does not auto-launch. `app/app.json` uses `NativeElf`, the validated application ID, the selected `bin/<architecture>/<outputName>.elf` path, `gx_main`, `guidexos-c-abi-v1`, and manual-launch permissions. The production Developer Studio package manifest advertises both AMD64 and ARM64 entries when both payloads are present.
 
 The generated `build.ps1` is the fixed Build Project recipe. It requires explicit `-SdkInclude` and `-ToolchainRoot` values and contains no Developer Studio or Server checkout absolute path. The generated CMake file remains an optional external build description. A typical external build is:
 
 ```powershell
-.\build.ps1 -SdkInclude D:\path\to\guideXOSServer\sdk\include -ToolchainRoot "C:\Program Files\LLVM\bin"
+.\build.ps1 -SdkInclude D:\path\to\guideXOSServer\sdk\include -ToolchainRoot "C:\Program Files\LLVM\bin" -TargetArchitecture arm64
 ```
+
+Use `-TargetArchitecture amd64` or `-TargetArchitecture arm64`; the recipe selects the matching Clang triple, LLD machine, ELF output directory, and header validation. The CMake description exposes the same choice through `-DGUIDEXOS_TARGET_ARCHITECTURE=amd64|arm64`.
 
 Generation is byte-for-byte deterministic for identical inputs: no timestamps, usernames, machine paths, random IDs, or session state are embedded. It creates only a new destination or an empty pre-existing destination, tracks every file and directory it creates, verifies the required layout, parses the generated metadata and manifest, and removes only tracked files and empty directories after a partial failure. Non-empty destinations are rejected before changes.
 
@@ -103,17 +105,17 @@ Build Developer Studio itself with an explicit Server checkout:
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -ServerRoot D:\path\to\guideXOSServer
 ```
 
-For a valid Native GUI Application project, use `Build -> Build Project` or `Ctrl+Shift+B`. Developer Studio derives the fixed build system, `build.ps1`, `Debug` configuration, and `build/bin/amd64/<outputName>.elf` artifact from the version 1 project metadata. Dirty project documents prompt for Save All or Cancel; an active build keeps the shell responsive and blocks close. The hosted Server validates the project, resolves the SDK/toolchain, runs the recipe asynchronously, captures separately bounded stdout/stderr output, and validates the resulting ELF64 AMD64 `ET_EXEC` image and `gx_main` entry point.
+For a valid Native GUI Application project, use `Build -> Build Project` or `Ctrl+Shift+B`. Developer Studio derives the fixed build system, `build.ps1`, `Debug` configuration, and `build/bin/<architecture>/<outputName>.elf` artifact from the version 1 project metadata. Dirty project documents prompt for Save All or Cancel; an active build keeps the shell responsive and blocks close. The hosted Server validates the project, resolves the SDK/toolchain, runs the recipe asynchronously, captures separately bounded stdout/stderr output, and validates the resulting ELF64 `ET_EXEC` image and `gx_main` entry point for the selected target.
 
 The service is hosted-development only. It does not accept arbitrary commands or metadata-defined executables, supports one build at a time, caps output at 64 KiB and 32 retained lines of 255 bytes, and stops a build after five minutes. SDK/toolchain resolution uses the hosted Server `sdk/include` and fixed LLVM locations, with `GUIDEXOS_SDK_ROOT` and `GUIDEXOS_TOOLCHAIN_ROOT` overrides.
 
-The package recipe removes the previous staged `developerstudio.elf` before compiling, validates the new staged image, and moves it into the package only after validation. The deterministic package audit checks the exact two-file runtime payload, canonical manifest identity, ELF64 little-endian AMD64 `ET_EXEC` headers, the required `.symtab`, and the absence of `.debug_*` sections. Run the fast validation tier for the complete local command sequence; it does not claim remote CI execution.
+The package recipe removes only the selected staged `developerstudio.elf` before compiling, validates the new staged image, and moves it into the selected architecture directory only after validation. The deterministic package audit checks the canonical manifest identity, matching ELF64 little-endian AMD64 and ARM64 `ET_EXEC` headers, the required `.symtab`, and the absence of `.debug_*` sections. Run the fast validation tier for the complete local command sequence; it does not claim remote CI execution.
 
 ## Run Project
 
 For the supported Native GUI Application, use the Build menu's `Run Project (F5)` item or press `F5`. Every run rebuilds the active project first; dirty documents go through the existing Save All/Cancel gate so a stale artifact is not launched.
 
-After a successful build, Developer Studio passes the project root, identity, fixed target, manifest path, artifact path, and build SHA-256 through the append-only hosted Run ABI. The Server revalidates the project metadata, exact generated manifest shape, artifact containment/non-symlink status, hash, ELF64 AMD64 `ET_EXEC` image, ABI, and `gx_main` entry point. It then registers the result as an in-memory temporary App Model application and launches it through the existing AppRegistry, DesktopService, Native ELF loader, and hosted runtime.
+After a successful build, Developer Studio passes the project root, identity, selected target, manifest path, target-specific artifact path, and build SHA-256 through the append-only hosted Run ABI. The Server revalidates the project metadata, exact generated manifest shape, artifact containment/non-symlink status, hash, ELF64 `ET_EXEC` image for the selected architecture, ABI, and `gx_main` entry point. It then registers the result as an in-memory temporary App Model application and launches it through the existing AppRegistry, DesktopService, Native ELF loader, and hosted runtime.
 
 The temporary application is owner- and generation-bound to the Developer Studio runtime. Its ID cannot collide with an installed application, it is not persisted or added to recent/pinned state, and only the generated Native GUI permission set is accepted. `Request Project Close` sends a close event only to windows owned by that deployment; on exit the temporary registration is removed and the handle is released. Closing Developer Studio while a run is active first presents a close-request modal.
 

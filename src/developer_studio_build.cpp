@@ -88,13 +88,19 @@ static void setResultFailure(BuildController* controller, BuildState state, Buil
 
 static bool appendArtifactPath(const Project& project, char* output, uint32_t outputSize) {
     uint32_t length = 0;
-    const char prefix[] = "build/bin/amd64/";
+    const char prefix[] = "build/bin/";
     const char suffix[] = ".elf";
     output[0] = '\0';
     for (uint32_t i = 0; prefix[i] != '\0'; ++i) {
         if (length + 1 >= outputSize) return false;
         output[length++] = prefix[i];
     }
+    for (uint32_t i = 0; project.architecture[i] != '\0'; ++i) {
+        if (length + 1 >= outputSize) return false;
+        output[length++] = project.architecture[i];
+    }
+    if (length + 1 >= outputSize) return false;
+    output[length++] = '/';
     for (uint32_t i = 0; project.outputName[i] != '\0'; ++i) {
         if (length + 1 >= outputSize) return false;
         output[length++] = project.outputName[i];

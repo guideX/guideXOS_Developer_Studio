@@ -6,10 +6,21 @@ namespace {
 
 static const char kProjectFileName[] = "guidexos.project";
 static const char kNativeGuiKind[] = "native-gui-application";
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+static const char kTargetId[] = "guidexos.arm64.hosted.native";
+static const char kBareMetalTargetId[] = "guidexos.arm64.baremetal.bootstrap.native";
+static const char kCompilerTriple[] = "aarch64-none-elf";
+#else
 static const char kTargetId[] = "guidexos.amd64.hosted.native";
 static const char kBareMetalTargetId[] = "guidexos.amd64.baremetal.bootstrap.native";
+static const char kCompilerTriple[] = "x86_64-unknown-elf";
+#endif
 static const char kAbi[] = "guidexos-c-abi-v1";
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+static const char kArchitecture[] = "arm64";
+#else
 static const char kArchitecture[] = "amd64";
+#endif
 
 static uint32_t lengthOf(const char* value, uint32_t limit, bool* terminated = nullptr) {
     if (terminated) *terminated = false;
@@ -582,8 +593,13 @@ static bool generateManifest(const Project& project, char* output, uint32_t outp
         !appendProjectField(output, outputSize, length, "kind", "NativeElf", first) ||
         !appendProjectField(output, outputSize, length, "icon", "", first) ||
         !appendProjectField(output, outputSize, length, "minGuideXOSVersion", "0.5.0", first) ||
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+        !appendText(output, outputSize, length, ",\n  \"supportedArchitectures\": [\n    \"arm64\"\n  ],\n  \"entries\": [\n    {\n") ||
+        !appendText(output, outputSize, length, "      \"architecture\": \"arm64\",\n      \"path\": \"bin/arm64/") ||
+#else
         !appendText(output, outputSize, length, ",\n  \"supportedArchitectures\": [\n    \"amd64\"\n  ],\n  \"entries\": [\n    {\n") ||
         !appendText(output, outputSize, length, "      \"architecture\": \"amd64\",\n      \"path\": \"bin/amd64/") ||
+#endif
         !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf") || !appendChar(output, outputSize, length, '\"') || !appendText(output, outputSize, length, ",\n      \"entryPoint\": ") ||
         !appendJsonString(output, outputSize, length, project.entryPoint) || !appendText(output, outputSize, length, ",\n      \"abi\": ") ||
         !appendJsonString(output, outputSize, length, project.abi) || !appendText(output, outputSize, length, ",\n      \"runtime\": \"native-elf\"\n    }\n  ],\n  \"permissions\": [\n    \"log\",\n    \"window\",\n    \"draw\"\n  ],\n  \"fileAssociations\": [],\n  \"defaultWindow\": {\n    \"width\": 640,\n    \"height\": 360,\n    \"resizable\": true\n  }\n}\n")) return false;
@@ -597,8 +613,10 @@ static bool generateCMake(const Project& project, char* output, uint32_t outputS
     if (!appendText(output, outputSize, length, "cmake_minimum_required(VERSION 3.16)\n\nproject(GuideXOSNativeGuiApplication LANGUAGES CXX)\n\nset(CMAKE_CXX_STANDARD 11)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)\n\nset(GUIDEXOS_SERVER_ROOT \"\" CACHE PATH \"guideXOS Server checkout\")\nif(NOT GUIDEXOS_SERVER_ROOT)\n    message(FATAL_ERROR \"Pass -DGUIDEXOS_SERVER_ROOT=<server-checkout>\")\nendif()\n\nadd_executable(" ) ||
         !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf\n    src/main.cpp\n    src/freestanding_memory.cpp\n)\ntarget_include_directories(" ) || !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, ".elf PRIVATE \"${GUIDEXOS_SERVER_ROOT}/sdk/include\")\ntarget_compile_options(" ) || !appendText(output, outputSize, length, project.outputName) ||
-        !appendText(output, outputSize, length, ".elf PRIVATE --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables)\ntarget_link_options(" ) ||
-        !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf PRIVATE --target=x86_64-unknown-elf -nostdlib -static -fuse-ld=lld -Wl,-e,gx_main)\nset_target_properties(" ) ||
+        !appendText(output, outputSize, length, ".elf PRIVATE --target=") || !appendText(output, outputSize, length, kCompilerTriple) ||
+        !appendText(output, outputSize, length, " -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables)\ntarget_link_options(" ) ||
+        !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf PRIVATE --target=") ||
+        !appendText(output, outputSize, length, kCompilerTriple) || !appendText(output, outputSize, length, " -nostdlib -static -fuse-ld=lld -Wl,-e,gx_main)\nset_target_properties(" ) ||
         !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf PROPERTIES OUTPUT_NAME ") || !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, " SUFFIX \".elf\")\n")) return false;
     if (outBytes) *outBytes = length;
@@ -608,13 +626,13 @@ static bool generateCMake(const Project& project, char* output, uint32_t outputS
 static bool generateBuildScript(const Project& project, char* output, uint32_t outputSize, uint32_t* outBytes) {
     uint32_t length = 0;
     output[0] = '\0';
-    if (!appendText(output, outputSize, length, "# GUIDEXOS_NATIVE_BUILD_RECIPE_V1\n[CmdletBinding()]\nparam(\n    [Parameter(Mandatory=$true)][string]$SdkInclude,\n    [Parameter(Mandatory=$true)][string]$ToolchainRoot,\n    [ValidateSet(\"Debug\")][string]$Configuration = \"Debug\",\n    [switch]$SkipReadElf\n)\n\n$ErrorActionPreference = \"Stop\"\n$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path\n$BuildRoot = Join-Path $RepoRoot \"build\"\n$PackageBin = Join-Path $BuildRoot \"bin\\amd64\"\n$ObjectRoot = Join-Path $BuildRoot \"objects\"\n$clang = Join-Path $ToolchainRoot \"clang++.exe\"\n$lld = Join-Path $ToolchainRoot \"ld.lld.exe\"\n$readElf = Join-Path $ToolchainRoot \"llvm-readelf.exe\"\nfunction Invoke-Checked([string]$FilePath, [string[]]$Arguments) { & $FilePath @Arguments; if ($LASTEXITCODE -ne 0) { throw \"Command failed: $FilePath\" } }\nif (-not (Test-Path -LiteralPath $SdkInclude -PathType Container)) { throw \"SDK headers not found: $SdkInclude\" }\nif (-not (Test-Path -LiteralPath $clang -PathType Leaf) -or -not (Test-Path -LiteralPath $lld -PathType Leaf)) { throw \"LLVM clang++ and ld.lld are required\" }\nWrite-Output \"Build started: ") ||
+    if (!appendText(output, outputSize, length, "# GUIDEXOS_NATIVE_BUILD_RECIPE_V1\n[CmdletBinding()]\nparam(\n    [Parameter(Mandatory=$true)][string]$SdkInclude,\n    [Parameter(Mandatory=$true)][string]$ToolchainRoot,\n    [ValidateSet(\"Debug\")][string]$Configuration = \"Debug\",\n    [ValidateSet(\"amd64\",\"arm64\")][string]$TargetArchitecture = \"amd64\",\n    [switch]$SkipReadElf\n)\n\n$ErrorActionPreference = \"Stop\"\n$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path\n$BuildRoot = Join-Path $RepoRoot \"build\"\n$PackageBin = Join-Path $BuildRoot (\"bin\\\" + $TargetArchitecture)\n$ObjectRoot = Join-Path $BuildRoot \"objects\"\n$clang = Join-Path $ToolchainRoot \"clang++.exe\"\n$lld = Join-Path $ToolchainRoot \"ld.lld.exe\"\n$readElf = Join-Path $ToolchainRoot \"llvm-readelf.exe\"\nfunction Invoke-Checked([string]$FilePath, [string[]]$Arguments) { & $FilePath @Arguments; if ($LASTEXITCODE -ne 0) { throw \"Command failed: $FilePath\" } }\nif (-not (Test-Path -LiteralPath $SdkInclude -PathType Container)) { throw \"SDK headers not found: $SdkInclude\" }\nif (-not (Test-Path -LiteralPath $clang -PathType Leaf) -or -not (Test-Path -LiteralPath $lld -PathType Leaf)) { throw \"LLVM clang++ and ld.lld are required\" }\n$compileTarget = if ($TargetArchitecture -eq \"arm64\") { \"aarch64-none-elf\" } else { \"x86_64-unknown-elf\" }\n$linkMachine = if ($TargetArchitecture -eq \"arm64\") { \"aarch64elf\" } else { \"elf_x86_64\" }\n$expectedMachine = if ($TargetArchitecture -eq \"arm64\") { \"AArch64\" } else { \"Advanced Micro Devices X86-64\" }\nWrite-Output \"Build started: ") ||
         !appendText(output, outputSize, length, project.displayName) ||
-        !appendText(output, outputSize, length, "\"\nWrite-Output \"Configuring project...\"\nNew-Item -ItemType Directory -Force -Path $PackageBin | Out-Null\nNew-Item -ItemType Directory -Force -Path $ObjectRoot | Out-Null\n$flags = @('--target=x86_64-unknown-elf','-std=c++11','-ffreestanding','-fno-exceptions','-fno-rtti','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables',\"-I$SdkInclude\",\"-I$RepoRoot\\src\")\ntry {\n    $mainObject = Join-Path $ObjectRoot \"main.o\"\n    $memoryObject = Join-Path $ObjectRoot \"freestanding_memory.o\"\n    Write-Output \"Compiling main.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',(Join-Path $RepoRoot \"src\\main.cpp\"),'-o',$mainObject))\n    Write-Output \"Compiling freestanding_memory.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',(Join-Path $RepoRoot \"src\\freestanding_memory.cpp\"),'-o',$memoryObject))\n    $elfPath = Join-Path $PackageBin \"") ||
+        !appendText(output, outputSize, length, "\"\nWrite-Output \"Configuring project...\"\nNew-Item -ItemType Directory -Force -Path $PackageBin | Out-Null\nNew-Item -ItemType Directory -Force -Path $ObjectRoot | Out-Null\n$flags = @(\"--target=$compileTarget\",'-std=c++11','-ffreestanding','-fno-exceptions','-fno-rtti','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables',\"-I$SdkInclude\",\"-I$RepoRoot\\src\")\ntry {\n    $mainObject = Join-Path $ObjectRoot \"main.o\"\n    $memoryObject = Join-Path $ObjectRoot \"freestanding_memory.o\"\n    Write-Output \"Compiling main.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',(Join-Path $RepoRoot \"src\\main.cpp\"),'-o',$mainObject))\n    Write-Output \"Compiling freestanding_memory.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',(Join-Path $RepoRoot \"src\\freestanding_memory.cpp\"),'-o',$memoryObject))\n    $elfPath = Join-Path $PackageBin \"") ||
         !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, ".elf\"\n    Write-Output \"Linking ") ||
         !appendText(output, outputSize, length, project.outputName) ||
-        !appendText(output, outputSize, length, ".elf\"\n    Invoke-Checked $lld @('-m','elf_x86_64','-static','-e','gx_main',$mainObject,$memoryObject,'-o',$elfPath)\n    if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf)) { throw \"Native ELF output was not produced\" }\n    if (-not $SkipReadElf -and (Test-Path -LiteralPath $readElf -PathType Leaf)) { $header = (& $readElf -h $elfPath 2>&1 | Out-String); if ($header -notmatch 'ELF64' -or $header -notmatch 'Advanced Micro Devices X86-64') { throw \"ELF64 AMD64 validation failed\" } }\n    Write-Output \"Build succeeded\"\n    Write-Output \"Artifact: $($elfPath)\"\n} finally { if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force } }\n")) return false;
+        !appendText(output, outputSize, length, ".elf\"\n    Invoke-Checked $lld @('-m',$linkMachine,'-static','-e','gx_main',$mainObject,$memoryObject,'-o',$elfPath)\n    if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf)) { throw \"Native ELF output was not produced\" }\n    if (-not $SkipReadElf -and (Test-Path -LiteralPath $readElf -PathType Leaf)) { $header = (& $readElf -h $elfPath 2>&1 | Out-String); if ($header -notmatch 'ELF64' -or $header -notmatch $expectedMachine) { throw \"ELF64 $TargetArchitecture validation failed\" } }\n    Write-Output \"Build succeeded\"\n    Write-Output \"Artifact: $($elfPath)\"\n} finally { if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force } }\n")) return false;
     if (outBytes) *outBytes = length;
     return true;
 }
@@ -623,7 +641,11 @@ static bool generateReadme(const Project& project, char* output, uint32_t output
     uint32_t length = 0;
     output[0] = '\0';
     if (!appendText(output, outputSize, length, "# ") || !appendText(output, outputSize, length, project.displayName) || !appendText(output, outputSize, length, "\n\nThis is a generated guideXOS Native GUI Application project.\n\nProject identity:\n\n- Application ID: `") ||
-        !appendText(output, outputSize, length, project.projectId) || !appendText(output, outputSize, length, "`\n- Project kind: `native-gui-application`\n- Target profile: `guidexos.amd64.hosted.native`\n- ABI: `guidexos-c-abi-v1`\n- Architecture: `amd64`\n\n## Layout\n\n- `guidexos.project` - version 1 project metadata.\n- `app/app.json` - Native ELF App Model manifest.\n- `src/main.cpp` - the `gx_main` starter application.\n- `src/freestanding_memory.cpp` - freestanding memory primitives required by the Native ELF link.\n- `CMakeLists.txt` and `build.ps1` - external build files.\n\n## External build\n\nDeveloper Studio's `Build -> Build Project` command invokes the fixed `build.ps1` recipe for this project. The script can also be run directly from this directory:\n\n```powershell\n.\\build.ps1 -SdkInclude D:\\path\\to\\guideXOSServer\\sdk\\include -ToolchainRoot \"C:\\Program Files\\LLVM\\bin\"\n```\n\nThe generated app is manual-launch only and is limited to the proven AMD64 hosted Native ELF target.\n")) return false;
+        !appendText(output, outputSize, length, project.projectId) || !appendText(output, outputSize, length, "`\n- Project kind: `native-gui-application`\n- Target profile: `") ||
+        !appendText(output, outputSize, length, project.targetProfileId) || !appendText(output, outputSize, length, "`\n- ABI: `") ||
+        !appendText(output, outputSize, length, project.abi) || !appendText(output, outputSize, length, "`\n- Architecture: `") ||
+        !appendText(output, outputSize, length, project.architecture) || !appendText(output, outputSize, length, "`\n\n## Layout\n\n- `guidexos.project` - version 1 project metadata.\n- `app/app.json` - Native ELF App Model manifest.\n- `src/main.cpp` - the `gx_main` starter application.\n- `src/freestanding_memory.cpp` - freestanding memory primitives required by the Native ELF link.\n- `CMakeLists.txt` and `build.ps1` - external build files.\n\n## External build\n\nDeveloper Studio's `Build -> Build Project` command invokes the fixed `build.ps1` recipe for this project. The script can also be run directly from this directory:\n\n```powershell\n.\\build.ps1 -SdkInclude D:\\path\\to\\guideXOSServer\\sdk\\include -ToolchainRoot \"C:\\Program Files\\LLVM\\bin\" -TargetArchitecture ") ||
+        !appendText(output, outputSize, length, project.architecture) || !appendText(output, outputSize, length, "\n```\n\nThe generated app is manual-launch only and uses the selected Native ELF target. Build output is written below `build/bin/<architecture>/`.\n")) return false;
     if (outBytes) *outBytes = length;
     return true;
 }

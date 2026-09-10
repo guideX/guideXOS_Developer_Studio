@@ -11,8 +11,10 @@ execution is therefore not claimed by these scripts.
 
 The native model and debugger tests are registered with CMake/CTest. The
 checked-in `build.ps1` remains the direct clang/LLD Native ELF package recipe;
-it stages `app/app.json` and `Apps/DeveloperStudio/bin/amd64/developerstudio.elf`
-in the paired Server checkout. Hosted UI validation launches
+it stages `app/app.json` and the selected
+`Apps/DeveloperStudio/bin/<architecture>/developerstudio.elf` in the paired
+Server checkout. The fast tier builds both `amd64` and `arm64` entries before
+the package audit. Hosted UI validation launches
 `guideXOSServer.experimental.exe` from that checkout and sends the bounded
 command stream through the Server stdin protocol.
 
@@ -30,9 +32,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-developer-studio
 ```
 
 This configures and builds the CMake tree, runs CTest, checks the canonical
-manifest resolver fields, builds the Native ELF package, and runs one
-representative hosted Continue/targeted-close lifecycle. The command prints
-each stage and elapsed time. `-SkipPackage` and `-SkipHosted` are available for
+multi-architecture manifest resolver fields, builds both Native ELF package
+payloads, and runs one representative hosted Continue/targeted-close lifecycle.
+The command prints each stage and elapsed time. `-SkipPackage` and `-SkipHosted` are available for
 diagnosing a toolchain or hosted-environment limitation; either prints `NOT
 RUN` and is not a passing substitute for that coverage.
 

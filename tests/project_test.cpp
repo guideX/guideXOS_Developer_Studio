@@ -225,7 +225,10 @@ int main(int argc, char** argv) {
     assert(generatedBuild.find("GUIDEXOS_NATIVE_BUILD_RECIPE_V1") != std::string::npos);
     assert(generatedBuild.find("ServerRoot") == std::string::npos);
     assert(generatedBuild.find("PackageRoot") == std::string::npos);
-    assert(generatedBuild.find("Join-Path $BuildRoot \"bin\\amd64\"") != std::string::npos);
+    assert(generatedBuild.find("Join-Path $BuildRoot (\"bin\\\" + $TargetArchitecture)") != std::string::npos);
+    assert(generatedBuild.find("ValidateSet(\"amd64\",\"arm64\")") != std::string::npos);
+    assert(generatedBuild.find("aarch64-none-elf") != std::string::npos);
+    assert(generatedBuild.find("aarch64elf") != std::string::npos);
     assert(generatedBuild.find("D:\\dev\\guideXOSServer") == std::string::npos);
 
     static WorkspaceController controller;

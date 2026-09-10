@@ -22,9 +22,15 @@ static const Capability kBareMetalCapabilities[] = {
 };
 
 static const TargetProfile kInitialTargetProfile = {
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+    "guidexos.arm64.hosted.native",
+    "guideXOS ARM64 Hosted - Native",
+    "arm64",
+#else
     "guidexos.amd64.hosted.native",
     "guideXOS AMD64 Hosted - Native",
     "amd64",
+#endif
     "guidexos-c-abi-v1",
     "Windows hosted guideXOS Server",
     "guideXOS Native SDK v1",
@@ -36,9 +42,15 @@ static const TargetProfile kInitialTargetProfile = {
 };
 
 static const TargetProfile kBareMetalTargetProfile = {
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+    "guidexos.arm64.baremetal.bootstrap.native",
+    "guideXOS ARM64 Bare-Metal - Bootstrap Native",
+    "arm64",
+#else
     "guidexos.amd64.baremetal.bootstrap.native",
     "guideXOS AMD64 Bare-Metal - Bootstrap Native",
     "amd64",
+#endif
     "guidexos-c-abi-v1",
     "guideXOS kernel NativeElf runtime",
     "guideXOS kernel VFS compiler subset",

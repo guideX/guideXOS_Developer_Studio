@@ -250,6 +250,19 @@ set_tests_properties(
 # package into the Server checkout rather than creating a second SDK copy here.
 option(GUIDEXOS_BUILD_NATIVE_ELF "Build the Native ELF shell with CMake" OFF)
 set(GUIDEXOS_SERVER_ROOT "" CACHE PATH "guideXOS Server checkout")
+set(GUIDEXOS_TARGET_ARCHITECTURE "amd64" CACHE STRING "Native ELF target architecture")
+set_property(CACHE GUIDEXOS_TARGET_ARCHITECTURE PROPERTY STRINGS amd64 arm64)
+
+if(GUIDEXOS_TARGET_ARCHITECTURE STREQUAL "amd64")
+    set(GUIDEXOS_COMPILER_TRIPLE "x86_64-unknown-elf")
+    set(GUIDEXOS_LINK_MACHINE "elf_x86_64")
+elseif(GUIDEXOS_TARGET_ARCHITECTURE STREQUAL "arm64")
+    set(GUIDEXOS_COMPILER_TRIPLE "aarch64-none-elf")
+    set(GUIDEXOS_LINK_MACHINE "aarch64elf")
+    add_compile_definitions(GXOS_DEVELOPER_STUDIO_AARCH64)
+else()
+    message(FATAL_ERROR "GUIDEXOS_TARGET_ARCHITECTURE must be amd64 or arm64")
+endif()
 
 if(GUIDEXOS_BUILD_NATIVE_ELF)
     if(NOT GUIDEXOS_SERVER_ROOT)
@@ -290,7 +303,7 @@ add_executable(developerstudio.elf
         "${GUIDEXOS_SERVER_ROOT}/sdk/include"
     )
     target_compile_options(developerstudio.elf PRIVATE
-        --target=x86_64-unknown-elf
+        --target=${GUIDEXOS_COMPILER_TRIPLE}
         -ffreestanding
         -fno-exceptions
         -fno-rtti
@@ -299,15 +312,16 @@ add_executable(developerstudio.elf
         -fno-asynchronous-unwind-tables
     )
     target_link_options(developerstudio.elf PRIVATE
-        --target=x86_64-unknown-elf
+        --target=${GUIDEXOS_COMPILER_TRIPLE}
         -nostdlib
         -static
         -fuse-ld=lld
         -Wl,-e,gx_main
+        -Wl,-m,${GUIDEXOS_LINK_MACHINE}
     )
     set_target_properties(developerstudio.elf PROPERTIES
         OUTPUT_NAME developerstudio
         SUFFIX .elf
-        RUNTIME_OUTPUT_DIRECTORY "${GUIDEXOS_SERVER_ROOT}/Apps/DeveloperStudio/bin/amd64"
+        RUNTIME_OUTPUT_DIRECTORY "${GUIDEXOS_SERVER_ROOT}/Apps/DeveloperStudio/bin/${GUIDEXOS_TARGET_ARCHITECTURE}"
     )
 endif()

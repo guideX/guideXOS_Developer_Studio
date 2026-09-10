@@ -5,6 +5,8 @@ param(
     [string]$ToolchainRoot = "",
     [ValidateSet("Debug", "DebugSymbols")]
     [string]$Configuration = "Debug",
+    [ValidateSet("amd64", "arm64")]
+    [string]$TargetArchitecture = "amd64",
     [switch]$SkipModelTest,
     [switch]$SkipProjectTest
 )
@@ -16,7 +18,7 @@ if (-not $ServerRoot) { throw "Pass -ServerRoot or set GUIDEXOS_SERVER_ROOT." }
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 if (-not $SdkInclude) { $SdkInclude = Join-Path $ServerRoot "sdk\include" }
 $PackageRoot = Join-Path $ServerRoot "Apps\DeveloperStudio"
-$PackageBin = Join-Path $PackageRoot "bin\amd64"
+$PackageBin = Join-Path $PackageRoot ("bin\" + $TargetArchitecture)
 $Manifest = Join-Path $RepoRoot "app\app.json"
 $ModelTest = Join-Path $ServerRoot "tmp\developer-studio-model-test.exe"
 $ProjectTest = Join-Path $ServerRoot "tmp\developer-studio-project-test.exe"
@@ -75,6 +77,9 @@ $lld = Find-Tool @("ld.lld.exe", "ld.lld") $toolRoots
 $readElf = Find-Tool @("llvm-readelf.exe", "llvm-readelf", "readelf.exe", "readelf") @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
 if (-not $clang) { throw "clang++ was not found. Install LLVM or add clang++ to PATH." }
 if (-not $lld) { throw "ld.lld was not found. Install LLVM or add ld.lld to PATH." }
+$compileTarget = if ($TargetArchitecture -eq "arm64") { "aarch64-none-elf" } else { "x86_64-unknown-elf" }
+$linkMachine = if ($TargetArchitecture -eq "arm64") { "aarch64elf" } else { "elf_x86_64" }
+$expectedMachine = if ($TargetArchitecture -eq "arm64") { "AArch64" } else { "Advanced Micro Devices X86-64" }
 
 New-Item -ItemType Directory -Force -Path $PackageBin | Out-Null
 New-Item -ItemType Directory -Force -Path $ObjectRoot | Out-Null
@@ -259,7 +264,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio conditional breakpoint test failed with exit code $LASTEXITCODE" }
 
     $compileFlags = @(
-        "--target=x86_64-unknown-elf", "-std=c++11", "-ffreestanding",
+        "--target=$compileTarget", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
         "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
         "-I$SdkInclude", "-Isrc"
@@ -323,15 +328,15 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
-    Invoke-Checked $lld @("-m", "elf_x86_64", "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $stagedElfPath)
+    Invoke-Checked $lld @("-m", $linkMachine, "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $stagedElfPath)
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }
 
     if ($readElf) {
         $header = (& $readElf -h $stagedElfPath 2>&1 | Out-String)
-        if ($LASTEXITCODE -ne 0 -or $header -notmatch "ELF64" -or $header -notmatch "Advanced Micro Devices X86-64") {
-            throw "Developer Studio ELF header validation failed."
+        if ($LASTEXITCODE -ne 0 -or $header -notmatch "ELF64" -or $header -notmatch $expectedMachine) {
+            throw "Developer Studio $TargetArchitecture ELF header validation failed."
         }
     }
 

@@ -17,7 +17,11 @@ static WorkspaceEntry entry(const char* name, WorkspaceEntryKind kind) {
 int main() {
     const TargetProfile& target = InitialTargetProfile();
     assert(IsValidTargetProfile(target));
+#if defined(GXOS_DEVELOPER_STUDIO_AARCH64)
+    assert(std::strcmp(target.architecture, "arm64") == 0);
+#else
     assert(std::strcmp(target.architecture, "amd64") == 0);
+#endif
 
     char normalized[kMaxPathBytes];
     assert(NormalizePath("D:\\work\\guidexos\\.\\studio", normalized, sizeof(normalized)));
