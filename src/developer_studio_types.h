@@ -18,13 +18,23 @@ static const uint32_t kTypeMaxLookupCandidates = 64u;
 static const uint32_t kTypeMaxScopeNesting = 64u;
 static const uint32_t kTypeMaxQualifiedNameBytes = 256u;
 static const uint32_t kTypeMaxInitializerBytes = 256u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kTypeMaxParserTokens = 4096u;
+#else
 static const uint32_t kTypeMaxParserTokens = 32768u;
+#endif
 static const uint32_t kTypeMaxParserDocumentBytes = kMaxEditorBytes;
 static const uint32_t kTypeMaxHoverRows = 8u;
 static const uint32_t kTypeMaxHoverTextBytes = 1024u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kTypeMaxRecords = 256u;
+static const uint32_t kTypeMaxDocuments = 16u;
+static const uint32_t kTypeMaxMemberBuckets = 64u;
+#else
 static const uint32_t kTypeMaxRecords = 4096u;
 static const uint32_t kTypeMaxDocuments = 2048u;
 static const uint32_t kTypeMaxMemberBuckets = 512u;
+#endif
 
 enum class TypeBaseKind {
     Unknown = 0,

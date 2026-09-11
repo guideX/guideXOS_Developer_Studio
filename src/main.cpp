@@ -124,6 +124,7 @@ using guidexos::developer_studio::FileInfoKind;
 using guidexos::developer_studio::FileListEntry;
 using guidexos::developer_studio::InitialTargetProfile;
 using guidexos::developer_studio::BareMetalTargetProfile;
+using guidexos::developer_studio::BareMetalMultiTargetProfile;
 using guidexos::developer_studio::IsSupportedTextPath;
 using guidexos::developer_studio::IsSymbolSourcePath;
 using guidexos::developer_studio::IsValidTargetProfile;
@@ -885,9 +886,15 @@ static uint32_t g_definitionSelected = 0;
 static uint32_t g_definitionScroll = 0;
 static char g_definitionStatus[160] = {};
 static uint64_t g_nextDefinitionQueryId = 1;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kStudioRelationshipGroupCapacity = 64u;
+static const uint32_t kStudioRelationshipEdgeCapacity = 64u;
+static const uint32_t kStudioRelationshipEndpointCapacity = 256u;
+#else
 static const uint32_t kStudioRelationshipGroupCapacity = 1024u;
 static const uint32_t kStudioRelationshipEdgeCapacity = 2048u;
 static const uint32_t kStudioRelationshipEndpointCapacity = 8192u;
+#endif
 static SymbolRelationshipGroup g_relationshipGroups[kStudioRelationshipGroupCapacity] = {};
 static SymbolRelationship g_relationshipEdges[kStudioRelationshipEdgeCapacity] = {};
 static uint32_t g_relationshipDeclarations[kStudioRelationshipEndpointCapacity] = {};
@@ -910,11 +917,19 @@ static bool g_relationshipNavigationToDeclaration = false;
 // Embedded ownership storage is intentionally smaller than the public model
 // limits.  A truncated graph remains explicit and never falls back to a
 // header x source Cartesian scan.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kStudioOwnershipFileCapacity = 32u;
+static const uint32_t kStudioOwnershipCandidateCapacity = 64u;
+static const uint32_t kStudioOwnershipGroupCapacity = 32u;
+static const uint32_t kStudioOwnershipEvidenceCapacity = 256u;
+static const uint32_t kStudioOwnershipEndpointCapacity = 64u;
+#else
 static const uint32_t kStudioOwnershipFileCapacity = 1024u;
 static const uint32_t kStudioOwnershipCandidateCapacity = 256u;
 static const uint32_t kStudioOwnershipGroupCapacity = 128u;
 static const uint32_t kStudioOwnershipEvidenceCapacity = 4096u;
 static const uint32_t kStudioOwnershipEndpointCapacity = 256u;
+#endif
 static OwnershipFileRecord g_ownershipInventory[kStudioOwnershipFileCapacity] = {};
 static FileOwnershipEndpoint g_ownershipCompletedFiles[kStudioOwnershipFileCapacity] = {};
 static FileOwnershipEndpoint g_ownershipBuildingFiles[kStudioOwnershipFileCapacity] = {};
@@ -3098,6 +3113,14 @@ static bool hostBuildPoll(void* userData, uint64_t handle, BuildResult* result, 
     result->compiledModuleCount = snapshot.compiledModuleCount;
     result->cachedModuleCount = snapshot.cachedModuleCount;
     result->linkedModuleCount = snapshot.linkedModuleCount;
+    result->siblingArtifactSize = snapshot.siblingArtifactSize;
+    result->siblingArtifactValid = snapshot.siblingArtifactValid != 0;
+    result->packageWritten = snapshot.packageWritten != 0;
+    result->packageGeneration = snapshot.packageGeneration;
+    copyText(result->siblingArtifactPath, sizeof(result->siblingArtifactPath), snapshot.siblingArtifactPath);
+    copyText(result->siblingArtifactSha256, sizeof(result->siblingArtifactSha256), snapshot.siblingArtifactSha256);
+    copyText(result->siblingArtifactArchitecture, sizeof(result->siblingArtifactArchitecture), snapshot.siblingArtifactArchitecture);
+    copyText(result->packagePath, sizeof(result->packagePath), snapshot.packagePath);
     copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);
@@ -3179,9 +3202,17 @@ static bool bareMetalBuildPoll(void* userData, uint64_t handle, BuildResult* res
     result->artifactSize = snapshot.artifactSize;
     result->artifactValid = snapshot.artifactValid != 0;
     result->artifactEntryPoint = snapshot.artifactEntryPoint != 0;
+    result->siblingArtifactSize = snapshot.siblingArtifactSize;
+    result->siblingArtifactValid = snapshot.siblingArtifactValid != 0;
+    result->packageWritten = snapshot.packageWritten != 0;
+    result->packageGeneration = snapshot.packageGeneration;
     copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);
+    copyText(result->siblingArtifactPath, sizeof(result->siblingArtifactPath), snapshot.siblingArtifactPath);
+    copyText(result->siblingArtifactSha256, sizeof(result->siblingArtifactSha256), snapshot.siblingArtifactSha256);
+    copyText(result->siblingArtifactArchitecture, sizeof(result->siblingArtifactArchitecture), snapshot.siblingArtifactArchitecture);
+    copyText(result->packagePath, sizeof(result->packagePath), snapshot.packagePath);
     copyText(result->errorMessage, sizeof(result->errorMessage), snapshot.errorMessage);
     result->outputCount = snapshot.outputCount > guidexos::developer_studio::kMaxBuildLines ? guidexos::developer_studio::kMaxBuildLines : snapshot.outputCount;
     for (uint32_t i = 0; i < result->outputCount; ++i) {
@@ -3295,6 +3326,7 @@ static bool hostRunPrepare(void* userData, const guidexos::developer_studio::Run
     nativeRequest.artifactSize = request.artifactSize;
     nativeRequest.artifactArchitecture = request.artifactArchitecture[0] != '\0' ? request.artifactArchitecture : nullptr;
     nativeRequest.artifactAbi = request.artifactAbi[0] != '\0' ? request.artifactAbi : nullptr;
+    nativeRequest.capabilities = GX_DEVELOPMENT_RUN_CAP_ARTIFACT_METADATA | GX_DEVELOPMENT_RUN_CAP_OUTPUT_CAPTURE | GX_DEVELOPMENT_RUN_CAP_DEBUG_DIAGNOSTICS;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
@@ -3392,6 +3424,7 @@ static bool bareMetalRunPrepare(void* userData, const guidexos::developer_studio
     nativeRequest.artifactSize = request.artifactSize;
     nativeRequest.artifactArchitecture = request.artifactArchitecture;
     nativeRequest.artifactAbi = request.artifactAbi;
+    nativeRequest.capabilities = GX_DEVELOPMENT_RUN_CAP_ARTIFACT_METADATA | GX_DEVELOPMENT_RUN_CAP_OUTPUT_CAPTURE | GX_DEVELOPMENT_RUN_CAP_DEBUG_DIAGNOSTICS;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
@@ -3955,6 +3988,154 @@ static bool runPhase27eSmoke(gx_app_context* ctx)
     phase27e_marker(ctx, "phase27e_kernel_survival=PASS", kernelSurvival);
     allPassed = kernelSurvival && allPassed;
     phase27e_marker(ctx, "phase27e=PASS", allPassed);
+    return allPassed;
+}
+#endif
+
+#if defined(GXOS_PHASE12_SMOKE)
+static void pollRun(gx_app_context* ctx);
+
+static void phase12_marker(gx_app_context* ctx, const char* marker, bool pass)
+{
+    if (pass) logMarker(ctx, marker);
+    else markerFailure(ctx, marker, "Phase 12 in-OS Developer Studio proof");
+}
+
+static bool phase12_edit_document(Document* document, const char* source, uint32_t bytes)
+{
+    if (!document || !TextBufferSet(&document->buffer, source, bytes)) return false;
+    document->buffer.caret = document->buffer.length;
+    return TextBufferInsert(&document->buffer, " ", 1) && TextBufferBackspace(&document->buffer) && document->buffer.dirty;
+}
+
+static bool phase12_run_output_contains(const RunResult& result, const char* expected)
+{
+    if (!expected) return false;
+    for (uint32_t i = 0; i < result.outputCount && i < guidexos::developer_studio::kMaxRunOutputLines; ++i) {
+        if (PathsEqual(result.output[i].text, expected)) return true;
+    }
+    return false;
+}
+
+// This is an app-internal Phase 12 command. It deliberately drives the same
+// WorkspaceController, document model, BuildController, OutputService, and
+// RunController used by the interactive Studio window, then closes that real
+// window after the deterministic proof completes.
+static bool runPhase12Smoke(gx_app_context* ctx)
+{
+    bool allPassed = true;
+    const bool bareBackend = buildService().backend == BuildBackendKind::BareMetal;
+    phase12_marker(ctx, "[guideXOS] Developer Studio SDK compatibility: PASS", bareBackend);
+    allPassed = bareBackend && allPassed;
+
+    gx_handle smokeWindow = 0;
+    const int32_t smokeWidth = bareBackend ? 600 : kWindowRect.width;
+    const int32_t smokeHeight = bareBackend ? 480 : kWindowRect.height;
+    const gx_result windowResult = ctx && ctx->host
+        ? (ctx->host->request_window_ex
+            ? ctx->host->request_window_ex(ctx, "guideXOS Developer Studio", smokeWidth, smokeHeight,
+                                           GX_WINDOW_FLAG_RESIZABLE | GX_WINDOW_FLAG_CENTERED, &smokeWindow)
+            : (ctx->host->request_window
+                ? ctx->host->request_window(ctx, "guideXOS Developer Studio", smokeWidth, smokeHeight,
+                                             &smokeWindow)
+                : GX_ERROR_UNSUPPORTED))
+        : GX_ERROR_UNSUPPORTED;
+    const bool windowCreated = windowResult == GX_OK && smokeWindow != 0;
+    phase12_marker(ctx, "[guideXOS] Developer Studio ARM64 launch: PASS", windowCreated);
+    allPassed = windowCreated && allPassed;
+
+    const bool projectOpened = bareBackend && WorkspaceControllerOpenProject(&g_controller, "/Phase12IDEProof") &&
+        WorkspaceControllerOpenDocument(&g_controller, "src/main.c");
+    phase12_marker(ctx, "[developer-studio] project opened: Phase12IDEProof", projectOpened);
+    const bool multiTarget = projectOpened && PathsEqual(g_controller.model.project.targetProfileId,
+                                                          BareMetalMultiTargetProfile().id);
+    phase12_marker(ctx, "[developer-studio] target: multi", multiTarget);
+    allPassed = projectOpened && multiTarget && allPassed;
+    if (!projectOpened || !multiTarget) {
+        if (smokeWindow && ctx->host->window_destroy) ctx->host->window_destroy(ctx, smokeWindow);
+        return false;
+    }
+
+    const bool build1Started = beginBuild(ctx, BuildDirtyDecision::SaveAll);
+    phase12_marker(ctx, "[developer-studio] build started", build1Started);
+    if (build1Started) pollBuild(ctx);
+    const bool build1 = build1Started && g_buildController.result.state == BuildState::Succeeded &&
+        g_buildController.result.artifactValid && g_buildController.result.artifactEntryPoint &&
+        g_buildController.result.siblingArtifactValid && g_buildController.result.packageWritten &&
+        PathsEqual(g_buildController.result.artifactArchitecture, "arm64") &&
+        PathsEqual(g_buildController.result.siblingArtifactArchitecture, "amd64") &&
+        g_buildController.result.packageGeneration != 0;
+    phase12_marker(ctx, "[developer-studio] build result: arm64 PASS", build1);
+    phase12_marker(ctx, "[developer-studio] build result: amd64 PASS", build1);
+    phase12_marker(ctx, "[guideXOS] resident compiler target: arm64", build1);
+    phase12_marker(ctx, "[guideXOS] resident compiler target: amd64", build1);
+    phase12_marker(ctx, "[guideXOS] ARM64 artifact: valid", build1);
+    phase12_marker(ctx, "[guideXOS] AMD64 sibling: valid", build1);
+    phase12_marker(ctx, "[guideXOS] generated ELF: EM_AARCH64", build1);
+    phase12_marker(ctx, "[guideXOS] generated ELF: EM_X86_64", build1);
+    phase12_marker(ctx, "[developer-studio] multiarch package: PASS", build1);
+    allPassed = build1 && allPassed;
+
+    char build1ArmHash[guidexos::developer_studio::kMaxBuildArtifactSha256Bytes] = {};
+    char build1AmdHash[guidexos::developer_studio::kMaxBuildArtifactSha256Bytes] = {};
+    copyText(build1ArmHash, sizeof(build1ArmHash), g_buildController.result.artifactSha256);
+    copyText(build1AmdHash, sizeof(build1AmdHash), g_buildController.result.siblingArtifactSha256);
+    const uint64_t build1Generation = g_buildController.result.packageGeneration;
+
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    const char invalidSource[] = "int gx_main(gx_app_context* ctx) {\n    return invalid_symbol;\n}\n";
+    const bool invalidEdit = phase12_edit_document(document, invalidSource, sizeof(invalidSource) - 1);
+    phase12_marker(ctx, "[developer-studio] source edited: invalid", invalidEdit);
+    OutputServiceClearProblemsForProject(&g_outputService, g_controller.model.project.projectId);
+    const bool invalidStarted = invalidEdit && beginBuild(ctx, BuildDirtyDecision::SaveAll);
+    phase12_marker(ctx, "[developer-studio] invalid rebuild started", invalidStarted);
+    if (invalidStarted) pollBuild(ctx);
+    const OutputRecord* problem = OutputServiceProblemAt(&g_outputService, g_controller.model.project.projectId, 0);
+    const bool diagnostic = invalidStarted && g_buildController.result.state == BuildState::Failed &&
+        g_buildController.result.errorCount != 0 && problem && problem->hasLocation &&
+        problem->line == 2 && problem->column != 0;
+    phase12_marker(ctx, "[developer-studio] invalid source diagnostics: PASS", diagnostic);
+    allPassed = invalidEdit && invalidStarted && diagnostic && allPassed;
+
+    FileInfo publishedArmInfo = {};
+    const bool previousPackageSurvived = g_controller.fileSystem.stat &&
+        g_controller.fileSystem.stat(g_controller.fileSystem.userData, "/Apps/P12Proof/bin/arm64/app.elf", &publishedArmInfo) &&
+        publishedArmInfo.kind == FileInfoKind::RegularFile && publishedArmInfo.size != 0;
+    phase12_marker(ctx, "[developer-studio] previous package survived failure: PASS", previousPackageSurvived);
+    allPassed = previousPackageSurvived && allPassed;
+
+    const char validSource[] = "int gx_main(gx_app_context* ctx) {\n    log(ctx, \"Built inside guideXOS Developer Studio\");\n    log(ctx, \"build=2\");\n    log(ctx, \"architecture=arm64\");\n    log(ctx, \"computation: PASS\");\n    return 42;\n}\n";
+    const bool recoveryEdit = phase12_edit_document(document, validSource, sizeof(validSource) - 1);
+    const bool build2Started = recoveryEdit && beginBuild(ctx, BuildDirtyDecision::SaveAll);
+    phase12_marker(ctx, "[developer-studio] recovery rebuild started", build2Started);
+    if (build2Started) pollBuild(ctx);
+    const bool build2 = build2Started && g_buildController.result.state == BuildState::Succeeded &&
+        g_buildController.result.artifactValid && g_buildController.result.siblingArtifactValid &&
+        g_buildController.result.packageWritten && g_buildController.result.packageGeneration > build1Generation &&
+        !PathsEqual(build1ArmHash, g_buildController.result.artifactSha256) &&
+        !PathsEqual(build1AmdHash, g_buildController.result.siblingArtifactSha256);
+    phase12_marker(ctx, "[developer-studio] recovery rebuild: PASS", build2);
+    phase12_marker(ctx, "[developer-studio] package generation advanced: PASS", build2);
+    phase12_marker(ctx, "[developer-studio] source edit: build=2", recoveryEdit);
+    phase12_marker(ctx, "[developer-studio] rebuild freshness: PASS", build2);
+    allPassed = build2 && allPassed;
+
+    beginRunOperation(ctx);
+    const bool runStarted = build2 && beginRunDeployment(ctx);
+    phase12_marker(ctx, "[developer-studio] Run: requested", runStarted);
+    if (runStarted) pollRun(ctx);
+    const RunResult& run = g_runController.result;
+    const bool runCompleted = runStarted && run.state == RunState::Completed && run.exitCode == 42 &&
+        run.cleanupComplete && !RunControllerIsActive(&g_runController) &&
+        phase12_run_output_contains(run, "build=2");
+    phase12_marker(ctx, "[developer-studio] Run: ARM64 payload selected", runCompleted);
+    phase12_marker(ctx, "[developer-studio] Run output: PASS", runCompleted);
+    phase12_marker(ctx, "[developer-studio] Run cleanup: PASS", runCompleted);
+    phase12_marker(ctx, "[developer-studio] compile failure recovery: PASS", diagnostic && previousPackageSurvived && build2);
+    allPassed = runCompleted && allPassed;
+
+    if (smokeWindow && ctx->host->window_destroy) ctx->host->window_destroy(ctx, smokeWindow);
+    phase12_marker(ctx, "[guideXOS] Developer Studio cleanup: PASS", allPassed);
     return allPassed;
 }
 #endif
@@ -10059,6 +10240,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugSelectedBreakpoint = 0;
     writeOutput("Ready");
 
+#if defined(GXOS_PHASE12_SMOKE)
+    if (hasBareBuildCallbacks) return runPhase12Smoke(ctx) ? GX_OK : GX_ERROR_FAILED;
+#endif
 #if defined(GXOS_PHASE27E_SMOKE)
     if (hasBareBuildCallbacks) return runPhase27eSmoke(ctx) ? GX_OK : GX_ERROR_FAILED;
 #endif

@@ -257,6 +257,7 @@ static bool parseProjectKind(const char* value, ProjectKind* kind) {
 static bool parseProjectObject(JsonCursor& cursor, Project* project) {
     if (!expect(cursor, '{')) return false;
     uint32_t fields = 0;
+    char packageRoot[kMaxPathBytes] = {};
     bool closed = false;
     const uint32_t requiredFields = (1u << 11) - 1u;
     skipWhitespace(cursor);
@@ -277,6 +278,7 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
         else if (equalText(key, "architecture")) bit = 1u << 9;
         else if (equalText(key, "outputName")) bit = 1u << 10;
         else if (equalText(key, "sourceEntry")) bit = 1u << 11;
+        else if (equalText(key, "packageRoot")) bit = 1u << 12;
         else { cursor.error = ProjectErrorCode::UnknownField; return false; }
         if ((fields & bit) != 0) { cursor.error = ProjectErrorCode::DuplicateField; return false; }
         fields |= bit;
@@ -318,6 +320,12 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
                 cursor.error = ProjectErrorCode::InvalidRelativePath;
                 return false;
             }
+        } else if (bit == (1u << 12)) {
+            if (!parseJsonString(cursor, packageRoot, sizeof(packageRoot)) || !isAbsolutePath(packageRoot) ||
+                PathContainsTraversal(packageRoot)) {
+                cursor.error = ProjectErrorCode::InvalidParentPath;
+                return false;
+            }
         }
         skipWhitespace(cursor);
         if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ',') { ++cursor.position; continue; }
@@ -346,6 +354,14 @@ static bool appendProjectNumberField(char* output, uint32_t size, uint32_t& leng
 }
 
 struct ManifestInfo {
+    struct Entry {
+        char architecture[32];
+        char path[kMaxProjectPathBytes];
+        char entryPoint[kMaxNameBytes];
+        char abi[kMaxNameBytes];
+        char runtime[32];
+    };
+    static const uint32_t kMaxEntries = 4;
     uint32_t schemaVersion;
     char id[kMaxProjectIdBytes];
     char displayName[kMaxProjectDisplayNameBytes];
@@ -355,6 +371,8 @@ struct ManifestInfo {
     char entryPoint[kMaxNameBytes];
     char abi[kMaxNameBytes];
     char runtime[32];
+    Entry entries[kMaxEntries];
+    uint32_t entryCount;
     bool hasSchema;
     bool hasId;
     bool hasDisplayName;
@@ -468,21 +486,28 @@ static bool parseManifestEntries(JsonCursor& cursor, ManifestInfo& manifest) {
             return false;
         }
         if (!entryClosed) { cursor.error = ProjectErrorCode::ManifestMalformed; return false; }
-        ++count;
-        if (count == 1) {
-            copyText(manifest.architecture, sizeof(manifest.architecture), architecture);
-            copyText(manifest.path, sizeof(manifest.path), path);
-            copyText(manifest.entryPoint, sizeof(manifest.entryPoint), entryPoint);
-            copyText(manifest.abi, sizeof(manifest.abi), abi);
-            copyText(manifest.runtime, sizeof(manifest.runtime), runtime);
-        }
+        if (count >= ManifestInfo::kMaxEntries) { cursor.error = ProjectErrorCode::ManifestMalformed; return false; }
+        ManifestInfo::Entry& stored = manifest.entries[count++];
+        copyText(stored.architecture, sizeof(stored.architecture), architecture);
+        copyText(stored.path, sizeof(stored.path), path);
+        copyText(stored.entryPoint, sizeof(stored.entryPoint), entryPoint);
+        copyText(stored.abi, sizeof(stored.abi), abi);
+        copyText(stored.runtime, sizeof(stored.runtime), runtime);
         skipWhitespace(cursor);
         if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ',') { ++cursor.position; continue; }
         if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ']') { ++cursor.position; break; }
         cursor.error = ProjectErrorCode::ManifestMalformed;
         return false;
     }
-    return count == 1;
+    manifest.entryCount = count;
+    if (count > 0) {
+        copyText(manifest.architecture, sizeof(manifest.architecture), manifest.entries[0].architecture);
+        copyText(manifest.path, sizeof(manifest.path), manifest.entries[0].path);
+        copyText(manifest.entryPoint, sizeof(manifest.entryPoint), manifest.entries[0].entryPoint);
+        copyText(manifest.abi, sizeof(manifest.abi), manifest.entries[0].abi);
+        copyText(manifest.runtime, sizeof(manifest.runtime), manifest.entries[0].runtime);
+    }
+    return count > 0;
 }
 
 static bool parseManifest(const char* bytes, uint32_t length, ManifestInfo* output) {
@@ -519,11 +544,11 @@ static bool parseManifest(const char* bytes, uint32_t length, ManifestInfo* outp
     return closed && cursor.position == cursor.length && output->hasSchema && output->hasId && output->hasDisplayName && output->hasKind && output->hasEntry;
 }
 
-static bool expectedManifestPath(const Project& project, char* output, uint32_t outputSize) {
+static bool expectedManifestPath(const Project& project, const char* architecture, char* output, uint32_t outputSize) {
     if (!isSafeOutputName(project.outputName)) return false;
     uint32_t length = 0;
     output[0] = '\0';
-    return appendText(output, outputSize, length, "bin/") && appendText(output, outputSize, length, project.architecture) &&
+    return appendText(output, outputSize, length, "bin/") && appendText(output, outputSize, length, architecture) &&
         appendText(output, outputSize, length, "/") && appendText(output, outputSize, length, project.outputName) &&
         appendText(output, outputSize, length, ".elf");
 }
@@ -704,11 +729,35 @@ static bool generateMemory(char* output, uint32_t outputSize, uint32_t* outBytes
 }
 
 static bool validateManifestAgainstProject(const ManifestInfo& manifest, const Project& project) {
+    if (!manifest.schemaVersion || manifest.schemaVersion != 1 || !manifest.hasId || !manifest.hasDisplayName ||
+        !manifest.hasKind || !manifest.hasEntry || !equalText(manifest.id, project.projectId) ||
+        !equalText(manifest.displayName, project.displayName) || !equalText(manifest.kind, "NativeElf")) return false;
+    if (equalText(project.architecture, "multi")) {
+        if (manifest.entryCount < 2) return false;
+        bool arm64 = false;
+        bool amd64 = false;
+        for (uint32_t i = 0; i < manifest.entryCount; ++i) {
+            const ManifestInfo::Entry& entry = manifest.entries[i];
+            char expectedPath[kMaxProjectPathBytes] = {};
+            if (!expectedManifestPath(project, entry.architecture, expectedPath, sizeof(expectedPath)) ||
+                !equalText(entry.entryPoint, project.entryPoint) || !equalText(entry.abi, project.abi) ||
+                !equalText(entry.runtime, "native-elf") || !equalText(entry.path, expectedPath)) return false;
+            if (equalText(entry.architecture, "arm64")) {
+                if (arm64) return false;
+                arm64 = true;
+            } else if (equalText(entry.architecture, "amd64")) {
+                if (amd64) return false;
+                amd64 = true;
+            } else return false;
+        }
+        return arm64 && amd64;
+    }
+    if (manifest.entryCount != 1) return false;
+    const ManifestInfo::Entry& entry = manifest.entries[0];
     char expectedPath[kMaxProjectPathBytes] = {};
-    return manifest.schemaVersion == 1 && manifest.hasId && manifest.hasDisplayName && manifest.hasKind && manifest.hasEntry &&
-        equalText(manifest.id, project.projectId) && equalText(manifest.displayName, project.displayName) && equalText(manifest.kind, "NativeElf") &&
-        equalText(manifest.architecture, project.architecture) && equalText(manifest.entryPoint, project.entryPoint) && equalText(manifest.abi, project.abi) &&
-        equalText(manifest.runtime, "native-elf") && expectedManifestPath(project, expectedPath, sizeof(expectedPath)) && equalText(manifest.path, expectedPath);
+    return equalText(entry.architecture, project.architecture) && equalText(entry.entryPoint, project.entryPoint) &&
+        equalText(entry.abi, project.abi) && equalText(entry.runtime, "native-elf") &&
+        expectedManifestPath(project, project.architecture, expectedPath, sizeof(expectedPath)) && equalText(entry.path, expectedPath);
 }
 
 static bool verifyRequiredFiles(const ProjectFileSystem& fileSystem, const Project& project) {
@@ -876,9 +925,12 @@ bool ValidateProjectMetadata(const Project& project, ProjectErrorCode* error) {
         if (local == ProjectErrorCode::None && project.sourceEntry[0] != '\0' &&
             (!isSafeRelativePath(project.sourceEntry, normalizedEntry, sizeof(normalizedEntry)) ||
              !equalText(project.sourceEntry, normalizedEntry))) local = ProjectErrorCode::InvalidRelativePath;
+        const bool multiTarget = equalText(project.targetProfileId, BareMetalMultiTargetProfile().id);
         if (local == ProjectErrorCode::None && !IsKnownTargetProfileId(project.targetProfileId)) local = ProjectErrorCode::UnknownTargetProfile;
         else if (local == ProjectErrorCode::None && !equalText(project.abi, kAbi)) local = ProjectErrorCode::InvalidAbi;
-        else if (local == ProjectErrorCode::None && !equalText(project.architecture, kArchitecture)) local = ProjectErrorCode::InvalidArchitecture;
+        else if (local == ProjectErrorCode::None &&
+                 ((multiTarget && !equalText(project.architecture, "multi")) ||
+                  (!multiTarget && !equalText(project.architecture, kArchitecture)))) local = ProjectErrorCode::InvalidArchitecture;
         else if (local == ProjectErrorCode::None && !isSafeOutputName(project.outputName)) local = ProjectErrorCode::InvalidOutputName;
         else if (local == ProjectErrorCode::None) {
             uint32_t entryLength = lengthOf(project.entryPoint, sizeof(project.entryPoint), nullptr);

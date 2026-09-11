@@ -7,7 +7,11 @@
 namespace guidexos {
 namespace developer_studio {
 
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kMaxProjectSourceFiles = 4;
+#else
 static const uint32_t kMaxProjectSourceFiles = 16;
+#endif
 
 struct ProjectSourceFile {
     char relativePath[kMaxProjectPathBytes];

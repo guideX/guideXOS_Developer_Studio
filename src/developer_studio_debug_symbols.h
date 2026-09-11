@@ -8,6 +8,17 @@ namespace developer_studio {
 // Phase 2 deliberately supports the artifact shape emitted by the current
 // hosted Native ELF toolchain. These limits keep malformed or unexpectedly
 // large debug files from becoming an unbounded allocation surface.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kDebugMapperMaxElfBytes = 512u * 1024u;
+static const uint32_t kDebugMapperMaxSectionBytes = 512u * 1024u;
+static const uint32_t kDebugMapperMaxSections = 32u;
+static const uint32_t kDebugMapperMaxDirectories = 32u;
+static const uint32_t kDebugMapperMaxFiles = 128u;
+static const uint32_t kDebugMapperMaxSourceFiles = 64u;
+static const uint32_t kDebugMapperMaxLineRows = 4096u;
+static const uint32_t kDebugMapperMaxLineKeys = 1024u;
+static const uint32_t kDebugMapperMaxSequences = 128u;
+#else
 static const uint32_t kDebugMapperMaxElfBytes = 16u * 1024u * 1024u;
 static const uint32_t kDebugMapperMaxSectionBytes = 16u * 1024u * 1024u;
 static const uint32_t kDebugMapperMaxSections = 256;
@@ -16,21 +27,37 @@ static const uint32_t kDebugMapperMaxFiles = 1024;
 static const uint32_t kDebugMapperMaxSourceFiles = 512;
 static const uint32_t kDebugMapperMaxLineRows = 131072;
 static const uint32_t kDebugMapperMaxLineKeys = 32768;
-static const uint32_t kDebugMapperMaxAddressesPerLine = 8;
 static const uint32_t kDebugMapperMaxSequences = 2048;
+#endif
+static const uint32_t kDebugMapperMaxAddressesPerLine = 8;
 static const uint32_t kDebugMapperMaxPathBytes = kMaxProjectPathBytes;
 static const uint32_t kDebugMapperMaxStringBytes = 1024;
 static const uint32_t kDebugMapperMaxSha256Bytes = 65;
 static const uint32_t kDebugMapperMaxArchitectureBytes = 32;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kDebugMapperMaxFunctionSymbols = 512u;
+static const uint32_t kDebugMapperMaxExecutableSegments = 8u;
+#else
 static const uint32_t kDebugMapperMaxFunctionSymbols = 16384;
 static const uint32_t kDebugMapperMaxExecutableSegments = 32;
+#endif
 static const uint32_t kDebugMapperMaxFunctionNameBytes = 128;
 static const uint32_t kDebugDwarfMaxCompilationUnits = 32;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kDebugDwarfMaxDies = 256u;
+static const uint32_t kDebugDwarfMaxAbbreviations = 32u;
+#else
 static const uint32_t kDebugDwarfMaxDies = 8192;
 static const uint32_t kDebugDwarfMaxAbbreviations = 256;
+#endif
 static const uint32_t kDebugDwarfMaxAttributes = 32;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kDebugDwarfMaxFunctions = 64u;
+static const uint32_t kDebugDwarfMaxVariables = 128u;
+#else
 static const uint32_t kDebugDwarfMaxFunctions = 512;
 static const uint32_t kDebugDwarfMaxVariables = 2048;
+#endif
 static const uint32_t kDebugDwarfMaxDisplayedVariables = 32;
 static const uint32_t kDebugDwarfMaxExpressionBytes = 128;
 static const uint32_t kDebugDwarfMaxTypeDepth = 32;

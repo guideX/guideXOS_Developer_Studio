@@ -17,8 +17,13 @@ static const uint32_t kSignatureMaxQualifierBytes = 2048u;
 static const uint32_t kSignatureMaxReceiverHintBytes = 1024u;
 static const uint32_t kSignatureMaxContainingScopeBytes = 2048u;
 static const uint32_t kSignatureMaxCandidateCollection = 2000u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kSignatureMaxRetainedCandidates = 32u;
+static const uint32_t kSignatureMaxParameters = 16u;
+#else
 static const uint32_t kSignatureMaxRetainedCandidates = 256u;
 static const uint32_t kSignatureMaxParameters = 64u;
+#endif
 static const uint32_t kSignatureMaxParameterDisplayBytes = 256u;
 static const uint32_t kSignatureMaxParameterNameBytes = 128u;
 static const uint32_t kSignatureMaxParameterTypeBytes = 256u;

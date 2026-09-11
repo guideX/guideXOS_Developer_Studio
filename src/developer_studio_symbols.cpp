@@ -4,7 +4,11 @@ namespace guidexos {
 namespace developer_studio {
 namespace {
 
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kMaxTokens = 16384u;
+#else
 static const uint32_t kMaxTokens = 131072u;
+#endif
 static const uint32_t kMaxScopeDepth = 96u;
 static const uint32_t kMaxConditionalDepth = 64u;
 static const uint32_t kMaxProjectDepth = 32u;

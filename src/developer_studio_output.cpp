@@ -485,6 +485,43 @@ bool ParseBuildDiagnostic(const char* projectRoot, const char* projectId, const 
         return true;
     }
 
+    // The bounded in-OS compiler reports source diagnostics without a host
+    // filesystem path: "error: line N, column M, offset K: message".  Keep
+    // the source location usable by the Problems view even though the
+    // compiler has no path resolver in the guest.
+    uint32_t diagnosticCursor = 0;
+    while (diagnosticCursor < length && (text[diagnosticCursor] == ' ' || text[diagnosticCursor] == '\t')) ++diagnosticCursor;
+    if (startsWithInsensitive(text + diagnosticCursor, "error: line ")) {
+        const uint32_t lineStart = diagnosticCursor + 12u;
+        const int lineComma = findChar(text, ',', lineStart, length);
+        if (lineComma > 0) {
+            uint32_t line = 0;
+            uint32_t columnLabel = static_cast<uint32_t>(lineComma + 1);
+            while (columnLabel < length && (text[columnLabel] == ' ' || text[columnLabel] == '\t')) ++columnLabel;
+            if (startsWithInsensitive(text + columnLabel, "column ")) {
+                const uint32_t columnStart = columnLabel + 7u;
+                const int columnComma = findChar(text, ',', columnStart, length);
+                uint32_t column = 0;
+                if (columnComma > 0 && parseUnsigned(text, lineStart, static_cast<uint32_t>(lineComma), &line) &&
+                    parseUnsigned(text, columnStart, static_cast<uint32_t>(columnComma), &column)) {
+                    record->source = OutputSource::Compiler;
+                    record->severity = OutputSeverity::Error;
+                    record->category = OutputCategory::BuildDiagnostic;
+                    record->line = line;
+                    record->column = column;
+                    record->hasLocation = true;
+                    copyBounded(record->diagnosticCode, sizeof(record->diagnosticCode), "GXOS-COMPILER", false, nullptr);
+                    const int messageColon = findChar(text, ':', static_cast<uint32_t>(columnComma + 1), length);
+                    if (messageColon >= 0) copyRange(record->text, sizeof(record->text), text,
+                                                      static_cast<uint32_t>(messageColon + 1), length);
+                    else copyBounded(record->text, sizeof(record->text), text, true, &record->isTruncated);
+                    copyBounded(record->projectId, sizeof(record->projectId), projectId, false, &record->isTruncated);
+                    return true;
+                }
+            }
+        }
+    }
+
     for (uint32_t cursor = 0; cursor < length; ++cursor) {
         if (text[cursor] != '(') continue;
         int comma = findChar(text, ',', cursor + 1, length);

@@ -73,15 +73,17 @@ enum class CapabilityMaturity {
     Deprecated
 };
 
-static const uint32_t kMaxPathBytes = 768;
-static const uint32_t kMaxNameBytes = 128;
 #if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kMaxPathBytes = 256;
+static const uint32_t kMaxNameBytes = 64;
 // The embedded Phase 27E proof keeps the same model/controller APIs while
 // selecting bounded capacities appropriate for a NativeElf application.
 static const uint32_t kMaxWorkspaceEntries = 32;
 static const uint32_t kMaxOpenDocuments = 4;
 static const uint32_t kMaxEditorBytes = 16u * 1024u;
 #else
+static const uint32_t kMaxPathBytes = 768;
+static const uint32_t kMaxNameBytes = 128;
 static const uint32_t kMaxWorkspaceEntries = 128;
 static const uint32_t kMaxOpenDocuments = 8;
 static const uint32_t kMaxEditorBytes = 256u * 1024u;
@@ -230,6 +232,7 @@ struct Workspace {
 
 const TargetProfile& InitialTargetProfile();
 const TargetProfile& BareMetalTargetProfile();
+const TargetProfile& BareMetalMultiTargetProfile();
 bool IsKnownTargetProfileId(const char* id);
 bool IsValidTargetProfile(const TargetProfile& profile);
 const char* ToString(ProjectKind kind);

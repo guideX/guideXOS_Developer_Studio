@@ -86,18 +86,20 @@ static void setResultFailure(BuildController* controller, BuildState state, Buil
     publishTerminal(controller);
 }
 
-static bool appendArtifactPath(const Project& project, char* output, uint32_t outputSize) {
+static bool appendArtifactPath(const Project& project, BuildBackendKind backend, char* output, uint32_t outputSize) {
     uint32_t length = 0;
     const char prefix[] = "build/bin/";
     const char suffix[] = ".elf";
+    const char* architecture = backend == BuildBackendKind::BareMetal &&
+        PathsEqual(project.targetProfileId, BareMetalMultiTargetProfile().id) ? "arm64" : project.architecture;
     output[0] = '\0';
     for (uint32_t i = 0; prefix[i] != '\0'; ++i) {
         if (length + 1 >= outputSize) return false;
         output[length++] = prefix[i];
     }
-    for (uint32_t i = 0; project.architecture[i] != '\0'; ++i) {
+    for (uint32_t i = 0; architecture[i] != '\0'; ++i) {
         if (length + 1 >= outputSize) return false;
-        output[length++] = project.architecture[i];
+        output[length++] = architecture[i];
     }
     if (length + 1 >= outputSize) return false;
     output[length++] = '/';
@@ -172,10 +174,12 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
         return false;
     }
     if (!IsSupportedProjectKind(project.kind)) { if (error) *error = BuildErrorCode::UnsupportedProjectKind; return false; }
-    const TargetProfile& target = backend == BuildBackendKind::BareMetal
-        ? BareMetalTargetProfile() : InitialTargetProfile();
-    if (!IsValidTargetProfile(target) || project.targetProfileId[0] == '\0' ||
-        !PathsEqual(project.targetProfileId, target.id)) {
+    const bool bareMetal = backend == BuildBackendKind::BareMetal;
+    const TargetProfile& target = bareMetal ? BareMetalTargetProfile() : InitialTargetProfile();
+    const bool targetMatches = bareMetal && PathsEqual(project.targetProfileId, BareMetalMultiTargetProfile().id)
+        ? IsValidTargetProfile(BareMetalMultiTargetProfile())
+        : IsValidTargetProfile(target) && PathsEqual(project.targetProfileId, target.id);
+    if (!targetMatches || project.targetProfileId[0] == '\0') {
         if (error) *error = BuildErrorCode::UnsupportedTarget;
         return false;
     }
@@ -186,7 +190,7 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
         !copyText(request->buildSystem, sizeof(request->buildSystem), backend == BuildBackendKind::BareMetal ? kBareMetalBuildSystem : kBuildSystem) ||
         !copyText(request->buildScript, sizeof(request->buildScript), backend == BuildBackendKind::BareMetal ? "" : kBuildScript) ||
         !copyText(request->configuration, sizeof(request->configuration), kBuildConfiguration) ||
-        !appendArtifactPath(project, request->expectedArtifact, sizeof(request->expectedArtifact))) {
+        !appendArtifactPath(project, backend, request->expectedArtifact, sizeof(request->expectedArtifact))) {
         if (error) *error = BuildErrorCode::InvalidRequest;
         return false;
     }

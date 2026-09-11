@@ -9,9 +9,15 @@ namespace developer_studio {
 
 // Symbol indexing is deliberately lexical.  These limits are part of the
 // embedded model contract; callers may provide smaller storage for tests.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kSymbolMaxProjectSymbols = 512u;
+static const uint32_t kSymbolMaxDocumentSymbols = 512u;
+static const uint32_t kSymbolMaxDocuments = 32u;
+#else
 static const uint32_t kSymbolMaxProjectSymbols = 100000u;
 static const uint32_t kSymbolMaxDocumentSymbols = 20000u;
 static const uint32_t kSymbolMaxDocuments = 2048u;
+#endif
 static const uint32_t kSymbolMaxNameBytes = 96u;
 static const uint32_t kSymbolMaxContainerBytes = 192u;
 static const uint32_t kSymbolMaxQualifiedNameBytes = 512u;

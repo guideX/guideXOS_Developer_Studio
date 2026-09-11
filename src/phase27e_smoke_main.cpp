@@ -351,6 +351,7 @@ static bool runPrepare(void*, const RunRequest& request, uint64_t* outHandle, Ru
     nativeRequest.artifactSize = request.artifactSize;
     nativeRequest.artifactArchitecture = request.artifactArchitecture;
     nativeRequest.artifactAbi = request.artifactAbi;
+    nativeRequest.capabilities = GX_DEVELOPMENT_RUN_CAP_ARTIFACT_METADATA | GX_DEVELOPMENT_RUN_CAP_OUTPUT_CAPTURE | GX_DEVELOPMENT_RUN_CAP_DEBUG_DIAGNOSTICS;
     nativeRequest.flags = request.debugControlled ? GX_DEVELOPMENT_RUN_FLAG_DEBUG_CONTROLLED : 0;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);

@@ -17,6 +17,15 @@ static const uint32_t kIncludeGraphMaxDirectivesPerFile = 4096u;
 // Keep two graph generations resident so a cancelled rebuild can leave the
 // last completed result visible.  These bounds are intentionally conservative
 // for the freestanding ELF's static storage budget.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kIncludeGraphMaxFiles = 64u;
+static const uint32_t kIncludeGraphMaxNodes = 128u;
+static const uint32_t kIncludeGraphMaxEdges = 256u;
+static const uint32_t kIncludeGraphMaxAmbiguousCandidates = 32u;
+static const uint32_t kIncludeGraphMaxStoredCandidates = 256u;
+static const uint32_t kIncludeGraphMaxDirectories = 128u;
+static const uint32_t kIncludeGraphMaxPendingDirectories = 32u;
+#else
 static const uint32_t kIncludeGraphMaxFiles = 1024u;
 static const uint32_t kIncludeGraphMaxNodes = 1024u;
 static const uint32_t kIncludeGraphMaxEdges = 4096u;
@@ -24,6 +33,7 @@ static const uint32_t kIncludeGraphMaxAmbiguousCandidates = 256u;
 static const uint32_t kIncludeGraphMaxStoredCandidates = 4096u;
 static const uint32_t kIncludeGraphMaxDirectories = 4096u;
 static const uint32_t kIncludeGraphMaxPendingDirectories = 512u;
+#endif
 static const uint32_t kIncludeGraphMaxDepth = 64u;
 static const uint32_t kIncludeGraphMaxScanFileBytes = kMaxEditorBytes;
 static const uint64_t kIncludeGraphMaxBytesScanned = 256ull * 1024ull * 1024ull;

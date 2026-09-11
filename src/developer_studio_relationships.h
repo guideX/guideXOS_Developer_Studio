@@ -11,11 +11,19 @@ namespace developer_studio {
 // Declaration/definition matching is deliberately lexical and bounded.  The
 // larger limits describe the model contract; callers provide the actual
 // storage, so the embedded application can choose a smaller working set.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kRelationshipMaxNormalizedSignatureBytes = 256u;
+static const uint32_t kRelationshipMaxGroups = 256u;
+static const uint32_t kRelationshipMaxEndpointsPerGroup = 64u;
+static const uint32_t kRelationshipMaxEdges = 512u;
+static const uint32_t kRelationshipMaxPickerCandidates = 64u;
+#else
 static const uint32_t kRelationshipMaxNormalizedSignatureBytes = 2048u;
 static const uint32_t kRelationshipMaxGroups = 100000u;
 static const uint32_t kRelationshipMaxEndpointsPerGroup = 1000u;
 static const uint32_t kRelationshipMaxEdges = 500000u;
 static const uint32_t kRelationshipMaxPickerCandidates = 1000u;
+#endif
 
 enum class SymbolRelationshipKind {
     DeclarationToDefinition = 0,

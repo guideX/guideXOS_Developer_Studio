@@ -17,7 +17,11 @@ static const uint32_t kCompletionMaxScopeBytes = 2048u;
 static const uint32_t kCompletionMaxContextScanBytes = 8u * 1024u;
 static const uint32_t kCompletionMaxCandidateCollection = 5000u;
 static const uint32_t kCompletionMaxContextualCollection = 1000u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kCompletionMaxRetainedCandidates = 64u;
+#else
 static const uint32_t kCompletionMaxRetainedCandidates = 1000u;
+#endif
 static const uint32_t kCompletionMaxVisibleCandidates = 100u;
 static const uint32_t kCompletionMaxInsertionBytes = 1024u;
 static const uint32_t kCompletionMaxDisplayBytes = 1024u;
@@ -29,7 +33,11 @@ static const uint32_t kCompletionMaxMemberOwnerBytes = 192u;
 static const uint32_t kCompletionMaxMemberScan = 512u;
 static const uint32_t kCompletionMaxMemberCandidates = 256u;
 static const uint32_t kCompletionMaxDocumentWordScanBytes = 8u * 1024u * 1024u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kCompletionMaxDocumentWords = 1024u;
+#else
 static const uint32_t kCompletionMaxDocumentWords = 20000u;
+#endif
 
 enum class CompletionCandidateKind {
     Keyword = 0,

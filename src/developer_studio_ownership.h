@@ -11,19 +11,30 @@ namespace developer_studio {
 // The public limits describe the ownership contract.  Embedded callers may
 // provide smaller caller-owned storage; a small Native ELF configuration is
 // used by Developer Studio itself.
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kOwnershipMaxProjectCodeFiles = 256u;
+static const uint32_t kOwnershipMaxStemBuckets = 256u;
+static const uint32_t kOwnershipMaxFilesPerStemBucket = 32u;
+static const uint32_t kOwnershipMaxInitialCandidatesPerFile = 32u;
+#else
 static const uint32_t kOwnershipMaxProjectCodeFiles = 100000u;
 static const uint32_t kOwnershipMaxStemBuckets = 100000u;
 static const uint32_t kOwnershipMaxFilesPerStemBucket = 1000u;
 static const uint32_t kOwnershipMaxInitialCandidatesPerFile = 1000u;
+#endif
 static const uint32_t kOwnershipMaxRetainedCandidatesPerFile = 256u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kOwnershipMaxCandidatePairs = 2048u;
+#else
 static const uint32_t kOwnershipMaxCandidatePairs = 500000u;
+#endif
 static const uint32_t kOwnershipMaxEvidencePerCandidate = 32u;
-static const uint32_t kOwnershipMaxRelationshipEndpointsPerPair = 2000u;
-static const uint32_t kOwnershipMaxSharedSymbolsPerPair = 2000u;
-static const uint32_t kOwnershipMaxPickerCandidates = 1000u;
+static const uint32_t kOwnershipMaxRelationshipEndpointsPerPair = 64u;
+static const uint32_t kOwnershipMaxSharedSymbolsPerPair = 64u;
+static const uint32_t kOwnershipMaxPickerCandidates = 64u;
 static const uint32_t kOwnershipMaxVisiblePickerCandidates = 100u;
-static const uint32_t kOwnershipMaxPathBytes = 2048u;
-static const uint32_t kOwnershipMaxEvidenceDetailBytes = 512u;
+static const uint32_t kOwnershipMaxPathBytes = 256u;
+static const uint32_t kOwnershipMaxEvidenceDetailBytes = 128u;
 static const uint64_t kOwnershipMaxBuildDurationMs = 5ull * 60ull * 1000ull;
 static const uint64_t kOwnershipMaxChordDurationMs = 2000ull;
 

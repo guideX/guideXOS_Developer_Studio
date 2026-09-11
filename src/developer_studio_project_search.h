@@ -13,14 +13,26 @@ static const uint32_t kProjectSearchMaxPatterns = 64u;
 static const uint32_t kProjectSearchMaxPatternBytesEach = 256u;
 static const uint32_t kProjectSearchMaxRelativePathBytes = kMaxPathBytes - 1u;
 static const uint32_t kProjectSearchMaxDirectoryDepth = 64u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kProjectSearchMaxDirectories = 128u;
+static const uint32_t kProjectSearchMaxPendingDirectories = 32u;
+static const uint32_t kProjectSearchMaxFiles = 256u;
+#else
 static const uint32_t kProjectSearchMaxDirectories = 4096u;
 static const uint32_t kProjectSearchMaxPendingDirectories = 512u;
 static const uint32_t kProjectSearchMaxFiles = 100000u;
+#endif
 static const uint32_t kProjectSearchMaxFileBytes = kMaxEditorBytes;
 static const uint64_t kProjectSearchMaxBytesScanned = 256ull * 1024ull * 1024ull;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kProjectSearchMaxResultFiles = 32u;
+static const uint32_t kProjectSearchMaxTotalMatches = 256u;
+static const uint32_t kProjectSearchMaxMatchesPerFile = 32u;
+#else
 static const uint32_t kProjectSearchMaxResultFiles = 256u;
 static const uint32_t kProjectSearchMaxTotalMatches = 4096u;
 static const uint32_t kProjectSearchMaxMatchesPerFile = 512u;
+#endif
 static const uint32_t kProjectSearchMaxPreviewBytes = 512u;
 static const uint32_t kProjectSearchMaxEntriesPerPoll = 16u;
 static const uint64_t kProjectSearchMaxDurationMs = 5ull * 60ull * 1000ull;

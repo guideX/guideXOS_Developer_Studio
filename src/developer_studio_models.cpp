@@ -61,6 +61,20 @@ static const TargetProfile kBareMetalTargetProfile = {
     CapabilityMaturity::Experimental
 };
 
+static const TargetProfile kBareMetalMultiTargetProfile = {
+    "guidexos.multi.baremetal.bootstrap.native",
+    "guideXOS ARM64 + AMD64 Bare-Metal - Bootstrap Native",
+    "multi",
+    "guidexos-c-abi-v1",
+    "EM_AARCH64 + EM_X86_64",
+    "guideXOS kernel NativeElf runtime",
+    "guideXOS kernel VFS compiler subset",
+    "in-kernel bootstrap compiler",
+    kBareMetalCapabilities,
+    sizeof(kBareMetalCapabilities) / sizeof(kBareMetalCapabilities[0]),
+    CapabilityMaturity::Experimental
+};
+
 static uint64_t g_nextProjectGeneration = 1;
 
 static uint32_t textLength(const char* text, uint32_t limit) {
@@ -272,9 +286,14 @@ const TargetProfile& BareMetalTargetProfile() {
     return kBareMetalTargetProfile;
 }
 
+const TargetProfile& BareMetalMultiTargetProfile() {
+    return kBareMetalMultiTargetProfile;
+}
+
 bool IsKnownTargetProfileId(const char* id) {
     return equalText(id, kInitialTargetProfile.id, false) ||
-           equalText(id, kBareMetalTargetProfile.id, false);
+           equalText(id, kBareMetalTargetProfile.id, false) ||
+           equalText(id, kBareMetalMultiTargetProfile.id, false);
 }
 
 bool IsValidTargetProfile(const TargetProfile& profile) {

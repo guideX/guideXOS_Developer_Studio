@@ -11,8 +11,13 @@ namespace developer_studio {
 static const uint32_t kDefinitionMaxIdentifierBytes = 1024u;
 static const uint32_t kDefinitionMaxQualifierBytes = 2048u;
 static const uint32_t kDefinitionMaxScopeBytes = 2048u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kDefinitionMaxCandidates = 64u;
+static const uint32_t kDefinitionMaxVisibleCandidates = 32u;
+#else
 static const uint32_t kDefinitionMaxCandidates = 1000u;
 static const uint32_t kDefinitionMaxVisibleCandidates = 100u;
+#endif
 static const uint32_t kDefinitionMaxSignatureDisplayBytes = 256u;
 static const uint32_t kDefinitionMaxQualifiedDisplayBytes = 512u;
 static const uint32_t kNavigationHistoryCapacity = 256u;

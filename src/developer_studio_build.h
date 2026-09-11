@@ -104,6 +104,16 @@ struct BuildResult {
     uint32_t compiledModuleCount;
     uint32_t cachedModuleCount;
     uint32_t linkedModuleCount;
+    // Append-only multi-architecture/package publication evidence returned by
+    // the resident bare-metal compiler.
+    uint64_t siblingArtifactSize;
+    bool siblingArtifactValid;
+    bool packageWritten;
+    uint64_t packageGeneration;
+    char siblingArtifactPath[kMaxProjectPathBytes];
+    char siblingArtifactSha256[kMaxBuildArtifactSha256Bytes];
+    char siblingArtifactArchitecture[32];
+    char packagePath[kMaxProjectPathBytes];
 };
 
 struct HostedBuildService {

@@ -8,7 +8,8 @@ param(
     [ValidateSet("amd64", "arm64")]
     [string]$TargetArchitecture = "amd64",
     [switch]$SkipModelTest,
-    [switch]$SkipProjectTest
+    [switch]$SkipProjectTest,
+    [switch]$Phase12Proof
 )
 
 $ErrorActionPreference = "Stop"
@@ -263,12 +264,16 @@ try {
     & $DebuggerConditionalTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio conditional breakpoint test failed with exit code $LASTEXITCODE" }
 
-    $compileFlags = @(
+$compileFlags = @(
         "--target=$compileTarget", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
         "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
         "-I$SdkInclude", "-Isrc"
     )
+    if ($TargetArchitecture -eq "arm64") {
+        $compileFlags += @("-DGXOS_DEVELOPER_STUDIO_AARCH64", "-DGXOS_DEVELOPER_STUDIO_BARE_METAL")
+    }
+    if ($Phase12Proof) { $compileFlags += "-DGXOS_PHASE12_SMOKE" }
     if ($Configuration -eq "DebugSymbols") {
         $compileFlags += @("-g", "-O0", "-fdebug-compilation-dir=$RepoRoot", "-fdebug-prefix-map=$RepoRoot=.")
         Write-Host "Native debug line information: enabled"
@@ -328,7 +333,11 @@ try {
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
-    Invoke-Checked $lld @("-m", $linkMachine, "-static", "-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $stagedElfPath)
+    # NativeElf applications use the guideXOS fixed-address load contract.  Keep
+    # both target artifacts at the same canonical base so the package can be
+    # validated and selected consistently in-OS.
+    $linkFlags = @("-m", $linkMachine, "-static", "--image-base=0x50000000", "-z", "max-page-size=0x1000")
+    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }
