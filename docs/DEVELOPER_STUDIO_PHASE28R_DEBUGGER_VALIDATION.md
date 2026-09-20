@@ -59,10 +59,10 @@ Observed SHA-256 values from the completed build artifacts:
 - Developer Studio AMD64 package: `A1270377FF92BA55661CB2D7C6668FC92F49CA35792A635E393A52995D41AC2A`
 - Developer Studio ARM64 package: `E91B7170B59439C941DE2295DF2188886175EC41D65F28C48B3787D1C8CE57E3`
 - Server executable: `57C195AA608258EBC40738D074784D47E956F04DC6BC38CAD0A78AACC6C56676`
-- AMD64 kernel ELF: `AD56D443D783CFC217DFE06CC00DFA7E174EC2C3E297F7F911255B5D8B380401`
+- AMD64 kernel ELF from the final forced freestanding link: `A2FCC8C6E6084F1FD454FE59830EBD3E40703891E026B697E999E75AE9B7D469`
 - Final P28Q compiler artifact: `fnv1a64:285E8C42C5212D02` (`10403` bytes)
 
-The AMD64 package hash was identical in the two package-build captures available during this phase. The final P28Q source produced the same artifact hash on its final compile capture. A complete three-boot determinism comparison was not possible because the proof did not complete. ARM64 was packaged, but no ARM64 QEMU or hardware runtime debugger validation was performed.
+The validation package build produced the AMD64 and ARM64 hashes above. The final tracked package binaries were restored after the harness mutated them, so their working-tree hashes are not substituted for the validation-package hashes. A complete three-boot determinism comparison was not possible because the proof did not complete. A prior successful kernel link produced a different hash from the final forced link; the full relink carries normal PE/link metadata differences, and no cross-boot package comparison was completed. ARM64 was packaged, but no ARM64 QEMU or hardware runtime debugger validation was performed.
 
 ## QEMU methodology and observed result
 
@@ -116,3 +116,9 @@ The standalone native build completed and the currently relevant CTest suite pas
 Phase 28R does not claim validation debt closure. The remaining blocker is a reproducible bare-metal NativeElf launch/safe-yield integration failure after artifact open. Phase 28S+ should diagnose that handoff without changing the Phase 28Q pause semantics, ABI append-only rules, execution ownership, generation authentication, breakpoint manager ownership, or scheduler safe-yield boundary. No new user-facing debugger capability was added in Phase 28R.
 
 Exact commands and artifacts above are retained so the next run can start from the repaired dependency/build baseline rather than recreating the Phase 28Q infrastructure investigation.
+
+## Closing Git state
+
+- Standalone ending phase commit before this documentation-only correction: `70d21cda22ad7093507cd4e1845313b065631cfa`.
+- Server ending phase commit: `8d438eabda4d5767aab340d945530b911b8dad72`.
+- Both worktrees were clean after their commits. Each local branch was one commit ahead of its configured upstream because both normal SSH pushes were rejected with `git@github.com: Permission denied (publickey)`; no force-push or history rewrite was attempted.
