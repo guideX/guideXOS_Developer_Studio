@@ -172,12 +172,16 @@ static StorageLoadResult loadStorageFile(const WorkspaceFileSystem& fileSystem, 
     if (info.kind != FileInfoKind::RegularFile || info.size > kDebuggerWorkspaceMaxFileBytes) {
         return StorageLoadResult::Invalid;
     }
-    char bytes[kDebuggerWorkspaceMaxFileBytes] = {};
+    // Workspace persistence runs on the same bounded NativeElf stack as the
+    // project loader. Keep the bounded file and parse storage out of that
+    // stack frame while preserving the existing transactional output copy.
+    static char bytes[kDebuggerWorkspaceMaxFileBytes] = {};
     uint32_t byteCount = 0;
     if (!fileSystem.read(fileSystem.userData, path, bytes, static_cast<uint32_t>(sizeof(bytes)), &byteCount) ||
         byteCount != info.size || byteCount > kDebuggerWorkspaceMaxFileBytes)
         return StorageLoadResult::CallbackFailure;
-    DebuggerWorkspace parsed = {};
+    static DebuggerWorkspace parsed = {};
+    DebuggerWorkspaceInit(&parsed);
     DebuggerWorkspaceErrorCode error = DebuggerWorkspaceErrorCode::None;
     if (!ParseDebuggerWorkspace(bytes, byteCount, &parsed, &error)) return StorageLoadResult::Invalid;
     *output = parsed;
@@ -539,7 +543,7 @@ bool ParseDebuggerWorkspace(const char* bytes, uint32_t length, DebuggerWorkspac
     setError(error, DebuggerWorkspaceErrorCode::None);
     if (!bytes || !output) { setError(error, DebuggerWorkspaceErrorCode::NullInput); return false; }
     if (length > kDebuggerWorkspaceMaxFileBytes) { DebuggerWorkspaceInit(output); setWorkspaceError(output, DebuggerWorkspaceErrorCode::FileError); setError(error, DebuggerWorkspaceErrorCode::FileError); return false; }
-    DebuggerWorkspace parsed = {};
+    static DebuggerWorkspace parsed = {};
     DebuggerWorkspaceInit(&parsed);
     Cursor cursor(bytes, length);
     if (!cursor.take('{')) goto failed;
@@ -583,7 +587,8 @@ bool DebuggerWorkspaceStorageLoad(const WorkspaceFileSystem& fileSystem, const c
         setStorageStatus(status, statusSize, "load invalid path");
         return false;
     }
-    DebuggerWorkspace loaded = {};
+    static DebuggerWorkspace loaded = {};
+    DebuggerWorkspaceInit(&loaded);
     const StorageLoadResult primaryResult = loadStorageFile(fileSystem, primary, &loaded);
     if (primaryResult == StorageLoadResult::Loaded) {
         *output = loaded;
@@ -619,7 +624,7 @@ bool DebuggerWorkspaceStorageSave(const WorkspaceFileSystem& fileSystem, const c
         setStorageStatus(status, statusSize, "save invalid path");
         return false;
     }
-    char bytes[kDebuggerWorkspaceMaxFileBytes + 1] = {};
+    static char bytes[kDebuggerWorkspaceMaxFileBytes + 1] = {};
     uint32_t serializedBytes = 0;
     DebuggerWorkspaceErrorCode error = DebuggerWorkspaceErrorCode::None;
     if (!SerializeDebuggerWorkspace(*workspace, bytes, sizeof(bytes), &serializedBytes, &error)) {

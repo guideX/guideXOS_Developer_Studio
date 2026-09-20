@@ -122,7 +122,7 @@ static bool appendCppString(char* output, uint32_t outputSize, uint32_t& length,
 
 static void initializeProject(Project* project) {
     if (!project) return;
-    *project = Project();
+    __builtin_memset(project, 0, sizeof(*project));
     project->kind = ProjectKind::NativeGuiApplication;
     project->loadState = ProjectLoadState::NotLoaded;
     project->validationState = ProjectValidationState::Unknown;
@@ -512,7 +512,7 @@ static bool parseManifestEntries(JsonCursor& cursor, ManifestInfo& manifest) {
 
 static bool parseManifest(const char* bytes, uint32_t length, ManifestInfo* output) {
     if (!bytes || !output || length == 0 || length > kMaxProjectFileBytes) return false;
-    *output = ManifestInfo();
+    __builtin_memset(output, 0, sizeof(*output));
     JsonCursor cursor = { bytes, length, 0, ProjectErrorCode::ManifestMalformed };
     if (!expect(cursor, '{')) return false;
     bool closed = false;
@@ -949,7 +949,7 @@ bool ParseProjectMetadata(const char* bytes, uint32_t length, Project* output, P
     if (error) *error = ProjectErrorCode::None;
     if (!bytes || !output) { if (error) *error = ProjectErrorCode::NullInput; return false; }
     if (length > kMaxProjectFileBytes) { if (error) *error = ProjectErrorCode::ProjectFileTooLarge; return false; }
-    Project project;
+    static Project project = {};
     initializeProject(&project);
     JsonCursor cursor = { bytes, length, 0, ProjectErrorCode::MalformedJson };
     if (!parseProjectObject(cursor, &project)) { if (error) *error = cursor.error; return false; }
@@ -1094,19 +1094,24 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
 
 bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath, ProjectOperationResult* result) {
     if (!result) return false;
-    *result = ProjectOperationResult();
+    // ProjectOperationResult owns the bounded project metadata buffers. Do
+    // not materialize a second full result temporary on the NativeElf stack.
+    __builtin_memset(result, 0, sizeof(*result));
     initializeProject(&result->project);
     if (!fileSystem.stat || !fileSystem.read || !rootOrMetadataPath) { setResult(result, ProjectErrorCode::NullInput); return false; }
-    char normalized[kMaxPathBytes] = {};
+    // NativeElf invokes this boundary on a bounded cooperative stack. Keep
+    // the existing scratch-buffer model for the path and manifest work so a
+    // hosted call cannot reserve the entire project loader frame at once.
+    static char normalized[kMaxPathBytes] = {};
     if (PathContainsTraversal(rootOrMetadataPath) || !NormalizePath(rootOrMetadataPath, normalized, sizeof(normalized))) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
     FileInfo inputInfo = {};
     if (!fileSystem.stat(fileSystem.userData, normalized, &inputInfo)) { setResult(result, ProjectErrorCode::ParentNotFound); return false; }
-    char root[kMaxPathBytes] = {};
+    static char root[kMaxPathBytes] = {};
     if (inputInfo.kind == FileInfoKind::Directory) copyText(root, sizeof(root), normalized);
     else if (inputInfo.kind == FileInfoKind::RegularFile && equalTextFolded(BaseName(normalized), kProjectFileName)) {
         if (!parentPath(normalized, root, sizeof(root))) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
     } else { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
-    char metadataPath[kMaxPathBytes] = {};
+    static char metadataPath[kMaxPathBytes] = {};
     if (!joinProjectPath(root, kProjectFileName, metadataPath, sizeof(metadataPath))) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
     FileInfo metadataInfo = {};
     if (!fileSystem.stat(fileSystem.userData, metadataPath, &metadataInfo) || metadataInfo.kind != FileInfoKind::RegularFile) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
@@ -1114,13 +1119,13 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     static char metadata[kMaxProjectFileBytes + 1] = {};
     uint32_t bytes = 0;
     if (!fileSystem.read(fileSystem.userData, metadataPath, metadata, kMaxProjectFileBytes, &bytes) || bytes > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::FileReadFailed); return false; }
-    Project project;
+    Project& project = result->project;
     ProjectErrorCode parseError = ProjectErrorCode::None;
     if (!ParseProjectMetadata(metadata, bytes, &project, &parseError)) { setResult(result, parseError); return false; }
     copyText(project.rootPath, sizeof(project.rootPath), root);
     project.loaded = true;
     project.loadState = ProjectLoadState::Loaded;
-    char manifestPath[kMaxPathBytes] = {};
+    static char manifestPath[kMaxPathBytes] = {};
     if (!joinProjectPath(root, project.manifestPath, manifestPath, sizeof(manifestPath))) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
     if (!verifyRequiredFiles(fileSystem, project)) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
     FileInfo manifestFileInfo = {};
@@ -1128,7 +1133,7 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     static char manifestBytes[kMaxProjectFileBytes + 1] = {};
     uint32_t manifestSize = 0;
     if (!fileSystem.read(fileSystem.userData, manifestPath, manifestBytes, kMaxProjectFileBytes, &manifestSize)) { setResult(result, ProjectErrorCode::FileReadFailed); return false; }
-    ManifestInfo manifest;
+    static ManifestInfo manifest = {};
     if (!parseManifest(manifestBytes, manifestSize, &manifest)) { setResult(result, ProjectErrorCode::ManifestMalformed); return false; }
     if (!validateManifestAgainstProject(manifest, project)) { setResult(result, ProjectErrorCode::ManifestIdentityMismatch); return false; }
     project.error = ProjectErrorCode::None;
@@ -1136,7 +1141,6 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     project.validationState = ProjectValidationState::Valid;
     result->success = true;
     result->error = ProjectErrorCode::None;
-    result->project = project;
     return true;
 }
 

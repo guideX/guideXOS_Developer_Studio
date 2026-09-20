@@ -8732,10 +8732,14 @@ static bool debugUiRefreshOutput() {
 static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControllerBreakpoints) {
     debugDataTipInvalidate(nullptr, "runtime_reset");
     debuggerWorkspaceResetRuntime(preserveControllerBreakpoints);
-    g_debugUiCallStack = gx_development_debug_call_stack();
-    g_debugUiVariables = gx_development_debug_variables();
-    g_debugUiBreakpointSnapshot = gx_development_debug_snapshot();
-    g_debugUiOutputSnapshot = gx_development_debug_snapshot();
+    // These ABI snapshots contain bounded output/source metadata arrays. A
+    // value-initialized temporary for each assignment consumes tens of
+    // kilobytes of the hosted NativeElf call stack before the reset call can
+    // return. Clear the already-owned storage in place instead.
+    __builtin_memset(&g_debugUiCallStack, 0, sizeof(g_debugUiCallStack));
+    __builtin_memset(&g_debugUiVariables, 0, sizeof(g_debugUiVariables));
+    __builtin_memset(&g_debugUiBreakpointSnapshot, 0, sizeof(g_debugUiBreakpointSnapshot));
+    __builtin_memset(&g_debugUiOutputSnapshot, 0, sizeof(g_debugUiOutputSnapshot));
     g_debugUiCallStackValid = false;
     g_debugUiVariablesValid = false;
     g_debugUiBreakpointValid = false;
@@ -8752,7 +8756,8 @@ static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControll
         for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i] = DebugUiWatch();
         g_debugUiWatchCount = 0;
     } else {
-        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i].result = gx_development_debug_expression();
+        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i)
+            __builtin_memset(&g_debugUiWatches[i].result, 0, sizeof(g_debugUiWatches[i].result));
     }
 }
 
@@ -9252,9 +9257,9 @@ static void debuggerWorkspaceResetRuntime(bool preserveControllerBreakpoints) {
     g_debugEditingWatchId = 0;
     g_debugEditingBreakpointId = 0;
     for (uint64_t& node : g_debugVisibleValueNodes) node = 0;
-    g_debugController.callStack = DebugCallStack();
-    g_debugController.variables = guidexos::developer_studio::DebugDwarfVariableView();
-    g_debugWatches.tree = guidexos::developer_studio::DebugDwarfVariableView();
+    __builtin_memset(&g_debugController.callStack, 0, sizeof(g_debugController.callStack));
+    __builtin_memset(&g_debugController.variables, 0, sizeof(g_debugController.variables));
+    __builtin_memset(&g_debugWatches.tree, 0, sizeof(g_debugWatches.tree));
     g_debugWatches.treeValid = false;
     g_debugWatches.treeStale = false;
     for (auto& watch : g_debugWatches.items)

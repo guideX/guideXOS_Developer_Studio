@@ -1,5 +1,7 @@
 # Developer Studio Phase 28R — Debugger Validation and Repository Hygiene
 
+Phase 28S follow-up: [Native Launch and Debugger Proof](DEVELOPER_STUDIO_PHASE28S_NATIVE_LAUNCH_DEBUGGER_PROOF.md). Phase 28S is Outcome B: the native launch stall and hosted stack crashes were repaired/localized, but complete debugger acceptance and hosted terminal smoke remain open.
+
 ## Result
 
 Phase 28R is **Outcome B — debugger proof exposes a real defect**. The repository hygiene debt was repaired, the missing Mbed TLS dependency was restored from the project’s pinned historical bootstrap, and the complete hosted Server and freestanding AMD64 kernel builds succeed. The bare-metal Phase 28Q proof was started through the real Developer Studio → debugger ABI → Server NativeElf path, but no complete QEMU proof is claimed.
