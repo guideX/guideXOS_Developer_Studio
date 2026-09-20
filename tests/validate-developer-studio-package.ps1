@@ -77,13 +77,11 @@ foreach ($architecture in $Architectures) {
     if ($header -notmatch 'Data:\s+2''s complement, little endian') { Fail-Audit "$($architecture.Name) ELF endianness is not little endian" }
     if ($header -notmatch 'Type:\s+EXEC') { Fail-Audit "$($architecture.Name) ELF type is not ET_EXEC" }
     if ($header -notmatch "Machine:\s+$([regex]::Escape($architecture.Machine))") { Fail-Audit "$($architecture.Name) ELF architecture is not $($architecture.Machine)" }
-    $sections = (& $readElf -S $elfPath 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) { Fail-Audit "readelf -S failed for $($architecture.Name)" }
-    $hasSymtab = $sections -match '(?m)\]\s+\.symtab\s'
-    $debugSectionMatches = @([regex]::Matches($sections, '(?m)\]\s+(\.debug_[^\s]+)') | ForEach-Object { $_.Groups[1].Value })
-    if (-not $hasSymtab) { Fail-Audit "$($architecture.Name) production ELF does not contain .symtab" }
-    if (-not $AllowDebugSections -and $debugSectionMatches.Count -ne 0) {
-        Fail-Audit "$($architecture.Name) production ELF contains debug sections: $($debugSectionMatches -join ', ')"
+    if ($header -notmatch 'Start of section headers:\s+0') {
+        Fail-Audit "$($architecture.Name) production ELF contains section metadata"
+    }
+    if ($header -notmatch 'Number of section headers:\s+0') {
+        Fail-Audit "$($architecture.Name) production ELF has a non-zero section-header count"
     }
 
     $file = Get-Item -LiteralPath $elfPath
@@ -96,8 +94,8 @@ foreach ($architecture in $Architectures) {
     Write-Host "elf_architecture=$($architecture.Name)"
     Write-Host "elf_type=ET_EXEC"
     Write-Host "elf_entry_point=$(([regex]::Match($header, 'Entry point address:\s+(\S+)')).Groups[1].Value)"
-    Write-Host "elf_symtab=$([bool]$hasSymtab)"
-    Write-Host "elf_debug_sections=$([bool]($debugSectionMatches.Count -ne 0))"
+    Write-Host 'elf_section_metadata=none'
+    Write-Host 'elf_debug_sections=False'
 }
 Write-Host "package_files=$($actualFiles -join ',')"
 Write-Host 'package_content_audit=PASS'

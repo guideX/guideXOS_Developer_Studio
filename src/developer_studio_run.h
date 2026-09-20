@@ -22,7 +22,11 @@ enum class RunState {
     Exited,
     CleaningUp,
     Completed,
-    Failed
+    Failed,
+    Closing,
+    Cancelled,
+    Paused,
+    Stepping
 };
 
 enum class RunErrorCode {
@@ -99,7 +103,11 @@ enum class HostedDebugCommand {
     StepOverCall = 11,
     ResumeInternalTrap = 12,
     StepInternalTrap = 13,
-    StepOutReturn = 14
+    StepOutReturn = 14,
+    // Phase 27Z compatibility resume for a non-breakpoint paused context.
+    Resume = 15,
+    // Phase 28Q: append-only cooperative user pause request.
+    Pause = 29
 };
 
 enum class HostedDebugSingleStepKind {
@@ -157,6 +165,7 @@ struct HostedDebugResult {
     bool bindingInstalled = false;
     uint32_t bindingCount = 0;
     uint64_t stopGeneration = 0;
+    uint32_t pauseReason = 0;
     uint32_t executionState = 0;
     uint32_t singleStepKind = 0;
     uint64_t rflagsBeforeStep = 0;

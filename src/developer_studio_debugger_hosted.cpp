@@ -27,7 +27,10 @@ static RunRequest makeRunRequest(const DebugTarget& target) {
     copyText(request.targetProfile, sizeof(request.targetProfile), target.targetProfile);
     copyText(request.manifestPath, sizeof(request.manifestPath), target.manifestPath);
     copyText(request.artifactPath, sizeof(request.artifactPath), target.executablePath);
+    request.artifactSize = target.artifactSize;
     copyText(request.artifactSha256, sizeof(request.artifactSha256), target.artifactSha256);
+    copyText(request.artifactArchitecture, sizeof(request.artifactArchitecture), target.architecture);
+    copyText(request.artifactAbi, sizeof(request.artifactAbi), target.abi);
     request.debugControlled = true;
     return request;
 }
@@ -37,10 +40,32 @@ static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generati
     if (!snapshot) return;
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
-    snapshot->state = backend.runController.state == RunState::Completed ? DebugSessionState::Exited :
-        (backend.runController.state == RunState::Failed ? DebugSessionState::Failed :
-         (backend.runController.state == RunState::Running ? DebugSessionState::Running :
-          (backend.runController.state == RunState::CleaningUp || backend.runController.closeRequested ? DebugSessionState::Stopping : DebugSessionState::Launching)));
+    switch (backend.runController.state) {
+    case RunState::Completed:
+    case RunState::Cancelled:
+        snapshot->state = DebugSessionState::Exited;
+        break;
+    case RunState::Failed:
+        snapshot->state = DebugSessionState::Failed;
+        break;
+    case RunState::Running:
+        snapshot->state = DebugSessionState::Running;
+        break;
+    case RunState::Closing:
+    case RunState::CleaningUp:
+        snapshot->state = DebugSessionState::Stopping;
+        break;
+    case RunState::Paused:
+    case RunState::Stepping:
+    default:
+        // The run service owns paused/stepping details. The debugger poll
+        // supplies the authenticated stop context after launch while the
+        // controller remains active during ABI setup.
+        snapshot->state = DebugSessionState::Launching;
+        break;
+    }
+    if (backend.runController.closeRequested && snapshot->state != DebugSessionState::Exited &&
+        snapshot->state != DebugSessionState::Failed) snapshot->state = DebugSessionState::Stopping;
     snapshot->processId = backend.runController.result.processId;
     snapshot->nativeRuntimeId = backend.runController.result.nativeRuntimeId;
     snapshot->debugHandle = backend.runController.result.handle;
@@ -55,10 +80,47 @@ static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generati
     else if (backend.runController.result.error != RunErrorCode::None) copyText(snapshot->errorMessage, sizeof(snapshot->errorMessage), RunErrorName(backend.runController.result.error));
 }
 
+static void applyRegisterSnapshot(const HostedDebugResult& result,
+                                  DebugBackendSnapshot* snapshot) {
+    if (!snapshot) return;
+    snapshot->registerContext.valid = result.registerContext.valid;
+    snapshot->registerContext.architecture = static_cast<DebugArchitecture>(result.registerContext.architecture);
+    snapshot->registerContext.processId = result.registerContext.processId;
+    snapshot->registerContext.nativeRuntimeId = result.registerContext.nativeRuntimeId;
+    snapshot->registerContext.threadId = result.registerContext.threadId;
+    snapshot->registerContext.sessionGeneration = result.registerContext.sessionGeneration;
+    snapshot->registerContext.stopGeneration = result.registerContext.stopGeneration;
+    snapshot->registerContext.rip = result.registerContext.rip;
+    snapshot->registerContext.rflags = result.registerContext.rflags;
+    snapshot->registerContext.rsp = result.registerContext.rsp;
+    snapshot->registerContext.rbp = result.registerContext.rbp;
+    snapshot->registerContext.rax = result.registerContext.rax;
+    snapshot->registerContext.rbx = result.registerContext.rbx;
+    snapshot->registerContext.rcx = result.registerContext.rcx;
+    snapshot->registerContext.rdx = result.registerContext.rdx;
+    snapshot->registerContext.rsi = result.registerContext.rsi;
+    snapshot->registerContext.rdi = result.registerContext.rdi;
+    snapshot->registerContext.r8 = result.registerContext.r8;
+    snapshot->registerContext.r9 = result.registerContext.r9;
+    snapshot->registerContext.r10 = result.registerContext.r10;
+    snapshot->registerContext.r11 = result.registerContext.r11;
+    snapshot->registerContext.r12 = result.registerContext.r12;
+    snapshot->registerContext.r13 = result.registerContext.r13;
+    snapshot->registerContext.r14 = result.registerContext.r14;
+    snapshot->registerContext.r15 = result.registerContext.r15;
+    snapshot->registerContext.stackLow = result.stackLow;
+    snapshot->registerContext.stackHigh = result.stackHigh;
+}
+
 static bool launch(void* userData, const DebugTarget& target, uint64_t generation, DebugBackendSnapshot* outSnapshot) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !outSnapshot) return false;
     RunControllerInit(&backend->runController);
+    backend->userPauseStopPending = false;
+    backend->userStepStopPending = false;
+    backend->internalTrapStopPending = false;
+    backend->lastSnapshot = DebugBackendSnapshot();
+    backend->lastSnapshotValid = false;
     const RunRequest request = makeRunRequest(target);
     RunErrorCode error = RunErrorCode::None;
     if (!RunControllerPrepare(&backend->runController, backend->runService, request, &error) ||
@@ -87,7 +149,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
     const uint64_t handle = backend->runController.result.handle;
     if (!RunControllerPoll(&backend->runController, backend->runService)) return false;
     snapshotFromRun(*backend, generation, outSnapshot);
-    if (backend->runService.debugCommand && handle != 0 && outSnapshot->processId != 0 && outSnapshot->nativeRuntimeId != 0 &&
+    if (backend->runService.debugCommand && handle != 0 &&
         (outSnapshot->state == DebugSessionState::Running || outSnapshot->state == DebugSessionState::Launching)) {
         HostedDebugResult debugResult = {};
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
@@ -104,9 +166,35 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }
+        // Bare-metal run snapshots deliberately omit process/runtime identity;
+        // the authenticated debugger snapshot is the authoritative source for
+        // the target identity used by the controller and breakpoint ownership.
+        if (debugResult.processId != 0 || debugResult.nativeRuntimeId != 0) {
+            outSnapshot->processId = debugResult.processId;
+            outSnapshot->nativeRuntimeId = debugResult.nativeRuntimeId;
+        }
+        if (debugResult.threadId != 0) outSnapshot->threadId = debugResult.threadId;
+        outSnapshot->debugHandle = handle;
         outSnapshot->stackLow = debugResult.stackLow;
         outSnapshot->stackHigh = debugResult.stackHigh;
-        if (debugResult.status == 3 && debugResult.trapKind == 1) {
+        if (debugResult.status == 3 &&
+            debugResult.trapKind == 0 && debugResult.pauseReason == 8) {
+            outSnapshot->state = DebugSessionState::Paused;
+            outSnapshot->stopReason = DebugStopReason::UserPause;
+            outSnapshot->breakpointTrap = false;
+            outSnapshot->singleStepTrap = false;
+            outSnapshot->threadId = debugResult.threadId;
+            outSnapshot->instructionPointer = debugResult.instructionPointer;
+            outSnapshot->targetAddress.valid = debugResult.targetAddress != 0;
+            outSnapshot->targetAddress.value = debugResult.targetAddress;
+            outSnapshot->stopGeneration = debugResult.stopGeneration;
+            outSnapshot->executionState = DebugBackendExecutionState::PausedAtUserPause;
+            applyRegisterSnapshot(debugResult, outSnapshot);
+            copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage),
+                     debugResult.errorMessage[0] ? debugResult.errorMessage :
+                     "User Pause captured at the cooperative scheduler boundary");
+            backend->userPauseStopPending = true;
+        } else if (debugResult.status == 3 && debugResult.trapKind == 1) {
             outSnapshot->state = DebugSessionState::Paused;
             outSnapshot->stopReason = debugResult.internalBreakpointTrap ? DebugStopReason::Step : DebugStopReason::Breakpoint;
             outSnapshot->breakpointTrap = true;
@@ -230,6 +318,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), "Breakpoint continuation pending internal single-step");
         }
     }
+    backend->lastSnapshot = *outSnapshot;
+    backend->lastSnapshotValid = true;
     return true;
 }
 
@@ -268,6 +358,19 @@ static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t ha
         backend->runService.userData, command, handle, sessionGeneration, processId, nativeRuntimeId,
         breakpointId, targetAddress, artifactSha256, threadId, stopGeneration, reinstallBreakpoint,
         auxiliaryAddress, readByteCount, outResult);
+}
+
+static bool pause(void* userData, uint64_t sessionGeneration) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !backend->runService.debugCommand || backend->runController.result.handle == 0)
+        return false;
+    HostedDebugResult result = {};
+    if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Pause,
+                                          backend->runController.result.handle, sessionGeneration,
+                                          0, backend->runController.result.nativeRuntimeId,
+                                          0, 0, backend->runController.request.artifactSha256,
+                                          0, 0, false, 0, 0, &result)) return false;
+    return result.status == 7;
 }
 
 static bool continueExecution(void* userData, uint64_t sessionGeneration,
@@ -313,14 +416,17 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
     HostedDebugResult result = {};
-    const HostedDebugCommand command = backend->internalTrapStopPending ?
-        HostedDebugCommand::ResumeInternalTrap : HostedDebugCommand::ResumeStep;
+    const HostedDebugCommand command = backend->userPauseStopPending ?
+        HostedDebugCommand::Resume : (backend->internalTrapStopPending ?
+        HostedDebugCommand::ResumeInternalTrap : HostedDebugCommand::ResumeStep);
+    const uint64_t targetAddress = backend->userPauseStopPending ? 0 : context.rip;
     if (!backend->runService.debugCommand(backend->runService.userData, command,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, 0, 0,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, false, context.rip, 0, &result)) return false;
-    if (result.status != 1) return false;
+                                          context.stopGeneration, false, targetAddress, 0, &result)) return false;
+    if (result.status != 1 && result.status != 3 && result.status != 6) return false;
+    backend->userPauseStopPending = false;
     backend->userStepStopPending = false;
     backend->internalTrapStopPending = false;
     return true;
@@ -375,7 +481,9 @@ static bool stepOverCall(void* userData, uint64_t sessionGeneration,
                                           context.processId, context.nativeRuntimeId, temporaryBreakpointId,
                                           callAddress, backend->runController.request.artifactSha256,
                                           context.threadId, context.stopGeneration, false, returnAddress, 0, &result)) return false;
-    if (result.status != 1) return false;
+    const bool accepted = result.status == 1 ||
+        (result.status == 3 && result.trapKind == 1 && result.internalBreakpointTrap);
+    if (!accepted) return false;
     backend->userStepStopPending = false;
     backend->internalTrapStopPending = false;
     return true;
@@ -397,16 +505,63 @@ static bool stepOutReturn(void* userData, uint64_t sessionGeneration,
                                           targetAddress, backend->runController.request.artifactSha256,
                                           context.threadId, context.stopGeneration, reinstallBreakpoint,
                                           returnAddress, 0, &result)) return false;
-    if (result.status != 1) return false;
+    const bool accepted = result.status == 1 ||
+        (result.status == 3 && result.trapKind == 1 && result.internalBreakpointTrap);
+    if (!accepted) return false;
     backend->userStepStopPending = false;
     backend->internalTrapStopPending = false;
     return true;
 }
 
 static bool stop(void* userData, uint64_t generation) {
-    (void)generation;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
-    return backend && RunControllerRequestClose(&backend->runController, backend->runService);
+    if (!backend) return false;
+    backend->lastStopRoute = 1; // paused cancellation eligible only with a current poll snapshot
+    backend->lastStopStatus = 0;
+    backend->lastStopFallbackFailed = false;
+    if (!backend->lastSnapshotValid) backend->lastStopRoute = 2;
+    else if (backend->lastSnapshot.sessionGeneration != generation) backend->lastStopRoute = 3;
+    else if (backend->lastSnapshot.state != DebugSessionState::Paused &&
+             backend->lastSnapshot.state != DebugSessionState::Stepping) backend->lastStopRoute = 4;
+    if (backend->lastSnapshotValid && backend->lastSnapshot.sessionGeneration == generation &&
+        (backend->lastSnapshot.state == DebugSessionState::Paused ||
+         backend->lastSnapshot.state == DebugSessionState::Stepping)) {
+        if (!backend->runService.debugCommand) { backend->lastStopRoute = 5; return false; }
+        if (backend->runController.result.handle == 0) { backend->lastStopRoute = 6; return false; }
+        const DebugBackendSnapshot& stopped = backend->lastSnapshot;
+        const DebugRegisterContext& context = stopped.registerContext;
+        const uint64_t processId = context.processId != 0 ? context.processId :
+            (stopped.processId != 0 ? stopped.processId :
+             (backend->runController.result.processId != 0 ? backend->runController.result.processId :
+              backend->stopProcessId));
+        const uint64_t runtimeId = context.nativeRuntimeId != 0 ? context.nativeRuntimeId :
+            (stopped.nativeRuntimeId != 0 ? stopped.nativeRuntimeId :
+             (backend->runController.result.nativeRuntimeId != 0 ? backend->runController.result.nativeRuntimeId :
+              backend->stopRuntimeId));
+        const uint64_t threadId = context.threadId != 0 ? context.threadId : stopped.threadId;
+        const uint64_t stopGeneration = context.stopGeneration != 0 ? context.stopGeneration : stopped.stopGeneration;
+        // Bare-metal NativeElf uses processId == 0 by ABI; its runtime
+        // registration generation is the authenticated identity instead.
+        if (runtimeId == 0) { backend->lastStopRoute = 7; return false; }
+        HostedDebugResult result = {};
+        const bool cancelled = backend->runService.debugCommand(
+                backend->runService.userData, HostedDebugCommand::CancelExecution,
+                backend->runController.result.handle, generation, processId, runtimeId,
+                0, 0, backend->runController.request.artifactSha256, threadId,
+                stopGeneration, false, 0, 0, &result);
+        backend->lastStopStatus = result.status;
+        if (!cancelled) { backend->lastStopRoute = 8; return false; }
+        if (result.status != 1u && result.status != 4u) { backend->lastStopRoute = 9; return false; }
+        backend->runController.closeRequested = true;
+        backend->lastSnapshot.state = DebugSessionState::Stopping;
+        backend->lastSnapshot.stopReason = DebugStopReason::UserRequested;
+        backend->lastStopRoute = 10;
+        return true;
+    }
+    const bool closeRequested = RunControllerRequestClose(&backend->runController, backend->runService);
+    backend->lastStopRoute = closeRequested ? 11 : backend->lastStopRoute;
+    backend->lastStopFallbackFailed = !closeRequested;
+    return closeRequested;
 }
 
 } // namespace
@@ -419,12 +574,19 @@ void HostedDebugBackendInit(HostedDebugBackend* backend,
     RunControllerInit(&backend->runController);
 }
 
+void HostedDebugBackendSetStopIdentity(HostedDebugBackend* backend,
+                                       uint64_t processId, uint64_t nativeRuntimeId) {
+    if (!backend) return;
+    backend->stopProcessId = processId;
+    backend->stopRuntimeId = nativeRuntimeId;
+}
+
 DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     DebugBackend result = {};
     result.userData = backend;
     result.capabilities.canLaunch = true;
     result.capabilities.canStop = true;
-    result.capabilities.canPause = false;
+    result.capabilities.canPause = true;
     result.capabilities.canContinue = true;
     result.capabilities.canSetInstructionBreakpoint = true;
     result.capabilities.canSetSourceBreakpoint = true;
@@ -446,7 +608,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.launch = launch;
     result.poll = poll;
     result.stop = stop;
-    result.pause = nullptr;
+    result.pause = pause;
     result.continueExecution = continueExecution;
     result.stepInstruction = stepInstruction;
     result.resumeExecution = resumeExecution;

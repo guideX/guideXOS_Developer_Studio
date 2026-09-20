@@ -33,7 +33,10 @@ add_library(developer_studio_models STATIC
     src/developer_studio_debug_symbols.cpp
     src/developer_studio_debug_variables.cpp
     src/developer_studio_debug_watches.cpp
+    src/developer_studio_debug_tips.cpp
     src/developer_studio_debugger_hosted.cpp
+    src/developer_studio_debug_editor.cpp
+    src/developer_studio_debugger_workspace.cpp
 )
 target_include_directories(developer_studio_models PUBLIC src)
 
@@ -237,6 +240,27 @@ add_executable(developer_studio_debugger_conditional_breakpoints_test
 target_link_libraries(developer_studio_debugger_conditional_breakpoints_test PRIVATE developer_studio_models)
 set_target_properties(developer_studio_debugger_conditional_breakpoints_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_debugger_conditional_breakpoints_test COMMAND developer_studio_debugger_conditional_breakpoints_test)
+
+add_executable(developer_studio_debug_editor_test
+    tests/debug_editor_test.cpp
+)
+target_link_libraries(developer_studio_debug_editor_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_debug_editor_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_debug_editor_test COMMAND developer_studio_debug_editor_test)
+
+add_executable(developer_studio_debugger_workspace_test
+    tests/debugger_workspace_test.cpp
+)
+target_link_libraries(developer_studio_debugger_workspace_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_debugger_workspace_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_debugger_workspace_test COMMAND developer_studio_debugger_workspace_test)
+
+add_executable(developer_studio_debug_tips_test
+    tests/debugger_data_tips_test.cpp
+)
+target_link_libraries(developer_studio_debug_tips_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_debug_tips_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_debug_tips_test COMMAND developer_studio_debug_tips_test)
 set_tests_properties(
     developer_studio_debugger_structured_variables_test
     developer_studio_debugger_variables_test
@@ -295,6 +319,7 @@ add_executable(developerstudio.elf
         src/developer_studio_debug_variables.cpp
         src/developer_studio_debug_watches.cpp
         src/developer_studio_debugger_hosted.cpp
+        src/developer_studio_debugger_workspace.cpp
         src/freestanding_memory.cpp
         src/main.cpp
     )

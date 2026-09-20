@@ -7,7 +7,9 @@ param(
     [int]$MaxRuntimeSeconds = 360,
     [string]$TraceDirectory = '',
     [switch]$ContinueAfterFailure,
-    [int]$MaxFailures = 1
+    [int]$MaxFailures = 1,
+    [switch]$Phase28OOnly,
+    [switch]$Phase28QOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,6 +33,170 @@ $common = @{
     DebugWaitSeconds = $DebugWaitSeconds
     MaxRuntimeSeconds = $MaxRuntimeSeconds
     TraceDirectory = $TraceDirectory
+}
+
+if ($Phase28QOnly) {
+    $bootstrap = Join-Path $ServerRoot 'scripts\smoke-compiler-bootstrap.ps1'
+    if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf)) {
+        throw "Phase 28Q QEMU harness is missing: $bootstrap"
+    }
+    $phase28qMarkers = @(
+        'DEVELOPER_STUDIO_PHASE28Q_BEGIN',
+        'DEVELOPER_STUDIO_PHASE28Q_APP_LAUNCH_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_PROJECT_OPEN_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_DEBUG_START_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_RUNNING_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_PAUSE_UI_REQUEST_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_PAUSE_REQUEST_ACCEPT_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_USER_PAUSE_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_CONTEXT_CAPTURE_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_CALL_STACK_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_CONTINUE_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_RUNNING_AFTER_CONTINUE_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_SECOND_PAUSE_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_NEW_STOP_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_CONTINUE_SECOND_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_FINAL_RESULT_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_NO_SKIP_DUPLICATE_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_PHASE28P_REGRESSION_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_CLEANUP_PASS',
+        'DEVELOPER_STUDIO_PHASE28Q_PASS'
+    )
+    $arguments = New-ValidationArgumentList -ScriptPath $bootstrap -Parameters @{
+        Phase28QOnly = $true
+        BootCount = 3
+        TimeoutSeconds = $MaxRuntimeSeconds
+    }
+    $result = Invoke-ValidationPowerShell -Name 'Phase 28Q debugger pause/continue' `
+        -ScriptPath $bootstrap -ScriptArguments $arguments -MaxOutputLines 1200
+    $evidencePath = ''
+    foreach ($line in $result.OutputTail) {
+        if ($line -match '^Phase 28Q evidence preserved at:\s*(.+)\s*$') {
+            $evidencePath = $Matches[1].Trim()
+        }
+    }
+    $evidenceText = @($result.OutputTail) -join "`n"
+    $serialFiles = @()
+    if ($evidencePath -and (Test-Path -LiteralPath $evidencePath -PathType Container)) {
+        $serialFiles = @(Get-ChildItem -LiteralPath $evidencePath -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'serial|qemu|trace' })
+        foreach ($serialFile in $serialFiles) {
+            $evidenceText += "`n" + [IO.File]::ReadAllText($serialFile.FullName)
+        }
+    }
+    $missing = @($phase28qMarkers | Where-Object { -not $evidenceText.Contains($_) })
+    if ($result.ExitCode -ne 0 -or $missing.Count -ne 0) {
+        $artifact = Join-Path $TraceDirectory "developer-studio-phase28q-$runId.log"
+        Write-BoundedValidationTrace -Path $artifact -Header @(
+            'guideXOS Developer Studio Phase 28Q debugger pause/continue trace',
+            "runId=$runId",
+            "childExitCode=$($result.ExitCode)",
+            "evidencePath=$evidencePath",
+            "missingMarkers=$($missing -join ',')",
+            "serverRoot=$ServerRoot"
+        ) -TraceFiles @($serialFiles | ForEach-Object { $_.FullName }) -OutputTail $result.OutputTail
+        throw "Phase 28Q debugger pause/continue failed: childExit=$($result.ExitCode) missing=$($missing -join ',')"
+    }
+    $previous = -1
+    foreach ($marker in $phase28qMarkers) {
+        $position = $evidenceText.IndexOf($marker, [StringComparison]::Ordinal)
+        if ($position -lt 0 -or $position -le $previous) {
+            throw "Phase 28Q marker ordering failed at $marker"
+        }
+        $previous = $position
+    }
+    Write-Host "phase28q_evidence_path=$evidencePath"
+    Write-Host 'developer_studio_phase28q=PASS'
+    exit 0
+}
+
+if ($Phase28OOnly) {
+    $bootstrap = Join-Path $ServerRoot 'scripts\smoke-compiler-bootstrap.ps1'
+    if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf)) {
+        throw "Phase 28O QEMU harness is missing: $bootstrap"
+    }
+
+    $phase28oMarkers = @(
+        'DEVELOPER_STUDIO_PHASE28O_BEGIN',
+        'DEVELOPER_STUDIO_PHASE28O_CORRUPT_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_PROJECT_OPEN_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_CONFIGURE_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_CAPACITY_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_ISOLATION_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_SAVE_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_CLOSE_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_RELAUNCH_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_RESTORE_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_NO_RUNTIME_ID_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_DIRTY_BUFFER_PASS',
+        'DEVELOPER_STUDIO_PHASE28N_EDITOR_READY_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_DEBUG_START_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_MATERIALIZE_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_HIT_COUNT_ZERO_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_UNRESOLVED_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_FRESH_ID_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_BREAKPOINT_HIT_PASS',
+        'DEVELOPER_STUDIO_PHASE28N_EXECUTION_FRAME0_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_WATCH_REEVALUATE_PASS',
+        'DEVELOPER_STUDIO_PHASE28N_RUNNING_MARKER_CLEAR_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_RESET_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_TERMINAL_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_SECOND_GENERATION_PASS',
+        'DEVELOPER_STUDIO_PHASE28N_NEW_SESSION_MARKER_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_BOUNDS_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_CLEANUP_PASS',
+        'DEVELOPER_STUDIO_PHASE28O_PASS'
+    )
+    $arguments = New-ValidationArgumentList -ScriptPath $bootstrap -Parameters @{
+        Phase28OOnly = $true
+        BootCount = 1
+        TimeoutSeconds = $MaxRuntimeSeconds
+    }
+    $result = Invoke-ValidationPowerShell -Name 'Phase 28O debugger workspace persistence' `
+        -ScriptPath $bootstrap -ScriptArguments $arguments -MaxOutputLines 800
+
+    $evidencePath = ''
+    foreach ($line in $result.OutputTail) {
+        if ($line -match '^Phase 28O evidence preserved at:\s*(.+)\s*$') {
+            $evidencePath = $Matches[1].Trim()
+        }
+    }
+    $evidenceText = @($result.OutputTail) -join "`n"
+    $serialFiles = @()
+    if ($evidencePath -and (Test-Path -LiteralPath $evidencePath -PathType Container)) {
+        $serialFiles = @(Get-ChildItem -LiteralPath $evidencePath -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'serial|qemu|trace' })
+        foreach ($serialFile in $serialFiles) {
+            $evidenceText += "`n" + [IO.File]::ReadAllText($serialFile.FullName)
+        }
+    }
+
+    $missing = @($phase28oMarkers | Where-Object { -not $evidenceText.Contains($_) })
+    if ($result.ExitCode -ne 0 -or $missing.Count -ne 0) {
+        $artifact = Join-Path $TraceDirectory "developer-studio-phase28o-$runId.log"
+        Write-BoundedValidationTrace -Path $artifact -Header @(
+            'guideXOS Developer Studio Phase 28O debugger workspace persistence trace',
+            "runId=$runId",
+            "childExitCode=$($result.ExitCode)",
+            "evidencePath=$evidencePath",
+            "missingMarkers=$($missing -join ',')",
+            "serverRoot=$ServerRoot"
+        ) -TraceFiles @($serialFiles.FullName) -OutputTail $result.OutputTail
+        throw "Phase 28O debugger workspace persistence failed: childExit=$($result.ExitCode) missing=$($missing -join ',')"
+    }
+
+    $previous = -1
+    foreach ($marker in $phase28oMarkers) {
+        $position = $evidenceText.IndexOf($marker, [StringComparison]::Ordinal)
+        if ($position -lt 0 -or $position -le $previous) {
+            throw "Phase 28O marker ordering failed at $marker"
+        }
+        $previous = $position
+    }
+    Write-Host "phase28o_evidence_path=$evidencePath"
+    Write-Host 'developer_studio_phase28o=PASS'
+    exit 0
 }
 
 function New-SuiteParameters {

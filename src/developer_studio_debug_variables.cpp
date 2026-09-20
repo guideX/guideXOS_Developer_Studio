@@ -1377,6 +1377,93 @@ static bool selectFunction(const DebugDwarfMapper* mapper, uint64_t address, uin
     return found;
 }
 
+static bool inspectBootstrapVariables(const DebugDwarfMapper* mapper,
+                                      const DebugDwarfFrameContext& frame,
+                                      DebugDwarfReadMemoryFn readMemory, void* userData,
+                                      DebugDwarfVariableView* view) {
+    if (!mapper || !view || !mapper->bootstrapSourceMap || !mapper->debugInfoReady ||
+        !frame.frameBaseKnown || !readMemory) {
+        if (view) copyText(view->status, sizeof(view->status),
+                           "Locals unavailable: bootstrap frame base is unavailable");
+        return false;
+    }
+    uint32_t functionIndex = 0;
+    if (!selectFunction(mapper, frame.instructionAddress, &functionIndex)) {
+        copyText(view->status, sizeof(view->status),
+                 "Variables unavailable: PC is not in a bootstrap function");
+        return false;
+    }
+    view->functionIndex = functionIndex;
+    copyText(view->functionName, sizeof(view->functionName), mapper->debugFunctions[functionIndex].name);
+    const uint64_t codeAddress = mapper->executableSegmentCount == 0 ? 0 :
+        mapper->executableSegments[0].startAddress;
+    if (codeAddress == 0 || frame.instructionAddress < codeAddress) {
+        copyText(view->status, sizeof(view->status), "Variables unavailable: bootstrap PC is outside code");
+        return false;
+    }
+    const uint64_t codeOffset = frame.instructionAddress - codeAddress;
+    for (uint32_t i = 0; i < mapper->bootstrapVariableCount; ++i) {
+        const DebugBootstrapVariable& source = mapper->bootstrapVariables[i];
+        if (source.functionIndex != functionIndex || codeOffset < source.liveStart ||
+            codeOffset >= source.liveEnd) continue;
+        if (view->variableCount >= kDebugDwarfMaxDisplayedVariables) break;
+        DebugDwarfVariable& variable = view->variables[view->variableCount++];
+        variable = DebugDwarfVariable();
+        variable.dieOffset = static_cast<uint64_t>(i + 1u);
+        variable.kind = source.kind == 1u ? DebugDwarfVariableKind::Argument : DebugDwarfVariableKind::Local;
+        variable.state = DebugDwarfVariableState::Unavailable;
+        variable.valueKind = source.type == 2u ? DebugDwarfValueKind::Pointer : DebugDwarfValueKind::SignedInteger;
+        variable.locationKind = DebugDwarfLocationKind::MemoryAddress;
+        variable.address = 0;
+        variable.scopeDepth = 0;
+        copyText(variable.name, sizeof(variable.name), source.name);
+        copyText(variable.typeDisplay, sizeof(variable.typeDisplay), source.type == 2u ? "pointer" : "int32");
+        copyText(variable.locationDisplay, sizeof(variable.locationDisplay), "MemoryAddress");
+        uint64_t address = 0;
+        if (!addSigned(frame.frameBase, source.frameOffset, &address)) {
+            copyText(variable.valueDisplay, sizeof(variable.valueDisplay), "<unavailable>");
+            copyText(variable.status, sizeof(variable.status), "frame address overflow");
+            continue;
+        }
+        variable.address = address;
+        uint32_t returned = 0;
+        if (source.sizeBytes > sizeof(variable.rawBytes) ||
+            !readMemory(userData, frame.sessionGeneration, frame.processId, frame.nativeRuntimeId,
+                        frame.threadId, frame.stopGeneration, address, variable.rawBytes,
+                        source.sizeBytes, &returned) || returned != source.sizeBytes) {
+            copyText(variable.valueDisplay, sizeof(variable.valueDisplay), "<unavailable>");
+            copyText(variable.status, sizeof(variable.status), "target memory read failed");
+            variable.state = DebugDwarfVariableState::ReadFailure;
+            continue;
+        }
+        variable.rawByteCount = source.sizeBytes;
+        variable.scalarValue = readLittle(variable.rawBytes, source.sizeBytes);
+        variable.state = DebugDwarfVariableState::Available;
+        ++view->targetMemoryReadCount;
+        if (source.type == 2u) appendHex(variable.valueDisplay, sizeof(variable.valueDisplay), variable.scalarValue);
+        else {
+            const int64_t signedValue = source.sizeBytes < 8u &&
+                (variable.scalarValue & (1ull << (source.sizeBytes * 8u - 1u))) ?
+                static_cast<int64_t>(variable.scalarValue | (UINT64_MAX << (source.sizeBytes * 8u))) :
+                static_cast<int64_t>(variable.scalarValue);
+            if (signedValue < 0) {
+                variable.valueDisplay[0] = '-';
+                appendUnsigned(variable.valueDisplay + 1, sizeof(variable.valueDisplay) - 1,
+                               static_cast<uint64_t>(-(signedValue + 1)) + 1u);
+            } else appendUnsigned(variable.valueDisplay, sizeof(variable.valueDisplay),
+                                  static_cast<uint64_t>(signedValue));
+        }
+    }
+    for (uint32_t i = 0; i < view->variableCount; ++i) {
+        if (view->variables[i].kind == DebugDwarfVariableKind::Argument) ++view->argumentCount;
+        else ++view->localCount;
+    }
+    view->valid = true;
+    copyText(view->status, sizeof(view->status), view->variableCount ?
+             "Live stopped values" : "No bootstrap variables in selected frame");
+    return true;
+}
+
 static bool canonicalAddress(uint64_t address) {
     const uint64_t upper = address >> 48;
     return address != 0 && (upper == 0 || upper == 0xffffu);
@@ -2095,6 +2182,8 @@ bool DebugDwarfInspectVariables(const DebugDwarfMapper* mapper,
     }
     view->artifactGeneration = mapper->identity.mapperGeneration;
     copyText(view->artifactSha256, sizeof(view->artifactSha256), mapper->identity.sha256);
+    if (mapper->bootstrapSourceMap)
+        return inspectBootstrapVariables(mapper, frame, readMemory, userData, view);
     uint32_t functionIndex = 0;
     if (!selectFunction(mapper, frame.instructionAddress, &functionIndex)) {
         copyText(view->status, sizeof(view->status), "Variables unavailable: PC is not in a DWARF subprogram");

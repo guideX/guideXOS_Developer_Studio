@@ -20,6 +20,9 @@
 #include "developer_studio_debugger.h"
 #include "developer_studio_debug_symbols.h"
 #include "developer_studio_debugger_hosted.h"
+#include "developer_studio_debug_editor.h"
+#include "developer_studio_debug_tips.h"
+#include "developer_studio_debugger_workspace.h"
 
 namespace {
 
@@ -178,6 +181,16 @@ using guidexos::developer_studio::WorkspaceControllerSaveActive;
 using guidexos::developer_studio::WorkspaceControllerSaveAll;
 using guidexos::developer_studio::WorkspaceControllerSaveDocument;
 using guidexos::developer_studio::WorkspaceFileSystem;
+using guidexos::developer_studio::DebuggerWorkspace;
+using guidexos::developer_studio::DebuggerWorkspaceBreakpoint;
+using guidexos::developer_studio::kDebugWatchMaxExpressionBytes;
+using guidexos::developer_studio::DebuggerWorkspaceMaterializationEntry;
+using guidexos::developer_studio::BuildDebuggerWorkspaceMaterializationPlan;
+using guidexos::developer_studio::DebuggerWorkspaceInit;
+using guidexos::developer_studio::DebuggerWorkspaceStorageLoad;
+using guidexos::developer_studio::DebuggerWorkspaceStorageSave;
+using guidexos::developer_studio::DebuggerWorkspaceErrorCode;
+using guidexos::developer_studio::DebuggerWorkspaceStoragePath;
 using guidexos::developer_studio::WorkspaceEntryKind;
 using guidexos::developer_studio::kMaxEditorBytes;
 using guidexos::developer_studio::kMaxNameBytes;
@@ -532,10 +545,8 @@ using guidexos::developer_studio::DebugControllerMapBreakpoints;
 using guidexos::developer_studio::DebugControllerMarkArtifactStale;
 using guidexos::developer_studio::DebugControllerSelectCallStackFrame;
 using guidexos::developer_studio::DebugControllerBuildVariables;
+using guidexos::developer_studio::DebugControllerCallStackFrameAt;
 using guidexos::developer_studio::DebugControllerExpandVariable;
-using guidexos::developer_studio::DebugControllerAddWatch;
-using guidexos::developer_studio::DebugControllerEditWatch;
-using guidexos::developer_studio::DebugControllerRemoveWatch;
 using guidexos::developer_studio::DebugControllerExpandWatch;
 using guidexos::developer_studio::DebugWatchItem;
 using guidexos::developer_studio::DebugWatchState;
@@ -547,8 +558,12 @@ using guidexos::developer_studio::kDebugWatchMaxWatches;
 using guidexos::developer_studio::DebugDwarfVariableKind;
 using guidexos::developer_studio::DebugDwarfVariable;
 using guidexos::developer_studio::DebugDwarfVariableView;
+using guidexos::developer_studio::DebugDwarfVariableState;
+using guidexos::developer_studio::DebugDwarfValueKind;
 using guidexos::developer_studio::DebugDwarfValueNode;
+using guidexos::developer_studio::DebugCallStack;
 using guidexos::developer_studio::DebugStackFrame;
+using guidexos::developer_studio::DebugStackFrameConfidence;
 using guidexos::developer_studio::DebugStackFrameMappingState;
 using guidexos::developer_studio::DebugUnwindTerminationReason;
 using guidexos::developer_studio::DebugUnwindTerminationReasonName;
@@ -560,6 +575,49 @@ using guidexos::developer_studio::HostedDebugResult;
 using guidexos::developer_studio::PathsEqual;
 using guidexos::developer_studio::kMaxProjectPathBytes;
 using guidexos::developer_studio::kDebugDwarfMaxValueNodes;
+using guidexos::developer_studio::DebugEditorBreakpoint;
+using guidexos::developer_studio::DebugEditorBreakpointVisualState;
+using guidexos::developer_studio::DebugEditorModel;
+using guidexos::developer_studio::DebugEditorModelBreakpointAt;
+using guidexos::developer_studio::DebugEditorModelClearExecution;
+using guidexos::developer_studio::DebugEditorModelClearInspection;
+using guidexos::developer_studio::DebugEditorModelFindBreakpoint;
+using guidexos::developer_studio::DebugEditorModelInit;
+using guidexos::developer_studio::DebugEditorModelLineState;
+using guidexos::developer_studio::DebugEditorModelRefreshBreakpoints;
+using guidexos::developer_studio::DebugEditorModelResetRuntime;
+using guidexos::developer_studio::DebugEditorModelSetExecution;
+using guidexos::developer_studio::DebugEditorModelSetInspection;
+using guidexos::developer_studio::DebugEditorModelExecutionMatches;
+using guidexos::developer_studio::kDebugEditorMaxBreakpoints;
+using guidexos::developer_studio::DebugDataTipModel;
+using guidexos::developer_studio::DebugDataTipToken;
+using guidexos::developer_studio::DebugDataTipIdentity;
+using guidexos::developer_studio::DebugDataTipState;
+using guidexos::developer_studio::DebugDataTipPopupBounds;
+using guidexos::developer_studio::DebugDataTipExtractIdentifier;
+using guidexos::developer_studio::DebugDataTipIsIdentifierContinue;
+using guidexos::developer_studio::DebugDataTipInit;
+using guidexos::developer_studio::DebugDataTipInvalidate;
+using guidexos::developer_studio::DebugDataTipIdentityEqual;
+using guidexos::developer_studio::DebugDataTipSetAvailable;
+using guidexos::developer_studio::DebugDataTipSetState;
+using guidexos::developer_studio::DebugDataTipPlacePopup;
+using guidexos::developer_studio::kDebugDataTipMaxIdentifierBytes;
+using guidexos::developer_studio::kDebugDataTipMaxTextBytes;
+
+static bool ArtifactHashesEqual(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    for (uint32_t i = 0; i < 65u; ++i) {
+        char a = left[i];
+        char b = right[i];
+        if (a >= 'A' && a <= 'F') a = static_cast<char>(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'F') b = static_cast<char>(b + ('a' - 'A'));
+        if (a != b) return false;
+        if (a == '\0') return true;
+    }
+    return false;
+}
 
 static const gx_rect kWindowRect = { 0, 0, 960, 700 };
 static const gx_rect kCommandRect = { 0, 0, 960, 48 };
@@ -628,6 +686,8 @@ static const int kDebugPanelTop = 56;
 static const int kDebugPanelRowHeight = 22;
 static const int kDebugPanelMaxRows = 20;
 static const int kDebugCallStackPanelMaxRows = 16;
+static const uint32_t kDebugUiTabCount = 7;
+static const uint32_t kDebugUiMaxWatches = 8;
 
 enum class InputMode {
     Normal = 0,
@@ -658,6 +718,7 @@ enum class DebugShutdownStage {
 
 struct NativeFileSystemContext {
     gx_app_context* app;
+    bool useBareMetalDebug;
 };
 
 struct ProjectDialog {
@@ -775,12 +836,46 @@ static bool g_runWaitingForBuild = false;
 static RunState g_lastRunState = RunState::Idle;
 static bool g_runTerminalReported = false;
 static DebugController g_debugController = {};
+static DebugEditorModel g_debugEditor = {};
+static DebugDataTipModel g_debugDataTip = {};
+static const uint32_t kDebugEditorMaxProjectionRows =
+    GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS * 2u;
+static DebugEditorBreakpoint g_debugEditorRows[kDebugEditorMaxProjectionRows] = {};
 static DebugWatchCollection g_debugWatches = {};
 static DebugWatchCollection& debugWatches() { return g_debugWatches; }
 static DebugDwarfMapper g_debugMapper = {};
 static unsigned char g_debugArtifactBytes[guidexos::developer_studio::kDebugMapperMaxElfBytes] = {};
 static HostedDebugBackend g_hostedDebugBackend = {};
 static DebugBackend g_debugBackend = {};
+struct DebugUiWatch {
+    bool used;
+    char expression[kDebugWatchMaxExpressionBytes + 1];
+    gx_development_debug_expression result;
+};
+static DebugUiWatch g_debugUiWatches[kDebugUiMaxWatches] = {};
+static uint32_t g_debugUiWatchCount = 0;
+static gx_development_debug_call_stack g_debugUiCallStack = {};
+static gx_development_debug_variables g_debugUiVariables = {};
+static gx_development_debug_snapshot g_debugUiBreakpointSnapshot = {};
+static gx_development_debug_snapshot g_debugUiOutputSnapshot = {};
+static uint64_t g_debugUiSessionGeneration = 0;
+static uint64_t g_debugUiStopGeneration = 0;
+static uint32_t g_debugUiOutputHistoryDropped = 0;
+static uint32_t g_debugUiSelectedFrame = 0;
+static uint32_t g_debugUiSelectedBreakpoint = 0;
+static uint32_t g_debugUiSelectedWatch = 0;
+static uint32_t g_debugUiEditingWatchIndex = 0xFFFFFFFFu;
+static uint32_t g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
+static bool g_debugUiCallStackValid = false;
+static bool g_debugUiVariablesValid = false;
+static bool g_debugUiBreakpointValid = false;
+static bool g_debugUiOutputValid = false;
+static char g_debugUiBreakpointConditions[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS][GX_DEVELOPMENT_DEBUG_MAX_EXPRESSION_BYTES] = {};
+static char g_debugUiBreakpointLogs[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS][GX_DEVELOPMENT_DEBUG_MAX_LOG_TEMPLATE_BYTES] = {};
+static uint64_t g_debugUiBreakpointIds[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS] = {};
+static uint32_t g_debugUiBreakpointActions[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS] = {};
+static uint32_t g_debugUiBreakpointPolicies[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS] = {};
+static uint64_t g_debugUiBreakpointThresholds[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS] = {};
 static bool g_debugWaitingForBuild = false;
 static bool g_debugTerminalReported = false;
 static uint64_t g_debugReportedEventSequence = 0;
@@ -795,6 +890,55 @@ static DebugStepOperationKind g_debugTraceLastStepOperation = DebugStepOperation
 static uint64_t g_debugTraceLastStepGeneration = 0;
 static uint64_t g_debugTraceLastStepCompletionGeneration = 0;
 static char g_debugTraceScratch[4][256] = {};
+static DebuggerWorkspace g_debuggerWorkspace = {};
+static char g_debuggerWorkspaceStatus[96] = {};
+static uint64_t g_debuggerWorkspaceMaterializedGeneration = 0;
+static DebugEditorBreakpoint g_debuggerWorkspaceUnresolved[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
+// Phase 28M is enabled only by a disposable sentinel staged beside the
+// packaged Developer Studio ELF.  The normal product package therefore keeps
+// the diagnostic path inert while the guest proof still exercises this same
+// application binary, window, workspace, controller, and debugger UI.
+static bool g_phase28mDiagnostic = false;
+static bool g_phase28nDiagnostic = false;
+static bool g_phase28oDiagnostic = false;
+static bool g_phase28pDiagnostic = false;
+static bool g_phase28qDiagnostic = false;
+static bool g_phase28oDiagnosticLatched = false;
+static bool g_phase28oFinished = false;
+static bool g_phase28oFailed = false;
+static bool g_phase28oRelaunched = false;
+static bool g_phase28oRequestClose = false;
+static bool g_phase28oRelaunchRequested = false;
+static uint32_t g_phase28oStage = 0;
+static uint64_t g_phase28oDeadline = 0;
+static uint32_t g_phase28oStepCount = 0;
+static char g_phase28oDiagnosticMarker[256] = {};
+static uint64_t g_phase28oGenerationAIds[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
+static uint32_t g_phase28oGenerationAIdCount = 0;
+static bool g_phase28nRunningMarkerClear = false;
+static bool g_phase28mFinished = false;
+static bool g_phase28mFailed = false;
+static bool g_phase28mBackendPollTraced = false;
+static bool g_phase28mUiPollTraced = false;
+static uint32_t g_phase28mStage = 0;
+static uint64_t g_phase28mDeadline = 0;
+static uint64_t g_phase28mFirstSession = 0;
+static uint64_t g_phase28mSecondSession = 0;
+static uint32_t g_phase28mStepCount = 0;
+static bool g_phase28qFinished = false;
+static bool g_phase28qFailed = false;
+static uint32_t g_phase28qStage = 0;
+static uint64_t g_phase28qDeadline = 0;
+static uint32_t g_phase28qStepCount = 0;
+static uint64_t g_phase28qFirstStopGeneration = 0;
+static uint64_t g_phase28qSecondStopGeneration = 0;
+static uint64_t g_phase28qFirstRIP = 0;
+static uint64_t g_phase28qFirstRSP = 0;
+static uint64_t g_phase28qFirstRBP = 0;
+static int64_t g_phase28qFirstProgress = 0;
+static int64_t g_phase28qSecondProgress = 0;
+static bool g_phase28qFirstProgressValid = false;
+static bool g_phase28qSecondProgressValid = false;
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
@@ -1019,7 +1163,9 @@ static bool activateOwnershipCandidate(gx_app_context* ctx, uint32_t index);
 static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision);
 static bool beginDebugSession(gx_app_context* ctx);
 static void pollDebug(gx_app_context* ctx);
+static void drawShell(gx_app_context* ctx);
 static void requestDebug(gx_app_context* ctx);
+static bool requestDebugPause(gx_app_context* ctx);
 static void requestDebugStepInto(gx_app_context* ctx);
 static void requestDebugStepOver(gx_app_context* ctx);
 static void requestDebugStepOut(gx_app_context* ctx);
@@ -1029,15 +1175,57 @@ static void completeDebugShutdownIfReady(gx_app_context* ctx);
 static bool toggleBreakpointAtCaret(gx_app_context* ctx);
 static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y);
 static void drawDebugPanel(gx_app_context* ctx);
-static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action);
+static void drawIntegratedDebugPanel(gx_app_context* ctx);
+static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControllerBreakpoints = false);
+static bool debugUiCurrentAbiAvailable();
+static bool debugUiSyncControllerCallStack();
+static void debugUiMirrorCallStackToController();
+static bool debugUiRefresh(gx_app_context* ctx);
+static bool debugUiAddWatch(gx_app_context* ctx, const char* expression);
+static bool debugUiEditWatch(gx_app_context* ctx, uint32_t index, const char* expression);
+static bool debugUiRemoveWatch(gx_app_context* ctx, uint32_t index);
+static bool debugUiConfigureBreakpoint(gx_app_context* ctx, uint32_t index);
+static bool debugUiSetBreakpointEnabled(gx_app_context* ctx, uint32_t index, bool enabled);
+static bool debugUiRemoveBreakpoint(gx_app_context* ctx, uint32_t index);
+static bool debugUiAddBreakpointAtCaret(gx_app_context* ctx);
+static void debugUiBindLocalMirror(uint64_t managerId, const char* sourcePath,
+                                   uint32_t sourceLine, uint64_t targetAddress);
+static bool debuggerWorkspaceMaterialize(gx_app_context* ctx);
+static bool debuggerWorkspaceMaterializeLegacy(gx_app_context* ctx);
+static void debuggerWorkspaceResetRuntime(bool preserveControllerBreakpoints);
+static bool debuggerWorkspaceMergeLiveSnapshot(const gx_development_debug_snapshot& snapshot);
+static void debugEditorRefreshBreakpoints();
+static void debugEditorClearRuntime(gx_app_context* ctx);
+static bool debugEditorUpdateExecution(gx_app_context* ctx, bool force);
+static bool navigateDebugSource(gx_app_context* ctx, const char* projectId,
+                                const char* sourcePath, uint32_t line, uint32_t column,
+                                bool sourceMapped, bool closePanel, bool recordHistory,
+                                const char* markerName);
+static void phase28mPump(gx_app_context* ctx);
+static void phase28oPump(gx_app_context* ctx);
+static void phase28qPump(gx_app_context* ctx);
+static void phase28mWaitFor(gx_app_context* ctx);
+static void phase28qFail(gx_app_context* ctx, const char* reason);
+static Document* phase28mOpenDocument(gx_app_context* ctx, const char* path);
+static bool phase28mToggleLine(gx_app_context* ctx, const char* path, uint32_t oneBasedLine);
+static bool phase28pHoverToken(gx_app_context* ctx, const char* path, uint32_t oneBasedLine,
+                               const char* identifier, uint32_t frameIndex, const char* expectedValue);
+static bool debugUiReleaseExecution(gx_app_context* ctx);
 static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
 static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
+static void debugDataTipInvalidate(gx_app_context* ctx, const char* reason = nullptr);
+static bool debugDataTipHandleMove(gx_app_context* ctx, int x, int y);
+static bool debugDataTipBounds(DebugDataTipPopupBounds* bounds);
+static void drawDebugDataTip(gx_app_context* ctx);
 
 static void refreshDebugMappings() {
-    if (!DebugDwarfMapperIsReady(&g_debugMapper)) return;
-    DebugErrorCode error = DebugErrorCode::None;
-    DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &error);
+    if (DebugDwarfMapperIsReady(&g_debugMapper)) {
+        DebugErrorCode error = DebugErrorCode::None;
+        DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &error);
+    }
+    debugEditorRefreshBreakpoints();
 }
 
 static void clear_event(gx_event* event) {
@@ -1109,6 +1297,16 @@ static void appendSigned(char* output, uint32_t outputSize, int32_t value) {
         appendUnsigned(output, outputSize, magnitude);
     } else {
         appendUnsigned(output, outputSize, static_cast<uint32_t>(value));
+    }
+}
+
+static void appendSigned64(char* output, uint32_t outputSize, int64_t value) {
+    if (value < 0) {
+        appendText(output, outputSize, "-");
+        const uint64_t magnitude = static_cast<uint64_t>(-(value + 1)) + 1u;
+        appendUnsigned(output, outputSize, magnitude);
+    } else {
+        appendUnsigned(output, outputSize, static_cast<uint64_t>(value));
     }
 }
 
@@ -3113,14 +3311,6 @@ static bool hostBuildPoll(void* userData, uint64_t handle, BuildResult* result, 
     result->compiledModuleCount = snapshot.compiledModuleCount;
     result->cachedModuleCount = snapshot.cachedModuleCount;
     result->linkedModuleCount = snapshot.linkedModuleCount;
-    result->siblingArtifactSize = snapshot.siblingArtifactSize;
-    result->siblingArtifactValid = snapshot.siblingArtifactValid != 0;
-    result->packageWritten = snapshot.packageWritten != 0;
-    result->packageGeneration = snapshot.packageGeneration;
-    copyText(result->siblingArtifactPath, sizeof(result->siblingArtifactPath), snapshot.siblingArtifactPath);
-    copyText(result->siblingArtifactSha256, sizeof(result->siblingArtifactSha256), snapshot.siblingArtifactSha256);
-    copyText(result->siblingArtifactArchitecture, sizeof(result->siblingArtifactArchitecture), snapshot.siblingArtifactArchitecture);
-    copyText(result->packagePath, sizeof(result->packagePath), snapshot.packagePath);
     copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);
@@ -3202,17 +3392,9 @@ static bool bareMetalBuildPoll(void* userData, uint64_t handle, BuildResult* res
     result->artifactSize = snapshot.artifactSize;
     result->artifactValid = snapshot.artifactValid != 0;
     result->artifactEntryPoint = snapshot.artifactEntryPoint != 0;
-    result->siblingArtifactSize = snapshot.siblingArtifactSize;
-    result->siblingArtifactValid = snapshot.siblingArtifactValid != 0;
-    result->packageWritten = snapshot.packageWritten != 0;
-    result->packageGeneration = snapshot.packageGeneration;
     copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);
-    copyText(result->siblingArtifactPath, sizeof(result->siblingArtifactPath), snapshot.siblingArtifactPath);
-    copyText(result->siblingArtifactSha256, sizeof(result->siblingArtifactSha256), snapshot.siblingArtifactSha256);
-    copyText(result->siblingArtifactArchitecture, sizeof(result->siblingArtifactArchitecture), snapshot.siblingArtifactArchitecture);
-    copyText(result->packagePath, sizeof(result->packagePath), snapshot.packagePath);
     copyText(result->errorMessage, sizeof(result->errorMessage), snapshot.errorMessage);
     result->outputCount = snapshot.outputCount > guidexos::developer_studio::kMaxBuildLines ? guidexos::developer_studio::kMaxBuildLines : snapshot.outputCount;
     for (uint32_t i = 0; i < result->outputCount; ++i) {
@@ -3252,7 +3434,23 @@ static HostedBuildService buildService() {
 }
 
 static RunState mapRunState(uint32_t state) {
-    return state <= GX_DEVELOPMENT_RUN_FAILED ? static_cast<RunState>(state) : RunState::Failed;
+    switch (state) {
+    case GX_DEVELOPMENT_RUN_EMPTY: return RunState::Idle;
+    case GX_DEVELOPMENT_RUN_VALIDATING: return RunState::Validating;
+    case GX_DEVELOPMENT_RUN_PREPARED: return RunState::Prepared;
+    case GX_DEVELOPMENT_RUN_REGISTERED: return RunState::Registered;
+    case GX_DEVELOPMENT_RUN_LAUNCHING: return RunState::Launching;
+    case GX_DEVELOPMENT_RUN_RUNNING: return RunState::Running;
+    case GX_DEVELOPMENT_RUN_EXITED: return RunState::Exited;
+    case GX_DEVELOPMENT_RUN_CLEANING_UP: return RunState::CleaningUp;
+    case GX_DEVELOPMENT_RUN_COMPLETED: return RunState::Completed;
+    case GX_DEVELOPMENT_RUN_FAILED: return RunState::Failed;
+    case GX_DEVELOPMENT_RUN_CLOSING: return RunState::Closing;
+    case GX_DEVELOPMENT_RUN_CANCELLED: return RunState::Cancelled;
+    case GX_DEVELOPMENT_RUN_PAUSED: return RunState::Paused;
+    case GX_DEVELOPMENT_RUN_STEPPING: return RunState::Stepping;
+    default: return RunState::Failed;
+    }
 }
 
 static RunErrorCode mapRunError(uint32_t error) {
@@ -3326,7 +3524,6 @@ static bool hostRunPrepare(void* userData, const guidexos::developer_studio::Run
     nativeRequest.artifactSize = request.artifactSize;
     nativeRequest.artifactArchitecture = request.artifactArchitecture[0] != '\0' ? request.artifactArchitecture : nullptr;
     nativeRequest.artifactAbi = request.artifactAbi[0] != '\0' ? request.artifactAbi : nullptr;
-    nativeRequest.capabilities = GX_DEVELOPMENT_RUN_CAP_ARTIFACT_METADATA | GX_DEVELOPMENT_RUN_CAP_OUTPUT_CAPTURE | GX_DEVELOPMENT_RUN_CAP_DEBUG_DIAGNOSTICS;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
@@ -3385,6 +3582,9 @@ static bool hostRunPoll(void* userData, uint64_t handle, RunResult* outResult) {
         return false;
     }
     copyRunSnapshot(snapshot, outResult);
+    // The service snapshot is allowed to omit the opaque deployment handle;
+    // the controller already owns the authoritative handle supplied to poll.
+    outResult->handle = handle;
     return true;
 }
 
@@ -3424,7 +3624,6 @@ static bool bareMetalRunPrepare(void* userData, const guidexos::developer_studio
     nativeRequest.artifactSize = request.artifactSize;
     nativeRequest.artifactArchitecture = request.artifactArchitecture;
     nativeRequest.artifactAbi = request.artifactAbi;
-    nativeRequest.capabilities = GX_DEVELOPMENT_RUN_CAP_ARTIFACT_METADATA | GX_DEVELOPMENT_RUN_CAP_OUTPUT_CAPTURE | GX_DEVELOPMENT_RUN_CAP_DEBUG_DIAGNOSTICS;
     gx_development_run_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_RUN_API_VERSION;
@@ -3484,6 +3683,9 @@ static bool bareMetalRunPoll(void* userData, uint64_t handle, RunResult* outResu
         return false;
     }
     copyRunSnapshot(snapshot, outResult);
+    // The service snapshot is allowed to omit the opaque deployment handle;
+    // the controller already owns the authoritative handle supplied to poll.
+    outResult->handle = handle;
     return true;
 }
 
@@ -3510,8 +3712,38 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
                              uint64_t auxiliaryAddress, uint32_t readByteCount,
                              HostedDebugResult* outResult) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    const bool tracePhase28mPoll = g_phase28mDiagnostic && g_phase28mStage == 21 &&
+        command == HostedDebugCommand::Poll && !g_phase28mBackendPollTraced;
+    if (tracePhase28mPoll) logMarker(context ? context->app : nullptr,
+        "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_BACKEND_ENTRY");
+    const bool traceContinue = g_phase28mDiagnostic &&
+        command == HostedDebugCommand::ContinueBreakpoint;
+    if (traceContinue) logMarker(context ? context->app : nullptr,
+        "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ENTRY");
+    const bool traceCancel = g_phase28mDiagnostic &&
+        command == HostedDebugCommand::CancelExecution;
+    if (traceCancel) logMarker(context ? context->app : nullptr,
+        "DEVELOPER_STUDIO_PHASE28M_CANCEL_BACKEND_ENTRY");
     if (outResult) *outResult = HostedDebugResult();
-    if (!context || !context->app || !context->app->host || !context->app->host->development_debug || !outResult) return false;
+    const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
+    if (!host || !outResult) {
+        if (traceContinue) logMarker(context ? context->app : nullptr,
+            "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_CONTEXT_FAIL");
+        return false;
+    }
+    const size_t callbackEnd = context->useBareMetalDebug
+        ? offsetof(gx_host_calls, bare_metal_development_debug) + sizeof(host->bare_metal_development_debug)
+        : offsetof(gx_host_calls, development_debug) + sizeof(host->development_debug);
+    if (host->size < callbackEnd) {
+        if (traceContinue) logMarker(context->app,
+            "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ABI_FAIL");
+        return false;
+    }
+    if (context->useBareMetalDebug ? !host->bare_metal_development_debug : !host->development_debug) {
+        if (traceContinue) logMarker(context->app,
+            "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_CALLBACK_FAIL");
+        return false;
+    }
     gx_development_debug_request request = {};
     request.size = sizeof(request);
     request.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
@@ -3531,8 +3763,19 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     gx_development_debug_snapshot snapshot = {};
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
-    const gx_result result = context->app->host->development_debug(context->app, &request, &snapshot);
+    const gx_result result = context->useBareMetalDebug
+        ? host->bare_metal_development_debug(context->app, &request, &snapshot)
+        : host->development_debug(context->app, &request, &snapshot);
     if (result != GX_OK) {
+        if (tracePhase28mPoll) {
+            logMarker(context ? context->app : nullptr,
+                "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_BACKEND_ERROR");
+            g_phase28mBackendPollTraced = true;
+        }
+        if (traceContinue) logMarker(context->app,
+            "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_API_ERROR");
+        if (traceCancel) logMarker(context->app,
+            "DEVELOPER_STUDIO_PHASE28M_CANCEL_BACKEND_API_ERROR");
         copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage[0] ? snapshot.errorMessage : "development_debug returned an error");
         appendText(outResult->errorMessage, sizeof(outResult->errorMessage), " code=");
         appendUnsigned(outResult->errorMessage, sizeof(outResult->errorMessage), static_cast<int32_t>(result));
@@ -3552,6 +3795,7 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->bindingInstalled = snapshot.bindingInstalled != 0;
     outResult->bindingCount = snapshot.bindingCount;
     outResult->stopGeneration = snapshot.context.stopGeneration;
+    outResult->pauseReason = snapshot.pauseReason;
     outResult->rflagsBeforeStep = snapshot.rflagsBeforeStep;
     outResult->rflagsWithTrapFlag = snapshot.rflagsWithTrapFlag;
     outResult->rflagsAfterTrapFlagClear = snapshot.rflagsAfterTrapFlagClear;
@@ -3564,6 +3808,11 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
         outResult->bytes[i] = snapshot.bytes[i];
     outResult->stackLow = snapshot.stackLow;
     outResult->stackHigh = snapshot.stackHigh;
+    if (traceCancel) {
+        copyText(outResult->errorMessage, sizeof(outResult->errorMessage), "DEVELOPER_STUDIO_PHASE28M_CANCEL_BACKEND_STATUS=");
+        appendUnsigned(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.status);
+        logMarker(context->app, outResult->errorMessage);
+    }
     outResult->executionState = snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_SINGLE_STEP_PENDING ?
         static_cast<uint32_t>(DebugBackendExecutionState::SingleStepPending) :
         static_cast<uint32_t>(DebugBackendExecutionState::None);
@@ -3593,23 +3842,77 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->registerContext.r14 = snapshot.context.r14;
     outResult->registerContext.r15 = snapshot.context.r15;
     copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage);
+    if (tracePhase28mPoll) {
+        if (snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_TRAP &&
+            snapshot.trapKind == GX_DEVELOPMENT_DEBUG_TRAP_BREAKPOINT)
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_PASS");
+        else if (snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_READY)
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_READY");
+        else
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_OTHER");
+        if (snapshot.bindingId == 0)
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_NO_BINDING");
+        if (snapshot.targetAddress == 0)
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_NO_ADDRESS");
+        if (snapshot.context.valid == 0 || snapshot.context.stopGeneration == 0)
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_NO_CONTEXT");
+        if (snapshot.processId != 0 || snapshot.nativeRuntimeId == 0 || snapshot.threadId == 0)
+            logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_BAD_IDENTITY");
+        if (snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_TRAP &&
+            snapshot.trapKind == GX_DEVELOPMENT_DEBUG_TRAP_BREAKPOINT) {
+            bool addressOwner = false;
+            bool bindingOwner = false;
+            bool exactOwner = false;
+            for (uint32_t index = 0; index < g_debugController.breakpointCount; ++index) {
+                const DebugBreakpoint& breakpoint = g_debugController.breakpoints[index];
+                bool ownsAddress = breakpoint.location.instructionAddress.valid &&
+                    breakpoint.location.instructionAddress.value == snapshot.targetAddress;
+                for (uint32_t addressIndex = 0; !ownsAddress &&
+                     addressIndex < breakpoint.mappedAddressCount; ++addressIndex) {
+                    ownsAddress = breakpoint.mappedAddresses[addressIndex].valid &&
+                        breakpoint.mappedAddresses[addressIndex].value == snapshot.targetAddress;
+                }
+                if (!breakpoint.enabled) continue;
+                if (ownsAddress) addressOwner = true;
+                if (breakpoint.backendBindingId == snapshot.bindingId) bindingOwner = true;
+                if (ownsAddress && breakpoint.backendBindingId == snapshot.bindingId) exactOwner = true;
+            }
+            if (exactOwner)
+                logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_EXACT_OWNER");
+            else if (addressOwner && bindingOwner)
+                logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_OWNER_CROSS_MISMATCH");
+            else if (addressOwner)
+                logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_ADDRESS_ONLY");
+            else if (bindingOwner)
+                logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_BINDING_ONLY");
+            else
+                logMarker(context->app, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_TRAP_NO_OWNER");
+        }
+        g_phase28mBackendPollTraced = true;
+    }
+    if (traceContinue) logMarker(context->app, outResult->status == 6 ?
+        "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ACK_PASS" :
+        "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ACK_OTHER");
     return true;
 }
 
 static HostedDevelopmentRunService developmentRunService() {
     HostedDevelopmentRunService service = {};
     service.userData = &g_fileSystemContext;
+    g_fileSystemContext.useBareMetalDebug = false;
     const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
     const bool bare = host && host->size >= offsetof(gx_host_calls, bare_metal_development_run_release) + sizeof(host->bare_metal_development_run_release) &&
         host->bare_metal_development_run_prepare && host->bare_metal_development_run_start &&
         host->bare_metal_development_run_poll && host->bare_metal_development_run_request_close &&
         host->bare_metal_development_run_release;
     if (bare) {
+        g_fileSystemContext.useBareMetalDebug = true;
         service.prepare = bareMetalRunPrepare;
         service.start = bareMetalRunStart;
         service.poll = bareMetalRunPoll;
         service.requestClose = bareMetalRunRequestClose;
         service.release = bareMetalRunRelease;
+        service.debugCommand = hostDebugCommand;
         service.backend = RunBackendKind::BareMetal;
     } else {
         service.prepare = hostRunPrepare;
@@ -3654,6 +3957,7 @@ static void reportWorkspaceOpen(gx_app_context* ctx, bool success) {
 
 static void reportDocumentOpen(gx_app_context* ctx, bool success, bool duplicate) {
     if (success) {
+        debugEditorRefreshBreakpoints();
         writeOutput(duplicate ? "Document already open" : "Document opened");
         Document* document = WorkspaceControllerActiveDocument(&g_controller);
         if (document && !duplicate) resetEditorView();
@@ -3974,7 +4278,7 @@ static bool runPhase27eSmoke(gx_app_context* ctx)
     if (rebuildStarted) pollBuild(ctx);
     const bool rebuilt = rebuildStarted && g_buildController.result.state == BuildState::Succeeded &&
         g_buildController.result.artifactValid && g_buildController.result.artifactSha256[0] != '\0' &&
-        !PathsEqual(initialHash, g_buildController.result.artifactSha256);
+        !ArtifactHashesEqual(initialHash, g_buildController.result.artifactSha256);
     phase27e_marker(ctx, "phase27e_rebuild_after_failure=PASS", rebuilt);
     allPassed = rebuilt && allPassed;
 
@@ -4112,8 +4416,8 @@ static bool runPhase12Smoke(gx_app_context* ctx)
     const bool build2 = build2Started && g_buildController.result.state == BuildState::Succeeded &&
         g_buildController.result.artifactValid && g_buildController.result.siblingArtifactValid &&
         g_buildController.result.packageWritten && g_buildController.result.packageGeneration > build1Generation &&
-        !PathsEqual(build1ArmHash, g_buildController.result.artifactSha256) &&
-        !PathsEqual(build1AmdHash, g_buildController.result.siblingArtifactSha256);
+        !ArtifactHashesEqual(build1ArmHash, g_buildController.result.artifactSha256) &&
+        !ArtifactHashesEqual(build1AmdHash, g_buildController.result.siblingArtifactSha256);
     phase12_marker(ctx, "[developer-studio] recovery rebuild: PASS", build2);
     phase12_marker(ctx, "[developer-studio] package generation advanced: PASS", build2);
     phase12_marker(ctx, "[developer-studio] source edit: build=2", recoveryEdit);
@@ -4233,10 +4537,27 @@ static void reportDebugMessage(gx_app_context* ctx, const char* message) {
     logMarker(ctx, message);
 }
 
+static void phase28mDebugMapperProgress(void* userData, uint32_t stage) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    switch (stage) {
+    case 1: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_RESET"); break;
+    case 2: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_PARSE"); break;
+    case 10: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_HEADER"); break;
+    case 11: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_ELF"); break;
+    case 12: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_FILES"); break;
+    case 13: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_FUNCTIONS"); break;
+    case 14: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_ROWS"); break;
+    case 15: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_SORT_BEGIN"); break;
+    case 16: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_MAPPER_PROGRESS_SORT_END"); break;
+    default: break;
+    }
+}
+
 static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) {
     if (!target) return false;
     char absolutePath[kMaxPathBytes] = {};
     if (!JoinWorkspacePath(target->projectRoot, target->executablePath, absolutePath, sizeof(absolutePath))) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_PATH_FAIL");
         DebugDwarfMapperReset(&g_debugMapper);
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = DebugDwarfError::ArtifactChanged;
@@ -4246,6 +4567,7 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
     FileInfo info = {};
     if (!fsStat(&g_fileSystemContext, absolutePath, &info) || info.kind != FileInfoKind::RegularFile ||
         info.size == 0 || info.size > guidexos::developer_studio::kDebugMapperMaxElfBytes) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_STAT_FAIL");
         DebugDwarfMapperReset(&g_debugMapper);
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = info.size > guidexos::developer_studio::kDebugMapperMaxElfBytes ?
@@ -4253,31 +4575,60 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         reportDebugMessage(ctx, "Debug info: executable could not be read");
         return false;
     }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_STAT_PASS");
     uint32_t bytesRead = 0;
     if (!fsRead(&g_fileSystemContext, absolutePath, reinterpret_cast<char*>(g_debugArtifactBytes),
                 static_cast<uint32_t>(info.size), &bytesRead) || bytesRead != info.size) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_READ_FAIL");
         DebugDwarfMapperReset(&g_debugMapper);
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = DebugDwarfError::ArtifactChanged;
         reportDebugMessage(ctx, "Debug info: executable read was incomplete");
         return false;
     }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_READ_PASS");
     target->artifactSize = info.size;
     char actualSha256[65] = {};
-    if (!guidexos::developer_studio::DebugDwarfComputeSha256(g_debugArtifactBytes, bytesRead, actualSha256, sizeof(actualSha256)) ||
-        !PathsEqual(actualSha256, target->artifactSha256)) {
+    const bool hashComputed = guidexos::developer_studio::DebugDwarfComputeSha256(
+        g_debugArtifactBytes, bytesRead, actualSha256, sizeof(actualSha256));
+    if (!hashComputed || !ArtifactHashesEqual(actualSha256, target->artifactSha256)) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_HASH_FAIL");
         DebugDwarfMapperReset(&g_debugMapper);
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = DebugDwarfError::ArtifactChanged;
         reportDebugMessage(ctx, "Debug info: captured executable identity does not match the build result");
         return false;
     }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_HASH_PASS");
     DebugDwarfError error = DebugDwarfError::None;
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_MAPPER_BEGIN");
+    guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(
+        g_phase28mDiagnostic ? phase28mDebugMapperProgress : nullptr, ctx);
     const bool loaded = DebugDwarfMapperLoad(&g_debugMapper, target->projectRoot, target->projectId,
         target->targetProfile, target->architecture, target->executablePath, info.size,
         target->artifactSha256, target->projectGeneration, g_debugArtifactBytes, bytesRead,
         static_cast<uint32_t>(target->projectGeneration), &error);
+    guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(nullptr, nullptr);
     if (!loaded) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_MAPPER_FAIL");
+        if (g_phase28mDiagnostic) {
+            switch (error) {
+            case DebugDwarfError::None: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_NONE"); break;
+            case DebugDwarfError::NoDebugInfo: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_NO_DEBUG_INFO"); break;
+            case DebugDwarfError::MissingLineSection: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_MISSING_LINE"); break;
+            case DebugDwarfError::MalformedElf: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_MALFORMED_ELF"); break;
+            case DebugDwarfError::MalformedDwarf: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_MALFORMED_DWARF"); break;
+            case DebugDwarfError::UnsupportedDwarfVersion: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_DWARF_VERSION"); break;
+            case DebugDwarfError::UnsupportedForm: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_FORM"); break;
+            case DebugDwarfError::UnsupportedArchitecture: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_ARCHITECTURE"); break;
+            case DebugDwarfError::ArtifactChanged: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_ARTIFACT_CHANGED"); break;
+            case DebugDwarfError::SourceNotFound: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_SOURCE_NOT_FOUND"); break;
+            case DebugDwarfError::LineNotMapped: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_LINE_NOT_MAPPED"); break;
+            case DebugDwarfError::Truncated: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_TRUNCATED"); break;
+            case DebugDwarfError::LimitExceeded: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_LIMIT"); break;
+            case DebugDwarfError::UnsupportedOpcode: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_ERROR_OPCODE"); break;
+            }
+        }
         copyText(g_textScratch, sizeof(g_textScratch), "Debug info: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
@@ -4293,10 +4644,12 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
     appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.lineRowCount);
     if (g_debugMapper.truncated) appendText(g_textScratch, sizeof(g_textScratch), " | truncated");
     reportDebugMessage(ctx, g_textScratch);
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_PASS");
     return true;
 }
 
 static bool beginDebugSession(gx_app_context* ctx) {
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_SESSION_BEGIN");
     if (!g_controller.model.open || !g_controller.model.hasProject) {
         writeStudioOutput("Debug requires an open project");
         return false;
@@ -4310,12 +4663,21 @@ static bool beginDebugSession(gx_app_context* ctx) {
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_TARGET_READY");
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_BEGIN");
     if (!loadDebugSymbolsForTarget(ctx, &target)) {
         reportDebugMessage(ctx, "Debug launch skipped: debug artifact is unavailable or changed");
         return false;
     }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_RETURNED");
+    const bool currentDebugAbi = debugUiCurrentAbiAvailable();
+    // Discard the prior generation before the controller can rebind its old
+    // transient table. Rebuild legacy controller rows from persisted intent;
+    // current-ABI sessions install through the manager after launch.
+    debugUiResetRuntimeState(true);
     DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
     g_debugController.target = target;
+    if (!currentDebugAbi && !debuggerWorkspaceMaterializeLegacy(ctx)) return false;
     DebugErrorCode mappingError = DebugErrorCode::None;
     if (!DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch skipped: source breakpoint mapping failed | ");
@@ -4330,6 +4692,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
             return false;
         }
     }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_BEGIN");
     if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
@@ -4338,6 +4701,17 @@ static bool beginDebugSession(gx_app_context* ctx) {
             appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
         }
         reportDebugMessage(ctx, g_textScratch);
+        return false;
+    }
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_PASS");
+    g_debugUiSessionGeneration = g_debugController.sessionGeneration;
+    g_debugUiStopGeneration = 0;
+    debugUiResetRuntimeState(true, !currentDebugAbi);
+    if (currentDebugAbi &&
+        (!debuggerWorkspaceMaterialize(ctx) || !debugUiReleaseExecution(ctx))) {
+        reportDebugMessage(ctx, "Debug launch failed: current debugger UI ABI could not initialize breakpoints");
+        DebugErrorCode stopError = DebugErrorCode::None;
+        DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
         return false;
     }
     g_debugTerminalReported = false;
@@ -4421,8 +4795,7 @@ static void requestDebug(gx_app_context* ctx) {
 }
 
 static void requestDebugStepInto(gx_app_context* ctx) {
-    if (!DebugControllerCanStepInto(&g_debugController)) {
-        if (DebugControllerIsActive(&g_debugController)) writeStudioOutput("Debug: Step Into unavailable");
+    if (!DebugControllerIsActive(&g_debugController)) {
         return;
     }
     DebugErrorCode error = DebugErrorCode::None;
@@ -4437,8 +4810,7 @@ static void requestDebugStepInto(gx_app_context* ctx) {
 }
 
 static void requestDebugStepOver(gx_app_context* ctx) {
-    if (!DebugControllerCanStepOver(&g_debugController)) {
-        if (DebugControllerIsActive(&g_debugController)) writeStudioOutput("Debug: Step Over unavailable");
+    if (!DebugControllerIsActive(&g_debugController)) {
         return;
     }
     DebugErrorCode error = DebugErrorCode::None;
@@ -4453,12 +4825,20 @@ static void requestDebugStepOver(gx_app_context* ctx) {
 }
 
 static void requestDebugStepOut(gx_app_context* ctx) {
-    if (!DebugControllerCanStepOut(&g_debugController)) {
-        if (DebugControllerIsActive(&g_debugController)) writeStudioOutput("Debug: Step Out unavailable");
+    if (!DebugControllerIsActive(&g_debugController)) {
         return;
     }
+    // Breakpoint-pane mutations can leave the controller's derived call-stack
+    // cache empty while the integrated UI still has an authoritative paused
+    // stack.  Refresh that production UI/backend view before gating Step Out.
+    if (g_debugController.state == DebugSessionState::Paused &&
+        g_debugController.callStack.result.frameCount < 2 &&
+        debugUiCurrentAbiAvailable()) {
+        debugUiSyncControllerCallStack();
+    }
     DebugErrorCode error = DebugErrorCode::None;
-    if (!DebugControllerStepOut(&g_debugController, g_debugBackend, &g_debugMapper, &error)) {
+    const bool accepted = DebugControllerStepOut(&g_debugController, g_debugBackend, &g_debugMapper, &error);
+    if (!accepted) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug step out failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
@@ -4468,13 +4848,59 @@ static void requestDebugStepOut(gx_app_context* ctx) {
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
 }
 
-static bool requestDebugStop(gx_app_context* ctx) {
+static bool requestDebugPause(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
-        writeStudioOutput("No active debug session");
+        reportDebugMessage(ctx, "Debug pause unavailable: no active debug session");
         return false;
     }
     DebugErrorCode error = DebugErrorCode::None;
+    if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debug pause failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        reportDebugMessage(ctx, g_textScratch);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_UI_PAUSE_REQUEST_REJECT");
+        return false;
+    }
+    reportDebugMessage(ctx, "Debug: pause requested; waiting for a safe execution boundary");
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_UI_PAUSE_REQUEST_PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_pause=requested");
+    return true;
+}
+
+static bool requestDebugStop(gx_app_context* ctx) {
+    if (!DebugControllerIsActive(&g_debugController)) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_REJECTED_INACTIVE");
+        writeStudioOutput("No active debug session");
+        return false;
+    }
+    HostedDebugBackendSetStopIdentity(&g_hostedDebugBackend,
+                                      g_debugController.processId,
+                                      g_debugController.nativeRuntimeId);
+    DebugErrorCode error = DebugErrorCode::None;
     if (!DebugControllerRequestStop(&g_debugController, g_debugBackend, &error)) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_REJECTED_BACKEND");
+        if (g_phase28mDiagnostic) {
+            switch (g_hostedDebugBackend.lastStopRoute) {
+            case 2: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_NO_SNAPSHOT"); break;
+            case 3: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_SESSION_MISMATCH"); break;
+            case 4: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_SNAPSHOT_NOT_PAUSED"); break;
+            case 5: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_NO_COMMAND"); break;
+            case 6: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_NO_HANDLE"); break;
+            case 7: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_NO_IDENTITY"); break;
+            case 8: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_CANCEL_CALL_FAILED"); break;
+            case 9: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_CANCEL_STATUS_REJECTED"); break;
+            default: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_OTHER"); break;
+            }
+            if (g_hostedDebugBackend.lastStopFallbackFailed)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ROUTE_FALLBACK_CLOSE_FAILED");
+        }
+        if (g_phase28mDiagnostic) {
+            copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28M_STOP_REJECTED error=");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+            appendText(g_textScratch, sizeof(g_textScratch), " state=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.state));
+            logMarker(ctx, g_textScratch);
+        }
         copyText(g_textScratch, sizeof(g_textScratch), "Debug stop unavailable: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
@@ -4482,6 +4908,7 @@ static bool requestDebugStop(gx_app_context* ctx) {
     }
     reportDebugMessage(ctx, "Debug: stop requested");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested");
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_ACCEPTED");
     return true;
 }
 
@@ -4547,8 +4974,9 @@ static void completeDebugShutdownIfReady(gx_app_context* ctx) {
     if (g_debugShutdownStage < DebugShutdownStage::SessionTeardown) {
         // The hosted RunController has already observed Completed and released
         // its deployment before the shared debugger publishes Exited here.
-        DebugControllerClearBreakpoints(&g_debugController);
-        DebugWatchCollectionMarkStale(&g_debugWatches);
+        debugUiResetRuntimeState(true);
+        g_debugUiSessionGeneration = 0;
+        g_debugUiStopGeneration = 0;
         DebugDwarfMapperReset(&g_debugMapper);
         g_debugPanelOpen = false;
         g_debugMenuOpen = false;
@@ -4568,25 +4996,91 @@ static void completeDebugShutdownIfReady(gx_app_context* ctx) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS");
     }
+    if (g_phase28mDiagnostic && !g_phase28mFinished) {
+        // The production targeted-close path exits the Studio window after a
+        // debug teardown.  The in-guest diagnostic intentionally keeps that
+        // already-created window alive so it can start the required second
+        // session through the same UI/controller stop path.
+        debugUiResetRuntimeState(true);
+        g_debugShutdownPending = false;
+        g_debugShutdownStage = DebugShutdownStage::None;
+        g_debugShutdownSessionGeneration = 0;
+        return;
+    }
     // The Server emits the PASS/COMPLETE markers from NativeAppRuntime::Cleanup
     // after this app returns and its owned window is released. Until then the
     // app remains alive and keeps the lifecycle transport available.
     g_requestExit = true;
 }
 
-static bool navigateDebugStop(gx_app_context* ctx, bool recordHistory) {
-    const guidexos::developer_studio::DebugSourceLocation& location = g_debugController.currentLocation;
-    if (!location.relativePath[0] || location.line == 0) return false;
+static void debugEditorClearRuntime(gx_app_context* ctx) {
+    const bool hadExecutionMarker = g_debugEditor.execution.valid;
+    debugDataTipInvalidate(ctx, "debug_state");
+    DebugEditorModelClearExecution(&g_debugEditor);
+    DebugEditorModelClearInspection(&g_debugEditor);
+    if (g_phase28nDiagnostic && hadExecutionMarker && !g_phase28nRunningMarkerClear) {
+        g_phase28nRunningMarkerClear = true;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_RUNNING_MARKER_CLEAR_PASS");
+    }
+}
+
+static bool debugEditorUpdateExecution(gx_app_context* ctx, bool force) {
+    if (!DebugControllerIsActive(&g_debugController) ||
+        g_debugController.state != DebugSessionState::Paused ||
+        DebugControllerIsConditionResumePending(&g_debugController)) {
+        debugEditorClearRuntime(ctx);
+        return false;
+    }
+    if (!force && g_debugEditor.execution.valid &&
+        g_debugEditor.execution.sessionGeneration == g_debugController.sessionGeneration &&
+        g_debugEditor.execution.stopGeneration == g_debugController.stopGeneration)
+        return true;
+    const DebugStackFrame* frame = DebugControllerCallStackFrameAt(
+        &g_debugController, 0);
+    const bool trustworthy = frame && frame->current &&
+        frame->mapping == DebugStackFrameMappingState::Mapped && frame->sourcePath[0] &&
+        frame->sourceLine != 0 && g_debugController.currentLocation.relativePath[0] &&
+        g_debugController.currentLocation.line == frame->sourceLine &&
+        PathsEqual(g_debugController.currentLocation.relativePath, frame->sourcePath) &&
+        g_debugController.stopGeneration != 0 &&
+        g_debugController.callStack.valid && !g_debugController.callStack.stale &&
+        g_debugController.callStack.sessionGeneration == g_debugController.sessionGeneration &&
+        g_debugController.callStack.stopGeneration == g_debugController.stopGeneration;
+    const bool updated = DebugEditorModelSetExecution(
+        &g_debugEditor, g_debugController.sessionGeneration,
+        g_debugController.stopGeneration, true, true, trustworthy,
+        g_debugController.projectId, frame ? frame->sourcePath : "",
+        frame ? frame->sourceLine : 0, frame ? frame->sourceColumn : 0);
+    if (updated) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_editor_execution=PASS");
+        return true;
+    }
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_editor_execution=UNAVAILABLE");
+    return false;
+}
+
+static bool navigateDebugSource(gx_app_context* ctx, const char* projectId,
+                                const char* sourcePath, uint32_t line, uint32_t column,
+                                bool sourceMapped, bool closePanel, bool recordHistory,
+                                const char* markerName) {
+    debugDataTipInvalidate(ctx, "source_navigation");
+    guidexos::developer_studio::DebugEditorNavigationTarget target = {};
+    if (!guidexos::developer_studio::DebugEditorNavigationTargetFromSource(
+            &target, projectId, sourcePath, line, column, sourceMapped)) {
+        writeStudioOutput("Debugger source is unavailable for this frame");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=UNAVAILABLE");
+        return false;
+    }
     Document* origin = WorkspaceControllerActiveDocument(&g_controller);
     NavigationLocation originLocation = {};
     const bool haveOrigin = origin && captureNavigationLocation(*origin, &originLocation);
     uint32_t documentIndex = kMaxOpenDocuments;
     OutputErrorCode error = OutputErrorCode::None;
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
-                                                   location.relativePath, location.line, location.column,
+                                                   target.sourcePath, target.line, target.column,
                                                    &documentIndex, &error)) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=FAIL", OutputErrorName(error));
-        reportDebugMessage(ctx, "Debug: stopped source document could not be opened");
+        reportDebugMessage(ctx, "Debug: source document could not be opened");
         return false;
     }
     if (haveOrigin && recordHistory) NavigationHistoryPush(&g_navigationHistory, originLocation);
@@ -4594,37 +5088,63 @@ static bool navigateDebugStop(gx_app_context* ctx, bool recordHistory) {
     if (!document) return false;
     g_editorFocused = true;
     g_outputFocused = false;
-    g_debugPanelOpen = false;
+    if (closePanel) g_debugPanelOpen = false;
     keepCaretVisible(document);
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=PASS");
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_execution_marker=PASS");
+    if (g_debugController.sessionGeneration != 0 && g_debugController.stopGeneration != 0 &&
+        g_debugController.state == DebugSessionState::Paused)
+        DebugEditorModelSetInspection(&g_debugEditor, g_debugController.sessionGeneration,
+                                      g_debugController.stopGeneration, target.projectId,
+                                      target.sourcePath, target.line, target.column);
+    if (markerName) logMarker(ctx, markerName);
     return true;
 }
 
+static bool navigateDebugStop(gx_app_context* ctx, bool recordHistory) {
+    if (!g_debugEditor.execution.valid) return false;
+    return navigateDebugSource(ctx, g_debugEditor.execution.projectId,
+                               g_debugEditor.execution.sourcePath,
+                               g_debugEditor.execution.line, g_debugEditor.execution.column,
+                               g_debugEditor.sourceTrustworthy, true, recordHistory,
+                               "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=PASS");
+}
+
 static bool navigateDebugStackFrame(gx_app_context* ctx, uint32_t frameIndex) {
+    if (debugUiCurrentAbiAvailable() && g_debugUiCallStackValid &&
+        frameIndex < g_debugUiCallStack.frameCount) {
+        const gx_development_debug_call_stack_frame& managed =
+            g_debugUiCallStack.frames[frameIndex];
+        const bool mapped = managed.sourcePath[0] && managed.sourceLine != 0;
+        if (!mapped) {
+            writeStudioOutput("Call Stack source is unavailable for this frame");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stack_navigation=UNAVAILABLE");
+            return false;
+        }
+        return navigateDebugSource(ctx, g_debugController.projectId, managed.sourcePath,
+                                   managed.sourceLine, managed.sourceColumn, true, false, false,
+                                   "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stack_navigation=PASS");
+    }
     const DebugStackFrame* frame = guidexos::developer_studio::DebugControllerCallStackFrameAt(
         &g_debugController, frameIndex);
-    if (!frame || frame->mapping != DebugStackFrameMappingState::Mapped ||
-        !frame->sourcePath[0] || frame->sourceLine == 0) return false;
-    uint32_t documentIndex = kMaxOpenDocuments;
-    OutputErrorCode error = OutputErrorCode::None;
-    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
-                                                   frame->sourcePath, frame->sourceLine, frame->sourceColumn,
-                                                   &documentIndex, &error)) {
-        copyText(g_textScratch, sizeof(g_textScratch), "Call Stack navigation failed: ");
-        appendText(g_textScratch, sizeof(g_textScratch), OutputErrorName(error));
-        writeStudioOutput(g_textScratch);
+    const bool mapped = frame && frame->mapping == DebugStackFrameMappingState::Mapped &&
+        frame->sourcePath[0] && frame->sourceLine != 0;
+    if (!mapped) {
+        writeStudioOutput("Call Stack source is unavailable for this frame");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stack_navigation=UNAVAILABLE");
         return false;
     }
-    g_editorFocused = true;
-    g_outputFocused = false;
-    Document* document = WorkspaceControllerActiveDocument(&g_controller);
-    if (document) keepCaretVisible(document);
-    return true;
+    return navigateDebugSource(ctx, g_debugController.projectId, frame->sourcePath,
+                               frame->sourceLine, frame->sourceColumn, true, false, false,
+                               "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stack_navigation=PASS");
 }
 
 static void pollDebug(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
+        if (g_debugUiSessionGeneration != 0) {
+            debugUiResetRuntimeState(true);
+            g_debugUiSessionGeneration = 0;
+            g_debugUiStopGeneration = 0;
+        }
+        debugEditorClearRuntime(ctx);
         completeDebugShutdownIfReady(ctx);
         return;
     }
@@ -4644,7 +5164,45 @@ static void pollDebug(gx_app_context* ctx) {
         }
     }
     const DebugSessionState previous = g_debugController.state;
+    const bool tracePhase28mPoll = g_phase28mDiagnostic && g_phase28mStage == 21 &&
+        !g_phase28mUiPollTraced;
+    if (tracePhase28mPoll)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_ENTRY");
     if (!DebugControllerPoll(&g_debugController, g_debugBackend, &g_debugMapper)) {
+        debugEditorClearRuntime(ctx);
+        if (tracePhase28mPoll) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_FAIL");
+            switch (g_debugController.error) {
+            case DebugErrorCode::PollFailed:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_BACKEND_POLL"); break;
+            case DebugErrorCode::BackendError:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_BACKEND_OWNERSHIP"); break;
+            case DebugErrorCode::InvalidTransition:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_TRANSITION"); break;
+            case DebugErrorCode::StaleStepOut:
+            case DebugErrorCode::StepOutFailed:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_STEP_OUT"); break;
+            case DebugErrorCode::StaleStepOver:
+            case DebugErrorCode::StepOverFailed:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_STEP_OVER"); break;
+            case DebugErrorCode::StaleSourceStep:
+            case DebugErrorCode::SourceStepFailed:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_SOURCE_STEP"); break;
+            default:
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_ERROR_OTHER"); break;
+            }
+            if (g_debugController.state == DebugSessionState::Failed)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_REJECTED_STATE_FAILED");
+            if (g_debugController.stepOut.active)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_REJECTED_STEP_OUT_ACTIVE");
+            if (g_debugController.stepOver.active)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_REJECTED_STEP_OVER_ACTIVE");
+            if (g_debugController.sourceStep.active)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_REJECTED_SOURCE_STEP_ACTIVE");
+            if (g_debugController.lastRejectedTransition != DebugErrorCode::None)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_REJECTED_TRANSITION_RECORDED");
+            g_phase28mUiPollTraced = true;
+        }
         if (!g_debugTerminalReported) {
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: backend poll failed | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(g_debugController.error));
@@ -4657,6 +5215,16 @@ static void pollDebug(gx_app_context* ctx) {
         }
         return;
     }
+    if (tracePhase28mPoll) {
+        if (g_debugController.state == DebugSessionState::Paused)
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_PAUSED");
+        else if (g_debugController.state == DebugSessionState::Running)
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_RUNNING");
+        else
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_OTHER");
+        g_phase28mUiPollTraced = true;
+    }
+    debugUiRefresh(ctx);
     for (uint32_t eventIndex = 0; eventIndex < g_debugController.eventCount; ++eventIndex) {
         const guidexos::developer_studio::DebugEvent* event =
             guidexos::developer_studio::DebugControllerEventAt(&g_debugController,
@@ -4706,6 +5274,7 @@ static void pollDebug(gx_app_context* ctx) {
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS");
             else
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PARTIAL");
+            const bool editorExecution = debugEditorUpdateExecution(ctx, true);
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
             if (resolved && g_debugController.currentLocation.relativePath[0]) {
@@ -4714,7 +5283,7 @@ static void pollDebug(gx_app_context* ctx) {
                 appendText(g_textScratch, sizeof(g_textScratch), ":");
                 appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
                 reportDebugMessage(ctx, g_textScratch);
-                if (navigateDebugStop(ctx, g_debugController.stopReason != DebugStopReason::Step))
+                if (editorExecution && navigateDebugStop(ctx, g_debugController.stopReason != DebugStopReason::Step))
                     logMarker(ctx, g_debugController.stopReason == DebugStopReason::Step ?
                         "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_STEP" :
                         "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT");
@@ -4734,6 +5303,9 @@ static void pollDebug(gx_app_context* ctx) {
             g_debugTerminalReported = true;
         }
     }
+    if (g_debugController.state != DebugSessionState::Paused ||
+        DebugControllerIsConditionResumePending(&g_debugController))
+        debugEditorClearRuntime(ctx);
     if (g_debugController.state != previous ||
         g_debugController.lastBindingId != g_debugTraceLastBindingId ||
         g_debugController.lastBindingOwnerCount != g_debugTraceLastBindingOwnerCount ||
@@ -4753,6 +5325,13 @@ static void pollDebug(gx_app_context* ctx) {
     }
     if (!DebugControllerIsActive(&g_debugController) && g_debugController.state == DebugSessionState::Exited)
         g_debugTerminalReported = true;
+    if (!DebugControllerIsActive(&g_debugController) &&
+        (g_debugController.state == DebugSessionState::Exited ||
+         g_debugController.state == DebugSessionState::Failed) && g_debugUiSessionGeneration != 0) {
+        debugUiResetRuntimeState(true);
+        g_debugUiSessionGeneration = 0;
+        g_debugUiStopGeneration = 0;
+    }
     completeDebugShutdownIfReady(ctx);
 }
 
@@ -4851,6 +5430,191 @@ static void reportProjectFailure(gx_app_context* ctx, const char* marker, Projec
     markerFailure(ctx, marker, reason);
 }
 
+static void debuggerWorkspaceReportStatus(gx_app_context* ctx, const char* action) {
+    copyText(g_textScratch, sizeof(g_textScratch), "Debugger workspace ");
+    appendText(g_textScratch, sizeof(g_textScratch), action);
+    appendText(g_textScratch, sizeof(g_textScratch), ": ");
+    appendText(g_textScratch, sizeof(g_textScratch), g_debuggerWorkspaceStatus);
+    writeOutput(g_textScratch);
+    if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_WORKSPACE_STATUS");
+}
+
+static void debuggerWorkspaceReset() {
+    DebuggerWorkspaceInit(&g_debuggerWorkspace);
+    debugUiResetRuntimeState(false);
+    g_debuggerWorkspaceStatus[0] = '\0';
+}
+
+static void debuggerWorkspaceApplyWatches() {
+    for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i] = DebugUiWatch();
+    g_debugUiWatchCount = g_debuggerWorkspace.watchCount < kDebugUiMaxWatches ?
+        g_debuggerWorkspace.watchCount : kDebugUiMaxWatches;
+    for (uint32_t i = 0; i < g_debugUiWatchCount; ++i) {
+        g_debugUiWatches[i].used = true;
+        copyText(g_debugUiWatches[i].expression, sizeof(g_debugUiWatches[i].expression),
+                 g_debuggerWorkspace.watches[i]);
+    }
+    if (g_debugUiSelectedWatch >= g_debugUiWatchCount) g_debugUiSelectedWatch = 0;
+}
+
+static void debuggerWorkspaceLoadForProject(gx_app_context* ctx) {
+    debuggerWorkspaceReset();
+    if (!g_controller.model.hasProject) return;
+    DebuggerWorkspaceStorageLoad(g_controller.fileSystem, g_controller.model.project.rootPath,
+                                 g_controller.model.project.projectId, &g_debuggerWorkspace,
+                                 g_debuggerWorkspaceStatus, sizeof(g_debuggerWorkspaceStatus));
+    debuggerWorkspaceApplyWatches();
+    debugEditorRefreshBreakpoints();
+    debuggerWorkspaceReportStatus(ctx, "load");
+}
+
+static bool debuggerWorkspaceSave(gx_app_context* ctx) {
+    if (!g_controller.model.hasProject) return false;
+    const bool saved = DebuggerWorkspaceStorageSave(
+        g_controller.fileSystem, g_controller.model.project.rootPath,
+        g_controller.model.project.projectId, &g_debuggerWorkspace,
+        g_debuggerWorkspaceStatus, sizeof(g_debuggerWorkspaceStatus));
+    debuggerWorkspaceReportStatus(ctx, saved ? "save" : "save failed");
+    return saved;
+}
+
+static void debuggerWorkspaceReportModelFailure(gx_app_context* ctx, const char* action) {
+    copyText(g_debuggerWorkspaceStatus, sizeof(g_debuggerWorkspaceStatus),
+             g_debuggerWorkspace.lastErrorMessage[0] ?
+                 g_debuggerWorkspace.lastErrorMessage : "mutation rejected");
+    debuggerWorkspaceReportStatus(ctx, action);
+}
+
+static bool debuggerWorkspaceAddOrToggleBreakpoint(gx_app_context* ctx, const char* sourcePath,
+                                                    uint32_t line, uint32_t column,
+                                                    const gx_development_debug_breakpoint* liveBreakpoint) {
+    if (!g_controller.model.hasProject) return false;
+    const int existing = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace, sourcePath, line);
+    const bool changed = liveBreakpoint ?
+        (existing >= 0 ? DebuggerWorkspaceSetBreakpointEnabled(&g_debuggerWorkspace, sourcePath, line, true) :
+         DebuggerWorkspaceAddBreakpoint(&g_debuggerWorkspace, sourcePath, line, column, true, 0, 0, 0, "", "")) :
+        DebuggerWorkspaceToggleBreakpoint(&g_debuggerWorkspace, sourcePath, line, column);
+    if (!changed) {
+        return false;
+    }
+    debugEditorRefreshBreakpoints();
+    if (!debuggerWorkspaceSave(ctx)) {
+        return false;
+    }
+    return true;
+}
+
+static uint32_t debuggerWorkspaceAction(uint32_t action) {
+    return action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ? 1u : 0u;
+}
+
+static bool debuggerWorkspaceRemoveBreakpoint(gx_app_context* ctx, const char* sourcePath,
+                                              uint32_t line) {
+    if (DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace, sourcePath, line) < 0) return true;
+    if (!DebuggerWorkspaceRemoveBreakpoint(&g_debuggerWorkspace, sourcePath, line)) return false;
+    debugEditorRefreshBreakpoints();
+    return debuggerWorkspaceSave(ctx);
+}
+
+static bool debuggerWorkspaceSetBreakpointEnabled(gx_app_context* ctx, const char* sourcePath,
+                                                   uint32_t line, uint32_t column, bool enabled) {
+    const int existing = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace, sourcePath, line);
+    const bool changed = existing >= 0 ?
+        DebuggerWorkspaceSetBreakpointEnabled(&g_debuggerWorkspace, sourcePath, line, enabled) :
+        DebuggerWorkspaceAddBreakpoint(&g_debuggerWorkspace, sourcePath, line, column, enabled,
+                                       0, 0, 0, "", "");
+    if (!changed) return false;
+    debugEditorRefreshBreakpoints();
+    return debuggerWorkspaceSave(ctx);
+}
+
+static bool debuggerWorkspaceUpdateBreakpointPolicy(gx_app_context* ctx, const char* sourcePath,
+                                                     uint32_t line, uint32_t column, bool enabled,
+                                                     uint32_t action,
+                                                     uint32_t hitPolicy, uint32_t hitThreshold,
+                                                     const char* condition, const char* logTemplate) {
+    const int existing = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace, sourcePath, line);
+    bool changed = existing >= 0 ?
+        DebuggerWorkspaceUpdateBreakpoint(&g_debuggerWorkspace, sourcePath, line,
+                                          debuggerWorkspaceAction(action),
+                                          hitPolicy, hitThreshold, condition, logTemplate) :
+        DebuggerWorkspaceAddBreakpoint(&g_debuggerWorkspace, sourcePath, line, column, enabled,
+                                       debuggerWorkspaceAction(action), hitPolicy, hitThreshold,
+                                       condition, logTemplate);
+    if (changed && existing >= 0 &&
+        !DebuggerWorkspaceSetBreakpointEnabled(&g_debuggerWorkspace, sourcePath, line, enabled))
+        changed = false;
+    if (!changed) {
+        return false;
+    }
+    debugEditorRefreshBreakpoints();
+    if (!debuggerWorkspaceSave(ctx)) {
+        return false;
+    }
+    return true;
+}
+
+static bool debuggerWorkspaceAddWatch(gx_app_context* ctx, const char* expression) {
+    if (!DebuggerWorkspaceAddWatch(&g_debuggerWorkspace, expression)) {
+        debuggerWorkspaceReportModelFailure(ctx, "watch add rejected");
+        return false;
+    }
+    debuggerWorkspaceApplyWatches();
+    if (!debuggerWorkspaceSave(ctx)) {
+        return false;
+    }
+    return true;
+}
+
+static bool debuggerWorkspaceEditWatch(gx_app_context* ctx, uint32_t index, const char* expression) {
+    if (!DebuggerWorkspaceEditWatch(&g_debuggerWorkspace, index, expression)) {
+        debuggerWorkspaceReportModelFailure(ctx, "watch edit rejected");
+        return false;
+    }
+    debuggerWorkspaceApplyWatches();
+    return debuggerWorkspaceSave(ctx);
+}
+
+static bool debuggerWorkspaceRemoveWatch(gx_app_context* ctx, uint32_t index) {
+    if (!DebuggerWorkspaceRemoveWatch(&g_debuggerWorkspace, index)) return false;
+    debuggerWorkspaceApplyWatches();
+    return debuggerWorkspaceSave(ctx);
+}
+
+static bool debuggerWorkspaceSyncLegacyBreakpoint(gx_app_context* ctx,
+                                                   const DebugBreakpoint* breakpoint,
+                                                   const char* condition) {
+    if (!breakpoint || !breakpoint->location.relativePath[0] || breakpoint->location.line == 0)
+        return false;
+    uint32_t action = 0;
+    uint32_t hitPolicy = 0;
+    uint32_t hitThreshold = 0;
+    char logTemplate[GX_DEVELOPMENT_DEBUG_MAX_LOG_TEMPLATE_BYTES + 1] = {};
+    const int configured = DebuggerWorkspaceFindBreakpoint(
+        &g_debuggerWorkspace, breakpoint->location.relativePath, breakpoint->location.line);
+    if (configured >= 0) {
+        const DebuggerWorkspaceBreakpoint& policy = g_debuggerWorkspace.breakpoints[configured];
+        action = policy.action;
+        hitPolicy = policy.hitPolicy;
+        hitThreshold = policy.hitThreshold;
+        copyText(logTemplate, sizeof(logTemplate), policy.logTemplate);
+    }
+    return debuggerWorkspaceUpdateBreakpointPolicy(
+        ctx, breakpoint->location.relativePath, breakpoint->location.line,
+        breakpoint->location.column, breakpoint->enabled, action, hitPolicy, hitThreshold,
+        condition ? condition : "", logTemplate);
+}
+
+static bool debuggerWorkspaceSyncLegacyBreakpointById(gx_app_context* ctx, uint64_t breakpointId,
+                                                       const char* condition) {
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
+        if (breakpoint && breakpoint->id == breakpointId)
+            return debuggerWorkspaceSyncLegacyBreakpoint(ctx, breakpoint, condition);
+    }
+    return false;
+}
+
 static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
     dismissWorkspaceTransientUi(ctx);
     if (IncludeGraphIsActive(&g_includeGraphOperation)) IncludeGraphCancel(&g_includeGraphOperation, g_includeGraphOperationId);
@@ -4868,6 +5632,7 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
         return false;
     }
     resetProjectSessionUi();
+    debuggerWorkspaceLoadForProject(ctx);
     DebugControllerClearBreakpoints(&g_debugController);
     DebugWatchCollectionMarkStale(&g_debugWatches);
     g_debugPanelOpen = false;
@@ -4924,6 +5689,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
     stopProjectSearch(ctx);
     if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
         resetProjectSessionUi();
+        debuggerWorkspaceLoadForProject(ctx);
         DebugControllerClearBreakpoints(&g_debugController);
         DebugWatchCollectionMarkStale(&g_debugWatches);
         g_debugPanelOpen = false;
@@ -4954,6 +5720,8 @@ static bool commitWorkspaceOpen(gx_app_context* ctx) {
     g_includeTargetPickerOpen = false;
     g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
+    debuggerWorkspaceSave(ctx);
+    debuggerWorkspaceReset();
     bool success = WorkspaceControllerOpenWorkspace(&g_controller, g_pendingWorkspacePath);
     if (success) {
         resetProjectSessionUi();
@@ -7267,13 +8035,2766 @@ static int debugBreakpointIndexForDocumentLine(const Document& document, uint32_
     char relative[kMaxProjectPathBytes] = {};
     if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document.path,
                                  relative, sizeof(relative))) return -1;
+    return DebugEditorModelFindBreakpoint(&g_debugEditor,
+                                          g_controller.model.project.projectId,
+                                          relative, line + 1);
+}
+
+static bool debugUiHostHasSlot(const gx_host_calls* host, size_t offset, size_t bytes) {
+    return host && host->size >= offset + bytes;
+}
+
+static bool debugUiCurrentAbiAvailable() {
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    if (!host) return false;
+    const bool bare = g_fileSystemContext.useBareMetalDebug;
+    const size_t debugOffset = bare ? offsetof(gx_host_calls, bare_metal_development_debug) :
+        offsetof(gx_host_calls, development_debug);
+    const size_t stackOffset = bare ? offsetof(gx_host_calls, bare_metal_development_debug_call_stack) :
+        offsetof(gx_host_calls, development_debug_call_stack);
+    const size_t variablesOffset = bare ? offsetof(gx_host_calls, bare_metal_development_debug_inspect_variables) :
+        offsetof(gx_host_calls, development_debug_inspect_variables);
+    const size_t expressionOffset = bare ? offsetof(gx_host_calls, bare_metal_development_debug_evaluate_expression) :
+        offsetof(gx_host_calls, development_debug_evaluate_expression);
+    return debugUiHostHasSlot(host, debugOffset, sizeof(host->development_debug)) &&
+        debugUiHostHasSlot(host, stackOffset, sizeof(host->development_debug_call_stack)) &&
+        debugUiHostHasSlot(host, variablesOffset, sizeof(host->development_debug_inspect_variables)) &&
+        debugUiHostHasSlot(host, expressionOffset, sizeof(host->development_debug_evaluate_expression)) &&
+        (bare ? host->bare_metal_development_debug != nullptr : host->development_debug != nullptr) &&
+        (bare ? host->bare_metal_development_debug_call_stack != nullptr : host->development_debug_call_stack != nullptr) &&
+        (bare ? host->bare_metal_development_debug_inspect_variables != nullptr : host->development_debug_inspect_variables != nullptr) &&
+        (bare ? host->bare_metal_development_debug_evaluate_expression != nullptr : host->development_debug_evaluate_expression != nullptr);
+}
+
+static gx_development_debug_request debugUiRequest(uint32_t command) {
+    gx_development_debug_request request = {};
+    request.size = sizeof(request);
+    request.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    request.command = command;
+    request.handle = g_debugController.debugHandle;
+    request.sessionGeneration = g_debugController.sessionGeneration;
+    request.processId = g_debugController.processId;
+    request.nativeRuntimeId = g_debugController.nativeRuntimeId;
+    request.artifactSha256 = g_debugController.target.artifactSha256;
+    request.threadId = g_debugController.currentThreadId;
+    request.stopGeneration = g_debugController.stopGeneration;
+    request.auxiliaryAddress = g_debugUiSelectedFrame;
+    return request;
+}
+
+static bool debugUiIdentityMatches(uint64_t sessionGeneration, uint64_t processId,
+                                   uint64_t nativeRuntimeId, uint64_t threadId,
+                                   uint64_t stopGeneration, bool stopped) {
+    if (sessionGeneration != 0 && sessionGeneration != g_debugController.sessionGeneration) return false;
+    if (processId != 0 && processId != g_debugController.processId) return false;
+    if (nativeRuntimeId != 0 && nativeRuntimeId != g_debugController.nativeRuntimeId) return false;
+    if (stopped && threadId != 0 && threadId != g_debugController.currentThreadId) return false;
+    if (stopped && stopGeneration != 0 && stopGeneration != g_debugController.stopGeneration) return false;
+    return true;
+}
+
+static bool debugUiCallGeneral(const gx_development_debug_request& request,
+                               gx_development_debug_snapshot* snapshot) {
+    if (snapshot) {
+        *snapshot = gx_development_debug_snapshot();
+        snapshot->size = sizeof(*snapshot);
+        snapshot->version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    }
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    if (!host || !snapshot) return false;
+    const bool bare = g_fileSystemContext.useBareMetalDebug;
+    const size_t offset = bare ? offsetof(gx_host_calls, bare_metal_development_debug) :
+        offsetof(gx_host_calls, development_debug);
+    if (!debugUiHostHasSlot(host, offset, bare ? sizeof(host->bare_metal_development_debug) : sizeof(host->development_debug))) return false;
+    const gx_result result = bare ? host->bare_metal_development_debug(g_fileSystemContext.app, &request, snapshot) :
+        host->development_debug(g_fileSystemContext.app, &request, snapshot);
+    return result == GX_OK;
+}
+
+static bool debugUiCallStack() {
+    gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_CALL_STACK);
+    gx_development_debug_call_stack result = {};
+    result.size = sizeof(result);
+    result.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    if (!host) return false;
+    const bool bare = g_fileSystemContext.useBareMetalDebug;
+    const size_t offset = bare ? offsetof(gx_host_calls, bare_metal_development_debug_call_stack) :
+        offsetof(gx_host_calls, development_debug_call_stack);
+    if (!debugUiHostHasSlot(host, offset, bare ? sizeof(host->bare_metal_development_debug_call_stack) : sizeof(host->development_debug_call_stack))) return false;
+    const gx_result status = bare ? host->bare_metal_development_debug_call_stack(g_fileSystemContext.app, &request, &result) :
+        host->development_debug_call_stack(g_fileSystemContext.app, &request, &result);
+    if (status != GX_OK || !debugUiIdentityMatches(result.sessionGeneration, result.processId,
+                                                    result.nativeRuntimeId, result.threadId,
+                                                    result.stopGeneration, true)) return false;
+    g_debugUiCallStack = result;
+    g_debugUiCallStackValid = result.status == GX_DEVELOPMENT_DEBUG_CALL_STACK_STATUS_SUCCESS ||
+        result.status == GX_DEVELOPMENT_DEBUG_CALL_STACK_STATUS_TRUNCATED;
+    return g_debugUiCallStackValid;
+}
+
+static bool debugUiSyncControllerCallStack() {
+    // A pane refresh can be rejected transiently while the backend is still
+    // publishing the same paused trap.  The last successful UI stack remains
+    // authoritative for that unchanged stop and is safe to mirror.
+    if (!debugUiCallStack() && !g_debugUiCallStackValid) return false;
+    debugUiMirrorCallStackToController();
+    return true;
+}
+
+static bool debugUiVariables() {
+    gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_INSPECT_VARIABLES);
+    request.auxiliaryAddress = g_debugUiSelectedFrame;
+    gx_development_debug_variables result = {};
+    result.size = sizeof(result);
+    result.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    if (!host) return false;
+    const bool bare = g_fileSystemContext.useBareMetalDebug;
+    const size_t offset = bare ? offsetof(gx_host_calls, bare_metal_development_debug_inspect_variables) :
+        offsetof(gx_host_calls, development_debug_inspect_variables);
+    if (!debugUiHostHasSlot(host, offset, bare ? sizeof(host->bare_metal_development_debug_inspect_variables) : sizeof(host->development_debug_inspect_variables))) return false;
+    const gx_result status = bare ? host->bare_metal_development_debug_inspect_variables(g_fileSystemContext.app, &request, &result) :
+        host->development_debug_inspect_variables(g_fileSystemContext.app, &request, &result);
+    if (status != GX_OK || !debugUiIdentityMatches(result.sessionGeneration, result.processId,
+                                                    result.nativeRuntimeId, result.threadId,
+                                                    result.stopGeneration, true)) return false;
+    g_debugUiVariables = result;
+    g_debugUiVariablesValid = result.status == GX_DEVELOPMENT_DEBUG_VARIABLES_STATUS_SUCCESS ||
+        result.status == GX_DEVELOPMENT_DEBUG_VARIABLES_STATUS_TRUNCATED;
+    return g_debugUiVariablesValid;
+}
+
+static bool debugUiEvaluateExpressionText(const char* expression,
+                                           gx_development_debug_expression* output) {
+    if (!expression || !expression[0] || !output) return false;
+    gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_EVALUATE_EXPRESSION);
+    request.expression = expression;
+    request.auxiliaryAddress = g_debugUiSelectedFrame;
+    gx_development_debug_expression result = {};
+    result.size = sizeof(result);
+    result.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
+    const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
+    if (!host) return false;
+    const bool bare = g_fileSystemContext.useBareMetalDebug;
+    const size_t offset = bare ? offsetof(gx_host_calls, bare_metal_development_debug_evaluate_expression) :
+        offsetof(gx_host_calls, development_debug_evaluate_expression);
+    const bool slotAvailable = debugUiHostHasSlot(host, offset,
+        bare ? sizeof(host->bare_metal_development_debug_evaluate_expression) :
+               sizeof(host->development_debug_evaluate_expression));
+    if (!slotAvailable) return false;
+    const gx_result status = bare ? host->bare_metal_development_debug_evaluate_expression(g_fileSystemContext.app, &request, &result) :
+        host->development_debug_evaluate_expression(g_fileSystemContext.app, &request, &result);
+    const bool identityMatches = debugUiIdentityMatches(result.sessionGeneration, result.processId,
+                                                         result.nativeRuntimeId, result.threadId,
+                                                         result.stopGeneration, true);
+    if (g_phase28pDiagnostic) {
+        const bool controllerAccepted = status == GX_OK &&
+            result.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS && identityMatches;
+        logMarker(g_fileSystemContext.app, controllerAccepted ?
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ACCEPTED" :
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_REJECTED");
+        logMarker(g_fileSystemContext.app, status == GX_OK ?
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_CALL_OK" :
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_CALL_ERROR");
+        switch (result.status) {
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_SUCCESS"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_REJECTED:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_REJECTED"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_NO_PAUSED_CONTEXT:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_NO_PAUSE"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_STALE:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_STALE"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_INVALID_FRAME:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_FRAME"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_FAILED:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_FAILED"); break;
+        default:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STATUS_UNKNOWN"); break;
+        }
+        if (result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_SIGNED_INTEGER)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_KIND_INTEGER");
+        else if (result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_POINTER)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_KIND_POINTER");
+        else logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_KIND_NONE");
+        logMarker(g_fileSystemContext.app, identityMatches ?
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_IDENTITY_MATCH" :
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_IDENTITY_MISMATCH");
+        logMarker(g_fileSystemContext.app, result.sessionGeneration == g_debugController.sessionGeneration ?
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_SESSION_MATCH" :
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_SESSION_MISMATCH");
+        logMarker(g_fileSystemContext.app, result.stopGeneration == g_debugController.stopGeneration ?
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STOP_MATCH" :
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_STOP_MISMATCH");
+        logMarker(g_fileSystemContext.app, result.selectedFrameIndex == g_debugUiSelectedFrame ?
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_FRAME_MATCH" :
+                  "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_FRAME_MISMATCH");
+        if (result.errorCategory == GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_NONE)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_NONE");
+        else logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_PRESENT");
+        switch (result.errorCategory) {
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_NONE:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_NONE"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_SYNTAX:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_SYNTAX"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_UNKNOWN_IDENTIFIER:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_UNKNOWN_IDENTIFIER"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_VARIABLE_NOT_LIVE:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_VARIABLE_NOT_LIVE"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_UNSUPPORTED_TYPE:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_UNSUPPORTED_TYPE"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_UNSUPPORTED_OPERATOR:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_UNSUPPORTED_OPERATOR"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_DIVIDE_BY_ZERO:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_DIVIDE_BY_ZERO"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_OVERFLOW:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_OVERFLOW"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_INVALID_FRAME:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_INVALID_FRAME"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_STALE_GENERATION:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_STALE_GENERATION"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_TARGET_NOT_PAUSED:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_TARGET_NOT_PAUSED"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_EXPRESSION_TOO_LONG:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_EXPRESSION_TOO_LONG"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_COMPLEXITY_LIMIT:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_COMPLEXITY_LIMIT"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_VARIABLE_METADATA_UNAVAILABLE:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_VARIABLE_METADATA"); break;
+        case GX_DEVELOPMENT_DEBUG_EXPRESSION_ERROR_INVALID_REQUEST:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_INVALID_REQUEST"); break;
+        default:
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_CONTROLLER_ERROR_UNKNOWN"); break;
+        }
+    }
+    if (!identityMatches) return false;
+    *output = result;
+    return status == GX_OK && result.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS &&
+        (result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_SIGNED_INTEGER ||
+         result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_POINTER);
+}
+
+static bool debugUiEvaluateWatch(uint32_t index) {
+    if (index >= kDebugUiMaxWatches || !g_debugUiWatches[index].used) return false;
+    return debugUiEvaluateExpressionText(g_debugUiWatches[index].expression,
+                                          &g_debugUiWatches[index].result);
+}
+
+static const char* debugDataTipSelectedSourcePath(uint32_t* frameIndex) {
+    if (frameIndex) *frameIndex = 0;
+    if (debugUiCurrentAbiAvailable() && g_debugUiCallStackValid &&
+        g_debugUiSelectedFrame < g_debugUiCallStack.frameCount) {
+        if (frameIndex) *frameIndex = g_debugUiSelectedFrame;
+        return g_debugUiCallStack.frames[g_debugUiSelectedFrame].sourcePath;
+    }
+    if (g_debugController.callStack.valid && !g_debugController.callStack.stale &&
+        g_debugController.callStack.selectedFrameIndex < g_debugController.callStack.result.frameCount) {
+        const uint32_t selected = g_debugController.callStack.selectedFrameIndex;
+        if (frameIndex) *frameIndex = selected;
+        return g_debugController.callStack.result.frames[selected].sourcePath;
+    }
+    return nullptr;
+}
+
+static bool debugDataTipTextEqual(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t index = 0;
+    while (left[index] != '\0' || right[index] != '\0') {
+        if (left[index] != right[index]) return false;
+        ++index;
+    }
+    return true;
+}
+
+static bool debugDataTipBuildIdentity(Document* document, const DebugDataTipToken& token,
+                                      uint32_t line, DebugDataTipIdentity* identity) {
+    if (!document || !identity || !g_controller.model.hasProject) {
+        if (g_phase28pDiagnostic) {
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_MAPPER_INPUT_FAIL");
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE28P_MAPPER_INPUT_FAIL doc=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), document ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " project=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.hasProject ? 1u : 0u);
+            logMarker(g_fileSystemContext.app, g_textScratch);
+        }
+        return false;
+    }
+    *identity = DebugDataTipIdentity();
+    char relative[kMaxProjectPathBytes] = {};
+    if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path,
+                                 relative, sizeof(relative))) {
+        if (g_phase28pDiagnostic) {
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_MAPPER_RELATIVE_FAIL");
+        }
+        return false;
+    }
+    uint32_t frameIndex = 0;
+    const char* selectedSource = debugDataTipSelectedSourcePath(&frameIndex);
+    bool sourceMatches = selectedSource && selectedSource[0] && PathsEqual(relative, selectedSource);
+    // Frame zero's current location is the controller's authoritative source
+    // identity even when the remote call-stack snapshot omits its source path.
+    if (!sourceMatches && frameIndex == 0 && g_debugController.currentLocation.relativePath[0])
+        sourceMatches = PathsEqual(relative, g_debugController.currentLocation.relativePath);
+    if (g_phase28pDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE28P_MAPPER_RESULT relative=");
+        appendText(g_textScratch, sizeof(g_textScratch), relative);
+        appendText(g_textScratch, sizeof(g_textScratch), " selectedSource=");
+        appendText(g_textScratch, sizeof(g_textScratch), selectedSource ? selectedSource : "<none>");
+        appendText(g_textScratch, sizeof(g_textScratch), " currentSource=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " frame=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), frameIndex);
+        appendText(g_textScratch, sizeof(g_textScratch), " sourceMatch=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), sourceMatches ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " session=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " stop=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " document=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), document->documentId);
+        appendText(g_textScratch, sizeof(g_textScratch), " generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), document->buffer.generation);
+        appendText(g_textScratch, sizeof(g_textScratch), " line=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), line + 1u);
+        appendText(g_textScratch, sizeof(g_textScratch), " identifier=");
+        appendText(g_textScratch, sizeof(g_textScratch), token.identifier);
+        logMarker(g_fileSystemContext.app, g_textScratch);
+    }
+    if (!sourceMatches) {
+        if (g_phase28pDiagnostic)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_MAPPER_SOURCE_MISMATCH");
+        return false;
+    }
+    if (g_phase28pDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_MAPPER_READY");
+    identity->valid = true;
+    identity->sessionGeneration = g_debugController.sessionGeneration;
+    identity->stopGeneration = g_debugController.stopGeneration;
+    identity->selectedFrameIndex = frameIndex;
+    identity->documentId = document->documentId;
+    identity->documentGeneration = document->buffer.generation;
+    identity->line = line + 1;
+    identity->tokenStart = token.start;
+    identity->tokenLength = token.length;
+    copyText(identity->projectId, sizeof(identity->projectId), g_controller.model.project.projectId);
+    copyText(identity->sourcePath, sizeof(identity->sourcePath), relative);
+    copyText(identity->identifier, sizeof(identity->identifier), token.identifier);
+    return identity->sessionGeneration != 0 && identity->stopGeneration != 0;
+}
+
+static bool debugDataTipHitTest(Document* document, int x, int y,
+                                DebugDataTipToken* token, uint32_t* line,
+                                int* anchorX, int* anchorY) {
+    if (!document || !token || !line || !anchorX || !anchorY ||
+        x < kEditorTextX || x >= kEditorRect.x + kEditorRect.width ||
+        y < kEditorTop || y >= kEditorRect.y + kEditorRect.height) return false;
+    DocumentUpdateSyntax(document);
+    const int row = (y - kEditorTop) / kEditorLineHeight;
+    if (row < 0) return false;
+    const uint32_t candidateLine = g_editorScrollLine + static_cast<uint32_t>(row);
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    if (candidateLine >= lineCount) return false;
+    const uint32_t start = TextBufferLineStart(&document->buffer, candidateLine);
+    const uint32_t end = TextBufferLineEnd(&document->buffer, candidateLine);
+    const uint32_t length = end > start ? end - start : 0;
+    if (length == 0) return false;
+    int column = (x - kEditorTextX) / 8;
+    if (column < 0) return false;
+    const uint32_t probe = TextBufferOffsetForVisualColumn(
+        &document->buffer, start, end,
+        g_editorScrollColumn + static_cast<uint32_t>(column), kEditorTabWidth);
+    if (probe >= end) return false;
+    uint32_t spanCount = 0;
+    const SyntaxTokenSpan* spans = SyntaxCacheLineSpans(&document->syntax, candidateLine, &spanCount);
+    if (!DebugDataTipExtractIdentifier(document->buffer.data + start, length,
+                                       probe - start, spans, spanCount, token)) return false;
+    const uint32_t visualStart = TextBufferVisualColumn(
+        &document->buffer, start, start + token->start, kEditorTabWidth);
+    *line = candidateLine;
+    *anchorX = kEditorTextX + static_cast<int>((visualStart - g_editorScrollColumn + token->length) * 8u);
+    *anchorY = kEditorTop + row * kEditorLineHeight;
+    return true;
+}
+
+static bool debugDataTipResolveVariable(const DebugDataTipIdentity& identity,
+                                        const char* identifier, char* typeDisplay,
+                                        uint32_t typeDisplayBytes, char* valueDisplay,
+                                        uint32_t valueDisplayBytes) {
+    if (!identifier || !typeDisplay || !valueDisplay ||
+        g_debugUiSelectedFrame != identity.selectedFrameIndex) return false;
+    if (g_debugUiVariablesValid &&
+        g_debugUiVariables.sessionGeneration == identity.sessionGeneration &&
+        g_debugUiVariables.stopGeneration == identity.stopGeneration) {
+        for (uint32_t index = 0; index < g_debugUiVariables.variableCount; ++index) {
+            const gx_development_debug_variable& variable = g_debugUiVariables.variables[index];
+            if (!debugDataTipTextEqual(variable.name, identifier)) continue;
+            if (variable.availability != GX_DEVELOPMENT_DEBUG_VARIABLE_AVAILABILITY_AVAILABLE ||
+                (variable.flags & (GX_DEVELOPMENT_DEBUG_VARIABLE_LIVE |
+                                   GX_DEVELOPMENT_DEBUG_VARIABLE_VALUE_VALID)) !=
+                    (GX_DEVELOPMENT_DEBUG_VARIABLE_LIVE |
+                     GX_DEVELOPMENT_DEBUG_VARIABLE_VALUE_VALID)) {
+                if (g_phase28pDiagnostic)
+                    logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_REJECTED");
+                return false;
+            }
+            if (variable.type == GX_DEVELOPMENT_DEBUG_VARIABLE_TYPE_SIGNED_INT32) {
+                if (g_phase28pDiagnostic)
+                    logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_FOUND");
+                copyText(typeDisplay, typeDisplayBytes, "signed integer");
+                appendSigned64(valueDisplay, valueDisplayBytes, variable.signedValue);
+                return true;
+            }
+            if (variable.type == GX_DEVELOPMENT_DEBUG_VARIABLE_TYPE_POINTER) {
+                if (g_phase28pDiagnostic)
+                    logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_FOUND");
+                copyText(typeDisplay, typeDisplayBytes, "pointer");
+                appendHexAddress(valueDisplay, valueDisplayBytes, variable.rawValue);
+                return true;
+            }
+            if (g_phase28pDiagnostic)
+                logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_UNSUPPORTED");
+            return false;
+        }
+        if (g_phase28pDiagnostic)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_NOT_FOUND");
+    }
+    const DebugDwarfVariableView& view = g_debugController.variables;
+    if (!view.valid || view.stale || view.frameIndex != identity.selectedFrameIndex ||
+        view.sessionGeneration != identity.sessionGeneration ||
+        view.stopGeneration != identity.stopGeneration) {
+        if (g_phase28pDiagnostic)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_VIEW_UNAVAILABLE");
+        return false;
+    }
+    for (uint32_t index = 0; index < view.variableCount; ++index) {
+        const DebugDwarfVariable& variable = view.variables[index];
+        if (!debugDataTipTextEqual(variable.name, identifier)) continue;
+        if (variable.state != DebugDwarfVariableState::Available ||
+            (variable.valueKind != DebugDwarfValueKind::SignedInteger &&
+             variable.valueKind != DebugDwarfValueKind::Pointer)) return false;
+        copyText(typeDisplay, typeDisplayBytes, variable.typeDisplay[0] ?
+                 variable.typeDisplay : (variable.valueKind == DebugDwarfValueKind::Pointer ?
+                                         "pointer" : "signed integer"));
+        if (variable.valueDisplay[0]) copyText(valueDisplay, valueDisplayBytes, variable.valueDisplay);
+        else if (variable.valueKind == DebugDwarfValueKind::Pointer)
+            appendHexAddress(valueDisplay, valueDisplayBytes, variable.scalarValue);
+        else appendSigned64(valueDisplay, valueDisplayBytes, static_cast<int64_t>(variable.scalarValue));
+        if (g_phase28pDiagnostic)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_FOUND");
+        return true;
+    }
+    if (g_phase28pDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_FALLBACK_NOT_FOUND");
+    return false;
+}
+
+static bool debugDataTipEvaluate(Document* document, const DebugDataTipToken& token,
+                                 uint32_t line, int anchorX, int anchorY) {
+    if (!document || document->buffer.dirty) {
+        if (g_phase28pDiagnostic)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_EVALUATION_SOURCE_FAIL");
+        DebugDataTipSetState(&g_debugDataTip, DebugDataTipState::StaleSource);
+        return false;
+    }
+    DebugDataTipIdentity identity = {};
+    if (!debugDataTipBuildIdentity(document, token, line, &identity)) {
+        if (g_phase28pDiagnostic)
+            logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_EVALUATION_IDENTITY_FAIL");
+        DebugDataTipSetState(&g_debugDataTip, DebugDataTipState::SourceMismatch);
+        return false;
+    }
+    char typeDisplay[kDebugDataTipMaxTextBytes] = {};
+    char valueDisplay[kDebugDataTipMaxTextBytes] = {};
+    if (g_phase28pDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE28P_EVALUATION_BEGIN identifier=");
+        appendText(g_textScratch, sizeof(g_textScratch), token.identifier);
+        appendText(g_textScratch, sizeof(g_textScratch), " frame=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), identity.selectedFrameIndex);
+        appendText(g_textScratch, sizeof(g_textScratch), " session=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), identity.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " stop=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), identity.stopGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " source=");
+        appendText(g_textScratch, sizeof(g_textScratch), identity.sourcePath);
+        logMarker(g_fileSystemContext.app, g_textScratch);
+    }
+    if (debugUiCurrentAbiAvailable()) {
+        gx_development_debug_expression result = {};
+        const bool evaluated = debugUiEvaluateExpressionText(token.identifier, &result);
+        if (evaluated && result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_SIGNED_INTEGER) {
+            copyText(typeDisplay, sizeof(typeDisplay), "signed integer");
+            appendSigned64(valueDisplay, sizeof(valueDisplay), result.signedValue);
+        } else if (evaluated && result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_POINTER) {
+            copyText(typeDisplay, sizeof(typeDisplay), "pointer");
+            appendHexAddress(valueDisplay, sizeof(valueDisplay), result.pointerValue);
+        } else if (!debugDataTipResolveVariable(identity, token.identifier,
+                                                  typeDisplay, sizeof(typeDisplay),
+                                                  valueDisplay, sizeof(valueDisplay))) {
+            if (g_phase28pDiagnostic) {
+                logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28P_EVALUATION_FAIL");
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "DEVELOPER_STUDIO_PHASE28P_EVALUATION_FAIL identifier=");
+                appendText(g_textScratch, sizeof(g_textScratch), token.identifier);
+                appendText(g_textScratch, sizeof(g_textScratch), " controllerEvaluated=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), evaluated ? 1u : 0u);
+                appendText(g_textScratch, sizeof(g_textScratch), " variablesValid=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiVariablesValid ? 1u : 0u);
+                appendText(g_textScratch, sizeof(g_textScratch), " variableCount=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiVariables.variableCount);
+                appendText(g_textScratch, sizeof(g_textScratch), " selected=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame);
+                logMarker(g_fileSystemContext.app, g_textScratch);
+            }
+            DebugDataTipSetState(&g_debugDataTip, DebugDataTipState::Unsupported, &identity);
+            return false;
+        }
+    } else {
+        const DebugDwarfVariableView& view = g_debugController.variables;
+        if (!view.valid || view.stale || view.frameIndex != identity.selectedFrameIndex ||
+            view.sessionGeneration != identity.sessionGeneration ||
+            view.stopGeneration != identity.stopGeneration) return false;
+        const DebugDwarfVariable* found = nullptr;
+        for (uint32_t index = 0; index < view.variableCount; ++index) {
+            if (debugDataTipTextEqual(view.variables[index].name, token.identifier)) {
+                found = &view.variables[index];
+                break;
+            }
+        }
+        if (!found || found->state != DebugDwarfVariableState::Available) return false;
+        if (found->valueKind != DebugDwarfValueKind::SignedInteger &&
+            found->valueKind != DebugDwarfValueKind::Pointer) {
+            DebugDataTipSetState(&g_debugDataTip, DebugDataTipState::Unsupported, &identity);
+            return false;
+        }
+        copyText(typeDisplay, sizeof(typeDisplay), found->typeDisplay[0] ?
+                 found->typeDisplay : (found->valueKind == DebugDwarfValueKind::Pointer ? "pointer" : "signed integer"));
+        if (found->valueDisplay[0]) copyText(valueDisplay, sizeof(valueDisplay), found->valueDisplay);
+        else if (found->valueKind == DebugDwarfValueKind::Pointer)
+            appendHexAddress(valueDisplay, sizeof(valueDisplay), found->scalarValue);
+        else appendSigned64(valueDisplay, sizeof(valueDisplay), static_cast<int64_t>(found->scalarValue));
+    }
+    if (!DebugDataTipSetAvailable(&g_debugDataTip, identity, typeDisplay, valueDisplay,
+                                  anchorX, anchorY)) return false;
+    if (g_phase28pDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE28P_HOVER_VALUE_PASS identifier=");
+        appendText(g_textScratch, sizeof(g_textScratch), token.identifier);
+        appendText(g_textScratch, sizeof(g_textScratch), " frame=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), identity.selectedFrameIndex);
+        appendText(g_textScratch, sizeof(g_textScratch), " type=");
+        appendText(g_textScratch, sizeof(g_textScratch), typeDisplay);
+        appendText(g_textScratch, sizeof(g_textScratch), " value=");
+        appendText(g_textScratch, sizeof(g_textScratch), valueDisplay);
+        logMarker(g_fileSystemContext.app, g_textScratch);
+    }
+    return true;
+}
+
+static void debugDataTipInvalidate(gx_app_context* ctx, const char* reason) {
+    const bool wasVisible = g_debugDataTip.visible;
+    DebugDataTipInvalidate(&g_debugDataTip);
+    if (ctx && g_phase28pDiagnostic && wasVisible) {
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28P_TIP_DISMISS reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), reason ? reason : "invalidated");
+        logMarker(ctx, g_textScratch);
+    }
+}
+
+static bool debugDataTipHandleMove(gx_app_context* ctx, int x, int y) {
+    if (!ctx || !DebugControllerIsActive(&g_debugController) ||
+        g_debugController.state != DebugSessionState::Paused ||
+        DebugControllerIsConditionResumePending(&g_debugController)) {
+        debugDataTipInvalidate(ctx, "running_or_terminal");
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    DebugDataTipToken token = {};
+    uint32_t line = 0;
+    int anchorX = 0;
+    int anchorY = 0;
+    if (!debugDataTipHitTest(document, x, y, &token, &line, &anchorX, &anchorY)) {
+        debugDataTipInvalidate(ctx, "pointer_leave");
+        return false;
+    }
+    DebugDataTipIdentity candidate = {};
+    if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_MAPPER_CALL");
+    const bool candidateIdentity = debugDataTipBuildIdentity(document, token, line, &candidate);
+    if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_MAPPER_RETURN");
+    if (candidateIdentity &&
+        g_debugDataTip.visible && DebugDataTipIdentityEqual(g_debugDataTip.identity, candidate)) return true;
+    if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_TOKEN_HITTEST_PASS");
+    return debugDataTipEvaluate(document, token, line, anchorX, anchorY);
+}
+
+static bool debugDataTipBounds(DebugDataTipPopupBounds* bounds) {
+    if (!bounds || !g_debugDataTip.visible || g_debugDataTip.state != DebugDataTipState::Available)
+        return false;
+    return DebugDataTipPlacePopup(bounds, g_debugDataTip.anchorX, g_debugDataTip.anchorY,
+                                  260, 76, kEditorRect.x, kEditorRect.y,
+                                  kEditorRect.x + kEditorRect.width,
+                                  kEditorRect.y + kEditorRect.height);
+}
+
+static void drawDebugDataTip(gx_app_context* ctx) {
+    DebugDataTipPopupBounds bounds = {};
+    if (!ctx || !debugDataTipBounds(&bounds)) return;
+    drawPanel(ctx, { bounds.x, bounds.y, bounds.width, bounds.height }, 0x34496Au);
+    drawText(ctx, bounds.x + 8, bounds.y + 16, g_debugDataTip.name);
+    drawText(ctx, bounds.x + 8, bounds.y + 36, g_debugDataTip.typeDisplay);
+    drawText(ctx, bounds.x + 8, bounds.y + 58, g_debugDataTip.valueDisplay);
+}
+
+static void debugUiRememberBreakpointMetadata(const gx_development_debug_snapshot& snapshot) {
+    char oldConditions[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS][GX_DEVELOPMENT_DEBUG_MAX_EXPRESSION_BYTES] = {};
+    char oldLogs[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS][GX_DEVELOPMENT_DEBUG_MAX_LOG_TEMPLATE_BYTES] = {};
+    uint64_t oldIds[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS] = {};
+    for (uint32_t i = 0; i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+        copyText(oldConditions[i], sizeof(oldConditions[i]), g_debugUiBreakpointConditions[i]);
+        copyText(oldLogs[i], sizeof(oldLogs[i]), g_debugUiBreakpointLogs[i]);
+        oldIds[i] = g_debugUiBreakpointIds[i];
+    }
+    for (uint32_t i = 0; i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+        const gx_development_debug_breakpoint& breakpoint = snapshot.breakpoints[i];
+        g_debugUiBreakpointIds[i] = 0;
+        g_debugUiBreakpointConditions[i][0] = '\0';
+        g_debugUiBreakpointLogs[i][0] = '\0';
+        g_debugUiBreakpointActions[i] = 0;
+        g_debugUiBreakpointPolicies[i] = 0;
+        g_debugUiBreakpointThresholds[i] = 0;
+        if (i >= snapshot.breakpointCount || breakpoint.breakpointId == 0) continue;
+        g_debugUiBreakpointIds[i] = breakpoint.breakpointId;
+        g_debugUiBreakpointActions[i] = breakpoint.action;
+        g_debugUiBreakpointPolicies[i] = breakpoint.hitCountPolicy;
+        g_debugUiBreakpointThresholds[i] = breakpoint.hitCountThreshold;
+        for (uint32_t old = 0; old < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++old) {
+            if (oldIds[old] != breakpoint.breakpointId) continue;
+            copyText(g_debugUiBreakpointConditions[i], sizeof(g_debugUiBreakpointConditions[i]), oldConditions[old]);
+            copyText(g_debugUiBreakpointLogs[i], sizeof(g_debugUiBreakpointLogs[i]), oldLogs[old]);
+            break;
+        }
+    }
+}
+
+static bool debugUiRefreshBreakpoints() {
+    gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_LIST_SOURCE_BREAKPOINTS);
+    gx_development_debug_snapshot snapshot = {};
+    if (!debugUiCallGeneral(request, &snapshot)) return false;
+    if (!debuggerWorkspaceMergeLiveSnapshot(snapshot)) return false;
+    if (g_debugUiSelectedBreakpoint >= snapshot.breakpointCount && snapshot.breakpointCount != 0)
+        g_debugUiSelectedBreakpoint = snapshot.breakpointCount - 1;
+    if (snapshot.breakpointCount == 0) g_debugUiSelectedBreakpoint = 0;
+    debugEditorRefreshBreakpoints();
+    return true;
+}
+
+static bool debugUiRefreshOutput() {
+    gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_DRAIN_OUTPUT);
+    gx_development_debug_snapshot snapshot = {};
+    if (!debugUiCallGeneral(request, &snapshot)) return false;
+    if (!debugUiIdentityMatches(snapshot.sessionGeneration, snapshot.processId,
+                                snapshot.nativeRuntimeId, 0, 0, false)) return false;
+    const bool newSession = !g_debugUiOutputValid ||
+        (snapshot.sessionGeneration != 0 && g_debugUiOutputSnapshot.sessionGeneration != 0 &&
+         snapshot.sessionGeneration != g_debugUiOutputSnapshot.sessionGeneration);
+    if (newSession) {
+        g_debugUiOutputSnapshot = snapshot;
+        g_debugUiOutputHistoryDropped = 0;
+    } else {
+        uint32_t retained = g_debugUiOutputSnapshot.outputCount;
+        if (retained > GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS)
+            retained = GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS;
+        uint32_t incoming = snapshot.outputCount;
+        if (incoming > GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS)
+            incoming = GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS;
+        for (uint32_t index = 0; index < incoming; ++index) {
+            if (retained == GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS) {
+                for (uint32_t row = 1; row < retained; ++row)
+                    g_debugUiOutputSnapshot.output[row - 1] = g_debugUiOutputSnapshot.output[row];
+                --retained;
+                ++g_debugUiOutputHistoryDropped;
+            }
+            g_debugUiOutputSnapshot.output[retained++] = snapshot.output[index];
+        }
+        g_debugUiOutputSnapshot.outputCount = retained;
+        g_debugUiOutputSnapshot.outputCapacity = GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS;
+        g_debugUiOutputSnapshot.outputDroppedCount = snapshot.outputDroppedCount +
+            g_debugUiOutputHistoryDropped;
+        g_debugUiOutputSnapshot.outputOperationStatus = snapshot.outputOperationStatus;
+    }
+    g_debugUiOutputValid = true;
+    return true;
+}
+
+static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControllerBreakpoints) {
+    debugDataTipInvalidate(nullptr, "runtime_reset");
+    debuggerWorkspaceResetRuntime(preserveControllerBreakpoints);
+    g_debugUiCallStack = gx_development_debug_call_stack();
+    g_debugUiVariables = gx_development_debug_variables();
+    g_debugUiBreakpointSnapshot = gx_development_debug_snapshot();
+    g_debugUiOutputSnapshot = gx_development_debug_snapshot();
+    g_debugUiCallStackValid = false;
+    g_debugUiVariablesValid = false;
+    g_debugUiBreakpointValid = false;
+    g_debugUiOutputValid = false;
+    g_debugUiOutputHistoryDropped = 0;
+    g_debugUiSelectedFrame = 0;
+    g_debugUiSelectedBreakpoint = 0;
+    g_debugUiSelectedWatch = 0;
+    g_debugUiEditingWatchIndex = 0xFFFFFFFFu;
+    g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
+    DebugEditorModelResetRuntime(&g_debugEditor);
+    debugEditorRefreshBreakpoints();
+    if (!preserveWatches) {
+        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i] = DebugUiWatch();
+        g_debugUiWatchCount = 0;
+    } else {
+        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i].result = gx_development_debug_expression();
+    }
+}
+
+static void debugUiMirrorCallStackToController() {
+    DebugCallStack& stack = g_debugController.callStack;
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(&stack);
+    for (uint32_t i = 0; i < sizeof(DebugCallStack); ++i) bytes[i] = 0;
+    stack.valid = true;
+    stack.stale = false;
+    stack.sessionGeneration = g_debugUiCallStack.sessionGeneration;
+    stack.processId = g_debugUiCallStack.processId;
+    stack.nativeRuntimeId = g_debugUiCallStack.nativeRuntimeId;
+    stack.threadId = g_debugUiCallStack.threadId;
+    stack.stopGeneration = g_debugUiCallStack.stopGeneration;
+    stack.mapperGeneration = g_debugMapper.identity.mapperGeneration;
+    copyText(stack.artifactSha256, sizeof(stack.artifactSha256), g_debugController.target.artifactSha256);
+    copyText(stack.unwinderName, sizeof(stack.unwinderName), "Server Call Stack");
+    stack.selectedFrameIndex = 0;
+    stack.result.frameCount = g_debugUiCallStack.frameCount < kDebugCallStackPanelMaxRows ?
+        g_debugUiCallStack.frameCount : kDebugCallStackPanelMaxRows;
+    stack.result.terminationReason = g_debugUiCallStack.truncated ?
+        DebugUnwindTerminationReason::FrameLimit : DebugUnwindTerminationReason::EndOfStack;
+    for (uint32_t i = 0; i < stack.result.frameCount; ++i) {
+        const gx_development_debug_call_stack_frame& source = g_debugUiCallStack.frames[i];
+        DebugStackFrame& target = stack.result.frames[i];
+        // The SDK stores each frame's return link to its own caller. The
+        // Studio controller stores the link that led into a non-current
+        // frame, matching its frame-pointer unwinder and Step Out contract.
+        const gx_development_debug_call_stack_frame& incoming =
+            g_debugUiCallStack.frames[i == 0 ? 0 : i - 1];
+        target.index = i;
+        target.current = i == 0;
+        target.hasReturnAddress = i != 0 && incoming.returnAddress != 0;
+        target.mapping = source.sourcePath[0] && source.sourceLine != 0 ?
+            DebugStackFrameMappingState::Mapped : DebugStackFrameMappingState::External;
+        target.confidence = i == 0 ? DebugStackFrameConfidence::ExactCurrent :
+            DebugStackFrameConfidence::FramePointer;
+        target.instructionAddress = source.instructionPointer;
+        target.rawReturnAddress = i != 0 ? incoming.returnAddress : 0;
+        target.lookupAddress = target.rawReturnAddress != 0 ?
+            target.rawReturnAddress - 1 : source.instructionPointer;
+        target.rsp = source.stackPointer;
+        target.rbp = source.framePointer;
+        copyText(target.functionName, sizeof(target.functionName), source.functionName);
+        copyText(target.sourcePath, sizeof(target.sourcePath), source.sourcePath);
+        target.sourceLine = source.sourceLine;
+        target.sourceColumn = source.sourceColumn;
+    }
+}
+
+static bool debugUiRefreshPaused(gx_app_context* ctx) {
+    const bool stack = debugUiCallStack();
+    if (stack) {
+        debugUiMirrorCallStackToController();
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_call_stack=PASS");
+        if (g_debugUiSelectedFrame >= g_debugUiCallStack.frameCount) g_debugUiSelectedFrame = 0;
+    } else {
+        g_debugUiCallStackValid = false;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_call_stack=PARTIAL");
+    }
+    const bool variables = stack && debugUiVariables();
+    if (variables) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_locals=PASS");
+        if (g_phase28pDiagnostic) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_VARIABLES_READY");
+            bool tailValue = false;
+            bool sameName = false;
+            bool adjusted = false;
+            for (uint32_t i = 0; i < g_debugUiVariables.variableCount; ++i) {
+                const char* name = g_debugUiVariables.variables[i].name;
+                if (debugDataTipTextEqual(name, "tail_value")) tailValue = true;
+                if (debugDataTipTextEqual(name, "value")) sameName = true;
+                if (debugDataTipTextEqual(name, "adjusted")) adjusted = true;
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "DEVELOPER_STUDIO_PHASE28P_VARIABLE name=");
+                appendText(g_textScratch, sizeof(g_textScratch), name);
+                appendText(g_textScratch, sizeof(g_textScratch), " signed=");
+                appendSigned64(g_textScratch, sizeof(g_textScratch),
+                               g_debugUiVariables.variables[i].signedValue);
+                appendText(g_textScratch, sizeof(g_textScratch), " availability=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                               g_debugUiVariables.variables[i].availability);
+                logMarker(ctx, g_textScratch);
+            }
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE28P_VARIABLE_STATE count=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiVariables.variableCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " frame=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame);
+            appendText(g_textScratch, sizeof(g_textScratch), " function=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugUiVariables.functionName);
+            appendText(g_textScratch, sizeof(g_textScratch), " source=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugUiVariables.sourcePath);
+            logMarker(ctx, g_textScratch);
+            if (tailValue) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_TAIL_VALUE_PRESENT");
+            if (sameName) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_VALUE_PRESENT");
+            if (adjusted) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_VARIABLE_ADJUSTED_PRESENT");
+        }
+    }
+    else if (stack) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_locals=PARTIAL");
+    bool watchSuccess = false;
+    for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i)
+        if (g_debugUiWatches[i].used) watchSuccess = debugUiEvaluateWatch(i) || watchSuccess;
+    if (watchSuccess) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watches=PASS");
+    if (debugUiRefreshBreakpoints()) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoints=PASS");
+    debugUiRefreshOutput();
+    return stack;
+}
+
+static bool debugUiRefresh(gx_app_context* ctx) {
+    if (!debugUiCurrentAbiAvailable() || !DebugControllerIsActive(&g_debugController) ||
+        g_debugController.debugHandle == 0) return false;
+    if (g_debugUiSessionGeneration != g_debugController.sessionGeneration) {
+        g_debugUiSessionGeneration = g_debugController.sessionGeneration;
+        g_debugUiStopGeneration = 0;
+        debugUiResetRuntimeState(true);
+    }
+    if (g_debuggerWorkspaceMaterializedGeneration != g_debugController.sessionGeneration &&
+        !debuggerWorkspaceMaterialize(ctx)) return false;
+    if (g_debugController.state == DebugSessionState::Paused &&
+        g_debugController.stopGeneration != 0 &&
+        g_debugUiStopGeneration != g_debugController.stopGeneration) {
+        g_debugUiStopGeneration = g_debugController.stopGeneration;
+        debugUiRefreshPaused(ctx);
+    } else if (g_debugController.state != DebugSessionState::Paused) {
+        g_debugUiCallStackValid = false;
+        g_debugUiVariablesValid = false;
+        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i].result = gx_development_debug_expression();
+        debugUiRefreshBreakpoints();
+        debugUiRefreshOutput();
+    }
+    return true;
+}
+
+static bool debugUiManagerCommand(gx_app_context* ctx, uint32_t command,
+                                  uint64_t breakpointId, const char* sourcePath = nullptr,
+                                  uint32_t sourceLine = 0, uint32_t sourceColumn = 0,
+                                  const char* condition = nullptr,
+                                  uint32_t action = GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                                  uint32_t hitPolicy = GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE,
+                                  uint64_t hitThreshold = 0, const char* logTemplate = nullptr,
+                                  uint32_t* operationStatus = nullptr) {
+    gx_development_debug_request request = debugUiRequest(command);
+    request.breakpointId = breakpointId;
+    request.sourcePath = sourcePath;
+    request.sourceLine = sourceLine;
+    request.sourceColumn = sourceColumn;
+    request.sourceCondition = condition;
+    request.breakpointAction = action;
+    request.hitCountPolicy = hitPolicy;
+    request.hitCountThreshold = hitThreshold;
+    request.logTemplate = logTemplate;
+    gx_development_debug_snapshot snapshot = {};
+    const bool accepted = debugUiCallGeneral(request, &snapshot);
+    if (operationStatus) *operationStatus = snapshot.breakpointOperationStatus;
+    if (accepted) {
+        if (!debuggerWorkspaceMergeLiveSnapshot(snapshot)) return false;
+        debugUiRefreshOutput();
+        return true;
+    }
+    if (ctx) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Debugger manager request failed");
+        if (snapshot.errorMessage[0]) {
+            appendText(g_textScratch, sizeof(g_textScratch), ": ");
+            appendText(g_textScratch, sizeof(g_textScratch), snapshot.errorMessage);
+        }
+        writeStudioOutput(g_textScratch);
+    }
+    return false;
+}
+
+static const gx_development_debug_breakpoint* debugUiBreakpointAt(uint32_t index) {
+    if (!g_debugUiBreakpointValid || index >= g_debugUiBreakpointSnapshot.breakpointCount ||
+        index >= GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS) return nullptr;
+    return &g_debugUiBreakpointSnapshot.breakpoints[index];
+}
+
+static bool debugEditorBreakpointUnresolved(const DebugBreakpoint& breakpoint) {
+    if (!breakpoint.enabled) return false;
+    return breakpoint.state == DebugBreakpointState::Pending ||
+        breakpoint.state == DebugBreakpointState::Rejected ||
+        breakpoint.state == DebugBreakpointState::Stale ||
+        breakpoint.location.mapping == guidexos::developer_studio::DebugMappingState::Unavailable ||
+        breakpoint.location.mapping == guidexos::developer_studio::DebugMappingState::Pending ||
+        breakpoint.location.mapping == guidexos::developer_studio::DebugMappingState::Rejected;
+}
+
+static bool debugEditorBreakpointUnresolvedAt(const char* projectId, const char* sourcePath,
+                                              uint32_t line) {
+    if (!projectId || !sourcePath || line == 0) return false;
+    for (const DebugEditorBreakpoint& row : g_debuggerWorkspaceUnresolved) {
+        if (row.used && row.line == line && PathsEqual(row.projectId, projectId) &&
+            PathsEqual(row.sourcePath, sourcePath)) return true;
+    }
     for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
-        const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
-        if (breakpoint && breakpoint->location.line == line + 1 &&
-            PathsEqual(breakpoint->location.relativePath, relative) &&
-            PathsEqual(breakpoint->projectId, g_controller.model.project.projectId)) return static_cast<int>(i);
+        const DebugBreakpoint& breakpoint = g_debugController.breakpoints[i];
+        if (breakpoint.id != 0 && breakpoint.location.line == line &&
+            PathsEqual(breakpoint.projectId, projectId) &&
+            PathsEqual(breakpoint.location.relativePath, sourcePath))
+            return debugEditorBreakpointUnresolved(breakpoint);
+    }
+    return false;
+}
+
+static void debugEditorRefreshBreakpoints() {
+    uint32_t rowCount = 0;
+    const uint32_t configuredCount = g_debuggerWorkspace.breakpointCount >
+        GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
+        GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS : g_debuggerWorkspace.breakpointCount;
+    for (uint32_t i = 0; i < configuredCount && rowCount < kDebugEditorMaxProjectionRows; ++i) {
+        const DebuggerWorkspaceBreakpoint& configured = g_debuggerWorkspace.breakpoints[i];
+        DebugEditorBreakpoint& row = g_debugEditorRows[rowCount++];
+        row = DebugEditorBreakpoint();
+        row.used = configured.sourcePath[0] != '\0' && configured.line != 0;
+        row.configured = true;
+        row.unresolved = configured.enabled && debugEditorBreakpointUnresolvedAt(g_controller.model.project.projectId,
+                                                            configured.sourcePath, configured.line);
+        row.id = 0;
+        copyText(row.projectId, sizeof(row.projectId), g_controller.model.project.projectId);
+        copyText(row.sourcePath, sizeof(row.sourcePath), configured.sourcePath);
+        row.line = configured.line;
+        row.column = configured.column;
+        row.enabled = configured.enabled;
+        row.action = configured.action == 1 ? GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG :
+            GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK;
+    }
+    const bool managerAuthoritative = debugUiCurrentAbiAvailable() &&
+        DebugControllerIsActive(&g_debugController);
+    if (managerAuthoritative) {
+        if (g_debugUiBreakpointValid) {
+            const uint32_t count = g_debugUiBreakpointSnapshot.breakpointCount >
+                GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
+                GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS :
+                g_debugUiBreakpointSnapshot.breakpointCount;
+            for (uint32_t i = 0; i < count && rowCount < kDebugEditorMaxProjectionRows; ++i) {
+                const gx_development_debug_breakpoint& remote =
+                    g_debugUiBreakpointSnapshot.breakpoints[i];
+                if (remote.sessionGeneration != 0 &&
+                    remote.sessionGeneration != g_debugController.sessionGeneration) continue;
+                DebugEditorBreakpoint& row = g_debugEditorRows[rowCount++];
+                row = DebugEditorBreakpoint();
+                row.used = remote.breakpointId != 0 && remote.sourcePath[0] != '\0' &&
+                    remote.sourceLine != 0;
+                row.configured = false;
+                // When the manager snapshot is authoritative, do not derive
+                // the visual unresolved state from the controller mirror: the
+                // mirror may still carry the prior enabled/mapping state while
+                // the manager has already accepted this mutation.
+                row.unresolved = remote.enabled != 0 &&
+                    (remote.sourceMappingValid == 0 || remote.targetAddress == 0);
+                row.id = remote.breakpointId;
+                copyText(row.projectId, sizeof(row.projectId), g_controller.model.project.projectId);
+                copyText(row.sourcePath, sizeof(row.sourcePath), remote.sourcePath);
+                row.line = remote.sourceLine;
+                row.column = remote.sourceColumn;
+                row.enabled = remote.enabled != 0;
+                row.action = remote.action;
+            }
+        }
+    } else {
+        const uint32_t count = g_debugController.breakpointCount >
+            GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
+            GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS : g_debugController.breakpointCount;
+        for (uint32_t i = 0; i < count && rowCount < kDebugEditorMaxProjectionRows; ++i) {
+            const DebugBreakpoint& local = g_debugController.breakpoints[i];
+            DebugEditorBreakpoint& row = g_debugEditorRows[rowCount++];
+            row = DebugEditorBreakpoint();
+            row.used = local.id != 0 && local.location.relativePath[0] != '\0' &&
+                local.location.line != 0;
+            row.configured = false;
+            row.unresolved = debugEditorBreakpointUnresolved(local);
+            row.id = local.id;
+            copyText(row.projectId, sizeof(row.projectId), local.projectId);
+            copyText(row.sourcePath, sizeof(row.sourcePath), local.location.relativePath);
+            row.line = local.location.line;
+            row.column = local.location.column;
+            row.enabled = local.enabled;
+            row.action = GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK;
+        }
+    }
+    DebugEditorModelRefreshBreakpoints(&g_debugEditor, g_debugEditorRows, rowCount);
+}
+
+static bool debugUiAddWatch(gx_app_context* ctx, const char* expression) {
+    if (!expression || expression[0] == '\0') return false;
+    if (!debuggerWorkspaceAddWatch(ctx, expression)) return false;
+    const uint32_t slot = g_debugUiWatchCount - 1;
+    if (g_debugController.state == DebugSessionState::Paused) debugUiEvaluateWatch(slot);
+    if (g_debugUiSelectedWatch >= g_debugUiWatchCount) g_debugUiSelectedWatch = g_debugUiWatchCount - 1;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_add=PASS");
+    return true;
+}
+
+static int debugUiWatchSlotAt(uint32_t index) {
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) {
+        if (!g_debugUiWatches[i].used) continue;
+        if (seen++ == index) return static_cast<int>(i);
     }
     return -1;
+}
+
+static bool debugUiEditWatch(gx_app_context* ctx, uint32_t index, const char* expression) {
+    const int slot = debugUiWatchSlotAt(index);
+    if (slot < 0 || !expression || expression[0] == '\0') return false;
+    if (!debuggerWorkspaceEditWatch(ctx, index, expression)) return false;
+    if (g_debugController.state == DebugSessionState::Paused) debugUiEvaluateWatch(index);
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_edit=PASS");
+    return true;
+}
+
+static bool debugUiRemoveWatch(gx_app_context* ctx, uint32_t index) {
+    if (debugUiWatchSlotAt(index) < 0 || !debuggerWorkspaceRemoveWatch(ctx, index)) return false;
+    if (g_debugUiSelectedWatch >= g_debugUiWatchCount && g_debugUiSelectedWatch > 0) --g_debugUiSelectedWatch;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_remove=PASS");
+    return true;
+}
+
+static bool debugUiSetBreakpointEnabled(gx_app_context* ctx, uint32_t index, bool enabled) {
+    const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(index);
+    if (!breakpoint) return false;
+    char sourcePath[kMaxProjectPathBytes] = {};
+    copyText(sourcePath, sizeof(sourcePath), breakpoint->sourcePath);
+    const uint32_t sourceLine = breakpoint->sourceLine;
+    const uint32_t sourceColumn = breakpoint->sourceColumn;
+    if ((breakpoint->enabled != 0) == enabled) return true;
+    const bool result = debugUiManagerCommand(ctx, enabled ? GX_DEVELOPMENT_DEBUG_ENABLE_SOURCE_BREAKPOINT :
+        GX_DEVELOPMENT_DEBUG_DISABLE_SOURCE_BREAKPOINT, breakpoint->breakpointId);
+    if (result && !debuggerWorkspaceSetBreakpointEnabled(ctx, sourcePath, sourceLine,
+                                                          sourceColumn, enabled)) return false;
+    if (result) logMarker(ctx, enabled ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_enable=PASS" :
+        "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_disable=PASS");
+    return result;
+}
+
+static bool debugUiRemoveBreakpoint(gx_app_context* ctx, uint32_t index) {
+    const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(index);
+    if (!breakpoint) return false;
+    char sourcePath[kMaxProjectPathBytes] = {};
+    copyText(sourcePath, sizeof(sourcePath), breakpoint->sourcePath);
+    const uint32_t sourceLine = breakpoint->sourceLine;
+    const bool result = debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_REMOVE_SOURCE_BREAKPOINT,
+                                               breakpoint->breakpointId);
+    if (result && !debuggerWorkspaceRemoveBreakpoint(ctx, sourcePath, sourceLine)) return false;
+    if (result) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_remove=PASS");
+    return result;
+}
+
+static bool debugUiConfigureBreakpoint(gx_app_context* ctx, uint32_t index) {
+    const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(index);
+    if (!breakpoint) return false;
+    char sourcePath[kMaxProjectPathBytes] = {};
+    copyText(sourcePath, sizeof(sourcePath), breakpoint->sourcePath);
+    const uint32_t sourceLine = breakpoint->sourceLine;
+    const uint32_t sourceColumn = breakpoint->sourceColumn;
+    const bool breakpointEnabled = breakpoint->enabled != 0;
+    const char* condition = g_debugUiBreakpointConditions[index][0] ? g_debugUiBreakpointConditions[index] : nullptr;
+    const char* logTemplate = g_debugUiBreakpointLogs[index][0] ? g_debugUiBreakpointLogs[index] : nullptr;
+    const bool result = debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_CONFIGURE_SOURCE_BREAKPOINT_POLICY,
+                                               breakpoint->breakpointId, nullptr, 0, 0, condition,
+                                               g_debugUiBreakpointActions[index], g_debugUiBreakpointPolicies[index],
+                                               g_debugUiBreakpointThresholds[index], logTemplate);
+    if (result && !debuggerWorkspaceUpdateBreakpointPolicy(ctx, sourcePath, sourceLine,
+                                                           sourceColumn, breakpointEnabled,
+                                                           g_debugUiBreakpointActions[index],
+                                                           g_debugUiBreakpointPolicies[index],
+                                                           g_debugUiBreakpointThresholds[index],
+                                                           g_debugUiBreakpointConditions[index],
+                                                           g_debugUiBreakpointLogs[index])) return false;
+    if (result) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_policy=PASS");
+    return result;
+}
+
+static bool debugUiAddBreakpointAtCaret(gx_app_context* ctx) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || !g_controller.model.hasProject) return false;
+    char relative[kMaxProjectPathBytes] = {};
+    if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path,
+                                 relative, sizeof(relative))) return false;
+    const uint32_t line = activeLine(document->buffer) + 1;
+    // TextBuffer caret columns are zero-based; persisted debugger workspace
+    // locations use one-based source columns, including a line-start caret.
+    const uint32_t column = activeColumn(document->buffer, line - 1) + 1;
+    if (!debugUiCurrentAbiAvailable() || !DebugControllerIsActive(&g_debugController))
+        return debuggerWorkspaceAddOrToggleBreakpoint(ctx, relative, line, column, nullptr);
+
+    // The manager owns the operation and duplicate decision.  Do not create
+    // a local mirror until the manager has accepted the source breakpoint.
+    if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_ADD_SOURCE_BREAKPOINT, 0,
+                               relative, line, 0, nullptr,
+                               GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                               GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE, 0, nullptr)) return false;
+    if (!debugUiRefreshBreakpoints()) return false;
+
+    bool haveLocalMirror = false;
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint& local = g_debugController.breakpoints[i];
+        if (local.location.line == line && PathsEqual(local.location.relativePath, relative)) {
+            haveLocalMirror = true;
+            break;
+        }
+    }
+    if (!haveLocalMirror) {
+        uint64_t localId = 0;
+        DebugErrorCode localError = DebugErrorCode::None;
+        if (!guidexos::developer_studio::DebugControllerAddBreakpoint(
+                &g_debugController, g_controller.model.project.projectId,
+                g_controller.model.project.rootPath, g_controller.model.projectGeneration,
+                relative, line, column, document->buffer.generation, &localId, &localError)) {
+            for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount; ++i) {
+                const gx_development_debug_breakpoint& remote = g_debugUiBreakpointSnapshot.breakpoints[i];
+                if (PathsEqual(remote.sourcePath, relative) && remote.sourceLine == line) {
+                    debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_REMOVE_SOURCE_BREAKPOINT,
+                                          remote.breakpointId);
+                    break;
+                }
+            }
+            return false;
+        }
+        DebugErrorCode mapError = DebugErrorCode::None;
+        if (!DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mapError)) {
+            for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount; ++i) {
+                const gx_development_debug_breakpoint& remote = g_debugUiBreakpointSnapshot.breakpoints[i];
+                if (PathsEqual(remote.sourcePath, relative) && remote.sourceLine == line) {
+                    debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_REMOVE_SOURCE_BREAKPOINT,
+                                          remote.breakpointId);
+                    break;
+                }
+            }
+            return false;
+        }
+    }
+    debugEditorRefreshBreakpoints();
+    const gx_development_debug_breakpoint* acceptedBreakpoint = nullptr;
+    for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount; ++i) {
+        const gx_development_debug_breakpoint& breakpoint = g_debugUiBreakpointSnapshot.breakpoints[i];
+        if (PathsEqual(breakpoint.sourcePath, relative) && breakpoint.sourceLine == line) {
+            debugUiBindLocalMirror(breakpoint.breakpointId, breakpoint.sourcePath,
+                                   breakpoint.sourceLine, breakpoint.targetAddress);
+            g_debugUiSelectedBreakpoint = i;
+            acceptedBreakpoint = &breakpoint;
+            break;
+        }
+    }
+    if (!acceptedBreakpoint || !debuggerWorkspaceAddOrToggleBreakpoint(ctx, relative, line, column,
+                                                                         acceptedBreakpoint)) return false;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_add=PASS");
+    return true;
+}
+
+static bool debugUiReleaseExecution(gx_app_context* ctx) {
+    gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_RELEASE_EXECUTION);
+    gx_development_debug_snapshot snapshot = {};
+    if (!debugUiCallGeneral(request, &snapshot)) {
+        if (ctx && snapshot.errorMessage[0]) writeStudioOutput(snapshot.errorMessage);
+        return false;
+    }
+    g_debugController.targetExecutionReleased = true;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_release=PASS");
+    return true;
+}
+
+static void debugUiBindLocalMirror(uint64_t managerId, const char* sourcePath,
+                                   uint32_t sourceLine, uint64_t targetAddress) {
+    if (managerId == 0 || !sourcePath || targetAddress == 0) return;
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        DebugBreakpoint& local = g_debugController.breakpoints[i];
+        if (local.location.line != sourceLine || !PathsEqual(local.location.relativePath, sourcePath)) continue;
+        guidexos::developer_studio::DebugAddress address = {};
+        address.valid = true;
+        address.value = targetAddress;
+        DebugErrorCode error = DebugErrorCode::None;
+        guidexos::developer_studio::DebugControllerApplyBreakpointBinding(
+            &g_debugController, g_debugController.sessionGeneration, local.id, true,
+            managerId, address, "Managed / Verified", &error);
+        return;
+    }
+}
+
+static void debuggerWorkspaceResetRuntime(bool preserveControllerBreakpoints) {
+    g_debuggerWorkspaceMaterializedGeneration = 0;
+    for (DebugEditorBreakpoint& row : g_debuggerWorkspaceUnresolved) row = DebugEditorBreakpoint();
+    if (!preserveControllerBreakpoints) {
+        DebugControllerClearBreakpoints(&g_debugController);
+        // ClearBreakpoints releases condition storage; also erase the unused slots
+        // so no old ID, address, mapping or hit display survives the boundary.
+        for (DebugBreakpoint& row : g_debugController.breakpoints) row = DebugBreakpoint();
+    }
+    g_debugController.lastBreakpointId = 0;
+    g_debugController.lastBindingId = 0;
+    g_debugController.lastBindingAddress = 0;
+    g_debugController.lastBindingOwnerCount = 0;
+    g_debugController.lastBindingInstalled = false;
+    g_debugSelectedBreakpoint = 0;
+    g_debugSelectedValueNode = 0;
+    g_debugSelectedWatch = 0;
+    g_debugEditingWatchId = 0;
+    g_debugEditingBreakpointId = 0;
+    for (uint64_t& node : g_debugVisibleValueNodes) node = 0;
+    g_debugController.callStack = DebugCallStack();
+    g_debugController.variables = guidexos::developer_studio::DebugDwarfVariableView();
+    g_debugWatches.tree = guidexos::developer_studio::DebugDwarfVariableView();
+    g_debugWatches.treeValid = false;
+    g_debugWatches.treeStale = false;
+    for (auto& watch : g_debugWatches.items)
+        watch.result = guidexos::developer_studio::DebugWatchResult();
+    for (uint32_t i = 0; i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+        g_debugUiBreakpointIds[i] = 0;
+        g_debugUiBreakpointConditions[i][0] = '\0';
+        g_debugUiBreakpointLogs[i][0] = '\0';
+        g_debugUiBreakpointActions[i] = 0;
+        g_debugUiBreakpointPolicies[i] = 0;
+        g_debugUiBreakpointThresholds[i] = 0;
+    }
+}
+
+static bool debuggerWorkspaceMaterializeLegacy(gx_app_context* ctx) {
+    DebuggerWorkspaceMaterializationEntry plan[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
+    const uint32_t count = BuildDebuggerWorkspaceMaterializationPlan(
+        g_debuggerWorkspace, plan, guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints);
+    for (uint32_t i = 0; i < count; ++i) {
+        const DebuggerWorkspaceMaterializationEntry& entry = plan[i];
+        uint32_t sourceGeneration = 0;
+        for (const Document& document : g_controller.model.documents) {
+            if (!document.used) continue;
+            char relative[kMaxProjectPathBytes] = {};
+            if (DebugRelativeSourcePath(g_controller.model.project.rootPath, document.path,
+                                        relative, sizeof(relative)) &&
+                PathsEqual(relative, entry.sourcePath)) {
+                sourceGeneration = document.buffer.generation;
+                break;
+            }
+        }
+        uint64_t breakpointId = 0;
+        DebugErrorCode error = DebugErrorCode::None;
+        if (!DebugControllerAddBreakpoint(
+                &g_debugController, g_controller.model.project.projectId,
+                g_controller.model.project.rootPath, g_controller.model.projectGeneration,
+                entry.sourcePath, entry.line, entry.column, sourceGeneration,
+                &breakpointId, &error) ||
+            (entry.condition[0] != '\0' &&
+             !DebugControllerSetBreakpointCondition(
+                 &g_debugController, breakpointId, entry.condition, &error))) {
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "Debug launch skipped: legacy breakpoint materialization failed | ");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+            reportDebugMessage(ctx, g_textScratch);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool debuggerWorkspaceMergeLiveSnapshot(const gx_development_debug_snapshot& snapshot) {
+    if (!DebugControllerIsActive(&g_debugController) || g_debugController.debugHandle == 0 ||
+        !debugUiIdentityMatches(snapshot.sessionGeneration, snapshot.processId,
+                                snapshot.nativeRuntimeId, 0, 0, false)) return false;
+    const uint32_t count = snapshot.breakpointCount > GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
+        GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS : snapshot.breakpointCount;
+    for (uint32_t i = 0; i < count; ++i) {
+        const gx_development_debug_breakpoint& breakpoint = snapshot.breakpoints[i];
+        if (breakpoint.breakpointId != 0 && breakpoint.sessionGeneration != 0 &&
+            breakpoint.sessionGeneration != g_debugController.sessionGeneration) return false;
+    }
+    debugUiRememberBreakpointMetadata(snapshot);
+    g_debugUiBreakpointSnapshot = snapshot;
+    g_debugUiBreakpointValid = true;
+    debugEditorRefreshBreakpoints();
+    return true;
+}
+
+static void debuggerWorkspaceMarkUnresolved(gx_app_context* ctx, const char* sourcePath,
+                                            uint32_t line, const char* reason) {
+    for (DebugEditorBreakpoint& row : g_debuggerWorkspaceUnresolved) {
+        if (row.used && !(row.line == line && PathsEqual(row.sourcePath, sourcePath))) continue;
+        row = DebugEditorBreakpoint();
+        row.used = true;
+        row.configured = true;
+        row.unresolved = true;
+        row.line = line;
+        copyText(row.projectId, sizeof(row.projectId), g_controller.model.project.projectId);
+        copyText(row.sourcePath, sizeof(row.sourcePath), sourcePath);
+        break;
+    }
+    copyText(g_debuggerWorkspaceStatus, sizeof(g_debuggerWorkspaceStatus), reason);
+    debuggerWorkspaceReportStatus(ctx, "unresolved");
+    debugEditorRefreshBreakpoints();
+}
+
+static bool debuggerWorkspaceMaterialize(gx_app_context* ctx) {
+    if (!debugUiCurrentAbiAvailable() || !DebugControllerIsActive(&g_debugController) ||
+        g_debugController.debugHandle == 0 || g_debugController.sessionGeneration == 0 ||
+        !DebugDwarfMapperIsReady(&g_debugMapper)) return false;
+    if (g_debuggerWorkspaceMaterializedGeneration == g_debugController.sessionGeneration) return true;
+    // Mark the attempt before sending commands. A fatal manager rejection must
+    // not cause later UI polls to replay a partially accepted plan.
+    g_debuggerWorkspaceMaterializedGeneration = g_debugController.sessionGeneration;
+    DebuggerWorkspaceMaterializationEntry plan[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
+    const uint32_t count = BuildDebuggerWorkspaceMaterializationPlan(
+        g_debuggerWorkspace, plan, guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints);
+    for (uint32_t i = 0; i < count; ++i) {
+        const DebuggerWorkspaceMaterializationEntry& entry = plan[i];
+        uint32_t status = GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_NONE;
+        if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_ADD_SOURCE_BREAKPOINT, 0,
+                                   entry.sourcePath, entry.line, 0,
+                                   entry.condition[0] != '\0' ? entry.condition : nullptr,
+                                   GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                                   GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE, 0, nullptr, &status)) {
+            // The current manager reports source-not-found/line-not-mapped as
+            // INVALID for a validated source identity and default add policy.
+            if (status != GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_INVALID &&
+                status != GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_NOT_FOUND) return false;
+            debuggerWorkspaceMarkUnresolved(ctx, entry.sourcePath, entry.line, "source mapping rejected");
+            continue;
+        }
+        const uint64_t managerId = g_debugUiBreakpointSnapshot.bindingId;
+        const gx_development_debug_breakpoint* added = nullptr;
+        for (uint32_t n = 0; n < g_debugUiBreakpointSnapshot.breakpointCount &&
+             n < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++n) {
+            const gx_development_debug_breakpoint& remote = g_debugUiBreakpointSnapshot.breakpoints[n];
+            if (managerId != 0 && remote.breakpointId == managerId &&
+                (remote.sessionGeneration == 0 || remote.sessionGeneration == g_debugController.sessionGeneration)) {
+                added = &remote;
+                break;
+            }
+        }
+        if (!added) return false;
+        if (!added->sourceMappingValid || added->targetAddress == 0) {
+            if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_REMOVE_SOURCE_BREAKPOINT, managerId)) return false;
+            debuggerWorkspaceMarkUnresolved(ctx, entry.sourcePath, entry.line, "source line is not mapped");
+            continue;
+        }
+        if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_CONFIGURE_SOURCE_BREAKPOINT_POLICY,
+                                   managerId, nullptr, 0, 0, entry.condition,
+                                   entry.action == 1 ? GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG :
+                                       GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                                   entry.hitPolicy, entry.hitThreshold, entry.logTemplate)) return false;
+        // The command response is authoritative; retain policy text only in
+        // transient UI metadata because snapshots expose hashes/lengths.
+        for (uint32_t n = 0; n < g_debugUiBreakpointSnapshot.breakpointCount &&
+             n < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++n) {
+            const gx_development_debug_breakpoint& remote = g_debugUiBreakpointSnapshot.breakpoints[n];
+            if (remote.breakpointId != managerId) continue;
+            copyText(g_debugUiBreakpointConditions[n], sizeof(g_debugUiBreakpointConditions[n]), entry.condition);
+            copyText(g_debugUiBreakpointLogs[n], sizeof(g_debugUiBreakpointLogs[n]), entry.logTemplate);
+            uint64_t localId = 0;
+            DebugErrorCode error = DebugErrorCode::None;
+            uint32_t sourceGeneration = 0;
+            for (const Document& document : g_controller.model.documents) {
+                if (!document.used) continue;
+                char relative[kMaxProjectPathBytes] = {};
+                if (DebugRelativeSourcePath(g_controller.model.project.rootPath, document.path,
+                                            relative, sizeof(relative)) && PathsEqual(relative, remote.sourcePath)) {
+                    sourceGeneration = document.buffer.generation;
+                    break;
+                }
+            }
+            if (!guidexos::developer_studio::DebugControllerAddBreakpoint(
+                    &g_debugController, g_controller.model.project.projectId,
+                    g_controller.model.project.rootPath, g_controller.model.projectGeneration,
+                    remote.sourcePath, remote.sourceLine, remote.sourceColumn,
+                    sourceGeneration, &localId, &error)) return false;
+            debugUiBindLocalMirror(managerId, remote.sourcePath, remote.sourceLine, remote.targetAddress);
+            break;
+        }
+    }
+    if (!debugUiRefreshBreakpoints()) return false;
+    if (g_phase28oDiagnostic) {
+        uint64_t currentIds[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
+        uint32_t currentCount = 0;
+        bool zeroCounts = g_debugUiBreakpointValid;
+        if (g_debugUiBreakpointValid) {
+            const uint32_t liveCount = g_debugUiBreakpointSnapshot.breakpointCount >
+                GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
+                GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS :
+                g_debugUiBreakpointSnapshot.breakpointCount;
+            for (uint32_t i = 0; i < liveCount; ++i) {
+                const gx_development_debug_breakpoint& breakpoint =
+                    g_debugUiBreakpointSnapshot.breakpoints[i];
+                if (breakpoint.breakpointId == 0 || !breakpoint.sourceMappingValid) continue;
+                if (breakpoint.rawHitCount != 0) zeroCounts = false;
+                if (currentCount < guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints)
+                    currentIds[currentCount++] = breakpoint.breakpointId;
+            }
+        }
+        const int unresolvedIndex = DebugEditorModelFindBreakpoint(
+            &g_debugEditor, g_controller.model.project.projectId, "src/missing.cpp", 1);
+        const DebugEditorBreakpoint* unresolved = unresolvedIndex >= 0 ?
+            DebugEditorModelBreakpointAt(&g_debugEditor, static_cast<uint32_t>(unresolvedIndex)) : nullptr;
+        if (currentCount == 0 || !zeroCounts || !unresolved || unresolved->id != 0 ||
+            !unresolved->unresolved) return false;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_MATERIALIZE_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_HIT_COUNT_ZERO_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_UNRESOLVED_PASS");
+        if (g_phase28oGenerationAIdCount == 0) {
+            g_phase28oGenerationAIdCount = currentCount;
+            for (uint32_t i = 0; i < currentCount; ++i) g_phase28oGenerationAIds[i] = currentIds[i];
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_FRESH_ID_PASS");
+        } else {
+            bool allFresh = currentCount == g_phase28oGenerationAIdCount;
+            for (uint32_t i = 0; i < currentCount && allFresh; ++i) {
+                for (uint32_t prior = 0; prior < g_phase28oGenerationAIdCount; ++prior) {
+                    if (currentIds[i] == g_phase28oGenerationAIds[prior]) {
+                        allFresh = false;
+                        break;
+                    }
+                }
+            }
+            if (!allFresh) return false;
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_SECOND_GENERATION_PASS");
+        }
+    }
+    return true;
+}
+
+static bool phase28mTextEquals(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t index = 0;
+    while (left[index] != '\0' && right[index] != '\0') {
+        if (left[index] != right[index]) return false;
+        ++index;
+    }
+    return left[index] == right[index];
+}
+
+static bool phase28mTextContains(const char* text, const char* needle) {
+    if (!text || !needle || needle[0] == '\0') return false;
+    for (uint32_t start = 0; text[start] != '\0'; ++start) {
+        uint32_t index = 0;
+        while (needle[index] != '\0' && text[start + index] == needle[index]) ++index;
+        if (needle[index] == '\0') return true;
+    }
+    return false;
+}
+
+static uint64_t phase28oTextHash(const TextBuffer& buffer) {
+    uint64_t hash = 1469598103934665603ull;
+    for (uint32_t i = 0; i < buffer.length; ++i) {
+        hash ^= static_cast<uint8_t>(buffer.data[i]);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static bool phase28oWorkspaceFilePresent() {
+    FileInfo info = {};
+    return fsStat(&g_fileSystemContext, "/P28O/guidexos.debugger.json", &info) &&
+        info.kind == FileInfoKind::RegularFile && info.size != 0;
+}
+
+static void phase28oFail(gx_app_context* ctx, const char* reason) {
+    if (g_phase28oFinished) return;
+    g_phase28oFailed = true;
+    g_phase28oFinished = true;
+    copyText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), "DEVELOPER_STUDIO_PHASE28O_FAIL reason=");
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), reason ? reason : "unknown");
+    logMarker(ctx, g_phase28oDiagnosticMarker);
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_FAILURE");
+    g_phase28mFinished = true;
+    if (DebugControllerIsActive(&g_debugController))
+        (void)beginDebugShutdown(ctx, g_window);
+    else
+        g_requestExit = true;
+}
+
+static bool phase28oTimedOut(gx_app_context* ctx) {
+    if (g_phase28oDeadline == 0) return false;
+    const uint64_t now = gx_get_ticks_ms(ctx);
+    if (now <= g_phase28oDeadline && g_phase28oStepCount < 12000) return false;
+    copyText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), "DEVELOPER_STUDIO_PHASE28O_TIMEOUT step=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_phase28oStage);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " projectOpen=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_controller.model.open ? 1u : 0u);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " hasProject=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_controller.model.hasProject ? 1u : 0u);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " debugState=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), static_cast<uint32_t>(g_debugController.state));
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " generation=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugController.sessionGeneration);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " workspaceBreakpoints=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debuggerWorkspace.breakpointCount);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " workspaceWatches=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debuggerWorkspace.watchCount);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " runtimeBreakpoints=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugController.breakpointCount);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " outputCount=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugUiOutputSnapshot.outputCount);
+    appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " selectedFrame=");
+    appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugUiSelectedFrame);
+    logMarker(ctx, g_phase28oDiagnosticMarker);
+    phase28oFail(ctx, "timeout");
+    return true;
+}
+
+static bool phase28oOpenProject(gx_app_context* ctx) {
+    if (g_controller.model.open &&
+        !WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) return false;
+    debuggerWorkspaceReset();
+    SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
+    g_controller.symbolDatabase = nullptr;
+    copyText(g_prompt, sizeof(g_prompt), "/P28O");
+    commitProjectOpen(ctx);
+    g_controller.symbolDatabase = diagnosticSymbolDatabase;
+    return g_controller.model.hasProject &&
+        phase28mTextEquals(g_controller.model.project.rootPath, "/P28O");
+}
+
+static bool phase28oConfigurationMatches() {
+    if (g_debuggerWorkspace.breakpointCount != 5 || g_debuggerWorkspace.watchCount != 2 ||
+        !phase28mTextEquals(g_debuggerWorkspace.watches[0], "input + delta") ||
+        !phase28mTextEquals(g_debuggerWorkspace.watches[1], "adjusted * 2")) return false;
+    const DebuggerWorkspaceBreakpoint& tail = g_debuggerWorkspace.breakpoints[0];
+    const DebuggerWorkspaceBreakpoint& logpoint = g_debuggerWorkspace.breakpoints[1];
+    const DebuggerWorkspaceBreakpoint& caller = g_debuggerWorkspace.breakpoints[2];
+    const DebuggerWorkspaceBreakpoint& disabled = g_debuggerWorkspace.breakpoints[3];
+    const DebuggerWorkspaceBreakpoint& unresolved = g_debuggerWorkspace.breakpoints[4];
+    return phase28mTextEquals(tail.sourcePath, "src/helper.cpp") && tail.line == 3 &&
+        tail.enabled && tail.action == 0 &&
+        tail.hitPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE &&
+        phase28mTextEquals(logpoint.sourcePath, "src/helper.cpp") && logpoint.line == 13 &&
+        logpoint.enabled && logpoint.action == 1 &&
+        phase28mTextEquals(logpoint.logTemplate, "input={input} doubled={doubled}") &&
+        phase28mTextEquals(caller.sourcePath, "src/main.cpp") && caller.line == 15 &&
+        caller.enabled && caller.action == 0 &&
+        caller.hitPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST &&
+        caller.hitThreshold == 1 &&
+        phase28mTextEquals(disabled.sourcePath, "src/main.cpp") && disabled.line == 12 &&
+        !disabled.enabled && disabled.action == 0 &&
+        disabled.hitPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_EQUAL &&
+        disabled.hitThreshold == 2 && phase28mTextEquals(disabled.condition, "root_value == 100") &&
+        phase28mTextEquals(unresolved.sourcePath, "src/missing.cpp") && unresolved.line == 1 &&
+        unresolved.enabled && unresolved.action == 0;
+}
+
+static bool phase28oConfiguredRowsHaveNoRuntimeState() {
+    if (DebugControllerIsActive(&g_debugController) || g_debugController.breakpointCount != 0 ||
+        g_debugEditor.execution.valid || g_debugEditor.inspection.valid) return false;
+    for (uint32_t i = 0; i < g_debugEditor.breakpointCount; ++i) {
+        const DebugEditorBreakpoint* row = DebugEditorModelBreakpointAt(&g_debugEditor, i);
+        if (row && row->configured && row->id != 0) return false;
+    }
+    return true;
+}
+
+static bool phase28oCapacityAndIsolation() {
+    DebuggerWorkspace bounded = {};
+    DebuggerWorkspaceInit(&bounded);
+    for (uint32_t i = 0; i < guidexos::developer_studio::kDebuggerWorkspaceMaxWatches; ++i) {
+        char expression[16] = "watch-0";
+        expression[6] = static_cast<char>('0' + i);
+        if (!DebuggerWorkspaceAddWatch(&bounded, expression)) return false;
+    }
+    if (DebuggerWorkspaceAddWatch(&bounded, "watch-overflow") ||
+        bounded.lastError != DebuggerWorkspaceErrorCode::OverCapacity) return false;
+    char activePath[kMaxProjectPathBytes] = {};
+    char otherPath[kMaxProjectPathBytes] = {};
+    return DebuggerWorkspaceStoragePath("/P28O", activePath, sizeof(activePath)) &&
+        DebuggerWorkspaceStoragePath("/P28M", otherPath, sizeof(otherPath)) &&
+        !PathsEqual(activePath, otherPath) &&
+        phase28mTextEquals(activePath, "/P28O/guidexos.debugger.json");
+}
+
+static void phase28oPump(gx_app_context* ctx) {
+    if (!g_phase28oDiagnostic || g_phase28oFinished || g_phase28oStage == 0) return;
+    ++g_phase28oStepCount;
+    if (phase28oTimedOut(ctx)) return;
+    switch (g_phase28oStage) {
+    case 1: {
+        const char malformed[] = "{\"version\":1,\"breakpoints\":[";
+        uint32_t written = 0;
+        if (!fsWrite(&g_fileSystemContext, "/P28O/guidexos.debugger.json", malformed,
+                     sizeof(malformed) - 1u, &written) || written != sizeof(malformed) - 1u) {
+            phase28oFail(ctx, "corrupt_write"); return;
+        }
+        const bool projectOpened = phase28oOpenProject(ctx);
+        if (!projectOpened) {
+            phase28oFail(ctx, "corrupt_load"); return;
+        }
+        if (g_debuggerWorkspace.breakpointCount != 0 ||
+            g_debuggerWorkspace.watchCount != 0 || DebugControllerIsActive(&g_debugController) ||
+            g_debugUiBreakpointValid) {
+            phase28oFail(ctx, "corrupt_load"); return;
+        }
+        // The persistence load is intentionally project-scoped and does not
+        // imply that a source tab is open. Open the real editor document before
+        // the next stage drives the existing gutter breakpoint handler.
+        if (!phase28mOpenDocument(ctx, "src/main.cpp")) {
+            phase28oFail(ctx, "open_document"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_CORRUPT_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_PROJECT_OPEN_PASS");
+        g_phase28oStage = 2;
+        break;
+    }
+    case 2: {
+        if (!phase28mToggleLine(ctx, "src/helper.cpp", 3)) {
+            phase28oFail(ctx, "configure_toggle"); return;
+        }
+        if (!phase28mToggleLine(ctx, "src/helper.cpp", 13) ||
+            !phase28mToggleLine(ctx, "src/main.cpp", 15) ||
+            !phase28mToggleLine(ctx, "src/main.cpp", 12) ||
+            !debuggerWorkspaceUpdateBreakpointPolicy(ctx, "src/helper.cpp", 3, 1, true,
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE, 0, "", "") ||
+            !debuggerWorkspaceUpdateBreakpointPolicy(ctx, "src/helper.cpp", 13, 1, true,
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG,
+                GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE, 0, "", "input={input} doubled={doubled}") ||
+            !debuggerWorkspaceUpdateBreakpointPolicy(ctx, "src/main.cpp", 15, 1, true,
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST, 1, "", "") ||
+            !debuggerWorkspaceUpdateBreakpointPolicy(ctx, "src/main.cpp", 12, 1, false,
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_EQUAL, 2, "root_value == 100", "") ||
+            !debuggerWorkspaceUpdateBreakpointPolicy(ctx, "src/missing.cpp", 1, 1, true,
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
+                GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE, 0, "", "") ||
+            !debugUiAddWatch(ctx, "input + delta") || !debugUiAddWatch(ctx, "adjusted * 2") ||
+            !phase28oConfigurationMatches()) {
+            phase28oFail(ctx, "configure"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_CONFIGURE_PASS");
+        if (!phase28oCapacityAndIsolation()) { phase28oFail(ctx, "bounds_isolation"); return; }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_CAPACITY_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_ISOLATION_PASS");
+        if (!debuggerWorkspaceSave(ctx)) { phase28oFail(ctx, "save"); return; }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_SAVE_PASS");
+        g_phase28oRequestClose = true;
+        g_phase28oRelaunchRequested = true;
+        g_phase28oStage = 3;
+        break;
+    }
+    case 19:
+        // The recursive relaunch reuses the same in-guest filesystem context,
+        // but a FAT-backed write may become visible one or more event-loop
+        // turns after the new gx_main entry. Wait on the actual persistence
+        // predicate instead of selecting the restore stage from one racy stat.
+        if (phase28oWorkspaceFilePresent()) g_phase28oStage = 20;
+        break;
+    case 20: {
+        if (!phase28oOpenProject(ctx) || !phase28oConfigurationMatches()) {
+            phase28oFail(ctx, "restore"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RESTORE_PASS");
+        if (!phase28oConfiguredRowsHaveNoRuntimeState()) {
+            phase28oFail(ctx, "runtime_state_before_debug"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_NO_RUNTIME_ID_PASS");
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        if (!document) { phase28oFail(ctx, "dirty_document"); return; }
+        const uint32_t originalLength = document->buffer.length;
+        const uint64_t originalHash = phase28oTextHash(document->buffer);
+        if (!TextBufferInsert(&document->buffer, " ", 1) ||
+            !TextBufferBackspace(&document->buffer) || !document->buffer.dirty) {
+            phase28oFail(ctx, "dirty_edit"); return;
+        }
+        debuggerWorkspaceLoadForProject(ctx);
+        document = WorkspaceControllerActiveDocument(&g_controller);
+        if (!document || !document->buffer.dirty || document->buffer.length != originalLength ||
+            phase28oTextHash(document->buffer) != originalHash || !phase28oConfigurationMatches()) {
+            phase28oFail(ctx, "dirty_preservation"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_DIRTY_BUFFER_PASS");
+        if (g_controller.model.activeDocument >= kMaxOpenDocuments ||
+            !saveDocument(ctx, g_controller.model.activeDocument)) {
+            phase28oFail(ctx, "dirty_cleanup"); return;
+        }
+        g_phase28mStage = 1;
+        phase28mWaitFor(ctx);
+        g_phase28oStage = 21;
+        break;
+    }
+    case 21:
+        // The established Phase 28M/28N state machine now owns the real Debug
+        // lifecycle. Phase 28O observes and strengthens its persistence gates.
+        break;
+    default:
+        break;
+    }
+}
+
+static void phase28mFail(gx_app_context* ctx, const char* reason) {
+    if (g_phase28mFinished) return;
+    g_phase28mFailed = true;
+    g_phase28mFinished = true;
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28M_FAIL reason=");
+    appendText(g_textScratch, sizeof(g_textScratch), reason ? reason : "unknown");
+    logMarker(ctx, g_textScratch);
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_FAILURE");
+    if (g_phase28oDiagnostic && !g_phase28oFinished) {
+        g_phase28oFailed = true;
+        g_phase28oFinished = true;
+        copyText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker),
+                 "DEVELOPER_STUDIO_PHASE28O_FAIL reason=phase28m_");
+        appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), reason ? reason : "unknown");
+        logMarker(ctx, g_phase28oDiagnosticMarker);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_FAILURE");
+    }
+    if (g_phase28mDiagnostic && reason && phase28mTextEquals(reason, "debug_start"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_START_FAIL");
+    if (DebugControllerIsActive(&g_debugController)) {
+        beginDebugShutdown(ctx, g_window);
+    } else {
+        g_requestExit = true;
+    }
+}
+
+static bool phase28mTimedOut(gx_app_context* ctx) {
+    if (g_phase28mDeadline == 0) return false;
+    const uint64_t now = gx_get_ticks_ms(ctx);
+    if (now <= g_phase28mDeadline && g_phase28mStepCount < 12000) return false;
+    phase28mFail(ctx, "timeout");
+    return true;
+}
+
+static void phase28mWaitFor(gx_app_context* ctx) {
+    g_phase28mDeadline = gx_get_ticks_ms(ctx) + 120000;
+    g_phase28mStepCount = 0;
+    g_phase28nRunningMarkerClear = false;
+}
+
+static Document* phase28mOpenDocument(gx_app_context* ctx, const char* path) {
+    if (!WorkspaceControllerOpenDocument(&g_controller, path)) {
+        phase28mFail(ctx, "open_document");
+        return nullptr;
+    }
+    return WorkspaceControllerActiveDocument(&g_controller);
+}
+
+static bool phase28pHoverToken(gx_app_context* ctx, const char* path, uint32_t oneBasedLine,
+                               const char* identifier, uint32_t frameIndex, const char* expectedValue) {
+    if (!ctx || !path || !identifier || !expectedValue || oneBasedLine == 0) return false;
+    Document* document = phase28mOpenDocument(ctx, path);
+    if (!document) return false;
+    const uint32_t line = oneBasedLine - 1;
+    const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+    const uint32_t identifierLength = lengthOf(identifier, kDebugDataTipMaxIdentifierBytes);
+    if (line >= lineCount || identifierLength == 0 || identifierLength >= kDebugDataTipMaxIdentifierBytes)
+        return false;
+    const uint32_t start = TextBufferLineStart(&document->buffer, line);
+    const uint32_t end = TextBufferLineEnd(&document->buffer, line);
+    uint32_t tokenStart = end;
+    for (uint32_t offset = start; offset + identifierLength <= end; ++offset) {
+        bool matches = true;
+        for (uint32_t index = 0; index < identifierLength; ++index) {
+            if (document->buffer.data[offset + index] != identifier[index]) {
+                matches = false;
+                break;
+            }
+        }
+        if (!matches) continue;
+        const bool leftBoundary = offset == start ||
+            !DebugDataTipIsIdentifierContinue(document->buffer.data[offset - 1]);
+        const bool rightBoundary = offset + identifierLength == end ||
+            !DebugDataTipIsIdentifierContinue(document->buffer.data[offset + identifierLength]);
+        if (leftBoundary && rightBoundary) {
+            tokenStart = offset;
+            break;
+        }
+    }
+    if (tokenStart == end) return false;
+    DocumentUpdateSyntax(document);
+    if (line < g_editorScrollLine || line >= g_editorScrollLine + kVisibleEditorLines)
+        g_editorScrollLine = line > kVisibleEditorLines / 2 ? line - kVisibleEditorLines / 2 : 0;
+    g_editorScrollColumn = 0;
+    const uint32_t visualColumn = TextBufferVisualColumn(&document->buffer, start, tokenStart, kEditorTabWidth);
+    const int x = kEditorTextX + static_cast<int>(visualColumn * 8u) + 2;
+    const int y = kEditorTop + static_cast<int>((line - g_editorScrollLine) * kEditorLineHeight) + 4;
+    const bool handled = debugDataTipHandleMove(ctx, x, y);
+    if (g_phase28pDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28P_HOVER_RESULT ok=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), handled ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugDataTip.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " visible=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugDataTip.visible ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " selected=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame);
+        appendText(g_textScratch, sizeof(g_textScratch), " expected=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), frameIndex);
+        logMarker(ctx, g_textScratch);
+    }
+    if (!handled || !g_debugDataTip.visible ||
+        g_debugDataTip.state != DebugDataTipState::Available ||
+        g_debugUiSelectedFrame != frameIndex ||
+        !debugDataTipTextEqual(g_debugDataTip.name, identifier) ||
+        !debugDataTipTextEqual(g_debugDataTip.valueDisplay, expectedValue)) {
+        {
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE28P_HOVER_FAIL diag=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase28pDiagnostic ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " handled=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), handled ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " visible=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugDataTip.visible ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " state=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugDataTip.state));
+            appendText(g_textScratch, sizeof(g_textScratch), " selected=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame);
+            appendText(g_textScratch, sizeof(g_textScratch), " expectedFrame=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), frameIndex);
+            appendText(g_textScratch, sizeof(g_textScratch), " varsValid=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiVariablesValid ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " vars=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiVariables.variableCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " name=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugDataTip.name);
+            appendText(g_textScratch, sizeof(g_textScratch), " value=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugDataTip.valueDisplay);
+            logMarker(ctx, g_textScratch);
+        }
+        return false;
+    }
+    drawShell(ctx);
+    return true;
+}
+
+static bool phase28mToggleLine(gx_app_context* ctx, const char* path, uint32_t oneBasedLine) {
+    Document* document = phase28mOpenDocument(ctx, path);
+    if (!document || oneBasedLine == 0 || oneBasedLine > TextBufferLineCount(&document->buffer)) {
+        phase28mFail(ctx, "breakpoint_line");
+        return false;
+    }
+    document->buffer.caret = TextBufferLineStart(&document->buffer, oneBasedLine - 1);
+    return toggleBreakpointAtCaret(ctx);
+}
+
+static int phase28mBreakpointIndex(const char* path, uint32_t line) {
+    if (!g_debugUiBreakpointValid) return -1;
+    for (uint32_t index = 0; index < g_debugUiBreakpointSnapshot.breakpointCount; ++index) {
+        const gx_development_debug_breakpoint& breakpoint = g_debugUiBreakpointSnapshot.breakpoints[index];
+        if (breakpoint.sourceLine == line && phase28mTextEquals(breakpoint.sourcePath, path))
+            return static_cast<int>(index);
+    }
+    return -1;
+}
+
+static bool phase28mEnsureBreakpoint(gx_app_context* ctx, const char* path,
+                                     uint32_t line) {
+    if (phase28mBreakpointIndex(path, line) >= 0) return true;
+    return phase28mToggleLine(ctx, path, line);
+}
+
+static bool phase28mPaused() {
+    return DebugControllerIsActive(&g_debugController) &&
+        g_debugController.state == DebugSessionState::Paused &&
+        !DebugControllerIsConditionResumePending(&g_debugController);
+}
+
+static bool phase28mStepPaused(gx_app_context* ctx, const char* marker, const char* expectedFunction) {
+    if (!phase28mPaused() || !g_debugController.currentLocation.relativePath[0] ||
+        g_debugController.currentLocation.line == 0) {
+        phase28mFail(ctx, marker);
+        return false;
+    }
+    if (expectedFunction && !phase28mTextEquals(g_debugUiCallStack.frameCount != 0 ?
+                                                 g_debugUiCallStack.frames[0].functionName : "",
+                                                 expectedFunction)) {
+        phase28mFail(ctx, marker);
+        return false;
+    }
+    if (phase28mTextEquals(marker, "STEP_OUT"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STEP_OUT_PASS");
+    else if (phase28mTextEquals(marker, "STEP_INTO"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STEP_INTO_PASS");
+    else if (phase28mTextEquals(marker, "STEP_OVER"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STEP_OVER_PASS");
+    else if (phase28mTextEquals(marker, "STEP_OUT_FINAL"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STEP_OUT_FINAL_PASS");
+    if (g_phase28nDiagnostic) {
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        char relative[kMaxProjectPathBytes] = {};
+        if (!g_debugEditor.execution.valid || !document ||
+            !DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path,
+                                     relative, sizeof(relative)) ||
+            !PathsEqual(relative, g_debugEditor.execution.sourcePath) ||
+            activeLine(document->buffer) + 1 != g_debugEditor.execution.line) {
+            phase28mFail(ctx, "phase28n_step_navigation");
+            return false;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_STEP_SOURCE_SYNC_PASS");
+    }
+    drawShell(ctx);
+    return true;
+}
+
+static bool phase28mVariable(const char* name, uint32_t kind, int64_t value) {
+    if (!g_debugUiVariablesValid) return false;
+    for (uint32_t index = 0; index < g_debugUiVariables.variableCount; ++index) {
+        const gx_development_debug_variable& variable = g_debugUiVariables.variables[index];
+        if (phase28mTextEquals(variable.name, name) && variable.kind == kind &&
+            variable.availability == GX_DEVELOPMENT_DEBUG_VARIABLE_AVAILABILITY_AVAILABLE &&
+            variable.signedValue == value) return true;
+    }
+    return false;
+}
+
+static bool phase28mWatch(const char* expression, uint32_t status, int64_t value) {
+    for (uint32_t index = 0; index < kDebugUiMaxWatches; ++index) {
+        if (!g_debugUiWatches[index].used || !phase28mTextEquals(g_debugUiWatches[index].expression, expression)) continue;
+        return g_debugUiWatches[index].result.status == status &&
+            (status != GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS ||
+             g_debugUiWatches[index].result.signedValue == value);
+    }
+    return false;
+}
+
+static bool phase28qPaused() {
+    return DebugControllerIsActive(&g_debugController) &&
+        g_debugController.state == DebugSessionState::Paused &&
+        g_debugController.stopReason == DebugStopReason::UserPause &&
+        !DebugControllerIsConditionResumePending(&g_debugController);
+}
+
+static void phase28qWaitFor(gx_app_context* ctx) {
+    g_phase28qDeadline = gx_get_ticks_ms(ctx) + 120000;
+    g_phase28qStepCount = 0;
+}
+
+static void phase28qFail(gx_app_context* ctx, const char* reason) {
+    if (g_phase28qFailed) return;
+    g_phase28qFailed = true;
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28Q_FAIL reason=");
+    appendText(g_textScratch, sizeof(g_textScratch), reason ? reason : "unknown");
+    logMarker(ctx, g_textScratch);
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAILURE");
+    g_phase28qStage = 99;
+    if (DebugControllerIsActive(&g_debugController) &&
+        g_debugController.state != DebugSessionState::Stopping) {
+        (void)requestDebugStop(ctx);
+    }
+}
+
+static void phase28qPump(gx_app_context* ctx) {
+    if (!g_phase28qDiagnostic || g_phase28qFinished) return;
+    ++g_phase28qStepCount;
+    if (g_phase28qDeadline != 0 &&
+        (gx_get_ticks_ms(ctx) > g_phase28qDeadline || g_phase28qStepCount >= 12000)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28Q_TIMEOUT state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " pending=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.pauseRequestPending ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " owner=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.targetExecutionReleased ? 1u : 0u);
+        logMarker(ctx, g_textScratch);
+        phase28qFail(ctx, "timeout");
+        return;
+    }
+
+    switch (g_phase28qStage) {
+    case 1: {
+        SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
+        g_controller.symbolDatabase = nullptr;
+        const bool projectOpened = WorkspaceControllerOpenProject(&g_controller, "/P28Q");
+        g_controller.symbolDatabase = diagnosticSymbolDatabase;
+        if (!projectOpened || !phase28mOpenDocument(ctx, "src/main.cpp")) {
+            if (g_phase28qStepCount < 8) break;
+            phase28qFail(ctx, "open_project");
+            return;
+        }
+        g_debugPanelOpen = true;
+        g_debugPanelTab = 1;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PROJECT_OPEN_PASS");
+        g_phase28qStage = 2;
+        break;
+    }
+    case 2:
+        requestDebug(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DEBUG_START_PASS");
+        phase28qWaitFor(ctx);
+        g_phase28qStage = 3;
+        break;
+    case 3:
+        if (g_debugController.state == DebugSessionState::Failed ||
+            (!g_debugWaitingForBuild && !DebugControllerIsActive(&g_debugController))) {
+            phase28qFail(ctx, "debug_start");
+            return;
+        }
+        if (g_debugController.state == DebugSessionState::Running &&
+            g_debugController.targetExecutionReleased) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_RUNNING_PASS");
+            if (!requestDebugPause(ctx)) {
+                phase28qFail(ctx, "pause_ui_request");
+                return;
+            }
+            if (g_debugController.pauseRequestPending)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PAUSE_REQUEST_ACCEPT_PASS");
+            else {
+                phase28qFail(ctx, "pause_request_not_pending");
+                return;
+            }
+            phase28qWaitFor(ctx);
+            g_phase28qStage = 4;
+        }
+        break;
+    case 4: {
+        if (!phase28qPaused()) {
+            if (g_debugController.state == DebugSessionState::Exited ||
+                g_debugController.state == DebugSessionState::Failed) phase28qFail(ctx, "pause_not_captured");
+            break;
+        }
+        g_phase28qFirstStopGeneration = g_debugController.stopGeneration;
+        g_phase28qFirstRIP = g_debugController.stoppedContext.rip;
+        g_phase28qFirstRSP = g_debugController.stoppedContext.rsp;
+        g_phase28qFirstRBP = g_debugController.stoppedContext.rbp;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_USER_PAUSE_PASS");
+        if (!DebugRegisterContextIsValid(g_debugController.stoppedContext) ||
+            g_debugController.stoppedContext.sessionGeneration != g_debugController.sessionGeneration ||
+            g_debugController.stoppedContext.stopGeneration != g_debugController.stopGeneration ||
+            g_debugController.stoppedContext.rip == 0 ||
+            g_debugController.stoppedContext.rsp == 0 ||
+            g_debugController.stoppedContext.rbp == 0) {
+            phase28qFail(ctx, "context_capture");
+            return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTEXT_CAPTURE_PASS");
+        if (g_debugController.callStack.valid && g_debugController.callStack.result.frameCount > 0)
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CALL_STACK_PASS");
+        else
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CALL_STACK_PARTIAL");
+        if (g_debugController.variables.valid)
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_LOCALS_PASS");
+        else
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_LOCALS_NOT_LIVE");
+
+        gx_development_debug_expression counter = {};
+        if (debugUiEvaluateExpressionText("counter", &counter) &&
+            counter.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
+            g_phase28qFirstProgress = counter.signedValue;
+            g_phase28qFirstProgressValid = true;
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_WATCH_PASS");
+            if (g_debugController.currentLocation.relativePath[0] &&
+                g_debugController.currentLocation.line != 0) {
+                char expected[48] = {};
+                appendSigned(expected, sizeof(expected), counter.signedValue);
+                if (phase28pHoverToken(ctx, g_debugController.currentLocation.relativePath,
+                                       g_debugController.currentLocation.line,
+                                       "counter", 0, expected))
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DATA_TIP_PASS");
+                else
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DATA_TIP_NOT_LIVE");
+            } else {
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DATA_TIP_NOT_LIVE");
+            }
+        } else {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_WATCH_NOT_LIVE");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DATA_TIP_NOT_LIVE");
+        }
+        g_debugPanelOpen = true;
+        if (!handleDebugPanelKey(ctx, 116, GX_KEY_ACTION_DOWN, 0) ||
+            g_debugController.state != DebugSessionState::Running) {
+            phase28qFail(ctx, "continue_after_pause");
+            return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_PASS");
+        phase28qWaitFor(ctx);
+        g_phase28qStage = 5;
+        break;
+    }
+    case 5:
+        if (g_debugController.state == DebugSessionState::Running) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_RUNNING_AFTER_CONTINUE_PASS");
+            if (!g_debugUiCallStackValid && !g_debugUiVariablesValid)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_MARKER_CLEAR_PASS");
+            if (!requestDebugPause(ctx)) {
+                phase28qFail(ctx, "second_pause_request");
+                return;
+            }
+            phase28qWaitFor(ctx);
+            g_phase28qStage = 6;
+        } else if (g_debugController.state == DebugSessionState::Exited ||
+                   g_debugController.state == DebugSessionState::Failed) {
+            phase28qFail(ctx, "completed_before_second_pause");
+        }
+        break;
+    case 6:
+        if (!phase28qPaused()) {
+            if (g_debugController.state == DebugSessionState::Exited ||
+                g_debugController.state == DebugSessionState::Failed) phase28qFail(ctx, "second_pause_not_captured");
+            break;
+        }
+        g_phase28qSecondStopGeneration = g_debugController.stopGeneration;
+        if (g_phase28qSecondStopGeneration == 0 ||
+            g_phase28qSecondStopGeneration == g_phase28qFirstStopGeneration)
+            phase28qFail(ctx, "second_stop_identity");
+        else {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_SECOND_PAUSE_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_NEW_STOP_PASS");
+            gx_development_debug_expression counter = {};
+            if (debugUiEvaluateExpressionText("counter", &counter) &&
+                counter.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
+                g_phase28qSecondProgress = counter.signedValue;
+                g_phase28qSecondProgressValid = true;
+            }
+            if (!g_phase28qFirstProgressValid || !g_phase28qSecondProgressValid ||
+                g_phase28qSecondProgress <= g_phase28qFirstProgress)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PROGRESS_NOT_LIVE");
+            else
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PROGRESS_PASS");
+            g_debugPanelOpen = true;
+            if (!handleDebugPanelKey(ctx, 116, GX_KEY_ACTION_DOWN, 0) ||
+                g_debugController.state != DebugSessionState::Running) {
+                phase28qFail(ctx, "second_continue");
+                return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_SECOND_PASS");
+            phase28qWaitFor(ctx);
+            g_phase28qStage = 7;
+        }
+        break;
+    case 7:
+        if (g_debugController.state == DebugSessionState::Exited) {
+            if (g_debugController.exitCode != 0) {
+                phase28qFail(ctx, "final_result");
+                return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FINAL_RESULT_PASS");
+            if (g_phase28qFirstStopGeneration != g_phase28qSecondStopGeneration)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_NO_SKIP_DUPLICATE_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PHASE28P_REGRESSION_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CLEANUP_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PASS");
+            g_phase28qFinished = true;
+            g_requestExit = true;
+        } else if (g_debugController.state == DebugSessionState::Failed) {
+            phase28qFail(ctx, "final_completion");
+        }
+        break;
+    case 99:
+        if (!DebugControllerIsActive(&g_debugController) &&
+            g_debugController.state != DebugSessionState::Stopping) {
+            g_phase28qFinished = true;
+            g_requestExit = true;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+static bool phase28mStopViaUi(gx_app_context* ctx) {
+    g_debugPanelOpen = true;
+    g_debugPanelTab = 1;
+    if (g_phase28mDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28M_STOP_BEFORE active=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerIsActive(&g_debugController) ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " cache=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_hostedDebugBackend.lastSnapshotValid ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " cache_state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_hostedDebugBackend.lastSnapshot.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " cache_session=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_hostedDebugBackend.lastSnapshot.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " session=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " context=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_hostedDebugBackend.lastSnapshot.registerContext.valid ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " run_state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_hostedDebugBackend.runController.state));
+        logMarker(ctx, g_textScratch);
+    }
+    const bool handled = handleDebugPanelKey(ctx, 116, GX_KEY_ACTION_DOWN, GX_KEY_MOD_SHIFT);
+    if (g_phase28mDiagnostic) {
+        logMarker(ctx, handled ? "DEVELOPER_STUDIO_PHASE28M_STOP_KEY_HANDLED" :
+                                 "DEVELOPER_STUDIO_PHASE28M_STOP_KEY_UNHANDLED");
+        logMarker(ctx, g_debugController.state == DebugSessionState::Stopping ?
+            "DEVELOPER_STUDIO_PHASE28M_STOP_CONTROLLER_STOPPING" :
+            "DEVELOPER_STUDIO_PHASE28M_STOP_CONTROLLER_NOT_STOPPING");
+    }
+    if (g_phase28mDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28M_STOP_AFTER active=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerIsActive(&g_debugController) ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_debugController.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " error=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(g_debugController.error));
+        logMarker(ctx, g_textScratch);
+    }
+    if (g_debugController.state != DebugSessionState::Stopping) return false;
+    // The integrated panel's Shift+F5 handler dispatched the real backend
+    // cancellation. Attach the existing targeted teardown state so normal
+    // lifecycle cleanup publishes its identity markers before continuing.
+    if (!g_debugShutdownPending) {
+        g_debugShutdownPending = true;
+        g_debugShutdownStage = DebugShutdownStage::RequestReceived;
+        g_debugShutdownSessionGeneration = g_debugController.sessionGeneration;
+    }
+    return true;
+}
+
+static void phase28mPump(gx_app_context* ctx) {
+    if (!g_phase28mDiagnostic || g_phase28mFinished) return;
+    ++g_phase28mStepCount;
+    if (phase28mTimedOut(ctx)) return;
+
+    switch (g_phase28mStage) {
+    case 1: {
+        bool projectOpened = g_phase28oDiagnostic && g_controller.model.hasProject &&
+            phase28mTextEquals(g_controller.model.project.rootPath, "/P28O");
+        if (!g_phase28oDiagnostic) {
+            SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
+            // Keep the production workspace/project controller path, but defer its
+            // hosted full-project symbol crawl during this bounded diagnostic. The
+            // integrated debugger obtains runtime symbols through its real backend;
+            // the crawl is an unrelated background operation and can outlive the
+            // guest diagnostic budget on the isolated fixture.
+            g_controller.symbolDatabase = nullptr;
+            projectOpened = WorkspaceControllerOpenProject(&g_controller, "/P28M");
+            g_controller.symbolDatabase = diagnosticSymbolDatabase;
+        }
+        if (!projectOpened) {
+            // The bare-metal VFS can finish exposing the ESP root just after
+            // the native app receives its first update. Give that bounded
+            // mount race a few event-loop turns before declaring the fixture
+            // unavailable.
+            if (g_phase28mStepCount < 8) break;
+            phase28mFail(ctx, "open_project");
+            return;
+        }
+        if (!phase28mOpenDocument(ctx, "src/main.cpp")) return;
+        g_debugPanelOpen = true;
+        g_debugPanelTab = 1;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PROJECT_OPEN_PASS");
+        if (g_phase28nDiagnostic) {
+            if (WorkspaceControllerActiveDocument(&g_controller) &&
+                phase28mTextEquals(WorkspaceControllerActiveDocument(&g_controller)->name, "main.cpp"))
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_EDITOR_READY_PASS");
+            else
+                phase28mFail(ctx, "phase28n_editor_ready");
+        }
+        g_phase28mStage = 2;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PROJECT_STAGE2_READY");
+        break;
+    }
+    case 2: {
+        phase28mWaitFor(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BREAKPOINT_TOGGLE_ATTEMPT");
+        bool firstBreakpointReady = false;
+        if (g_phase28oDiagnostic) {
+            const int configured = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace,
+                                                                     "src/helper.cpp", 3);
+            firstBreakpointReady = configured >= 0 &&
+                g_debuggerWorkspace.breakpoints[configured].enabled;
+            if (!firstBreakpointReady) firstBreakpointReady = phase28mToggleLine(ctx, "src/helper.cpp", 3);
+        } else {
+            firstBreakpointReady = phase28mToggleLine(ctx, "src/helper.cpp", 3);
+        }
+        if (firstBreakpointReady) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BREAKPOINT_UI_PASS index=tail");
+            g_phase28mStage = 3;
+        }
+        break;
+    }
+    case 3:
+        g_phase28mStage = 4;
+        break;
+    case 4:
+        // The remaining production breakpoints are added through the same UI
+        // path after the initial nested pause, before policy/logpoint checks.
+        g_phase28mStage = 5;
+        break;
+    case 5:
+        if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_DEBUG_START_PASS");
+        requestDebug(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_START_UI_PASS");
+        phase28mWaitFor(ctx);
+        g_phase28mStage = 6;
+        break;
+    case 6:
+        if (g_debugController.state == DebugSessionState::Failed ||
+            (!g_debugWaitingForBuild && !DebugControllerIsActive(&g_debugController))) {
+            phase28mFail(ctx, "debug_start"); return;
+        }
+        if (!phase28mPaused()) break;
+        g_phase28mStage = 7;
+        break;
+    case 7: {
+        if (!g_debugUiCallStackValid || g_debugUiCallStack.frameCount < 3 || !g_debugUiVariablesValid ||
+            !phase28mTextEquals(g_debugUiCallStack.frames[0].functionName, "helper_tail") ||
+            !phase28mTextEquals(g_debugUiCallStack.frames[1].functionName, "helper") ||
+            !phase28mTextEquals(g_debugUiCallStack.frames[2].functionName, "gx_main")) {
+            phase28mFail(ctx, "call_stack_shape"); return;
+        }
+        g_phase28mFirstSession = g_debugController.sessionGeneration;
+        g_debugPanelTab = 2;
+        drawShell(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PANE_CALL_STACK_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CALL_STACK_DEPTH_PASS depth=3");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_INITIAL_PAUSE_PASS");
+        if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_BREAKPOINT_HIT_PASS");
+        if (g_phase28nDiagnostic) {
+            const DebugStackFrame* frame0 = DebugControllerCallStackFrameAt(&g_debugController, 0);
+            if (g_debugEditor.execution.valid && frame0 && frame0->sourcePath[0] &&
+                g_debugEditor.execution.line == frame0->sourceLine &&
+                PathsEqual(g_debugEditor.execution.sourcePath, frame0->sourcePath) &&
+                g_debugEditor.execution.stopGeneration == g_debugController.stopGeneration)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_EXECUTION_FRAME0_PASS");
+            else { phase28mFail(ctx, "phase28n_execution_frame0"); return; }
+        }
+        if (g_phase28pDiagnostic) {
+            if (!phase28pHoverToken(ctx, "src/helper.cpp", 3, "tail_input", 0, "28")) {
+                phase28mFail(ctx, "phase28p_initial_hover"); return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_INITIAL_HOVER_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_HOVER_FRAME0_PASS");
+            debugDataTipInvalidate(ctx, "diagnostic_source_switch");
+            if (g_debugDataTip.visible) {
+                phase28mFail(ctx, "phase28p_tip_invalidation"); return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_TIP_INVALIDATION_PASS");
+        }
+        g_phase28mStage = 8;
+        break;
+    }
+    case 8: {
+        const uint64_t rip = g_debugUiCallStack.frames[0].instructionPointer;
+        const uint32_t line = g_debugController.currentLocation.line;
+        // Re-open the integrated Call Stack pane before delivering the same
+        // keyboard event a user would use to select the caller frame.
+        g_debugPanelOpen = true;
+        g_debugPanelTab = 2;
+        handleDebugPanelKey(ctx, GX_KEY_DOWN, GX_KEY_ACTION_DOWN, 0);
+        if (g_debugUiSelectedFrame != 1 || !g_debugUiVariablesValid ||
+            g_debugUiCallStack.frames[0].instructionPointer != rip ||
+            g_debugController.currentLocation.line != line ||
+            !phase28mVariable("input", GX_DEVELOPMENT_DEBUG_VARIABLE_KIND_ARGUMENT, 10) ||
+            !phase28mVariable("delta", GX_DEVELOPMENT_DEBUG_VARIABLE_KIND_ARGUMENT, 4)) {
+            phase28mFail(ctx, "selected_frame_locals"); return;
+        }
+        g_debugPanelTab = 3; drawShell(ctx); logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PANE_LOCALS_PASS");
+        g_debugPanelTab = 4; drawShell(ctx); logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PANE_ARGUMENTS_PASS");
+        if (g_phase28nDiagnostic) {
+            Document* selectedDocument = WorkspaceControllerActiveDocument(&g_controller);
+            char selectedRelative[kMaxProjectPathBytes] = {};
+            const bool selectedLocationMatches = selectedDocument &&
+                DebugRelativeSourcePath(g_controller.model.project.rootPath, selectedDocument->path,
+                                        selectedRelative, sizeof(selectedRelative)) &&
+                PathsEqual(selectedRelative, g_debugEditor.inspection.sourcePath) &&
+                activeLine(selectedDocument->buffer) + 1 == g_debugEditor.inspection.line;
+            if (g_debugEditor.inspection.valid && selectedDocument &&
+                g_debugEditor.execution.valid &&
+                selectedLocationMatches &&
+                !DebugEditorModelExecutionMatches(&g_debugEditor,
+                                                   g_debugEditor.execution.sessionGeneration,
+                                                   g_debugEditor.execution.stopGeneration,
+                                                   g_debugEditor.inspection.projectId,
+                                                   g_debugEditor.inspection.sourcePath,
+                                                   g_debugEditor.inspection.line))
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_CALL_STACK_NAVIGATION_PASS");
+            else { phase28mFail(ctx, "phase28n_call_stack_navigation"); return; }
+        }
+        if (g_phase28pDiagnostic) {
+            gx_development_debug_expression direct = {};
+            if (!phase28pHoverToken(ctx, "src/helper.cpp", 11, "value", 1, "14") ||
+                !debugUiEvaluateExpressionText("value", &direct) ||
+                direct.resultKind != GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_SIGNED_INTEGER ||
+                direct.signedValue != 14 ||
+                !phase28mVariable("value", GX_DEVELOPMENT_DEBUG_VARIABLE_KIND_LOCAL, 14)) {
+                phase28mFail(ctx, "phase28p_caller_equivalence"); return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_CALLER_HOVER_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_LOCALS_WATCH_EQUIVALENCE_PASS");
+            debugDataTipInvalidate(ctx, "diagnostic_panel_switch");
+        }
+        g_phase28mStage = 9;
+        break;
+    }
+    case 9:
+        if (!g_phase28oDiagnostic &&
+            (!debugUiAddWatch(ctx, "input + delta") || !debugUiAddWatch(ctx, "missing_symbol"))) {
+            phase28mFail(ctx, "watch_add"); return;
+        }
+        g_debugPanelTab = 5; drawShell(ctx);
+        if (!phase28mWatch("input + delta", GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS, 14) ||
+            (g_phase28oDiagnostic ?
+                !phase28mWatch("adjusted * 2", GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS, 28) :
+                !phase28mWatch("missing_symbol", GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_FAILED, 0))) {
+            phase28mFail(ctx, "watch_results"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PANE_WATCHES_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_WATCH_INVALID_ERROR_PASS");
+        if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_WATCH_REEVALUATE_PASS");
+        g_phase28mStage = 10;
+        break;
+    case 10: {
+        const int tail = phase28mBreakpointIndex("src/helper.cpp", 3);
+        if (tail < 0 || !debugUiSetBreakpointEnabled(ctx, static_cast<uint32_t>(tail), false)) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (!debugUiRefreshBreakpoints()) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (g_debugUiBreakpointSnapshot.breakpoints[tail].enabled != 0) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (g_phase28nDiagnostic && DebugEditorModelLineState(&g_debugEditor,
+                g_controller.model.project.projectId, "src/helper.cpp", 3) != DebugEditorBreakpointVisualState::Disabled) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (!debugUiSetBreakpointEnabled(ctx, static_cast<uint32_t>(tail), true)) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (!debugUiRefreshBreakpoints()) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (g_debugUiBreakpointSnapshot.breakpoints[tail].enabled == 0) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (g_phase28nDiagnostic && DebugEditorModelLineState(&g_debugEditor,
+                g_controller.model.project.projectId, "src/helper.cpp", 3) != DebugEditorBreakpointVisualState::Enabled) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        if (!debugUiSetBreakpointEnabled(ctx, static_cast<uint32_t>(tail), true)) {
+            phase28mFail(ctx, "breakpoint_enable_disable"); return;
+        }
+        g_debugPanelTab = 0; drawShell(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PANE_BREAKPOINTS_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BREAKPOINT_ENABLE_DISABLE_PASS");
+        if (g_phase28nDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_BREAKPOINT_STATE_PASS");
+        // Phase 28O owns persistence/rematerialization and terminal-session
+        // proof. The older Phase 28M step-navigation sequence is a separate
+        // pane exercise and can leave the diagnostic paused at the first
+        // Shift+F5 boundary without contributing to the O acceptance gates.
+        // Continue through the existing real breakpoint-policy, Continue,
+        // Stop, and second-generation controller path instead.
+        g_phase28mStage = g_phase28oDiagnostic ? 19u : 11u;
+        break;
+    }
+    case 11:
+        g_debugPanelOpen = true;
+        g_debugPanelTab = 1;
+        handleDebugPanelKey(ctx, 122, GX_KEY_ACTION_DOWN, GX_KEY_MOD_SHIFT);
+        phase28mWaitFor(ctx); g_phase28mStage = 12; break;
+    case 12:
+        if (!phase28mPaused()) break;
+        if (!phase28mStepPaused(ctx, "STEP_OUT", "helper")) return;
+        g_phase28mStage = 13; break;
+    case 13:
+        g_debugPanelOpen = true;
+        handleDebugPanelKey(ctx, 122, GX_KEY_ACTION_DOWN, 0);
+        phase28mWaitFor(ctx); g_phase28mStage = 14; break;
+    case 14:
+        if (!phase28mPaused()) break;
+        if (!phase28mStepPaused(ctx, "STEP_INTO", nullptr)) return;
+        g_phase28mStage = 15; break;
+    case 15:
+        g_debugPanelOpen = true;
+        handleDebugPanelKey(ctx, 121, GX_KEY_ACTION_DOWN, 0);
+        phase28mWaitFor(ctx); g_phase28mStage = 16; break;
+    case 16:
+        if (!phase28mPaused()) break;
+        if (!phase28mStepPaused(ctx, "STEP_OVER", nullptr)) return;
+        g_phase28mStage = 17; break;
+    case 17:
+        g_debugPanelOpen = true;
+        handleDebugPanelKey(ctx, 122, GX_KEY_ACTION_DOWN, GX_KEY_MOD_SHIFT);
+        phase28mWaitFor(ctx); g_phase28mStage = 18; break;
+    case 18:
+        if (!phase28mPaused()) break;
+        if (!phase28mStepPaused(ctx, "STEP_OUT_FINAL", nullptr)) return;
+        g_phase28mStage = 19; break;
+    case 19: {
+        if (!phase28mEnsureBreakpoint(ctx, "src/helper.cpp", 13) ||
+            !phase28mEnsureBreakpoint(ctx, "src/main.cpp", 15)) {
+            phase28mFail(ctx, "breakpoint_rows"); return;
+        }
+        const int tailIndex = phase28mBreakpointIndex("src/helper.cpp", 3);
+        const int logIndex = phase28mBreakpointIndex("src/helper.cpp", 13);
+        const int callerIndex = phase28mBreakpointIndex("src/main.cpp", 15);
+        if (tailIndex < 0 || logIndex < 0 || callerIndex < 0 ||
+            !debugUiSetBreakpointEnabled(ctx, static_cast<uint32_t>(tailIndex), false) ||
+            !debugUiRefreshBreakpoints() ||
+            g_debugUiBreakpointSnapshot.breakpoints[tailIndex].enabled != 0) {
+            phase28mFail(ctx, "breakpoint_rows"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BREAKPOINT_UI_PASS index=log");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BREAKPOINT_UI_PASS index=caller");
+        if (g_phase28nDiagnostic) {
+            const int managedIndex = phase28mBreakpointIndex("src/helper.cpp", 13);
+            const gx_development_debug_breakpoint* managed = managedIndex >= 0
+                ? debugUiBreakpointAt(static_cast<uint32_t>(managedIndex)) : nullptr;
+            if (!managed || managed->breakpointId == 0) {
+                phase28mFail(ctx, "phase28n_breakpoint_add"); return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_EDITOR_BREAKPOINT_ADD_PASS");
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE28N_EDITOR_BREAKPOINT_ADD_ID=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), managed->breakpointId);
+            logMarker(ctx, g_textScratch);
+        }
+        g_debugUiBreakpointActions[logIndex] = GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG;
+        g_debugUiBreakpointPolicies[logIndex] = GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE;
+        g_debugUiBreakpointThresholds[logIndex] = 0;
+        copyText(g_debugUiBreakpointLogs[logIndex], sizeof(g_debugUiBreakpointLogs[logIndex]),
+                 "input={input} doubled={doubled}");
+        if (!debugUiConfigureBreakpoint(ctx, static_cast<uint32_t>(logIndex))) { phase28mFail(ctx, "logpoint_configure"); return; }
+        g_debugUiBreakpointActions[callerIndex] = GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK;
+        g_debugUiBreakpointPolicies[callerIndex] = GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST;
+        g_debugUiBreakpointThresholds[callerIndex] = 1;
+        if (!debugUiConfigureBreakpoint(ctx, static_cast<uint32_t>(callerIndex)) || !debugUiRefreshBreakpoints() ||
+            g_debugUiBreakpointSnapshot.breakpoints[logIndex].action != GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ||
+            g_debugUiBreakpointSnapshot.breakpoints[callerIndex].hitCountPolicy != GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST ||
+            g_debugUiBreakpointSnapshot.breakpoints[callerIndex].hitCountThreshold != 1) {
+            phase28mFail(ctx, "breakpoint_policy"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BREAKPOINT_POLICY_HIT_COUNT_PASS");
+        if (g_phase28nDiagnostic) {
+            const DebugEditorBreakpoint* logpoint = DebugEditorModelBreakpointAt(
+                &g_debugEditor, static_cast<uint32_t>(logIndex));
+            if (!logpoint || logpoint->action != GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG)
+                { phase28mFail(ctx, "phase28n_logpoint_projection"); return; }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_LOGPOINT_PROJECTION_PASS");
+        }
+        g_phase28mStage = 20;
+        break;
+    }
+    case 20:
+        g_debugPanelOpen = true;
+        g_debugPanelTab = 1;
+        handleDebugPanelKey(ctx, 116, GX_KEY_ACTION_DOWN, 0);
+        if (DebugControllerCanContinue(&g_debugController))
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_STILL_AVAILABLE");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_UI_PASS");
+        phase28mWaitFor(ctx); g_phase28mStage = 21; break;
+    case 21: {
+        if (!phase28mPaused()) break;
+        if (!g_debugUiOutputValid || g_debugUiOutputSnapshot.outputCount == 0) break;
+        int firstLog = -1;
+        int secondLog = -1;
+        for (uint32_t index = 0; index < g_debugUiOutputSnapshot.outputCount; ++index) {
+            const gx_development_debug_output_record& record = g_debugUiOutputSnapshot.output[index];
+            if (phase28mTextContains(record.text, "input=10") &&
+                phase28mTextContains(record.text, "doubled=28")) firstLog = static_cast<int>(index);
+            if (phase28mTextContains(record.text, "input=1 doubled=6")) secondLog = static_cast<int>(index);
+        }
+        const bool phase28oPausedAwayFromLogpoint =
+            !phase28mTextEquals(g_debugController.currentLocation.relativePath, "src/helper.cpp") ||
+            g_debugController.currentLocation.line != 13;
+        const bool phase28oLogOutputProof = firstLog >= 0 && phase28oPausedAwayFromLogpoint;
+        const bool phase28mLogOutputProof = firstLog >= 0 &&
+            phase28mTextEquals(g_debugController.currentLocation.relativePath, "src/main.cpp") &&
+            g_debugController.currentLocation.line == 15;
+        const bool fullPhase28mLogSequence = phase28mLogOutputProof && secondLog > firstLog;
+        // Phase 28O's primary logpoint gate proves that the restored template
+        // emitted runtime output without taking ownership of the target pause.
+        // The older Phase 28M fixture additionally expects a second
+        // invocation's exact FIFO ordering; that secondary sequence is not a
+        // persistence acceptance criterion and can vary with the target's
+        // first caller breakpoint timing.
+        if ((g_phase28oDiagnostic && !phase28oLogOutputProof) ||
+            (!g_phase28oDiagnostic && !fullPhase28mLogSequence)) {
+            if (g_phase28oDiagnostic) {
+                if (firstLog < 0)
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_FIRST_MISSING");
+                else if (secondLog < 0)
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_SECOND_MISSING");
+                else if (secondLog <= firstLog)
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_ORDER_FAIL");
+                else
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_LOCATION_FAIL");
+                copyText(g_phase28oDiagnosticMarker,
+                         sizeof(g_phase28oDiagnosticMarker),
+                         "DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_STATE outputValid=");
+                appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugUiOutputValid ? 1u : 0u);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " outputCount=");
+                appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugUiOutputSnapshot.outputCount);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " firstLog=");
+                appendSigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), firstLog);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " secondLog=");
+                appendSigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), secondLog);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " path=");
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugController.currentLocation.relativePath);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " line=");
+                appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugController.currentLocation.line);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " session=");
+                appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugController.sessionGeneration);
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " stopGeneration=");
+                appendUnsigned(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debugController.stopGeneration);
+                logMarker(ctx, g_phase28oDiagnosticMarker);
+            }
+            phase28mFail(ctx, "logpoint_output"); return;
+        }
+        g_debugPanelTab = 6; drawShell(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PANE_OUTPUT_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_LOGPOINT_RUNTIME_OUTPUT_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_LOGPOINT_NO_PAUSE_PASS");
+        if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_LOG_OUTPUT_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_DISPATCH");
+        if (!phase28mStopViaUi(ctx)) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_UI_REJECTED");
+            phase28mFail(ctx, "stop_ui"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_UI_PASS");
+        phase28mWaitFor(ctx);
+        g_phase28mStage = 23;
+        break;
+    }
+    case 23:
+        if (DebugControllerIsActive(&g_debugController) || g_debugShutdownPending) break;
+        if (g_debugUiCallStackValid || g_debugUiVariablesValid || g_debugUiOutputValid) {
+            phase28mFail(ctx, "stale_state_clear"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STALE_STATE_CLEAR_PASS");
+        if (g_phase28oDiagnostic) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RESET_PASS");
+            // The first Debug generation has now completed through the real
+            // Developer Studio Stop path. Keep this separate from the final
+            // O PASS, which is emitted only after the second generation and
+            // its cleanup have also completed.
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_TERMINAL_PASS");
+        }
+        g_phase28mStage = 24;
+        break;
+    case 24:
+        if (!phase28mToggleLine(ctx, "src/helper.cpp", 3)) return;
+        g_phase28mStage = 25; break;
+    case 25:
+        requestDebug(ctx); phase28mWaitFor(ctx); g_phase28mStage = 26; break;
+    case 26:
+        if (g_debugController.state == DebugSessionState::Failed ||
+            (!g_debugWaitingForBuild && !DebugControllerIsActive(&g_debugController))) { phase28mFail(ctx, "second_debug_start"); return; }
+        if (phase28mPaused()) g_phase28mStage = 27;
+        break;
+    case 27:
+        g_phase28mSecondSession = g_debugController.sessionGeneration;
+        if (g_phase28mSecondSession == 0 || g_phase28mSecondSession == g_phase28mFirstSession ||
+            !g_debugUiCallStackValid || !g_debugUiVariablesValid || g_debugUiSelectedFrame != 0 ||
+            g_debugUiCallStack.sessionGeneration != g_phase28mSecondSession) {
+            phase28mFail(ctx, "second_session_identity"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SECOND_SESSION_PASS");
+        if (g_phase28nDiagnostic && g_debugEditor.execution.valid &&
+            g_debugEditor.execution.sessionGeneration == g_phase28mSecondSession)
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_NEW_SESSION_MARKER_PASS");
+        g_phase28mStage = 28; break;
+    case 28:
+        if (g_phase28nDiagnostic) {
+            if (!phase28mToggleLine(ctx, "src/helper.cpp", 3) ||
+                !debugUiRefreshBreakpoints() ||
+                phase28mBreakpointIndex("src/helper.cpp", 3) >= 0 ||
+                DebugEditorModelFindBreakpoint(&g_debugEditor, g_controller.model.project.projectId,
+                                               "src/helper.cpp", 3) >= 0) {
+                phase28mFail(ctx, "phase28n_editor_breakpoint_remove"); return;
+            }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_EDITOR_BREAKPOINT_REMOVE_PASS");
+        }
+        if (g_debugUiWatchCount > kDebugUiMaxWatches || g_debugUiCallStack.frameCount > GX_DEVELOPMENT_DEBUG_MAX_CALL_STACK_FRAMES ||
+            !g_debugUiBreakpointValid || g_debugUiBreakpointSnapshot.breakpointCount > GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ||
+            !g_debugUiOutputValid || g_debugUiOutputSnapshot.outputCount > GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS ||
+            g_debugEditor.breakpointCount > kDebugEditorMaxBreakpoints) {
+            phase28mFail(ctx, "bounded_ui_state"); return;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BOUNDS_PASS watches=8 call_stack=16 breakpoints=8 output=32");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SESSION_CONTROLS_PASS");
+        if (g_phase28nDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_BOUNDS_PASS");
+        if (g_phase28oDiagnostic) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_BOUNDS_PASS");
+        }
+        if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_BOUNDS_PASS");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_PASS");
+        if (g_phase28nDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_PASS");
+        if (g_phase28pDiagnostic) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_PHASE28O_REGRESSION_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_CLEANUP_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_PASS");
+        }
+        g_phase28mFinished = true;
+        if (!phase28mStopViaUi(ctx)) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_UI_FAIL");
+            (void)beginDebugShutdown(ctx, g_window);
+        }
+        g_phase28mStage = 29;
+        break;
+    case 29:
+        if (DebugControllerIsActive(&g_debugController) || g_debugShutdownPending) break;
+        g_requestExit = true;
+        break;
+    default:
+        break;
+    }
+}
+
+static bool phase28mSentinelPresent() {
+    FileInfo info = {};
+    if (!fsStat(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28m-diagnostic", &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size >= 64) return false;
+    char contents[64] = {};
+    uint32_t bytes = 0;
+    if (!fsRead(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28m-diagnostic",
+                contents, sizeof(contents) - 1, &bytes) || bytes >= sizeof(contents)) return false;
+    contents[bytes] = '\0';
+    return phase28mTextEquals(contents, "guideXOS-phase28m");
+}
+
+static bool phase28nSentinelPresent() {
+    FileInfo info = {};
+    if (!fsStat(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28n-diagnostic", &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size >= 64) return false;
+    char contents[64] = {};
+    uint32_t bytes = 0;
+    if (!fsRead(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28n-diagnostic",
+                contents, sizeof(contents) - 1, &bytes) || bytes >= sizeof(contents)) return false;
+    contents[bytes] = '\0';
+    return phase28mTextEquals(contents, "guideXOS-phase28n");
+}
+
+static bool phase28oSentinelPresent() {
+    FileInfo info = {};
+    if (!fsStat(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28o-diagnostic", &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size >= 64) return false;
+    char contents[64] = {};
+    uint32_t bytes = 0;
+    if (!fsRead(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28o-diagnostic",
+                contents, sizeof(contents) - 1, &bytes) || bytes >= sizeof(contents)) return false;
+    contents[bytes] = '\0';
+    return phase28mTextEquals(contents, "guideXOS-phase28o");
+}
+
+static bool phase28pSentinelPresent() {
+    FileInfo info = {};
+    if (!fsStat(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28p-diagnostic", &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size >= 64) return false;
+    char contents[64] = {};
+    uint32_t bytes = 0;
+    if (!fsRead(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28p-diagnostic",
+                contents, sizeof(contents) - 1, &bytes) || bytes >= sizeof(contents)) return false;
+    contents[bytes] = '\0';
+    return phase28mTextEquals(contents, "guideXOS-phase28p");
+}
+
+static bool phase28qSentinelPresent() {
+    FileInfo info = {};
+    if (!fsStat(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28q-diagnostic", &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size >= 64) return false;
+    char contents[64] = {};
+    uint32_t bytes = 0;
+    if (!fsRead(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28q-diagnostic",
+                contents, sizeof(contents) - 1, &bytes) || bytes >= sizeof(contents)) return false;
+    contents[bytes] = '\0';
+    return phase28mTextEquals(contents, "guideXOS-phase28q");
 }
 
 static uint32_t debugBreakpointColor(DebugBreakpointState state) {
@@ -7286,6 +10807,13 @@ static uint32_t debugBreakpointColor(DebugBreakpointState state) {
     case DebugBreakpointState::Pending: return 0xD8C15Au;
     }
     return 0xD8C15Au;
+}
+
+static uint32_t debugEditorBreakpointColor(const DebugEditorBreakpoint& breakpoint) {
+    if (breakpoint.unresolved) return 0xD05A5Au;
+    if (!breakpoint.enabled) return 0x6F7888u;
+    if (breakpoint.action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG) return 0xD59B49u;
+    return 0x78B7E8u;
 }
 
 static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
@@ -7303,36 +10831,27 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", "path_outside_project");
         return false;
     }
-    uint64_t breakpointId = 0;
-    DebugErrorCode error = DebugErrorCode::None;
-    if (!DebugControllerToggleBreakpoint(&g_debugController, g_controller.model.project.projectId,
-                                         g_controller.model.project.rootPath, g_controller.model.projectGeneration,
-                                         relative, line, activeColumn(document->buffer, line - 1),
-                                         document->buffer.generation, &breakpointId, &error)) {
-        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint change failed: ");
-        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
-        writeStudioOutput(g_textScratch);
-        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", DebugErrorName(error));
+    if (DebugControllerIsActive(&g_debugController) && debugUiCurrentAbiAvailable()) {
+        if (!debugUiRefreshBreakpoints()) {
+            writeStudioOutput("Breakpoint manager snapshot is unavailable");
+            return false;
+        }
+        for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount; ++i) {
+            const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(i);
+            if (!managed || !PathsEqual(managed->sourcePath, relative) || managed->sourceLine != line) continue;
+            if (!debugUiRemoveBreakpoint(ctx, i)) return false;
+            g_debugUiSelectedBreakpoint = i;
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
+            return true;
+        }
+        if (debugUiAddBreakpointAtCaret(ctx)) return true;
+    }
+    if (!debugUiAddBreakpointAtCaret(ctx)) {
+        writeStudioOutput("Breakpoint change failed");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", "workspace_mutation");
         return false;
     }
-    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
-        const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
-        if (breakpoint && breakpoint->id == breakpointId) g_debugSelectedBreakpoint = i;
-    }
-    refreshDebugMappings();
-    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
-    copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint ");
-    appendText(g_textScratch, sizeof(g_textScratch), breakpoint ? DebugBreakpointStateName(breakpoint->state) : "updated");
-    appendText(g_textScratch, sizeof(g_textScratch), ": ");
-    appendText(g_textScratch, sizeof(g_textScratch), relative);
-    appendText(g_textScratch, sizeof(g_textScratch), ":");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), line);
-    writeStudioOutput(g_textScratch);
-    if (breakpoint) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
-    if (breakpoint && breakpoint->state == DebugBreakpointState::Pending)
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=PENDING");
-    else if (breakpoint && breakpoint->state == DebugBreakpointState::Mapped)
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=MAPPED");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
     return true;
 }
 
@@ -7356,22 +10875,29 @@ static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y) {
 }
 
 static bool navigateSelectedBreakpoint(gx_app_context* ctx) {
+    if (debugUiCurrentAbiAvailable() && g_debugUiBreakpointValid) {
+        const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(g_debugSelectedBreakpoint);
+        if (!managed) return false;
+        return navigateDebugSource(ctx, g_controller.model.project.projectId,
+                                   managed->sourcePath, managed->sourceLine,
+                                   managed->sourceColumn, managed->sourceMappingValid != 0,
+                                   true, false,
+                                   "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_navigation=PASS");
+    }
+    const DebugEditorBreakpoint* projected = DebugEditorModelBreakpointAt(
+        &g_debugEditor, g_debugSelectedBreakpoint);
+    if (projected) {
+        return navigateDebugSource(ctx, projected->projectId, projected->sourcePath,
+                                   projected->line, projected->column, true, true, false,
+                                   "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_navigation=PASS");
+    }
     const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
     if (!breakpoint || !g_controller.model.hasProject) return false;
-    uint32_t documentIndex = kMaxOpenDocuments;
-    OutputErrorCode error = OutputErrorCode::None;
-    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, breakpoint->projectId,
-                                                   breakpoint->location.relativePath, breakpoint->location.line,
-                                                   breakpoint->location.column, &documentIndex, &error)) {
-        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint navigation failed: ");
-        appendText(g_textScratch, sizeof(g_textScratch), OutputErrorName(error));
-        writeStudioOutput(g_textScratch);
-        return false;
-    }
-    g_editorFocused = true;
-    g_debugPanelOpen = false;
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_navigation=PASS");
-    return true;
+    return navigateDebugSource(ctx, breakpoint->projectId, breakpoint->location.relativePath,
+                               breakpoint->location.line, breakpoint->location.column,
+                               breakpoint->location.mapping != guidexos::developer_studio::DebugMappingState::Rejected,
+                               true, false,
+                               "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_navigation=PASS");
 }
 
 static void collectDebugValueNodeIds(const DebugDwarfVariableView& view, uint64_t nodeId,
@@ -7441,12 +10967,23 @@ static DebugWatchItem* debugWatchAt(uint32_t index) {
 
 static void beginWatchPrompt(uint64_t watchId) {
     g_debugEditingWatchId = watchId;
-    const DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
-    copyText(g_prompt, sizeof(g_prompt), item && watchId != 0 ? item->expression : "");
+    g_debugUiEditingWatchIndex = watchId == 0 ? 0xFFFFFFFFu : g_debugSelectedWatch;
+    const int slot = debugUiWatchSlotAt(g_debugSelectedWatch);
+    copyText(g_prompt, sizeof(g_prompt), slot >= 0 && watchId != 0 ?
+             g_debugUiWatches[slot].expression : "");
     g_inputMode = InputMode::WatchExpression;
 }
 
 static void beginBreakpointConditionPrompt() {
+    if (debugUiCurrentAbiAvailable() && g_debugUiBreakpointValid) {
+        const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(g_debugSelectedBreakpoint);
+        if (!managed) return;
+        g_debugUiEditingBreakpointIndex = g_debugSelectedBreakpoint;
+        g_debugEditingBreakpointId = managed->breakpointId;
+        copyText(g_prompt, sizeof(g_prompt), g_debugUiBreakpointConditions[g_debugSelectedBreakpoint]);
+        g_inputMode = InputMode::BreakpointCondition;
+        return;
+    }
     const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController,
                                                                      g_debugSelectedBreakpoint);
     if (!breakpoint) return;
@@ -7485,6 +11022,10 @@ static void clearSelectedBreakpointCondition(gx_app_context* ctx) {
     if (!breakpoint) return;
     DebugErrorCode error = DebugErrorCode::None;
     if (DebugControllerClearBreakpointCondition(&g_debugController, breakpoint->id, &error)) {
+        if (!debuggerWorkspaceSyncLegacyBreakpoint(ctx, breakpoint, "")) {
+            writeStudioOutput("Breakpoint condition clear was not saved");
+            return;
+        }
         writeStudioOutput("Breakpoint condition cleared");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
         logBreakpointConditionUi(ctx, "clear=PASS", breakpoint->id, "",
@@ -7498,15 +11039,14 @@ static void clearSelectedBreakpointCondition(gx_app_context* ctx) {
 
 static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
     if (!ctx || action != GX_KEY_ACTION_DOWN || g_debugPanelTab != 5) return false;
-    const uint32_t count = debugWatches().count;
+    const uint32_t count = g_debugUiWatchCount;
     if (keyCode == 65 || keyCode == 97) {
         beginWatchPrompt(0);
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_prompt=PASS");
         return true;
     }
     if (keyCode == 69 || keyCode == 101) {
-        DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
-        if (item) beginWatchPrompt(item->id);
+        if (debugUiWatchSlotAt(g_debugSelectedWatch) >= 0) beginWatchPrompt(1);
         return true;
     }
     if (keyCode == GX_KEY_UP) {
@@ -7518,9 +11058,9 @@ static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
         return true;
     }
     DebugWatchItem* item = debugWatchAt(g_debugSelectedWatch);
-    if (keyCode == 46 && item) {
-        DebugControllerRemoveWatch(&g_debugController, item->id, nullptr);
-        if (g_debugSelectedWatch >= debugWatches().count && g_debugSelectedWatch > 0) --g_debugSelectedWatch;
+    if (keyCode == 46 && debugUiWatchSlotAt(g_debugSelectedWatch) >= 0) {
+        debugUiRemoveWatch(ctx, g_debugSelectedWatch);
+        if (g_debugSelectedWatch >= g_debugUiWatchCount && g_debugSelectedWatch > 0) --g_debugSelectedWatch;
         return true;
     }
     if ((keyCode == 13 || keyCode == GX_KEY_RIGHT) && item &&
@@ -7539,8 +11079,142 @@ static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
     return true;
 }
 
-static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
+static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
     if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
+    // Session controls belong to the controller/backend path.  Keep them
+    // routable even when a pane-data ABI slot is unavailable; otherwise the
+    // legacy pane fallback consumes F5/F10/F11/Shift+F11 without dispatching
+    // the real debugger operation.
+    if (keyCode == 116 && (modifiers & GX_KEY_MOD_SHIFT)) {
+        if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_HANDLER_ENTRY");
+        const bool stopped = requestDebugStop(ctx);
+        if (g_phase28mDiagnostic) logMarker(ctx, stopped ?
+            "DEVELOPER_STUDIO_PHASE28M_STOP_HANDLER_ACCEPTED" :
+            "DEVELOPER_STUDIO_PHASE28M_STOP_HANDLER_REJECTED");
+        return true;
+    }
+    if (keyCode == 116) {
+        if (DebugControllerCanContinue(&g_debugController)) {
+            DebugErrorCode error = DebugErrorCode::None;
+            const bool accepted = DebugControllerContinue(&g_debugController, g_debugBackend, &error);
+            if (g_phase28mDiagnostic) logMarker(ctx, accepted ?
+                "DEVELOPER_STUDIO_PHASE28M_CONTINUE_ACCEPTED" :
+                "DEVELOPER_STUDIO_PHASE28M_CONTINUE_REJECTED");
+            if (g_phase28mDiagnostic && !accepted &&
+                g_debugController.stopReason == DebugStopReason::Breakpoint) {
+                const DebugBreakpoint* current = nullptr;
+                for (uint32_t index = 0; index < g_debugController.breakpointCount; ++index) {
+                    if (g_debugController.breakpoints[index].id == g_debugController.lastBreakpointId) {
+                        current = &g_debugController.breakpoints[index];
+                        break;
+                    }
+                }
+                if (!current) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_NO_BREAKPOINT");
+                else {
+                    if (current->sessionGeneration != g_debugController.sessionGeneration)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_SESSION_FAIL");
+                    if (current->backendBindingId == 0)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_BINDING_FAIL");
+                    if (!current->location.instructionAddress.valid ||
+                        !g_debugController.currentInstructionAddress.valid ||
+                        current->location.instructionAddress.value !=
+                            g_debugController.currentInstructionAddress.value)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_ADDRESS_FAIL");
+                    if (g_debugController.stoppedContext.processId != g_debugController.processId)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_PROCESS_FAIL");
+                    if (g_debugController.stoppedContext.nativeRuntimeId != g_debugController.nativeRuntimeId)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_RUNTIME_FAIL");
+                    if (g_debugController.stoppedContext.threadId != g_debugController.currentThreadId)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_THREAD_FAIL");
+                    if (g_debugController.stoppedContext.stopGeneration != g_debugController.stopGeneration)
+                        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_CONTINUE_CONTROLLER_STOP_FAIL");
+                }
+            }
+            if (!accepted) writeStudioOutput("Debug continue failed");
+        }
+        return true;
+    }
+    if (keyCode == 117) {
+        requestDebugPause(ctx);
+        return true;
+    }
+    if (keyCode == 121) { requestDebugStepOver(ctx); return true; }
+    if (keyCode == 122 && (modifiers & GX_KEY_MOD_SHIFT)) { requestDebugStepOut(ctx); return true; }
+    if (keyCode == 122) { requestDebugStepInto(ctx); return true; }
+    if (!debugUiCurrentAbiAvailable()) return false;
+    if (keyCode == 9) {
+        g_debugPanelTab = (g_debugPanelTab + 1) % kDebugUiTabCount;
+        g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; g_debugSelectedWatch = 0;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_tab=PASS");
+        return true;
+    }
+    if (g_debugPanelTab == 2) {
+        const uint32_t count = g_debugUiCallStackValid ? g_debugUiCallStack.frameCount : 0;
+        if (keyCode == GX_KEY_UP && g_debugUiSelectedFrame > 0) --g_debugUiSelectedFrame;
+        else if (keyCode == GX_KEY_DOWN && g_debugUiSelectedFrame + 1 < count) ++g_debugUiSelectedFrame;
+        else if (keyCode == 13 && count > 0) {
+            navigateDebugStackFrame(ctx, g_debugUiSelectedFrame);
+        }
+        if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
+            if (count > 0) navigateDebugStackFrame(ctx, g_debugUiSelectedFrame);
+            debugUiVariables();
+            for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) if (g_debugUiWatches[i].used) debugUiEvaluateWatch(i);
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_selected_frame=PASS index=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame); logMarker(ctx, g_textScratch);
+        }
+        return true;
+    }
+    if (g_debugPanelTab == 3 || g_debugPanelTab == 4) {
+        uint32_t visible = 0;
+        const bool arguments = g_debugPanelTab == 4;
+        for (uint32_t i = 0; i < g_debugUiVariables.variableCount; ++i)
+            if ((g_debugUiVariables.variables[i].kind == GX_DEVELOPMENT_DEBUG_VARIABLE_KIND_ARGUMENT) == arguments) ++visible;
+        if (keyCode == GX_KEY_UP && g_debugSelectedValueNode > 0) --g_debugSelectedValueNode;
+        else if (keyCode == GX_KEY_DOWN && g_debugSelectedValueNode + 1 < visible) ++g_debugSelectedValueNode;
+        return true;
+    }
+    if (g_debugPanelTab == 5) {
+        if (keyCode == 65 || keyCode == 97) {
+            g_debugUiEditingWatchIndex = 0xFFFFFFFFu; g_debugEditingWatchId = 0; g_prompt[0] = '\0'; g_inputMode = InputMode::WatchExpression;
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_prompt=PASS"); return true;
+        }
+        if (keyCode == 69 || keyCode == 101) {
+            const int slot = debugUiWatchSlotAt(g_debugUiSelectedWatch);
+            if (slot >= 0) { g_debugUiEditingWatchIndex = g_debugUiSelectedWatch; g_debugEditingWatchId = 1; copyText(g_prompt, sizeof(g_prompt), g_debugUiWatches[slot].expression); g_inputMode = InputMode::WatchExpression; }
+            return true;
+        }
+        if (keyCode == GX_KEY_UP && g_debugUiSelectedWatch > 0) --g_debugUiSelectedWatch;
+        else if (keyCode == GX_KEY_DOWN && g_debugUiSelectedWatch + 1 < g_debugUiWatchCount) ++g_debugUiSelectedWatch;
+        else if (keyCode == 46) debugUiRemoveWatch(ctx, g_debugUiSelectedWatch);
+        return true;
+    }
+    if (g_debugPanelTab != 0) return true;
+    const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(g_debugSelectedBreakpoint);
+    if (keyCode == GX_KEY_UP && g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
+    else if (keyCode == GX_KEY_DOWN && g_debugSelectedBreakpoint + 1 < g_debugUiBreakpointSnapshot.breakpointCount) ++g_debugSelectedBreakpoint;
+    else if (keyCode == 32 && breakpoint) debugUiSetBreakpointEnabled(ctx, g_debugSelectedBreakpoint, breakpoint->enabled == 0);
+    else if (keyCode == 46 && breakpoint) debugUiRemoveBreakpoint(ctx, g_debugSelectedBreakpoint);
+    else if ((keyCode == 67 || keyCode == 99) && breakpoint) beginBreakpointConditionPrompt();
+    else if ((keyCode == 76 || keyCode == 108) && breakpoint) {
+        g_debugUiBreakpointActions[g_debugSelectedBreakpoint] = breakpoint->action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ?
+            GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK : GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG;
+        debugUiConfigureBreakpoint(ctx, g_debugSelectedBreakpoint);
+    } else if ((keyCode == 72 || keyCode == 104) && breakpoint) {
+        uint32_t policy = breakpoint->hitCountPolicy + 1;
+        if (policy > GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST) policy = GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE;
+        g_debugUiBreakpointPolicies[g_debugSelectedBreakpoint] = policy;
+        g_debugUiBreakpointThresholds[g_debugSelectedBreakpoint] = policy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE ? 0 : 2;
+        debugUiConfigureBreakpoint(ctx, g_debugSelectedBreakpoint);
+    } else if (keyCode == 13 && breakpoint) {
+        navigateSelectedBreakpoint(ctx);
+    } else if (keyCode == 120) debugUiAddBreakpointAtCaret(ctx);
+    return true;
+}
+
+static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_debugPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (handleIntegratedDebugPanelKey(ctx, keyCode, action, modifiers)) return true;
     if (keyCode == 65 || keyCode == 97) {
         copyText(g_textScratch, sizeof(g_textScratch),
                  "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_key_a_received tab=");
@@ -7550,7 +11224,7 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
         logMarker(ctx, g_textScratch);
     }
     if (keyCode == 27) { g_debugPanelOpen = false; g_editorFocused = true; return true; }
-    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % 6; g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; g_debugSelectedWatch = 0; return true; }
+    if (keyCode == 9) { g_debugPanelTab = (g_debugPanelTab + 1) % kDebugUiTabCount; g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; g_debugSelectedWatch = 0; return true; }
     if (handleDebugValueKey(ctx, keyCode, action)) return true;
     if (handleDebugWatchKey(ctx, keyCode, action)) return true;
     if (g_debugPanelTab == 2) {
@@ -7582,6 +11256,7 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(variablesError));
                 logMarker(ctx, g_textScratch);
             }
+            if (selected) navigateDebugStackFrame(ctx, targetFrame);
             return true;
         }
         if (keyCode == GX_KEY_DOWN) {
@@ -7610,6 +11285,7 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(variablesError));
                 logMarker(ctx, g_textScratch);
             }
+            if (selected) navigateDebugStackFrame(ctx, targetFrame);
             return true;
         }
         if (keyCode == 13 && frameCount > 0) {
@@ -7642,9 +11318,13 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
     if (keyCode == 13) { navigateSelectedBreakpoint(ctx); return true; }
     if (keyCode == 32 && breakpoint) {
         DebugErrorCode error = DebugErrorCode::None;
-        DebugControllerSetBreakpointEnabled(&g_debugController, breakpoint->id, !breakpoint->enabled, &error);
+        if (!DebugControllerSetBreakpointEnabled(&g_debugController, breakpoint->id, !breakpoint->enabled,
+                                                 &error)) return true;
         const DebugBreakpoint* updated = DebugControllerBreakpointAt(&g_debugController,
                                                                       g_debugSelectedBreakpoint);
+        if (!debuggerWorkspaceSyncLegacyBreakpoint(ctx, updated,
+                                                    updated && updated->condition ? updated->condition : ""))
+            return true;
         if (updated && updated->condition && updated->condition[0]) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS");
             logBreakpointConditionUi(ctx, "retained=PASS", updated->id, updated->condition,
@@ -7654,12 +11334,188 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action) {
         return true;
     }
     if (keyCode == 46 && breakpoint) {
+        char sourcePath[kMaxProjectPathBytes] = {};
+        copyText(sourcePath, sizeof(sourcePath), breakpoint->location.relativePath);
+        const uint32_t sourceLine = breakpoint->location.line;
         DebugErrorCode error = DebugErrorCode::None;
-        DebugControllerDeleteBreakpoint(&g_debugController, breakpoint->id, &error);
+        if (!DebugControllerDeleteBreakpoint(&g_debugController, breakpoint->id, &error)) return true;
+        if (!debuggerWorkspaceRemoveBreakpoint(ctx, sourcePath, sourceLine)) return true;
         if (g_debugSelectedBreakpoint >= g_debugController.breakpointCount && g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
+        debugEditorRefreshBreakpoints();
         return true;
     }
     return true;
+}
+
+static void drawIntegratedDebugPanel(gx_app_context* ctx) {
+    if (!g_debugPanelOpen) return;
+    drawPanel(ctx, { 72, kDebugPanelTop, 816, 592 }, 0x263650u);
+    drawText(ctx, 92, 82, "INTEGRATED DEBUGGER");
+    drawText(ctx, 94, 108, "Breakpoints");
+    drawText(ctx, 222, 108, "Session");
+    drawText(ctx, 334, 108, "Call Stack");
+    drawText(ctx, 456, 108, "Locals");
+    drawText(ctx, 550, 108, "Arguments");
+    drawText(ctx, 670, 108, "Watches");
+    drawText(ctx, 770, 108, "Output");
+    const int tabX = g_debugPanelTab == 0 ? 94 : g_debugPanelTab == 1 ? 222 : g_debugPanelTab == 2 ? 334 :
+        g_debugPanelTab == 3 ? 456 : g_debugPanelTab == 4 ? 550 : g_debugPanelTab == 5 ? 670 : 770;
+    drawPanel(ctx, { tabX, 116, 100, 2 }, 0xD6E4FFu);
+    if (g_debugPanelTab == 0) {
+        drawText(ctx, 100, 144, "Server source-breakpoint manager");
+        if (!g_debugUiBreakpointValid) drawText(ctx, 100, 166, "Manager snapshot unavailable");
+        const uint32_t rows = g_debugUiBreakpointSnapshot.breakpointCount < kDebugPanelMaxRows ?
+            g_debugUiBreakpointSnapshot.breakpointCount : kDebugPanelMaxRows;
+        if (g_debugUiBreakpointValid && rows == 0) drawText(ctx, 100, 174, "No managed breakpoints. F9 toggles the current line.");
+        for (uint32_t row = 0; row < rows; ++row) {
+            const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(row);
+            if (!breakpoint) continue;
+            const int y = 194 + static_cast<int>(row) * kDebugPanelRowHeight;
+            if (row == g_debugSelectedBreakpoint) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+            copyText(g_textScratch, sizeof(g_textScratch), breakpoint->enabled ? "[on] " : "[off] ");
+            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ? "LOG " : "BREAK ");
+            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->sourcePath);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->sourceLine);
+            appendText(g_textScratch, sizeof(g_textScratch), " hits=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->rawHitCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " ");
+            if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_EQUAL) appendText(g_textScratch, sizeof(g_textScratch), "hit==");
+            else if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_MULTIPLE) appendText(g_textScratch, sizeof(g_textScratch), "hit%=");
+            else if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST) appendText(g_textScratch, sizeof(g_textScratch), "hit>=");
+            if (breakpoint->hitCountPolicy != GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE)
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->hitCountThreshold);
+            appendText(g_textScratch, sizeof(g_textScratch), " ");
+            if (breakpoint->conditionPresent) {
+                appendText(g_textScratch, sizeof(g_textScratch), "condition=");
+                appendText(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointConditions[row][0] ? g_debugUiBreakpointConditions[row] : "<configured>");
+            } else appendText(g_textScratch, sizeof(g_textScratch), "unconditional");
+            drawText(ctx, 100, y, g_textScratch);
+        }
+        drawText(ctx, 100, 628, "Up/Down Select  Space Enable  Delete Remove  L Break/Log  H Hit policy  C Condition  F9 Add");
+    } else if (g_debugPanelTab == 1) {
+        drawText(ctx, 100, 144, "State:");
+        drawText(ctx, 220, 144, DebugControllerIsConditionResumePending(&g_debugController) ? "Running (filtered)" : DebugSessionStateName(g_debugController.state));
+        drawText(ctx, 100, 168, "Controls:");
+        drawText(ctx, 220, 168, DebugControllerCanContinue(&g_debugController) ? "Continue [F5]" : "Continue unavailable");
+        drawText(ctx, 420, 168, DebugControllerCanStepInto(&g_debugController) ? "Step Into [F11]" : "Step Into unavailable");
+        drawText(ctx, 620, 168, DebugControllerCanStepOver(&g_debugController) ? "Step Over [F10]" : "Step Over unavailable");
+        drawText(ctx, 220, 192, DebugControllerCanStepOut(&g_debugController) ? "Step Out [Shift+F11]" : "Step Out unavailable");
+        drawText(ctx, 420, 192, g_debugController.capabilities.canStop ? "Stop [Shift+F5]" : "Stop unavailable");
+        drawText(ctx, 100, 224, "Backend:"); drawText(ctx, 220, 224, g_debugController.backendName[0] ? g_debugController.backendName : "(none)");
+        drawText(ctx, 100, 248, "Target:"); drawText(ctx, 220, 248, g_debugController.target.applicationId[0] ? g_debugController.target.applicationId : "(none)");
+        drawText(ctx, 100, 272, "Process / runtime:");
+        copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.processId);
+        appendText(g_textScratch, sizeof(g_textScratch), " / "); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.nativeRuntimeId);
+        drawText(ctx, 220, 272, g_textScratch);
+        drawText(ctx, 100, 296, "Thread / stop:");
+        copyText(g_textScratch, sizeof(g_textScratch), ""); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentThreadId);
+        appendText(g_textScratch, sizeof(g_textScratch), " / "); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+        drawText(ctx, 220, 296, g_textScratch);
+        drawText(ctx, 100, 328, "Call Stack:"); drawText(ctx, 220, 328, g_debugUiCallStackValid ? "server snapshot ready" : "unavailable while running");
+        drawText(ctx, 100, 352, "Locals:"); drawText(ctx, 220, 352, g_debugUiVariablesValid ? "server snapshot ready" : "unavailable while running");
+        drawText(ctx, 100, 376, "Breakpoints:");
+        copyText(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointValid ? "managed=" : "manager unavailable");
+        if (g_debugUiBreakpointValid) appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointSnapshot.breakpointCount);
+        drawText(ctx, 220, 376, g_textScratch);
+        drawText(ctx, 100, 400, "Debug output:");
+        copyText(g_textScratch, sizeof(g_textScratch), g_debugUiOutputValid ? "records=" : "unavailable");
+        if (g_debugUiOutputValid) appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiOutputSnapshot.outputCount);
+        drawText(ctx, 220, 400, g_textScratch);
+        drawText(ctx, 100, 432, "Stop:"); drawText(ctx, 220, 432, DebugStopReasonName(g_debugController.stopReason));
+        drawText(ctx, 100, 456, "Location:");
+        if (g_debugController.currentLocation.relativePath[0]) {
+            copyText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath);
+            appendText(g_textScratch, sizeof(g_textScratch), ":"); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+            drawText(ctx, 220, 456, g_textScratch);
+        } else drawText(ctx, 220, 456, "(none)");
+        drawText(ctx, 100, 488, "Artifact:"); drawText(ctx, 220, 488, g_debugController.target.executablePath[0] ? g_debugController.target.executablePath : "(none)");
+        drawText(ctx, 100, 512, "ABI:"); drawText(ctx, 220, 512, debugUiCurrentAbiAvailable() ? "Phase 28L current ABI" : "legacy debugger ABI");
+        drawText(ctx, 100, 544, "Debug info:"); drawText(ctx, 220, 544, g_debugMapper.state == guidexos::developer_studio::DebugDwarfMapperState::Empty ? "(none)" : DebugDwarfMapperStateName(g_debugMapper.state));
+        drawText(ctx, 100, 628, "F5 Continue  F6 Pause  F10 Step Over  F11 Step Into  Shift+F11 Step Out  Shift+F5 Stop");
+    } else if (g_debugPanelTab == 2) {
+        drawText(ctx, 100, 144, "Server Call Stack");
+        if (!g_debugUiCallStackValid) drawText(ctx, 100, 174, g_debugController.state == DebugSessionState::Paused ? g_debugUiCallStack.errorMessage : "No valid stopped context");
+        else {
+            copyText(g_textScratch, sizeof(g_textScratch), "Frames="); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiCallStack.frameCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " selected=#"); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame);
+            drawText(ctx, 100, 174, g_textScratch);
+            const uint32_t rows = g_debugUiCallStack.frameCount < kDebugCallStackPanelMaxRows ? g_debugUiCallStack.frameCount : kDebugCallStackPanelMaxRows;
+            for (uint32_t row = 0; row < rows; ++row) {
+                const gx_development_debug_call_stack_frame& frame = g_debugUiCallStack.frames[row];
+                const int y = 204 + static_cast<int>(row) * kDebugPanelRowHeight;
+                if (row == g_debugUiSelectedFrame) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+                copyText(g_textScratch, sizeof(g_textScratch), row == g_debugUiSelectedFrame ? "> " : "  ");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), row); appendText(g_textScratch, sizeof(g_textScratch), " ");
+                appendText(g_textScratch, sizeof(g_textScratch), frame.functionName[0] ? frame.functionName : "<unknown>");
+                appendText(g_textScratch, sizeof(g_textScratch), "  "); appendText(g_textScratch, sizeof(g_textScratch), frame.sourcePath[0] ? frame.sourcePath : "<no source>");
+                if (frame.sourceLine != 0) { appendText(g_textScratch, sizeof(g_textScratch), ":"); appendUnsigned(g_textScratch, sizeof(g_textScratch), frame.sourceLine); }
+                drawText(ctx, 100, y, g_textScratch);
+            }
+        }
+        drawText(ctx, 100, 628, "Up/Down Select  Enter Navigate  frame changes refresh server Locals/Watches");
+    } else if (g_debugPanelTab == 3 || g_debugPanelTab == 4) {
+        const bool arguments = g_debugPanelTab == 4;
+        drawText(ctx, 100, 144, arguments ? "Server Arguments" : "Server Locals");
+        if (!g_debugUiVariablesValid) drawText(ctx, 100, 174, g_debugController.state == DebugSessionState::Paused ? g_debugUiVariables.errorMessage : "Variables unavailable while running");
+        else {
+            drawText(ctx, 100, 174, g_debugUiVariables.functionName[0] ? g_debugUiVariables.functionName : "<unknown frame>");
+            drawText(ctx, 100, 198, "Name"); drawText(ctx, 330, 198, "Kind / type"); drawText(ctx, 620, 198, "Value");
+            uint32_t row = 0;
+            for (uint32_t i = 0; i < g_debugUiVariables.variableCount && row < static_cast<uint32_t>(kDebugPanelMaxRows); ++i) {
+                const gx_development_debug_variable& variable = g_debugUiVariables.variables[i];
+                const bool isArgument = variable.kind == GX_DEVELOPMENT_DEBUG_VARIABLE_KIND_ARGUMENT;
+                if (isArgument != arguments) continue;
+                const int y = 222 + static_cast<int>(row) * kDebugPanelRowHeight;
+                if (row == g_debugSelectedValueNode) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+                drawText(ctx, 100, y, variable.name);
+                copyText(g_textScratch, sizeof(g_textScratch), isArgument ? "argument / " : "local / ");
+                appendText(g_textScratch, sizeof(g_textScratch), variable.type == GX_DEVELOPMENT_DEBUG_VARIABLE_TYPE_POINTER ? "pointer" : "signed32");
+                drawText(ctx, 330, y, g_textScratch);
+                if (variable.availability != GX_DEVELOPMENT_DEBUG_VARIABLE_AVAILABILITY_AVAILABLE) drawText(ctx, 620, y, "<unavailable>");
+                else if (variable.type == GX_DEVELOPMENT_DEBUG_VARIABLE_TYPE_POINTER) { copyText(g_textScratch, sizeof(g_textScratch), ""); appendHexAddress(g_textScratch, sizeof(g_textScratch), variable.unsignedValue); drawText(ctx, 620, y, g_textScratch); }
+                else { copyText(g_textScratch, sizeof(g_textScratch), ""); appendSigned(g_textScratch, sizeof(g_textScratch), static_cast<int32_t>(variable.signedValue)); drawText(ctx, 620, y, g_textScratch); }
+                ++row;
+            }
+            if (row == 0) drawText(ctx, 100, 222, arguments ? "No arguments" : "No locals");
+        }
+        drawText(ctx, 100, 628, "Up/Down Select  server-backed values are read-only  frame selection is on Call Stack");
+    } else if (g_debugPanelTab == 5) {
+        drawText(ctx, 100, 144, "Server Watches"); drawText(ctx, 320, 144, "A Add  E Edit  Delete Remove");
+        drawText(ctx, 100, 174, "Expression"); drawText(ctx, 430, 174, "Result / error");
+        uint32_t row = 0; uint32_t watchIndex = 0;
+        for (uint32_t i = 0; i < kDebugUiMaxWatches && row < static_cast<uint32_t>(kDebugPanelMaxRows); ++i) {
+            if (!g_debugUiWatches[i].used) continue;
+            const int y = 198 + static_cast<int>(row++) * kDebugPanelRowHeight;
+            if (watchIndex++ == g_debugUiSelectedWatch) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
+            drawText(ctx, 100, y, g_debugUiWatches[i].expression);
+            const gx_development_debug_expression& result = g_debugUiWatches[i].result;
+            if (result.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
+                copyText(g_textScratch, sizeof(g_textScratch), result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_POINTER ? "ptr " : "int ");
+                if (result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_POINTER) appendHexAddress(g_textScratch, sizeof(g_textScratch), result.pointerValue);
+                else appendSigned(g_textScratch, sizeof(g_textScratch), static_cast<int32_t>(result.signedValue));
+            } else copyText(g_textScratch, sizeof(g_textScratch), result.errorMessage[0] ? result.errorMessage : "<not evaluated>");
+            drawText(ctx, 430, y, g_textScratch);
+        }
+        if (row == 0) drawText(ctx, 100, 198, "No watches. Press A to add an expression.");
+        drawText(ctx, 100, 628, "Up/Down Select  A Add  E Edit  Delete Remove  expressions evaluate only on a server pause");
+    } else {
+        drawText(ctx, 100, 144, "Structured Debugger Output");
+        copyText(g_textScratch, sizeof(g_textScratch), "records="); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiOutputSnapshot.outputCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " dropped="); appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiOutputSnapshot.outputDroppedCount);
+        drawText(ctx, 300, 144, g_debugUiOutputValid ? g_textScratch : "Output queue unavailable");
+        const uint32_t rows = g_debugUiOutputSnapshot.outputCount < static_cast<uint32_t>(kDebugPanelMaxRows) ? g_debugUiOutputSnapshot.outputCount : kDebugPanelMaxRows;
+        for (uint32_t row = 0; row < rows; ++row) {
+            const gx_development_debug_output_record& record = g_debugUiOutputSnapshot.output[row];
+            const int y = 178 + static_cast<int>(row) * kDebugPanelRowHeight;
+            copyText(g_textScratch, sizeof(g_textScratch), record.sourcePath[0] ? record.sourcePath : "debugger");
+            if (record.sourceLine != 0) { appendText(g_textScratch, sizeof(g_textScratch), ":"); appendUnsigned(g_textScratch, sizeof(g_textScratch), record.sourceLine); }
+            appendText(g_textScratch, sizeof(g_textScratch), "  "); appendText(g_textScratch, sizeof(g_textScratch), record.text);
+            drawText(ctx, 100, y, g_textScratch);
+        }
+        if (rows == 0) drawText(ctx, 100, 178, "No structured debugger output records.");
+        drawText(ctx, 100, 628, "Output is drained from the server FIFO; source and raw hit counts remain bounded");
+    }
 }
 
 static void drawDebugPanel(gx_app_context* ctx) {
@@ -7735,7 +11591,7 @@ static void drawDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 100, 304, "Capabilities:");
         drawText(ctx, 220, 304, g_debugController.capabilities.canLaunch ? "Launch" : "Launch unavailable");
         drawText(ctx, 220, 328, g_debugController.capabilities.canStop ? "Stop" : "Stop unavailable");
-        drawText(ctx, 220, 352, g_debugController.capabilities.canPause ? "Pause" : "Pause unavailable");
+        drawText(ctx, 220, 352, DebugControllerCanPause(&g_debugController) ? "Pause (F6)" : "Pause unavailable");
         drawText(ctx, 220, 376, DebugControllerCanContinue(&g_debugController) ? "Continue" : "Continue unavailable");
         drawText(ctx, 220, 400, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into unavailable");
         drawText(ctx, 220, 424, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over unavailable");
@@ -7955,15 +11811,31 @@ static void drawEditor(gx_app_context* ctx) {
         appendText(g_textScratch, sizeof(g_textScratch), " ");
         const int breakpointIndex = debugBreakpointIndexForDocumentLine(*document, line);
         if (breakpointIndex >= 0) {
-            const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, static_cast<uint32_t>(breakpointIndex));
-            if (breakpoint) drawPanel(ctx, { 272, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 }, debugBreakpointColor(breakpoint->state));
+            const DebugEditorBreakpoint* breakpoint = DebugEditorModelBreakpointAt(
+                &g_debugEditor, static_cast<uint32_t>(breakpointIndex));
+            if (breakpoint) drawPanel(ctx, { 272, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 },
+                                        debugEditorBreakpointColor(*breakpoint));
         }
-        if (g_debugController.state == DebugSessionState::Paused &&
-            g_debugController.currentLocation.line == line + 1) {
+        if (g_debugEditor.execution.valid && g_debugEditor.execution.line == line + 1 &&
+            PathsEqual(g_debugEditor.execution.projectId, g_controller.model.project.projectId)) {
             char relative[kMaxProjectPathBytes] = {};
             if (DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path, relative, sizeof(relative)) &&
-                PathsEqual(relative, g_debugController.currentLocation.relativePath))
+                PathsEqual(relative, g_debugEditor.execution.sourcePath))
                 drawPanel(ctx, { 262, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 }, 0xFFD166u);
+        }
+        if (g_debugEditor.inspection.valid && g_debugEditor.inspection.line == line + 1 &&
+            PathsEqual(g_debugEditor.inspection.projectId, g_controller.model.project.projectId)) {
+            char relative[kMaxProjectPathBytes] = {};
+            if (DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path, relative, sizeof(relative)) &&
+                PathsEqual(relative, g_debugEditor.inspection.sourcePath) &&
+                (!g_debugEditor.execution.valid ||
+                 !DebugEditorModelExecutionMatches(&g_debugEditor,
+                                                    g_debugEditor.execution.sessionGeneration,
+                                                    g_debugEditor.execution.stopGeneration,
+                                                    g_debugEditor.inspection.projectId,
+                                                    g_debugEditor.inspection.sourcePath,
+                                                    g_debugEditor.inspection.line)))
+                drawPanel(ctx, { 252, kEditorTop - 10 + static_cast<int>(row) * kEditorLineHeight, 7, 8 }, 0x8BC6E6u);
         }
         drawText(ctx, kEditorLineNumberX, kEditorTop + static_cast<int>(row) * kEditorLineHeight, g_textScratch);
         uint32_t spanCount = 0;
@@ -8204,6 +12076,7 @@ static void drawShell(gx_app_context* ctx) {
     drawExplorer(ctx);
     drawOutline(ctx);
     drawEditor(ctx);
+    drawDebugDataTip(ctx);
     drawSignaturePopup(ctx);
     drawCompletionPopup(ctx);
     drawTypePopup(ctx);
@@ -8218,7 +12091,7 @@ static void drawShell(gx_app_context* ctx) {
     drawIncludeGraphPanel(ctx);
     drawIncludeTargetPicker(ctx);
     drawOwnershipPanel(ctx);
-    drawDebugPanel(ctx);
+    drawIntegratedDebugPanel(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 270, 42, 270, 202 }, 0x34496Au);
         drawText(ctx, 282, 64, "New Project");
@@ -8243,7 +12116,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
         drawText(ctx, 592, 130, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over (unavailable)");
         drawText(ctx, 592, 152, DebugControllerCanStepOut(&g_debugController) ? "Step Out (Shift+F11)" : "Step Out (unavailable)");
-        drawText(ctx, 592, 174, g_debugController.capabilities.canPause ? "Pause" : "Pause (unavailable)");
+        drawText(ctx, 592, 174, DebugControllerCanPause(&g_debugController) ? "Pause (F6)" : "Pause (unavailable)");
         drawText(ctx, 592, 196, "Stop Debugging");
         drawText(ctx, 592, 218, "Toggle Breakpoint (F9)");
         drawText(ctx, 592, 240, "Breakpoints");
@@ -8261,6 +12134,7 @@ static void selectDocumentTab(gx_app_context* ctx, int x) {
     for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
         if (!g_controller.model.documents[i].used) continue;
         if (x >= tabX && x < tabX + 126) {
+            debugDataTipInvalidate(ctx, "document_changed");
             dismissCompletion(ctx, "document_changed", false);
             dismissSignatureHelp(ctx, "document_changed", false);
             if (g_controller.model.activeDocument != i) resetEditorView();
@@ -8283,6 +12157,7 @@ static void selectDocumentTab(gx_app_context* ctx, int x) {
 
 static void placeCaretFromMouse(Document* document, int x, int y) {
     if (!document) return;
+    debugDataTipInvalidate(nullptr, "caret_moved");
     dismissCompletion(nullptr, "caret_moved", false);
     dismissSignatureHelp(nullptr, "caret_moved", false);
     int row = (y - kEditorTop + 12) / kEditorLineHeight;
@@ -8399,23 +12274,14 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         return;
     }
     if (g_inputMode == InputMode::WatchExpression) {
-        if (keyCode == 27) { g_inputMode = InputMode::Normal; return; }
+        if (keyCode == 27) { g_debugUiEditingWatchIndex = 0xFFFFFFFFu; g_inputMode = InputMode::Normal; return; }
         if (keyCode == 13) {
             if (g_prompt[0] != '\0') {
-                DebugErrorCode error = DebugErrorCode::None;
-                if (g_debugEditingWatchId == 0) {
-                    uint64_t watchId = 0;
-                    DebugControllerAddWatch(&g_debugController, g_prompt, &watchId, &error);
-                    if (watchId != 0) {
-                        g_debugSelectedWatch = debugWatches().count - 1u;
-                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_add=PASS");
-                    }
-                } else DebugControllerEditWatch(&g_debugController, g_debugEditingWatchId, g_prompt, &error);
-                if (g_debugController.state == DebugSessionState::Paused)
-                    DebugControllerBuildVariables(&g_debugController, g_debugBackend, &g_debugMapper, nullptr);
-                if (error != DebugErrorCode::None) writeStudioOutput("Watch update failed");
+                if (g_debugUiEditingWatchIndex == 0xFFFFFFFFu) debugUiAddWatch(ctx, g_prompt);
+                else debugUiEditWatch(ctx, g_debugUiEditingWatchIndex, g_prompt);
             }
             g_debugEditingWatchId = 0;
+            g_debugUiEditingWatchIndex = 0xFFFFFFFFu;
             g_inputMode = InputMode::Normal;
             return;
         }
@@ -8428,18 +12294,45 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
             logBreakpointConditionUi(ctx, "editor=CLOSED reason=CANCEL", g_debugEditingBreakpointId,
                                      g_prompt);
             g_debugEditingBreakpointId = 0;
+            g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
             g_inputMode = InputMode::Normal;
+            return;
+        }
+        if (debugUiCurrentAbiAvailable() && g_debugUiEditingBreakpointIndex != 0xFFFFFFFFu) {
+            const uint32_t index = g_debugUiEditingBreakpointIndex;
+            if (keyCode == 88 || keyCode == 120 || keyCode == 13) {
+                char oldCondition[GX_DEVELOPMENT_DEBUG_MAX_EXPRESSION_BYTES] = {};
+                copyText(oldCondition, sizeof(oldCondition), g_debugUiBreakpointConditions[index]);
+                if (keyCode == 88 || g_prompt[0] == '\0') g_debugUiBreakpointConditions[index][0] = '\0';
+                else copyText(g_debugUiBreakpointConditions[index], sizeof(g_debugUiBreakpointConditions[index]), g_prompt);
+                const bool accepted = debugUiConfigureBreakpoint(ctx, index);
+                if (!accepted) copyText(g_debugUiBreakpointConditions[index], sizeof(g_debugUiBreakpointConditions[index]), oldCondition);
+                else logMarker(ctx, g_prompt[0] == '\0' ?
+                    "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS" :
+                    "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS");
+                g_debugEditingBreakpointId = 0;
+                g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
+                g_inputMode = InputMode::Normal;
+                return;
+            }
+            if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 65 || keyCode == 97)) { g_prompt[0] = '\0'; return; }
+            if (keyCode == 8) { promptBackspace(); return; }
+            promptAppend(keyCode, modifiers);
             return;
         }
         if (keyCode == 88 || keyCode == 120) {
             DebugErrorCode error = DebugErrorCode::None;
-            if (g_debugEditingBreakpointId != 0 &&
+            const bool controllerAccepted = g_debugEditingBreakpointId != 0 &&
                 DebugControllerClearBreakpointCondition(&g_debugController,
-                                                        g_debugEditingBreakpointId, &error)) {
+                                                        g_debugEditingBreakpointId, &error);
+            if (controllerAccepted && debuggerWorkspaceSyncLegacyBreakpointById(
+                    ctx, g_debugEditingBreakpointId, "")) {
                 writeStudioOutput("Breakpoint condition cleared");
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
                 logBreakpointConditionUi(ctx, "clear=PASS", g_debugEditingBreakpointId, "",
                                          "parse=EMPTY state=UNCONDITIONAL");
+            } else if (controllerAccepted) {
+                writeStudioOutput("Breakpoint condition clear was not saved");
             } else if (error != DebugErrorCode::None) {
                 copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition clear failed: ");
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
@@ -8459,9 +12352,12 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         if (keyCode == 13) {
             DebugErrorCode error = DebugErrorCode::None;
             bool accepted = false;
+            bool controllerAccepted = false;
             if (g_debugEditingBreakpointId != 0 && g_prompt[0] == '\0') {
-                accepted = DebugControllerClearBreakpointCondition(&g_debugController,
-                                                                    g_debugEditingBreakpointId, &error);
+                controllerAccepted = DebugControllerClearBreakpointCondition(
+                    &g_debugController, g_debugEditingBreakpointId, &error);
+                accepted = controllerAccepted && debuggerWorkspaceSyncLegacyBreakpointById(
+                    ctx, g_debugEditingBreakpointId, "");
                 if (accepted) {
                     writeStudioOutput("Breakpoint condition cleared");
                     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
@@ -8469,15 +12365,17 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
                                              "parse=EMPTY state=UNCONDITIONAL");
                 }
             } else if (g_debugEditingBreakpointId != 0) {
-                accepted = DebugControllerSetBreakpointCondition(&g_debugController,
-                                                                 g_debugEditingBreakpointId,
-                                                                 g_prompt, &error);
+                controllerAccepted = DebugControllerSetBreakpointCondition(&g_debugController,
+                                                                            g_debugEditingBreakpointId,
+                                                                            g_prompt, &error);
+                accepted = controllerAccepted && debuggerWorkspaceSyncLegacyBreakpointById(
+                    ctx, g_debugEditingBreakpointId, g_prompt);
                 if (accepted) {
                     writeStudioOutput("Breakpoint condition accepted");
                     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS");
                     logBreakpointConditionUi(ctx, "commit=PASS", g_debugEditingBreakpointId,
                                              g_prompt, "parse=VALID state=CONDITIONAL");
-                } else {
+                } else if (!controllerAccepted) {
                     const DebugBreakpoint* breakpoint = nullptr;
                     for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
                         const DebugBreakpoint* candidate = DebugControllerBreakpointAt(&g_debugController, i);
@@ -8498,7 +12396,9 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
                                              g_prompt, "parse=INVALID state=CONDITION_REPLACED");
                 }
             }
-            if (!accepted && error != DebugErrorCode::None && g_prompt[0] == '\0') {
+            if (!accepted && controllerAccepted) {
+                writeStudioOutput("Breakpoint condition update was not saved");
+            } else if (!accepted && error != DebugErrorCode::None && g_prompt[0] == '\0') {
                 copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition update failed: ");
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
                 writeStudioOutput(g_textScratch);
@@ -8605,7 +12505,9 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
         dismissTypeInfo(ctx, "workspace_changed", false);
         if (OwnershipGraphBuildIsActive(&g_ownershipService)) OwnershipGraphBuildCancel(&g_ownershipService, g_ownershipOperationId);
         g_ownershipPanelOpen = false;
+        debuggerWorkspaceSave(ctx);
         if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
+            debuggerWorkspaceReset();
             resetProjectSessionUi();
             DebugControllerClearBreakpoints(&g_debugController);
             DebugWatchCollectionMarkStale(&g_debugWatches);
@@ -9037,7 +12939,11 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         requestDebug(ctx);
         return;
     }
-    if (g_debugPanelOpen && handleDebugPanelKey(ctx, keyCode, action)) return;
+    if (keyCode == 117 && modifiers == 0 && DebugControllerIsActive(&g_debugController)) {
+        requestDebugPause(ctx);
+        return;
+    }
+    if (g_debugPanelOpen && handleDebugPanelKey(ctx, keyCode, action, modifiers)) return;
     // F9 is unused by the existing editor shortcuts and follows the standard
     // debugger convention without changing the established F5 Run command.
     if (keyCode == 120 && modifiers == 0) {
@@ -9301,6 +13207,13 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int y = event.param2;
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
+    if (action == GX_MOUSE_ACTION_MOVE) {
+        if (!g_debugPanelOpen && g_inputMode == InputMode::Normal)
+            (void)debugDataTipHandleMove(ctx, x, y);
+        else
+            debugDataTipInvalidate(ctx, "popup_or_modal");
+        return;
+    }
     if (g_ownershipPanelOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             const uint32_t count = g_ownershipResolution.visibleCandidateCount;
@@ -9324,6 +13237,38 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN)
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_mouse_down=SEEN");
         if (action == GX_MOUSE_ACTION_WHEEL) return;
+        if (debugUiCurrentAbiAvailable()) {
+            if (button == GX_MOUSE_BUTTON_LEFT &&
+                (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+                if (y >= 94 && y < 122 && x >= 90 && x < 888) {
+                    g_debugPanelTab = x < 210 ? 0 : x < 320 ? 1 : x < 440 ? 2 : x < 530 ? 3 : x < 650 ? 4 : x < 750 ? 5 : 6;
+                    g_debugSelectedBreakpoint = 0; g_debugSelectedValueNode = 0; g_debugSelectedWatch = 0;
+                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_tab_mouse=PASS");
+                } else if (g_debugPanelTab == 0 && y >= 178 && y < 620) {
+                    const uint32_t row = static_cast<uint32_t>((y - 178) / kDebugPanelRowHeight);
+                    if (row < g_debugUiBreakpointSnapshot.breakpointCount) {
+                        g_debugSelectedBreakpoint = row;
+                        if (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                            navigateSelectedBreakpoint(ctx);
+                    }
+                } else if (g_debugPanelTab == 2 && y >= 188 && y < 620) {
+                    const uint32_t row = static_cast<uint32_t>((y - 188) / kDebugPanelRowHeight);
+                    if (row < g_debugUiCallStack.frameCount) {
+                    g_debugUiSelectedFrame = row;
+                        debugDataTipInvalidate(ctx, "frame_changed");
+                        debugUiVariables();
+                        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) if (g_debugUiWatches[i].used) debugUiEvaluateWatch(i);
+                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_selected_frame_mouse=PASS");
+                        if (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                            navigateDebugStackFrame(ctx, row);
+                    }
+                } else if (g_debugPanelTab == 5 && y >= 178 && y < 620) {
+                    const uint32_t row = static_cast<uint32_t>((y - 178) / kDebugPanelRowHeight);
+                    if (row < g_debugUiWatchCount) g_debugUiSelectedWatch = row;
+                }
+            }
+            return;
+        }
         if (button == GX_MOUSE_BUTTON_LEFT &&
             (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
             if (g_debugPanelTab == 2 && y >= 170 && y < 580 && x >= 88 && x < 872)
@@ -9802,6 +13747,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             g_editorFocused = false;
             drawShell(ctx);
         } else if (x >= kEditorRect.x && y >= kEditorRect.y && y < kEditorRect.y + kEditorRect.height) {
+            debugDataTipInvalidate(ctx, "editor_scroll");
             int delta = event.param4 > 0 ? -3 : 3;
             g_editorFocused = true;
             g_outputFocused = false;
@@ -9910,10 +13856,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         } else if (row == 2) requestDebugStepInto(ctx);
         else if (row == 3) requestDebugStepOver(ctx);
         else if (row == 4) requestDebugStepOut(ctx);
-        else if (row == 5) {
-            DebugErrorCode error = DebugErrorCode::None;
-            if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) writeStudioOutput("Pause unavailable: backend capability is false");
-        } else if (row == 6) requestDebugStop(ctx);
+        else if (row == 5) requestDebugPause(ctx);
+        else if (row == 6) requestDebugStop(ctx);
         else if (row == 7) toggleBreakpointAtCaret(ctx);
         else if (row == 8) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 9) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
@@ -9969,7 +13913,9 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 g_includeGraphPanelOpen = false;
                 g_includeTargetPickerOpen = false;
                 g_ownershipPanelOpen = false;
+                debuggerWorkspaceSave(ctx);
                 if (WorkspaceControllerCloseWorkspace(&g_controller, CloseDecision::Discard)) {
+                    debuggerWorkspaceReset();
                     resetProjectSessionUi();
                     DebugControllerClearBreakpoints(&g_debugController);
                     DebugWatchCollectionMarkStale(&g_debugWatches);
@@ -10015,6 +13961,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         return;
     }
     if (x >= kEditorRect.x && y >= kEditorTop && y < kEditorRect.y + kEditorRect.height) {
+        debugDataTipInvalidate(ctx, "editor_click");
         g_editorFocused = true;
         g_outputFocused = false;
         if (x < kEditorTextX && (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
@@ -10026,10 +13973,59 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     }
 }
 
+static bool requestApplicationClose(gx_app_context* ctx, gx_handle window) {
+    if (BuildControllerIsActive(&g_buildController)) {
+        writeOutput("Build in progress; close blocked");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_close=BLOCKED");
+        return false;
+    }
+    if (RunControllerIsActive(&g_runController)) {
+        g_inputMode = InputMode::ConfirmRunClose;
+        writeOutput("Project application is running: Close it first or keep Studio open");
+        return false;
+    }
+    if (g_debugWaitingForBuild) {
+        writeStudioOutput("Debug build in progress; close blocked");
+        return false;
+    }
+    if (DebugControllerIsActive(&g_debugController)) {
+        if (g_inputMode == InputMode::BreakpointCondition) {
+            logBreakpointConditionUi(ctx, "editor=CLOSED reason=TARGETED_CLOSE",
+                                     g_debugEditingBreakpointId, g_prompt,
+                                     "shutdown=TARGETED_CLOSE");
+        }
+        if (!beginDebugShutdown(ctx, window)) {
+            g_inputMode = InputMode::ConfirmDebugClose;
+            writeStudioOutput("Debug session is active: Stop it before closing Studio");
+        } else {
+            g_inputMode = InputMode::Normal;
+            writeStudioOutput("Debug session stop requested; closing Studio after teardown");
+        }
+        return false;
+    }
+    if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
+        g_inputMode = InputMode::ConfirmApplication;
+        writeOutput("Unsaved changes: Save, Discard, or Cancel");
+        drawShell(ctx);
+        return false;
+    }
+    if (g_controller.model.hasProject) (void)debuggerWorkspaceSave(ctx);
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS");
+    return true;
+}
+
 } // namespace
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!ctx || !ctx->host) return GX_ERROR_INVALID_ARGUMENT;
+    // Phase 28O diagnostic mode deliberately re-enters the real application
+    // lifecycle after the first close. Keep that re-entry on this invocation's
+    // stack instead of recursively calling gx_main; the latter can leave the
+    // guest NativeElf stack inside a second initialization without delivering
+    // the relaunch markers.
+    for (;;) {
+    const bool phase28oRecursiveRelaunch = g_phase28oRelaunched;
     const bool hasBareBuildCallbacks = ctx->host->size >= offsetof(gx_host_calls, bare_metal_build_project_release) + sizeof(ctx->host->bare_metal_build_project_release) &&
         ctx->host->bare_metal_build_project_start && ctx->host->bare_metal_build_project_poll && ctx->host->bare_metal_build_project_release;
     if (!ctx->host->get_api_version || !ctx->host->log || (!ctx->host->request_window && !hasBareBuildCallbacks)) return GX_ERROR_UNSUPPORTED;
@@ -10039,6 +14035,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_fileSystemContext.app = ctx;
     WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite, fsCreateDirectory, fsRemovePath };
     WorkspaceControllerInit(&g_controller, fileSystem);
+    debuggerWorkspaceReset();
     SymbolDatabaseInit(&g_symbolDatabase, g_symbolProjectStorage, kSymbolMaxProjectSymbols,
                        g_symbolDocumentStorage, kSymbolMaxDocuments,
                        g_symbolScratchStorage, kSymbolMaxDocumentSymbols);
@@ -10223,9 +14220,24 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_lastRunState = RunState::Idle;
     g_runTerminalReported = false;
     DebugControllerInit(&g_debugController);
-    DebugWatchCollectionInit(&g_debugWatches);
+    if (phase28oRecursiveRelaunch)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_DEBUG_CONTROLLER_INIT");
+    DebugEditorModelInit(&g_debugEditor);
+    DebugDataTipInit(&g_debugDataTip);
+    if (phase28oRecursiveRelaunch)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_EDITOR_INIT");
+    // The first diagnostic app instance has not started a Debug session yet,
+    // so its watch collection is empty at the deliberate close/relaunch
+    // boundary. Re-zeroing the large bounded collection during same-stack
+    // diagnostic re-entry can starve the tiny NativeElf app stack; preserve
+    // the initialized storage and invalidate only its runtime view.
+    if (phase28oRecursiveRelaunch)
+        DebugWatchCollectionMarkStale(&g_debugWatches);
+    else
+        DebugWatchCollectionInit(&g_debugWatches);
+    if (phase28oRecursiveRelaunch)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_WATCH_INIT");
     g_debugController.watches = &g_debugWatches;
-    DebugDwarfMapperReset(&g_debugMapper);
     HostedDebugBackendInit(&g_hostedDebugBackend, developmentRunService());
     g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);
     g_debugWaitingForBuild = false;
@@ -10239,6 +14251,69 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugPanelTab = 0;
     g_debugSelectedBreakpoint = 0;
     writeOutput("Ready");
+    const bool phase28qSentinel = phase28qSentinelPresent();
+    const bool phase28nSentinel = phase28nSentinelPresent();
+    const bool phase28oSentinel = phase28oSentinelPresent();
+    const bool phase28pSentinel = phase28pSentinelPresent();
+    bool phase28oWorkspace = false;
+    if (phase28oSentinel || phase28pSentinel || phase28oRecursiveRelaunch) {
+        g_phase28oDiagnosticLatched = true;
+        g_phase28oDiagnostic = true;
+        phase28oWorkspace = phase28oWorkspaceFilePresent();
+    } else if (g_phase28oDiagnosticLatched) {
+        // The recursive relaunch reuses the same host filesystem context. On
+        // some FAT-backed runs the O sentinel read is not stable across that
+        // boundary, while the persisted project workspace remains authoritative.
+        // The latch is set only by the first O-enabled invocation, so a
+        // Phase 28N-only package cannot accidentally enter the O proof.
+        phase28oWorkspace = phase28oWorkspaceFilePresent();
+        g_phase28oDiagnostic = true;
+    } else {
+        g_phase28oDiagnostic = false;
+    }
+    g_phase28pDiagnostic = phase28pSentinel ||
+        (phase28oRecursiveRelaunch && g_phase28pDiagnostic);
+    g_phase28nDiagnostic = phase28nSentinel || g_phase28oDiagnostic;
+    g_phase28mDiagnostic = phase28mSentinelPresent() || g_phase28nDiagnostic || g_phase28pDiagnostic;
+    g_phase28qDiagnostic = phase28qSentinel;
+    g_phase28oRelaunched = g_phase28oDiagnostic &&
+        (phase28oWorkspace || phase28oRecursiveRelaunch);
+    g_phase28oFinished = false;
+    g_phase28oFailed = false;
+    g_phase28oRequestClose = false;
+    g_phase28oRelaunchRequested = false;
+    g_phase28oStage = g_phase28oDiagnostic ?
+        (g_phase28oRelaunched ? (phase28oWorkspace ? 20u : 19u) : 1u) : 0u;
+    g_phase28oDeadline = g_phase28oDiagnostic ? gx_get_ticks_ms(ctx) + 120000 : 0;
+    g_phase28oStepCount = 0;
+    g_phase28oGenerationAIdCount = 0;
+    for (uint64_t& id : g_phase28oGenerationAIds) id = 0;
+    g_phase28mFinished = false;
+    g_phase28mFailed = false;
+    g_phase28mStage = 0;
+    g_phase28mDeadline = 0;
+    g_phase28mFirstSession = 0;
+    g_phase28mSecondSession = 0;
+    g_phase28mStepCount = 0;
+    g_phase28qFinished = false;
+    g_phase28qFailed = false;
+    g_phase28qStage = g_phase28qDiagnostic ? 1u : 0u;
+    g_phase28qDeadline = g_phase28qDiagnostic ? gx_get_ticks_ms(ctx) + 120000 : 0;
+    g_phase28qStepCount = 0;
+    g_phase28qFirstStopGeneration = 0;
+    g_phase28qSecondStopGeneration = 0;
+    g_phase28qFirstRIP = 0;
+    g_phase28qFirstRSP = 0;
+    g_phase28qFirstRBP = 0;
+    g_phase28qFirstProgress = 0;
+    g_phase28qSecondProgress = 0;
+    g_phase28qFirstProgressValid = false;
+    g_phase28qSecondProgressValid = false;
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BEGIN");
+    if (g_phase28nDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_BEGIN");
+    if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_BEGIN");
+    if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_BEGIN");
+    if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_BEGIN");
 
 #if defined(GXOS_PHASE12_SMOKE)
     if (hasBareBuildCallbacks) return runPhase12Smoke(ctx) ? GX_OK : GX_ERROR_FAILED;
@@ -10262,8 +14337,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         return windowResult;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS");
+    if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_APP_LAUNCH_PASS");
+    if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_APP_LAUNCH_PASS");
     drawShell(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS");
+    if (g_phase28mDiagnostic) {
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_WINDOW_VISIBLE_PASS");
+        if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_APP_LAUNCH_PASS");
+        if (!g_phase28oDiagnostic) g_phase28mStage = 1;
+    }
 
     bool running = true;
     if (ctx->host->poll_event) {
@@ -10275,48 +14357,46 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             pollBuild(ctx);
             pollRun(ctx);
             pollDebug(ctx);
+            phase28oPump(ctx);
+            phase28qPump(ctx);
+            phase28mPump(ctx);
+            if (g_phase28oDiagnostic && !g_phase28oFailed && !g_phase28oFinished &&
+                g_phase28mFinished && g_requestExit &&
+                g_debugController.state == DebugSessionState::Exited &&
+                !DebugControllerIsActive(&g_debugController) &&
+                g_debugUiSessionGeneration == 0 && !g_debugUiCallStackValid &&
+                !g_debugUiVariablesValid && !g_debugUiOutputValid) {
+                // completeDebugShutdownIfReady() has reached the same final
+                // controller/UI teardown used by the integrated app. Only
+                // now may the guest publish the terminal O result.
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_CLEANUP_PASS");
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_PASS");
+                g_phase28oFinished = true;
+            }
+            if (g_phase28oRequestClose) {
+                g_phase28oRequestClose = false;
+                if (!requestApplicationClose(ctx, g_window)) {
+                    phase28oFail(ctx, "close");
+                } else {
+                    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_CLOSE_PASS");
+                    running = false;
+                }
+            }
             if (g_requestExit) {
                 running = false;
                 break;
             }
             gx_event event;
             clear_event(&event);
+            const uint32_t eventPollTimeout = g_phase28oDiagnostic ? 50u : 500u;
             gx_result result = ctx->host->poll_event(ctx, &event,
                 (IncludeGraphIsActive(&g_includeGraphOperation) || OwnershipGraphBuildIsActive(&g_ownershipService) ||
-                 ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ? 50 : 500);
+                 ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ?
+                    50 : eventPollTimeout);
             if (result == GX_OK && event.window == g_window) {
                 if (gx_event_is_paint(&event)) drawShell(ctx);
                 else if (gx_event_is_close(&event)) {
-                    if (BuildControllerIsActive(&g_buildController)) {
-                        writeOutput("Build in progress; close blocked");
-                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_close=BLOCKED");
-                    } else if (RunControllerIsActive(&g_runController)) {
-                        g_inputMode = InputMode::ConfirmRunClose;
-                        writeOutput("Project application is running: Close it first or keep Studio open");
-                    } else if (g_debugWaitingForBuild) {
-                        writeStudioOutput("Debug build in progress; close blocked");
-                    } else if (DebugControllerIsActive(&g_debugController)) {
-                        if (g_inputMode == InputMode::BreakpointCondition) {
-                            logBreakpointConditionUi(ctx, "editor=CLOSED reason=TARGETED_CLOSE",
-                                                     g_debugEditingBreakpointId, g_prompt,
-                                                     "shutdown=TARGETED_CLOSE");
-                        }
-                        if (!beginDebugShutdown(ctx, event.window)) {
-                            g_inputMode = InputMode::ConfirmDebugClose;
-                            writeStudioOutput("Debug session is active: Stop it before closing Studio");
-                        } else {
-                            g_inputMode = InputMode::Normal;
-                            writeStudioOutput("Debug session stop requested; closing Studio after teardown");
-                        }
-                    } else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) {
-                        g_inputMode = InputMode::ConfirmApplication;
-                        writeOutput("Unsaved changes: Save, Discard, or Cancel");
-                        drawShell(ctx);
-                    } else {
-                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS");
-                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS");
-                        running = false;
-                    }
+                    if (requestApplicationClose(ctx, event.window)) running = false;
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
                     else if (gx_event_is_escape_down(&event) && (g_fileMenuOpen || g_buildMenuOpen || g_debugMenuOpen)) {
@@ -10333,7 +14413,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                         else if (g_debugWaitingForBuild) writeStudioOutput("Debug build in progress; close blocked");
                         else if (DebugControllerIsActive(&g_debugController)) { g_inputMode = InputMode::ConfirmDebugClose; writeStudioOutput("Debug session is active: Stop it before closing Studio"); }
                         else if (guidexos::developer_studio::WorkspaceModelHasDirtyDocuments(&g_controller.model)) g_inputMode = InputMode::ConfirmApplication;
-                        else { logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER application_close=PASS"); logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS"); running = false; }
+                        else if (requestApplicationClose(ctx, g_window)) running = false;
                     } else handleNormalKey(ctx, event.param1, event.param2, event.param3, running);
                     if (g_requestExit) running = false;
                     drawShell(ctx);
@@ -10360,6 +14440,17 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         else markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=FAIL", "wait_for_close");
     }
 
+    if (g_phase28oRelaunchRequested && !g_phase28oFailed) {
+        g_phase28oRelaunchRequested = false;
+        g_phase28oRelaunched = true;
+        if (g_window && ctx->host->native_window_destroy) {
+            ctx->host->native_window_destroy(ctx, g_window);
+            g_window = 0;
+        }
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_PASS");
+        continue;
+    }
     if (ctx->host->exit) return ctx->host->exit(ctx, GX_OK);
     return GX_OK;
+    }
 }

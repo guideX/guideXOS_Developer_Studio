@@ -105,7 +105,10 @@ enum class DebugErrorCode {
     StepOutFailed,
     StaleStepOut,
     InvalidCondition,
-    ConditionError
+    ConditionError,
+    PauseAlreadyRequested,
+    AlreadyPaused,
+    TargetNotRunning
 };
 
 enum class DebugBreakpointState {
@@ -140,7 +143,8 @@ enum class DebugStopReason {
     Signal,
     EntryPoint,
     Unknown,
-    Step
+    Step,
+    UserPause
 };
 
 enum class DebugBackendExecutionState {
@@ -154,7 +158,8 @@ enum class DebugBackendExecutionState {
     StepOverPending,
     PausedAtStepOver,
     StepOutPending,
-    PausedAtStepOut
+    PausedAtStepOut,
+    PausedAtUserPause
 };
 
 enum class DebugEventKind {
@@ -191,7 +196,8 @@ enum class DebugEventKind {
     StepOutCompleted,
     StepOutInterrupted,
     BreakpointConditionFalse,
-    BreakpointConditionError
+    BreakpointConditionError,
+    PauseRequested
 };
 
 enum class DebugStepOperationKind {
@@ -696,6 +702,8 @@ struct DebugController {
     // filtered hit, not a user-visible paused stop.
     bool conditionResumePending;
     bool conditionEvaluationPending;
+    bool pauseRequestPending;
+    uint64_t pauseRequestGeneration;
 };
 
 const char* DebugSessionStateName(DebugSessionState state);
@@ -709,6 +717,7 @@ bool DebugCapabilitiesEqual(const DebugCapabilities& left, const DebugCapabiliti
 bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities);
 bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities);
 bool DebugRegisterContextIsValid(const DebugRegisterContext& context);
+bool DebugRegisterContextIsValidForController(const DebugRegisterContext& context);
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
                           uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error);

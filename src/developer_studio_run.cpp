@@ -65,7 +65,7 @@ static void setFailure(RunController* controller, RunState state, RunErrorCode e
 }
 
 static bool isTerminal(RunState state) {
-    return state == RunState::Completed || state == RunState::Failed;
+    return state == RunState::Completed || state == RunState::Failed || state == RunState::Cancelled;
 }
 
 } // namespace
@@ -82,6 +82,10 @@ const char* RunStateName(RunState state) {
     case RunState::CleaningUp: return "CleaningUp";
     case RunState::Completed: return "Completed";
     case RunState::Failed: return "Failed";
+    case RunState::Closing: return "Closing";
+    case RunState::Cancelled: return "Cancelled";
+    case RunState::Paused: return "Paused";
+    case RunState::Stepping: return "Stepping";
     }
     return "Unknown";
 }
@@ -290,7 +294,8 @@ bool RunControllerIsActive(const RunController* controller) {
 
 bool RunControllerIsTransitionActive(const RunController* controller) {
     if (!controller || !controller->active) return false;
-    return controller->state != RunState::Completed && controller->state != RunState::Failed;
+    return controller->state != RunState::Completed && controller->state != RunState::Failed &&
+        controller->state != RunState::Cancelled;
 }
 
 } // namespace developer_studio

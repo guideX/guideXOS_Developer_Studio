@@ -461,6 +461,27 @@ struct DebugDwarfExecutableSegment {
     uint64_t endAddress;
 };
 
+// guideXOS' freestanding compiler emits a bounded GXSM source-map trailer
+// instead of DWARF.  Keep the decoded variable records separate from the
+// DWARF DIE tables so the same debugger controller can consume both artifact
+// formats without manufacturing a second debug model.
+struct DebugBootstrapVariable {
+    uint16_t sourceFileIndex;
+    uint16_t functionIndex;
+    uint8_t kind;
+    uint8_t type;
+    uint8_t location;
+    uint8_t flags;
+    uint32_t sizeBytes;
+    uint32_t declarationOffset;
+    uint32_t declarationLine;
+    uint32_t declarationColumn;
+    int32_t frameOffset;
+    uint32_t liveStart;
+    uint32_t liveEnd;
+    char name[64];
+};
+
 struct DebugDwarfMapper {
     DebugDwarfMapperState state;
     DebugDwarfError error;
@@ -492,6 +513,9 @@ struct DebugDwarfMapper {
     uint32_t debugInfoVariableCount;
     uint32_t debugInfoParseMilliseconds;
     bool debugInfoReady;
+    bool bootstrapSourceMap;
+    uint32_t bootstrapVariableCount;
+    DebugBootstrapVariable bootstrapVariables[kDebugDwarfMaxVariables];
     DebugDwarfCompilationUnitInfo compilationUnits[kDebugDwarfMaxCompilationUnits];
     DebugDwarfDieInfo dies[kDebugDwarfMaxDies];
     DebugDwarfFunctionInfo debugFunctions[kDebugDwarfMaxFunctions];
@@ -521,6 +545,9 @@ const char* DebugDwarfErrorName(DebugDwarfError error);
 // build completion and symbol loading cannot silently reuse the old identity.
 bool DebugDwarfComputeSha256(const unsigned char* bytes, uint64_t size,
                              char* output, uint32_t outputSize);
+
+typedef void (*DebugDwarfMapperProgressFn)(void* userData, uint32_t stage);
+void DebugDwarfMapperSetProgressCallback(DebugDwarfMapperProgressFn callback, void* userData);
 
 void DebugDwarfMapperReset(DebugDwarfMapper* mapper);
 bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,

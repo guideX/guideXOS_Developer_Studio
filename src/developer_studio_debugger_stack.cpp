@@ -174,9 +174,9 @@ bool DebugUnwindAmd64FramePointer(const DebugRegisterContext& context,
     if (!result) return false;
     *result = DebugUnwindResult();
     result->terminationReason = DebugUnwindTerminationReason::None;
-    if (!DebugRegisterContextIsValid(context) || context.architecture != DebugArchitecture::Amd64 ||
+    if (!DebugRegisterContextIsValidForController(context) || context.architecture != DebugArchitecture::Amd64 ||
         context.sessionGeneration != sessionGeneration || !mapper || !DebugDwarfMapperIsReady(mapper)) {
-        result->terminationReason = !DebugRegisterContextIsValid(context) ||
+        result->terminationReason = !DebugRegisterContextIsValidForController(context) ||
             context.sessionGeneration != sessionGeneration ? DebugUnwindTerminationReason::StaleContext :
             DebugUnwindTerminationReason::UnsupportedArchitecture;
         setStatus(result, DebugUnwindTerminationReasonName(result->terminationReason));
@@ -285,7 +285,7 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
     if (error) *error = DebugErrorCode::None;
     if (!controller || controller->state != DebugSessionState::Paused ||
         controller->stopReason == DebugStopReason::None ||
-        !DebugRegisterContextIsValid(controller->stoppedContext) || !mapper ||
+        !DebugRegisterContextIsValidForController(controller->stoppedContext) || !mapper ||
         !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory) {
         if (error) *error = DebugErrorCode::StaleStopContext;
         return false;
@@ -330,7 +330,7 @@ bool DebugControllerBuildVariables(DebugController* controller, const DebugBacke
     if (!controller || controller->state != DebugSessionState::Paused ||
         !controller->callStack.valid || controller->callStack.stale || !mapper ||
         !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
-        !DebugRegisterContextIsValid(controller->stoppedContext)) {
+        !DebugRegisterContextIsValidForController(controller->stoppedContext)) {
         if (error) *error = DebugErrorCode::StaleStopContext;
         if (controller) clearVariableView(&controller->variables);
         return false;
@@ -399,7 +399,7 @@ bool DebugControllerExpandVariable(DebugController* controller, const DebugBacke
     if (!controller || controller->state != DebugSessionState::Paused ||
         !controller->callStack.valid || controller->callStack.stale || !controller->variables.valid ||
         !mapper || !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
-        !DebugRegisterContextIsValid(controller->stoppedContext)) {
+        !DebugRegisterContextIsValidForController(controller->stoppedContext)) {
         if (error) *error = DebugErrorCode::StaleStopContext;
         return false;
     }
@@ -479,7 +479,7 @@ static bool fillWatchContext(const DebugController* controller, const DebugBacke
                              DebugWatchEvaluationContext* context) {
     if (!controller || !context || controller->state != DebugSessionState::Paused || !mapper ||
         !DebugDwarfMapperIsReady(mapper) || !backend.readTargetMemory ||
-        !DebugRegisterContextIsValid(controller->stoppedContext) || instructionAddress == 0) return false;
+        !DebugRegisterContextIsValidForController(controller->stoppedContext) || instructionAddress == 0) return false;
     context->mapper = mapper;
     context->frame = DebugDwarfFrameContext();
     context->frame.frameIndex = frameIndex;
@@ -535,7 +535,7 @@ static bool controllerWatchContext(const DebugController* controller, const Debu
 static bool breakpointWatchContext(const DebugController* controller, const DebugBackend& backend,
                                   const DebugDwarfMapper* mapper,
                                   DebugWatchEvaluationContext* context) {
-    if (!controller || !DebugRegisterContextIsValid(controller->stoppedContext)) return false;
+    if (!controller || !DebugRegisterContextIsValidForController(controller->stoppedContext)) return false;
     const uint64_t instructionAddress = controller->stoppedContext.rip != 0 ?
         controller->stoppedContext.rip : controller->currentInstructionAddress.value;
     uint64_t frameBase = 0;
@@ -597,7 +597,7 @@ bool DebugControllerEvaluateBreakpointCondition(DebugController* controller,
                                                 DebugBreakpointConditionDecision* decision) {
     if (decision) *decision = DebugBreakpointConditionDecision::Error;
     if (!controller || controller->state != DebugSessionState::Paused ||
-        !DebugRegisterContextIsValid(controller->stoppedContext)) return false;
+        !DebugRegisterContextIsValidForController(controller->stoppedContext)) return false;
     int breakpointIndex = -1;
     for (uint32_t i = 0; i < controller->breakpointCount; ++i)
         if (controller->breakpoints[i].id == controller->lastBreakpointId) { breakpointIndex = static_cast<int>(i); break; }

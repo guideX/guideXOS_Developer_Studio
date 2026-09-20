@@ -146,6 +146,16 @@ static bool continueExecution(void* userData, uint64_t generation, const DebugRe
     return true;
 }
 
+static bool resumeExecution(void* userData, uint64_t generation,
+                            const DebugRegisterContext& context) {
+    FakeBackend* fake = static_cast<FakeBackend*>(userData);
+    if (!fake || !context.valid || context.sessionGeneration != generation) return false;
+    ++fake->continueCalls;
+    fake->lastContinueContext = context;
+    fake->continuePending = true;
+    return true;
+}
+
 static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t,
                                    uint64_t, uint64_t, const DebugBreakpoint& breakpoint,
                                    DebugBackendBinding* binding) {
@@ -218,6 +228,13 @@ static DebugBackend makeBreakpointBackend(FakeBackend* fake) {
     return backend;
 }
 
+static DebugBackend makePauseBackend(FakeBackend* fake) {
+    DebugBackend backend = makeBackend(fake);
+    backend.capabilities.canPause = true;
+    backend.resumeExecution = resumeExecution;
+    return backend;
+}
+
 static void prepareMappedBreakpoint(DebugController* controller, uint64_t breakpointId) {
     assert(controller && controller->breakpointCount == 1);
     DebugBreakpoint& breakpoint = controller->breakpoints[0];
@@ -274,6 +291,81 @@ int main() {
     assert(!DebugControllerCanPause(&controller));
     assert(!DebugControllerPause(&controller, backend, &error));
     assert(error == DebugErrorCode::CapabilityUnavailable && !fake.pauseCalled);
+
+    FakeBackend pauseFake;
+    DebugBackend pauseBackend = makePauseBackend(&pauseFake);
+    static DebugController pauseController = {};
+    assert(DebugControllerInit(&pauseController));
+    assert(DebugControllerSetProjectContext(&pauseController, project.projectId, project.rootPath, 9));
+    assert(DebugControllerStart(&pauseController, pauseBackend, target, &error));
+    assert(DebugControllerPoll(&pauseController, pauseBackend));
+    assert(pauseController.state == DebugSessionState::Running);
+    assert(DebugControllerCanPause(&pauseController));
+    assert(DebugControllerPause(&pauseController, pauseBackend, &error));
+    assert(pauseController.pauseRequestPending && pauseFake.pauseCalled);
+    assert(!DebugControllerPause(&pauseController, pauseBackend, &error));
+    assert(error == DebugErrorCode::PauseAlreadyRequested);
+    DebugBackendSnapshot userPause = {};
+    userPause.sessionGeneration = pauseController.sessionGeneration;
+    userPause.state = DebugSessionState::Paused;
+    userPause.stopReason = DebugStopReason::UserPause;
+    userPause.processId = 0;
+    userPause.nativeRuntimeId = 77;
+    userPause.threadId = 1;
+    userPause.instructionPointer = 0x401234;
+    userPause.targetAddress.valid = true;
+    userPause.targetAddress.value = 0x401234;
+    userPause.stopGeneration = 4;
+    userPause.executionState = DebugBackendExecutionState::PausedAtUserPause;
+    userPause.registerContext.valid = true;
+    userPause.registerContext.architecture = DebugArchitecture::Amd64;
+    userPause.registerContext.processId = 0;
+    userPause.registerContext.nativeRuntimeId = 77;
+    userPause.registerContext.threadId = 1;
+    userPause.registerContext.sessionGeneration = pauseController.sessionGeneration;
+    userPause.registerContext.stopGeneration = 4;
+    userPause.registerContext.rip = 0x401234;
+    userPause.registerContext.rflags = 0x202;
+    userPause.registerContext.rsp = 0x700008;
+    userPause.registerContext.rbp = 0x700100;
+    assert(DebugControllerApplySnapshot(&pauseController, pauseController.sessionGeneration, userPause));
+    assert(pauseController.state == DebugSessionState::Paused);
+    assert(pauseController.stopReason == DebugStopReason::UserPause);
+    assert(pauseController.backendExecutionState == DebugBackendExecutionState::PausedAtUserPause);
+    assert(pauseController.currentInstructionAddress.valid &&
+           pauseController.currentInstructionAddress.value == 0x401234);
+    assert(!pauseController.pauseRequestPending && DebugControllerCanContinue(&pauseController));
+    assert(!DebugControllerPause(&pauseController, pauseBackend, &error));
+    assert(error == DebugErrorCode::AlreadyPaused);
+    assert(DebugControllerContinue(&pauseController, pauseBackend, &error));
+    assert(pauseController.state == DebugSessionState::Running &&
+           pauseController.stopReason == DebugStopReason::None);
+    assert(pauseFake.continueCalls == 1);
+    assert(DebugControllerPoll(&pauseController, pauseBackend));
+    assert(pauseController.state == DebugSessionState::Running);
+    assert(DebugControllerPause(&pauseController, pauseBackend, &error));
+    assert(pauseController.pauseRequestPending);
+    assert(DebugControllerRequestStop(&pauseController, pauseBackend, &error));
+    assert(!pauseController.pauseRequestPending && pauseController.state == DebugSessionState::Stopping);
+    assert(DebugControllerPoll(&pauseController, pauseBackend));
+    assert(pauseController.state == DebugSessionState::Exited && !pauseController.active);
+
+    FakeBackend completionFake;
+    DebugBackend completionBackend = makePauseBackend(&completionFake);
+    static DebugController completion = {};
+    assert(DebugControllerInit(&completion));
+    assert(DebugControllerSetProjectContext(&completion, project.projectId, project.rootPath, 9));
+    assert(DebugControllerStart(&completion, completionBackend, target, &error));
+    assert(DebugControllerPoll(&completion, completionBackend));
+    assert(DebugControllerPause(&completion, completionBackend, &error));
+    DebugBackendSnapshot completionSnapshot = {};
+    completionSnapshot.sessionGeneration = completion.sessionGeneration;
+    completionSnapshot.state = DebugSessionState::Exited;
+    completionSnapshot.stopReason = DebugStopReason::Exited;
+    completionSnapshot.cleanupComplete = true;
+    assert(DebugControllerApplySnapshot(&completion, completion.sessionGeneration, completionSnapshot));
+    assert(completion.state == DebugSessionState::Exited && !completion.active &&
+           !completion.pauseRequestPending);
     assert(DebugControllerRequestStop(&controller, backend, &error));
     assert(controller.state == DebugSessionState::Stopping && fake.stops == 1);
     assert(DebugControllerPoll(&controller, backend));

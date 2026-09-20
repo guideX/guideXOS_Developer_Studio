@@ -42,6 +42,8 @@ $DebuggerStackTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-stack-
 $DebuggerVariablesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-variables-test.exe"
 $DebuggerWatchesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-watches-test.exe"
 $DebuggerConditionalTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-conditional-breakpoints-test.exe"
+$DebugEditorTest = Join-Path $ServerRoot "tmp\developer-studio-debug-editor-test.exe"
+$DebugDataTipTest = Join-Path $ServerRoot "tmp\developer-studio-debug-data-tips-test.exe"
 $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
@@ -75,6 +77,7 @@ $toolRoots = @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
 if ($ToolchainRoot) { $toolRoots = @($ToolchainRoot) + $toolRoots }
 $clang = Find-Tool @("clang++.exe", "clang++") $toolRoots
 $lld = Find-Tool @("ld.lld.exe", "ld.lld") $toolRoots
+$objcopy = Find-Tool @("llvm-objcopy.exe", "llvm-objcopy") $toolRoots
 $readElf = Find-Tool @("llvm-readelf.exe", "llvm-readelf", "readelf.exe", "readelf") @("C:\Program Files\LLVM\bin", "C:\mingw64\bin")
 if (-not $clang) { throw "clang++ was not found. Install LLVM or add clang++ to PATH." }
 if (-not $lld) { throw "ld.lld was not found. Install LLVM or add ld.lld to PATH." }
@@ -264,15 +267,33 @@ try {
     & $DebuggerConditionalTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio conditional breakpoint test failed with exit code $LASTEXITCODE" }
 
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_debug_editor.cpp", "src\developer_studio_debug_tips.cpp", "tests\debug_editor_test.cpp",
+        "-o", $DebugEditorTest
+    )
+    & $DebugEditorTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio source debugger editor test failed with exit code $LASTEXITCODE" }
+
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_syntax.cpp", "src\developer_studio_debug_tips.cpp", "tests\debugger_data_tips_test.cpp",
+        "-o", $DebugDataTipTest
+    )
+    & $DebugDataTipTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio debugger data tips test failed with exit code $LASTEXITCODE" }
+
 $compileFlags = @(
         "--target=$compileTarget", "-std=c++11", "-ffreestanding",
         "-fno-exceptions", "-fno-rtti", "-fno-stack-protector",
         "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
         "-I$SdkInclude", "-Isrc"
     )
-    if ($TargetArchitecture -eq "arm64") {
-        $compileFlags += @("-DGXOS_DEVELOPER_STUDIO_AARCH64", "-DGXOS_DEVELOPER_STUDIO_BARE_METAL")
-    }
+    # Both packaged targets run inside the bounded NativeElf guest.  Keep the
+    # freestanding mapper/table limits on AMD64 as well as ARM64; hosted test
+    # binaries use the larger defaults because they are compiled separately.
+    $compileFlags += "-DGXOS_DEVELOPER_STUDIO_BARE_METAL"
+    if ($TargetArchitecture -eq "arm64") { $compileFlags += "-DGXOS_DEVELOPER_STUDIO_AARCH64" }
     if ($Phase12Proof) { $compileFlags += "-DGXOS_PHASE12_SMOKE" }
     if ($Configuration -eq "DebugSymbols") {
         $compileFlags += @("-g", "-O0", "-fdebug-compilation-dir=$RepoRoot", "-fdebug-prefix-map=$RepoRoot=.")
@@ -302,7 +323,10 @@ $compileFlags = @(
     $debugSymbolsObject = Join-Path $ObjectRoot "developer_studio_debug_symbols.o"
     $debugVariablesObject = Join-Path $ObjectRoot "developer_studio_debug_variables.o"
     $debugWatchesObject = Join-Path $ObjectRoot "developer_studio_debug_watches.o"
+    $debugTipsObject = Join-Path $ObjectRoot "developer_studio_debug_tips.o"
     $debuggerHostedObject = Join-Path $ObjectRoot "developer_studio_debugger_hosted.o"
+    $debugEditorObject = Join-Path $ObjectRoot "developer_studio_debug_editor.o"
+    $debuggerWorkspaceObject = Join-Path $ObjectRoot "developer_studio_debugger_workspace.o"
     $memoryObject = Join-Path $ObjectRoot "freestanding_memory.o"
     $mainObject = Join-Path $ObjectRoot "main.o"
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_models.cpp"), "-o", $modelObject))
@@ -329,7 +353,10 @@ $compileFlags = @(
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_symbols.cpp"), "-o", $debugSymbolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_variables.cpp"), "-o", $debugVariablesObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_watches.cpp"), "-o", $debugWatchesObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_tips.cpp"), "-o", $debugTipsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger_hosted.cpp"), "-o", $debuggerHostedObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debug_editor.cpp"), "-o", $debugEditorObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_debugger_workspace.cpp"), "-o", $debuggerWorkspaceObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\freestanding_memory.cpp"), "-o", $memoryObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\main.cpp"), "-o", $mainObject))
 
@@ -337,10 +364,17 @@ $compileFlags = @(
     # both target artifacts at the same canonical base so the package can be
     # validated and selected consistently in-OS.
     $linkFlags = @("-m", $linkMachine, "-static", "--image-base=0x50000000", "-z", "max-page-size=0x1000")
-    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debuggerHostedObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
+    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }
+
+    # The NativeElf production contract deliberately rejects section metadata.
+    # Keep the allocatable PT_LOAD contents (including the GXSM debugger/source
+    # map trailer) while removing only the linker section table.
+    $sectionlessElfPath = "$stagedElfPath.sectionless"
+    Invoke-Checked $objcopy @("--strip-sections", $stagedElfPath, $sectionlessElfPath)
+    Move-Item -LiteralPath $sectionlessElfPath -Destination $stagedElfPath -Force
 
     if ($readElf) {
         $header = (& $readElf -h $stagedElfPath 2>&1 | Out-String)
@@ -377,5 +411,7 @@ $compileFlags = @(
     if (Test-Path -LiteralPath $DebuggerVariablesTest) { Remove-Item -LiteralPath $DebuggerVariablesTest -Force }
     if (Test-Path -LiteralPath $DebuggerWatchesTest) { Remove-Item -LiteralPath $DebuggerWatchesTest -Force }
     if (Test-Path -LiteralPath $DebuggerConditionalTest) { Remove-Item -LiteralPath $DebuggerConditionalTest -Force }
+    if (Test-Path -LiteralPath $DebugEditorTest) { Remove-Item -LiteralPath $DebugEditorTest -Force }
+    if (Test-Path -LiteralPath $DebugDataTipTest) { Remove-Item -LiteralPath $DebugDataTipTest -Force }
     if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force }
 }
