@@ -1,5 +1,6 @@
 # Native/host build output
 /build/
+/build-*/
 /out/
 /bin/
 /obj/

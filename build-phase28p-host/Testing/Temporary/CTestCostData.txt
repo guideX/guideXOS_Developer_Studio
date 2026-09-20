@@ -1,2 +1,0 @@
-developer_studio_debug_tips_test 1 0.0208805
----
