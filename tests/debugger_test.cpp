@@ -529,6 +529,26 @@ int main() {
     assert(DebugControllerPoll(&delayed, delayedBackend));
     assert(delayed.state == DebugSessionState::Exited && !delayed.active);
 
+    FakeBackend externalReleaseFake;
+    DebugBackend externalReleaseBackend = makeBreakpointBackend(&externalReleaseFake);
+    static DebugController externalRelease = {};
+    assert(DebugControllerInit(&externalRelease));
+    assert(DebugControllerSetProjectContext(&externalRelease, project.projectId, project.rootPath, 9));
+    DebugControllerSetExecutionReleaseDeferred(&externalRelease, true);
+    assert(DebugControllerStart(&externalRelease, externalReleaseBackend, target, &error));
+    assert(externalRelease.state == DebugSessionState::Launching);
+    const uint64_t externalReleaseGeneration = externalRelease.sessionGeneration;
+    assert(DebugControllerAcceptExternalExecutionRelease(&externalRelease,
+                                                         externalReleaseGeneration, &error));
+    assert(externalRelease.state == DebugSessionState::Running);
+    assert(externalRelease.targetExecutionReleased);
+    assert(DebugControllerAcceptExternalExecutionRelease(&externalRelease,
+                                                         externalReleaseGeneration, &error));
+    assert(error == DebugErrorCode::None && externalRelease.state == DebugSessionState::Running);
+    assert(!DebugControllerAcceptExternalExecutionRelease(&externalRelease,
+                                                          externalReleaseGeneration + 1, &error));
+    assert(error == DebugErrorCode::InvalidTransition);
+
     FakeBackend firstRejectFake;
     firstRejectFake.failBindAt = 1;
     DebugBackend firstRejectBackend = makeBreakpointBackend(&firstRejectFake);

@@ -174,7 +174,7 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
-        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:' } | Select-Object -Last 96)
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
         $recent = @($lines | Select-Object -Last 80)
         $serverExitCode = if ($process -and $process.HasExited) { $process.ExitCode } else { 'unknown' }
         $header = @(
@@ -447,7 +447,7 @@ try {
     }
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "the real source breakpoint produces a breakpoint pause"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=PASS')) "the breakpoint stop navigates to the existing source document"
-    Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_execution_marker=PASS')) "the breakpoint stop publishes the editor execution marker"
+    Assert-True ($text -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_(editor_execution|execution_marker)=PASS') "the breakpoint stop publishes the editor execution marker"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS')) "the stopped hosted session builds its real call stack"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS')) "the stopped hosted session publishes real locals"
     if ($InteractiveWatch) {

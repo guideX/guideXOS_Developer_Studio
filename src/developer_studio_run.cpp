@@ -43,14 +43,17 @@ static void appendRunText(RunController* controller, OutputSeverity severity, co
 static void publishTerminal(RunController* controller) {
     if (!controller || controller->terminalPublished || !controller->output || controller->operationId == 0) return;
     char text[256] = {};
-    copyText(text, sizeof(text), controller->result.state == RunState::Completed ? "Run Succeeded" : "Run Failed");
+    copyText(text, sizeof(text),
+             (controller->result.state == RunState::Exited ||
+              controller->result.state == RunState::Completed) ? "Run Succeeded" : "Run Failed");
     const uint32_t offset = textLength(text, sizeof(text));
     if (offset + 1 < sizeof(text)) { text[offset] = ' '; text[offset + 1] = '\0'; }
     const uint32_t next = textLength(text, sizeof(text));
     if (next + 10 < sizeof(text)) copyText(text + next, sizeof(text) - next, "exit_code=");
     appendUnsigned(text, sizeof(text), controller->result.exitCode);
     OutputServiceCompleteOperation(controller->output, controller->operationId,
-                                   controller->result.state == RunState::Completed,
+                                   controller->result.state == RunState::Exited ||
+                                       controller->result.state == RunState::Completed,
                                    text, nullptr);
     controller->terminalPublished = true;
 }
@@ -65,7 +68,8 @@ static void setFailure(RunController* controller, RunState state, RunErrorCode e
 }
 
 static bool isTerminal(RunState state) {
-    return state == RunState::Completed || state == RunState::Failed || state == RunState::Cancelled;
+    return state == RunState::Exited || state == RunState::Completed ||
+        state == RunState::Failed || state == RunState::Cancelled;
 }
 
 } // namespace
@@ -294,8 +298,8 @@ bool RunControllerIsActive(const RunController* controller) {
 
 bool RunControllerIsTransitionActive(const RunController* controller) {
     if (!controller || !controller->active) return false;
-    return controller->state != RunState::Completed && controller->state != RunState::Failed &&
-        controller->state != RunState::Cancelled;
+    return controller->state != RunState::Exited && controller->state != RunState::Completed &&
+        controller->state != RunState::Failed && controller->state != RunState::Cancelled;
 }
 
 } // namespace developer_studio

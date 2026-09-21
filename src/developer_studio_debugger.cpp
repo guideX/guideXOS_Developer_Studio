@@ -547,9 +547,9 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
     return true;
 }
 
-static bool bindAndReleaseIfReady(DebugController* controller, const DebugBackend& backend,
-                                  DebugBackendSnapshot* snapshot) {
-    if (!controller || !snapshot || controller->targetExecutionReleased || snapshot->nativeRuntimeId == 0 ||
+static bool bindBreakpointsIfReady(DebugController* controller, const DebugBackend& backend,
+                                   const DebugBackendSnapshot& snapshot) {
+    if (!controller || controller->targetExecutionReleased || snapshot.nativeRuntimeId == 0 ||
         !backend.capabilities.canBindSoftwareBreakpoint || !backend.debugCommand) return true;
     uint32_t acceptedBindings = 0;
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
@@ -558,7 +558,7 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
             breakpoint.backendBindingId != 0 || !breakpoint.location.instructionAddress.valid) continue;
         DebugBackendBinding binding = {};
         const bool called = backend.bindSoftwareBreakpoint(backend.userData, controller->target,
-            controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId, breakpoint, &binding);
+            controller->sessionGeneration, snapshot.processId, snapshot.nativeRuntimeId, breakpoint, &binding);
         if (!called || !binding.accepted) {
             breakpoint.state = DebugBreakpointState::Rejected;
             breakpoint.mappingError = DebugErrorCode::BreakpointRejected;
@@ -566,7 +566,7 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
             appendEvent(controller, DebugEventKind::BreakpointRejected, controller->state, DebugStopReason::Unknown, breakpoint.message);
             HostedDebugResult restored = {};
             const bool restoredSuccessfully = backend.debugCommand(backend.userData, HostedDebugCommand::RestoreAll,
-                controller->debugHandle, controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId,
+                controller->debugHandle, controller->sessionGeneration, snapshot.processId, snapshot.nativeRuntimeId,
                 0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, &restored);
             for (uint32_t rollbackIndex = 0; rollbackIndex < controller->breakpointCount; ++rollbackIndex) {
                 DebugBreakpoint& rollback = controller->breakpoints[rollbackIndex];
@@ -592,6 +592,22 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
         observeBinding(controller, binding.bindingId, address.value,
                        binding.ownerCount == 0 ? 1 : binding.ownerCount, true);
         ++acceptedBindings;
+    }
+    return true;
+}
+
+static bool bindAndReleaseIfReady(DebugController* controller, const DebugBackend& backend,
+                                  DebugBackendSnapshot* snapshot) {
+    if (!controller || !snapshot || controller->targetExecutionReleased || snapshot->nativeRuntimeId == 0 ||
+        !backend.capabilities.canBindSoftwareBreakpoint || !backend.debugCommand) return true;
+    if (!bindBreakpointsIfReady(controller, backend, *snapshot)) return false;
+    if (controller->deferExecutionRelease) {
+        // Runtime identity and software-breakpoint ownership are now
+        // authoritative, but the session owner may still need to publish
+        // generation-specific UI breakpoints before opening the gate.  Leave
+        // the target parked. The session owner completes the release through
+        // DebugControllerReleaseDeferredExecution after that work completes.
+        return true;
     }
     HostedDebugResult released = {};
     if (!backend.debugCommand(backend.userData, HostedDebugCommand::ReleaseExecution, controller->debugHandle,
@@ -1439,6 +1455,38 @@ bool DebugControllerSetProjectContext(DebugController* controller, const char* p
     return true;
 }
 
+void DebugControllerSetExecutionReleaseDeferred(DebugController* controller, bool deferred) {
+    if (!controller || controller->targetExecutionReleased) return;
+    controller->deferExecutionRelease = deferred;
+}
+
+bool DebugControllerAcceptExternalExecutionRelease(DebugController* controller,
+                                                   uint64_t sessionGeneration,
+                                                   DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->active || sessionGeneration == 0 ||
+        sessionGeneration != controller->sessionGeneration) {
+        if (error) *error = DebugErrorCode::InvalidTransition;
+        if (controller) recordRejectedTransition(controller, DebugErrorCode::InvalidTransition);
+        return false;
+    }
+    if (controller->targetExecutionReleased && controller->state == DebugSessionState::Running) return true;
+    if (controller->state != DebugSessionState::Launching || controller->targetExecutionReleased) {
+        if (error) *error = DebugErrorCode::InvalidTransition;
+        recordRejectedTransition(controller, DebugErrorCode::InvalidTransition);
+        return false;
+    }
+    controller->targetExecutionReleased = true;
+    controller->deferExecutionRelease = false;
+    controller->stopReason = DebugStopReason::None;
+    controller->backendExecutionState = DebugBackendExecutionState::Running;
+    recordStateTransition(controller, DebugSessionState::Running);
+    appendEvent(controller, DebugEventKind::Running, controller->state,
+                DebugStopReason::None, "NativeElf startup handshake complete");
+    setMessage(controller, "NativeElf startup handshake complete");
+    return true;
+}
+
 void DebugControllerClearBreakpoints(DebugController* controller) {
     if (!controller) return;
     for (uint32_t i = 0; i < controller->breakpointCount; ++i)
@@ -1779,6 +1827,56 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
     }
     if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot)) return false;
     return processPendingBreakpointCondition(controller, backend, mapper);
+}
+
+bool DebugControllerReleaseDeferredExecution(DebugController* controller,
+                                             const DebugBackend& backend,
+                                             DebugErrorCode* error) {
+    if (error) *error = DebugErrorCode::None;
+    if (!controller || !controller->active || !controller->deferExecutionRelease ||
+        controller->targetExecutionReleased) return true;
+    if (!backend.debugCommand || controller->debugHandle == 0 ||
+        controller->processId == 0 || controller->nativeRuntimeId == 0) {
+        if (error) *error = DebugErrorCode::BackendError;
+        controller->error = DebugErrorCode::BackendError;
+        setMessage(controller, "Hosted debugger startup is waiting for a runtime identity");
+        return false;
+    }
+    DebugBackendSnapshot snapshot;
+    clearSnapshot(&snapshot);
+    snapshot.sessionGeneration = controller->sessionGeneration;
+    snapshot.state = controller->state;
+    snapshot.processId = controller->processId;
+    snapshot.nativeRuntimeId = controller->nativeRuntimeId;
+    snapshot.debugHandle = controller->debugHandle;
+    if (!bindBreakpointsIfReady(controller, backend, snapshot)) {
+        if (error) *error = controller->error == DebugErrorCode::None ?
+            DebugErrorCode::BackendError : controller->error;
+        return false;
+    }
+    HostedDebugResult released = {};
+    if (!backend.debugCommand(backend.userData, HostedDebugCommand::ReleaseExecution,
+                              controller->debugHandle, controller->sessionGeneration,
+                              controller->processId, controller->nativeRuntimeId,
+                              0, 0, controller->target.artifactSha256, 0, 0,
+                              false, 0, 0, &released)) {
+        if (error) *error = DebugErrorCode::BackendError;
+        controller->error = DebugErrorCode::BackendError;
+        setMessage(controller, released.errorMessage[0] ? released.errorMessage :
+                   "Hosted debugger could not release the launch gate");
+        return false;
+    }
+    controller->targetExecutionReleased = true;
+    controller->deferExecutionRelease = false;
+    controller->stopReason = DebugStopReason::None;
+    controller->backendExecutionState = DebugBackendExecutionState::Running;
+    if (controller->state == DebugSessionState::Launching) {
+        recordStateTransition(controller, DebugSessionState::Running);
+        appendEvent(controller, DebugEventKind::Running, controller->state,
+                    DebugStopReason::None, "Hosted Native ELF target running");
+    }
+    setMessage(controller, "Hosted debugger startup handshake complete");
+    return true;
 }
 
 bool DebugControllerRequestStop(DebugController* controller, const DebugBackend& backend,

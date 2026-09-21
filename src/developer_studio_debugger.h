@@ -662,6 +662,10 @@ struct DebugController {
     int32_t exitCode;
     DebugStopReason stopReason;
     char lastMessage[kDebugMaxMessageBytes];
+    // When true, runtime identity/breakpoint binding may be published by a
+    // poll, but the execution gate remains owned by the caller until its
+    // generation-specific setup has completed.
+    bool deferExecutionRelease;
     bool targetExecutionReleased;
     DebugBackendExecutionState backendExecutionState;
     uint64_t stopGeneration;
@@ -727,11 +731,21 @@ bool DebugRelativeSourcePath(const char* projectRoot, const char* absolutePath,
 bool DebugControllerInit(DebugController* controller);
 bool DebugControllerSetProjectContext(DebugController* controller, const char* projectId,
                                       const char* projectRoot, uint64_t projectGeneration);
+void DebugControllerSetExecutionReleaseDeferred(DebugController* controller, bool deferred);
+bool DebugControllerAcceptExternalExecutionRelease(DebugController* controller,
+                                                   uint64_t sessionGeneration,
+                                                   DebugErrorCode* error);
 void DebugControllerClearBreakpoints(DebugController* controller);
 bool DebugControllerStart(DebugController* controller, const DebugBackend& backend,
                           const DebugTarget& target, DebugErrorCode* error);
 bool DebugControllerPoll(DebugController* controller, const DebugBackend& backend,
                          const DebugDwarfMapper* mapper = nullptr);
+// Completes a deferred hosted launch handshake after the session owner has
+// published generation-specific debugger/UI state. This opens the execution
+// gate exactly once; it does not execute target work itself.
+bool DebugControllerReleaseDeferredExecution(DebugController* controller,
+                                             const DebugBackend& backend,
+                                             DebugErrorCode* error);
 bool DebugControllerRequestStop(DebugController* controller, const DebugBackend& backend,
                                 DebugErrorCode* error);
 bool DebugControllerPause(DebugController* controller, const DebugBackend& backend,

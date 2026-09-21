@@ -30,6 +30,7 @@ struct FakeRun {
     bool released = false;
     bool startFails = false;
     bool emitOutput = false;
+    bool emitExited = false;
 };
 
 static bool prepareRun(void* userData, const RunRequest&, uint64_t* handle, RunResult* result) {
@@ -56,7 +57,7 @@ static bool pollRun(void* userData, uint64_t, RunResult* result) {
     *result = RunResult();
     if (fake->polls++ == 0) result->state = RunState::Running;
     else {
-        result->state = RunState::Completed;
+        result->state = fake->emitExited ? RunState::Exited : RunState::Completed;
         result->cleanupComplete = true;
         result->exitCode = 0;
         if (fake->emitOutput) {
@@ -130,6 +131,24 @@ int main() {
     }
     assert(sawApplicationOutput);
     uint32_t terminalCount = 0;
+    for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
+    assert(terminalCount == 1);
+
+    FakeRun exited;
+    exited.emitExited = true;
+    service.userData = &exited;
+    assert(RunControllerInit(&controller));
+    OutputServiceInit(&output);
+    const uint64_t exitedOperationId = OutputServiceBeginOperation(&output, OutputOperationType::Run, project.projectId);
+    RunControllerAttachOutput(&controller, &output, exitedOperationId);
+    assert(RunControllerPrepare(&controller, service, request, &error));
+    assert(RunControllerStart(&controller, service, &error));
+    assert(RunControllerPoll(&controller, service));
+    assert(controller.state == RunState::Running && RunControllerIsActive(&controller));
+    assert(RunControllerPoll(&controller, service));
+    assert(controller.state == RunState::Exited && !RunControllerIsActive(&controller));
+    assert(exited.released);
+    terminalCount = 0;
     for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
     assert(terminalCount == 1);
 

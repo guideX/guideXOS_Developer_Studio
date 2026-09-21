@@ -878,6 +878,7 @@ static uint32_t g_debugUiBreakpointPolicies[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREA
 static uint64_t g_debugUiBreakpointThresholds[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS] = {};
 static bool g_debugWaitingForBuild = false;
 static bool g_debugTerminalReported = false;
+static bool g_debugReadyReported = false;
 static uint64_t g_debugReportedEventSequence = 0;
 static bool g_debugShutdownPending = false;
 static DebugShutdownStage g_debugShutdownStage = DebugShutdownStage::None;
@@ -893,6 +894,7 @@ static char g_debugTraceScratch[4][256] = {};
 static DebuggerWorkspace g_debuggerWorkspace = {};
 static char g_debuggerWorkspaceStatus[96] = {};
 static uint64_t g_debuggerWorkspaceMaterializedGeneration = 0;
+static bool g_debuggerWorkspaceMaterializationFailed = false;
 static DebugEditorBreakpoint g_debuggerWorkspaceUnresolved[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
 // Phase 28M is enabled only by a disposable sentinel staged beside the
 // packaged Developer Studio ELF.  The normal product package therefore keeps
@@ -1339,6 +1341,77 @@ static void writeStudioOutput(const char* message) {
 
 static void logMarker(gx_app_context* ctx, const char* marker) {
     if (ctx && ctx->host && ctx->host->log && marker) ctx->host->log(ctx, marker);
+}
+
+// Phase 28U diagnostics are deliberately bounded and scoped to the real
+// Phase 28Q proof.  The proof currently publishes its request marker before
+// the asynchronous build/debug handshake has completed, so these markers
+// distinguish the request from the authoritative controller transitions.
+static uint32_t g_phase28uHostTraceCount = 0;
+static char g_phase28uHostTraceLastEvent[64] = {};
+static uint32_t g_phase28uHostTraceLastState = UINT32_MAX;
+static uint64_t g_phase28uHostTraceLastGeneration = UINT64_MAX;
+static uint32_t g_phase28uHostTraceLastBreakpointCount = UINT32_MAX;
+static bool g_phase28uHostTraceLastReleased = false;
+
+static bool phase28u_host_event_equals(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t index = 0;
+    while (left[index] != '\0' || right[index] != '\0') {
+        if (left[index] != right[index]) return false;
+        ++index;
+    }
+    return true;
+}
+
+static void phase28u_host_trace(gx_app_context* ctx, const char* event) {
+    if (!event || g_phase28uHostTraceCount >= 128) return;
+    const uint32_t state = static_cast<uint32_t>(g_debugController.state);
+    const uint32_t breakpointCount = g_debugController.breakpointCount;
+    if (g_phase28uHostTraceLastEvent[0] != '\0' &&
+        phase28u_host_event_equals(g_phase28uHostTraceLastEvent, event) &&
+        g_phase28uHostTraceLastState == state &&
+        g_phase28uHostTraceLastGeneration == g_debugController.sessionGeneration &&
+        g_phase28uHostTraceLastBreakpointCount == breakpointCount &&
+        g_phase28uHostTraceLastReleased == g_debugController.targetExecutionReleased) return;
+    copyText(g_phase28uHostTraceLastEvent, sizeof(g_phase28uHostTraceLastEvent), event);
+    g_phase28uHostTraceLastState = state;
+    g_phase28uHostTraceLastGeneration = g_debugController.sessionGeneration;
+    g_phase28uHostTraceLastBreakpointCount = breakpointCount;
+    g_phase28uHostTraceLastReleased = g_debugController.targetExecutionReleased;
+    ++g_phase28uHostTraceCount;
+    char marker[192] = {};
+    copyText(marker, sizeof(marker), "DEVELOPER_STUDIO_PHASE28U_HOST ");
+    appendText(marker, sizeof(marker), event);
+    appendText(marker, sizeof(marker), " qstage=");
+    appendUnsigned(marker, sizeof(marker), g_phase28qStage);
+    appendText(marker, sizeof(marker), " build_active=");
+    appendUnsigned(marker, sizeof(marker), BuildControllerIsActive(&g_buildController) ? 1u : 0u);
+    appendText(marker, sizeof(marker), " debug_state=");
+    appendUnsigned(marker, sizeof(marker), static_cast<uint32_t>(g_debugController.state));
+    appendText(marker, sizeof(marker), " debug_active=");
+    appendUnsigned(marker, sizeof(marker), DebugControllerIsActive(&g_debugController) ? 1u : 0u);
+    appendText(marker, sizeof(marker), " generation=");
+    appendUnsigned(marker, sizeof(marker), g_debugController.sessionGeneration);
+    appendText(marker, sizeof(marker), " process=");
+    appendUnsigned(marker, sizeof(marker), g_debugController.processId);
+    appendText(marker, sizeof(marker), " runtime=");
+    appendUnsigned(marker, sizeof(marker), g_debugController.nativeRuntimeId);
+    appendText(marker, sizeof(marker), " breakpoints=");
+    appendUnsigned(marker, sizeof(marker), breakpointCount);
+    appendText(marker, sizeof(marker), " released=");
+    appendUnsigned(marker, sizeof(marker), g_debugController.targetExecutionReleased ? 1u : 0u);
+    appendText(marker, sizeof(marker), " deferred=");
+    appendUnsigned(marker, sizeof(marker), g_debugController.deferExecutionRelease ? 1u : 0u);
+    appendText(marker, sizeof(marker), " workspace=");
+    appendUnsigned(marker, sizeof(marker), g_debuggerWorkspace.breakpointCount);
+    uint32_t workspaceEnabled = 0;
+    for (uint32_t i = 0; i < g_debuggerWorkspace.breakpointCount &&
+         i < guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints; ++i)
+        if (g_debuggerWorkspace.breakpoints[i].enabled) ++workspaceEnabled;
+    appendText(marker, sizeof(marker), " workspace_enabled=");
+    appendUnsigned(marker, sizeof(marker), workspaceEnabled);
+    logMarker(ctx, marker);
 }
 
 static uint32_t debugTraceUserOwnerCount() {
@@ -4130,7 +4203,7 @@ static void completeRunWithoutDeployment(const char* message) {
 static void reportRunTerminal(gx_app_context* ctx) {
     if (g_runTerminalReported) return;
     const RunResult& result = g_runController.result;
-    if (result.state == RunState::Completed) {
+    if (result.state == RunState::Exited || result.state == RunState::Completed) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=SUCCEEDED");
     } else {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_complete=FAILED", RunErrorName(result.error));
@@ -4142,7 +4215,9 @@ static void reportRunTerminal(gx_app_context* ctx) {
         logMarker(ctx, marker);
     }
     if (result.cleanupComplete) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_cleanup=PASS");
-    logMarker(ctx, result.state == RunState::Completed ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_complete=SUCCEEDED" : "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_complete=FAILED");
+    logMarker(ctx, result.state == RunState::Exited || result.state == RunState::Completed ?
+        "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_complete=SUCCEEDED" :
+        "GUIDEXOS_DEVELOPER_STUDIO_MARKER output_operation_complete=FAILED");
     g_runTerminalReported = true;
     g_runOperationId = 0;
 }
@@ -4178,8 +4253,11 @@ static bool beginRunDeployment(gx_app_context* ctx) {
 
 static void pollBuild(gx_app_context* ctx) {
     if (!BuildControllerIsActive(&g_buildController)) return;
+    phase28u_host_trace(ctx, "POLL_BUILD_ENTRY");
     BuildControllerPoll(&g_buildController, buildService());
+    phase28u_host_trace(ctx, "POLL_BUILD_AFTER_CONTROLLER");
     if (!BuildControllerIsActive(&g_buildController) && !g_buildTerminalReported) {
+        phase28u_host_trace(ctx, "POLL_BUILD_TERMINAL");
         reportBuildResult(ctx);
         if (g_runWaitingForBuild) {
             g_runWaitingForBuild = false;
@@ -4197,6 +4275,7 @@ static void pollBuild(gx_app_context* ctx) {
         if (g_debugWaitingForBuild) {
             g_debugWaitingForBuild = false;
             if (g_buildController.result.state == BuildState::Succeeded) {
+                phase28u_host_trace(ctx, "POLL_BUILD_DEBUG_BEGIN");
                 writeStudioOutput("Debug: build completed");
                 if (!beginDebugSession(ctx)) writeStudioOutput("Debug: deployment skipped");
             } else {
@@ -4528,7 +4607,10 @@ static void pollRun(gx_app_context* ctx) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER run_cleanup=START");
         }
     }
-    if (!RunControllerIsActive(&g_runController) && (result.state == RunState::Completed || result.state == RunState::Failed)) reportRunTerminal(ctx);
+    if (!RunControllerIsActive(&g_runController) &&
+        (result.state == RunState::Exited || result.state == RunState::Completed ||
+         result.state == RunState::Failed || result.state == RunState::Cancelled))
+        reportRunTerminal(ctx);
 }
 
 static void reportDebugMessage(gx_app_context* ctx, const char* message) {
@@ -4649,35 +4731,44 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
 }
 
 static bool beginDebugSession(gx_app_context* ctx) {
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_ENTRY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_SESSION_BEGIN");
     if (!g_controller.model.open || !g_controller.model.hasProject) {
         writeStudioOutput("Debug requires an open project");
         return false;
     }
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_PROJECT_READY");
     DebugTarget target = {};
     DebugErrorCode error = DebugErrorCode::None;
     if (!DebugTargetFromBuild(g_controller.model.project, g_buildController.result,
                               g_controller.model.projectGeneration, &target, &error)) {
+        phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_TARGET_FAILED");
         copyText(g_textScratch, sizeof(g_textScratch), "Debug target unavailable: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_TARGET_READY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_TARGET_READY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_BEGIN");
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_ENTRY");
     if (!loadDebugSymbolsForTarget(ctx, &target)) {
+        phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_FAILED");
         reportDebugMessage(ctx, "Debug launch skipped: debug artifact is unavailable or changed");
         return false;
     }
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_READY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_RETURNED");
     const bool currentDebugAbi = debugUiCurrentAbiAvailable();
+    const bool useManagerWorkspace = currentDebugAbi && g_fileSystemContext.useBareMetalDebug;
     // Discard the prior generation before the controller can rebind its old
     // transient table. Rebuild legacy controller rows from persisted intent;
-    // current-ABI sessions install through the manager after launch.
+    // NativeElf current-ABI sessions install through the manager after launch;
+    // hosted sessions retain the controller-owned mapping/binding path.
     debugUiResetRuntimeState(true);
     DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
     g_debugController.target = target;
-    if (!currentDebugAbi && !debuggerWorkspaceMaterializeLegacy(ctx)) return false;
+    if (!useManagerWorkspace && !debuggerWorkspaceMaterializeLegacy(ctx)) return false;
     DebugErrorCode mappingError = DebugErrorCode::None;
     if (!DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch skipped: source breakpoint mapping failed | ");
@@ -4692,8 +4783,17 @@ static bool beginDebugSession(gx_app_context* ctx) {
             return false;
         }
     }
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_BREAKPOINTS_READY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_BEGIN");
+    phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_ENTRY");
+    // The NativeElf manager owns the bare-metal entry-stop handshake: it
+    // materializes the generation's breakpoints and acknowledges the parked
+    // entry trap before the controller begins ordinary polling. Hosted
+    // deployments publish their runtime identity asynchronously, so their
+    // controller remains the deferred-release owner.
+    DebugControllerSetExecutionReleaseDeferred(&g_debugController, !useManagerWorkspace);
     if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
+        phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_FAILED");
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         if (g_debugController.lastMessage[0]) {
@@ -4704,16 +4804,52 @@ static bool beginDebugSession(gx_app_context* ctx) {
         return false;
     }
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_PASS");
+    phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_RETURN");
     g_debugUiSessionGeneration = g_debugController.sessionGeneration;
     g_debugUiStopGeneration = 0;
-    debugUiResetRuntimeState(true, !currentDebugAbi);
-    if (currentDebugAbi &&
-        (!debuggerWorkspaceMaterialize(ctx) || !debugUiReleaseExecution(ctx))) {
-        reportDebugMessage(ctx, "Debug launch failed: current debugger UI ABI could not initialize breakpoints");
-        DebugErrorCode stopError = DebugErrorCode::None;
-        DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
-        return false;
+    debugUiResetRuntimeState(true, !useManagerWorkspace);
+    if (useManagerWorkspace) {
+        // Bare-metal start returns with the NativeElf target parked at its
+        // one-shot entry breakpoint.  Materialize and acknowledge that stop
+        // through lifecycle metadata before the next controller poll; letting
+        // the poll observe the bootstrap trap would incorrectly require a
+        // user breakpoint owner and leave the launch parked forever.
+        if (!debuggerWorkspaceMaterialize(ctx) || !debugUiReleaseExecution(ctx)) {
+            reportDebugMessage(ctx, "Debug launch failed: NativeElf startup handshake could not complete");
+            DebugErrorCode stopError = DebugErrorCode::None;
+            (void)DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
+            return false;
+        }
+        DebugErrorCode handshakeError = DebugErrorCode::None;
+        if (!DebugControllerAcceptExternalExecutionRelease(&g_debugController,
+                                                            g_debugController.sessionGeneration,
+                                                            &handshakeError)) {
+            reportDebugMessage(ctx, "Debug launch failed: NativeElf controller handshake could not complete");
+            DebugErrorCode stopError = DebugErrorCode::None;
+            (void)DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
+            return false;
+        }
+        phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_RELEASED");
+    } else {
+        // The local controller already owns this generation's mapped source
+        // breakpoints. Do not send NativeElf manager commands to a hosted
+        // NativeAppDebugger session.
+        g_debuggerWorkspaceMaterializedGeneration = g_debugController.sessionGeneration;
+        g_debuggerWorkspaceMaterializationFailed = false;
     }
+    // The controller owns the launch gate for hosted targets.  Their runtime
+    // identity is published asynchronously, so materializing manager state or
+    // sending RELEASE_EXECUTION here would race the owner and fail while the
+    // deployment is still Launching.  The normal controller poll binds and
+    // releases once the authenticated runtime snapshot exists; UI materialize
+    // then runs from debugUiRefresh in that same owner-controlled poll.
+    // Launch returns after the process/session has been allocated.  The
+    // debugger startup handshake completes on the normal controller poll once
+    // the initial stop is observed, bindings are verified, and the execution
+    // gate is opened.  Keep that acknowledgement asynchronous because the
+    // hosted process may not have published its runtime identity yet.
+    g_debugReadyReported = false;
+    phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_DEFERRED");
     g_debugTerminalReported = false;
     g_debugReportedEventSequence = 0;
     if (g_debugController.eventCount != 0) {
@@ -4735,7 +4871,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
     copyText(g_textScratch, sizeof(g_textScratch), "Debug: launching ");
     appendText(g_textScratch, sizeof(g_textScratch), target.projectId);
     reportDebugMessage(ctx, g_textScratch);
-    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS");
+    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_RETURN");
     return true;
 }
 
@@ -5168,7 +5304,8 @@ static void pollDebug(gx_app_context* ctx) {
         !g_phase28mUiPollTraced;
     if (tracePhase28mPoll)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_ENTRY");
-    if (!DebugControllerPoll(&g_debugController, g_debugBackend, &g_debugMapper)) {
+    const bool controllerPollReady = DebugControllerPoll(&g_debugController, g_debugBackend, &g_debugMapper);
+    if (!controllerPollReady) {
         debugEditorClearRuntime(ctx);
         if (tracePhase28mPoll) {
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_FAIL");
@@ -5224,7 +5361,47 @@ static void pollDebug(gx_app_context* ctx) {
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_OTHER");
         g_phase28mUiPollTraced = true;
     }
-    debugUiRefresh(ctx);
+    const bool debugUiReady = debugUiRefresh(ctx);
+    phase28u_host_trace(ctx, debugUiReady ? "DEBUG_UI_REFRESH_READY" : "DEBUG_UI_REFRESH_PENDING");
+    if (!debugUiReady && g_debuggerWorkspaceMaterializationFailed &&
+        g_debugController.state == DebugSessionState::Launching) {
+        if (!g_debugTerminalReported) {
+            reportDebugMessage(ctx, "Debug: startup breakpoint materialization failed");
+            g_debugTerminalReported = true;
+        }
+        DebugErrorCode stopError = DebugErrorCode::None;
+        DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
+    }
+    if (debugUiReady && debugUiCurrentAbiAvailable() &&
+        (g_debugController.state == DebugSessionState::Launching ||
+         g_debugController.state == DebugSessionState::Running) &&
+        !g_debugController.targetExecutionReleased) {
+        DebugErrorCode releaseError = DebugErrorCode::None;
+        if (!DebugControllerReleaseDeferredExecution(&g_debugController, g_debugBackend, &releaseError)) {
+            phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_RELEASE_FAILED");
+            copyText(g_textScratch, sizeof(g_textScratch), "Debug: startup handshake failed | ");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(releaseError));
+            if (g_debugController.lastMessage[0]) {
+                appendText(g_textScratch, sizeof(g_textScratch), " | ");
+                appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
+            }
+            reportDebugMessage(ctx, g_textScratch);
+            DebugErrorCode stopError = DebugErrorCode::None;
+            DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
+        } else {
+            phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_RELEASED");
+        }
+    }
+    if (!g_debugReadyReported &&
+        g_debugController.state == DebugSessionState::Running &&
+        g_debugController.targetExecutionReleased &&
+        (!debugUiCurrentAbiAvailable() || debugUiReady)) {
+        g_debugReadyReported = true;
+        phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_READY");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28U_DEBUG_START_READY_PASS");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS");
+        reportDebugMessage(ctx, "Debug: startup handshake complete");
+    }
     for (uint32_t eventIndex = 0; eventIndex < g_debugController.eventCount; ++eventIndex) {
         const guidexos::developer_studio::DebugEvent* event =
             guidexos::developer_studio::DebugControllerEventAt(&g_debugController,
@@ -5269,6 +5446,7 @@ static void pollDebug(gx_app_context* ctx) {
             if (stackBuilt) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS");
             else logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PARTIAL");
             DebugErrorCode variablesError = DebugErrorCode::None;
+            phase28u_host_trace(ctx, "STOP_PROCESSING_VARIABLES_ENTRY");
             if (stackBuilt && DebugControllerBuildVariables(&g_debugController, g_debugBackend,
                                                               &g_debugMapper, &variablesError))
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS");
@@ -5489,6 +5667,7 @@ static bool debuggerWorkspaceAddOrToggleBreakpoint(gx_app_context* ctx, const ch
                                                     uint32_t line, uint32_t column,
                                                     const gx_development_debug_breakpoint* liveBreakpoint) {
     if (!g_controller.model.hasProject) return false;
+    phase28u_host_trace(ctx, "WORKSPACE_BREAKPOINT_TOGGLE_ENTRY");
     const int existing = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace, sourcePath, line);
     const bool changed = liveBreakpoint ?
         (existing >= 0 ? DebuggerWorkspaceSetBreakpointEnabled(&g_debuggerWorkspace, sourcePath, line, true) :
@@ -5501,6 +5680,7 @@ static bool debuggerWorkspaceAddOrToggleBreakpoint(gx_app_context* ctx, const ch
     if (!debuggerWorkspaceSave(ctx)) {
         return false;
     }
+    phase28u_host_trace(ctx, "WORKSPACE_BREAKPOINT_TOGGLE_SAVED");
     return true;
 }
 
@@ -8093,6 +8273,21 @@ static bool debugUiIdentityMatches(uint64_t sessionGeneration, uint64_t processI
     return true;
 }
 
+static void debugUiAdoptBareRuntimeIdentity(uint64_t sessionGeneration,
+                                            uint64_t processId,
+                                            uint64_t nativeRuntimeId) {
+    // NativeElf deliberately has no host process id.  Its registration
+    // generation is the authoritative runtime identity, and it is published
+    // by the first authenticated paused snapshot after the startup gate is
+    // released.  Adopt it only while this exact debugger generation still has
+    // the provisional ABI identity; a late snapshot from another launch must
+    // never retarget the active controller.
+    if (!g_fileSystemContext.useBareMetalDebug || sessionGeneration == 0 ||
+        sessionGeneration != g_debugController.sessionGeneration || processId != 0 ||
+        nativeRuntimeId == 0 || g_debugController.nativeRuntimeId != 0) return;
+    g_debugController.nativeRuntimeId = nativeRuntimeId;
+}
+
 static bool debugUiCallGeneral(const gx_development_debug_request& request,
                                gx_development_debug_snapshot* snapshot) {
     if (snapshot) {
@@ -8124,6 +8319,8 @@ static bool debugUiCallStack() {
     if (!debugUiHostHasSlot(host, offset, bare ? sizeof(host->bare_metal_development_debug_call_stack) : sizeof(host->development_debug_call_stack))) return false;
     const gx_result status = bare ? host->bare_metal_development_debug_call_stack(g_fileSystemContext.app, &request, &result) :
         host->development_debug_call_stack(g_fileSystemContext.app, &request, &result);
+    debugUiAdoptBareRuntimeIdentity(result.sessionGeneration, result.processId,
+                                    result.nativeRuntimeId);
     if (status != GX_OK || !debugUiIdentityMatches(result.sessionGeneration, result.processId,
                                                     result.nativeRuntimeId, result.threadId,
                                                     result.stopGeneration, true)) return false;
@@ -8680,6 +8877,14 @@ static void debugUiRememberBreakpointMetadata(const gx_development_debug_snapsho
 }
 
 static bool debugUiRefreshBreakpoints() {
+    // Hosted NativeAppDebugger sessions use the controller's existing
+    // pre-launch source mapping/binding path. The persistent source-breakpoint
+    // manager is a NativeElf/bare-metal service; do not ask the hosted service
+    // for manager rows during an otherwise valid controller-owned session.
+    if (!g_fileSystemContext.useBareMetalDebug) {
+        debugEditorRefreshBreakpoints();
+        return true;
+    }
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_LIST_SOURCE_BREAKPOINTS);
     gx_development_debug_snapshot snapshot = {};
     if (!debugUiCallGeneral(request, &snapshot)) return false;
@@ -8875,7 +9080,8 @@ static bool debugUiRefresh(gx_app_context* ctx) {
         g_debugUiStopGeneration = 0;
         debugUiResetRuntimeState(true);
     }
-    if (g_debuggerWorkspaceMaterializedGeneration != g_debugController.sessionGeneration &&
+    if (g_fileSystemContext.useBareMetalDebug &&
+        g_debuggerWorkspaceMaterializedGeneration != g_debugController.sessionGeneration &&
         !debuggerWorkspaceMaterialize(ctx)) return false;
     if (g_debugController.state == DebugSessionState::Paused &&
         g_debugController.stopGeneration != 0 &&
@@ -8914,9 +9120,25 @@ static bool debugUiManagerCommand(gx_app_context* ctx, uint32_t command,
     const bool accepted = debugUiCallGeneral(request, &snapshot);
     if (operationStatus) *operationStatus = snapshot.breakpointOperationStatus;
     if (accepted) {
-        if (!debuggerWorkspaceMergeLiveSnapshot(snapshot)) return false;
+        if (!debuggerWorkspaceMergeLiveSnapshot(snapshot)) {
+            if (command == GX_DEVELOPMENT_DEBUG_ADD_SOURCE_BREAKPOINT ||
+                command == GX_DEVELOPMENT_DEBUG_CONFIGURE_SOURCE_BREAKPOINT_POLICY)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28U_HOST MANAGER_SNAPSHOT_IDENTITY_REJECT");
+            return false;
+        }
         debugUiRefreshOutput();
         return true;
+    }
+    if (command == GX_DEVELOPMENT_DEBUG_ADD_SOURCE_BREAKPOINT ||
+        command == GX_DEVELOPMENT_DEBUG_CONFIGURE_SOURCE_BREAKPOINT_POLICY) {
+        char marker[160] = {};
+        copyText(marker, sizeof(marker), "DEVELOPER_STUDIO_PHASE28U_HOST MANAGER_COMMAND_FAIL command=");
+        appendUnsigned(marker, sizeof(marker), command);
+        appendText(marker, sizeof(marker), " status=");
+        appendUnsigned(marker, sizeof(marker), snapshot.breakpointOperationStatus);
+        appendText(marker, sizeof(marker), " error=");
+        appendText(marker, sizeof(marker), snapshot.errorMessage);
+        logMarker(ctx, marker);
     }
     if (ctx) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debugger manager request failed");
@@ -9215,7 +9437,6 @@ static bool debugUiReleaseExecution(gx_app_context* ctx) {
         if (ctx && snapshot.errorMessage[0]) writeStudioOutput(snapshot.errorMessage);
         return false;
     }
-    g_debugController.targetExecutionReleased = true;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_release=PASS");
     return true;
 }
@@ -9350,26 +9571,46 @@ static void debuggerWorkspaceMarkUnresolved(gx_app_context* ctx, const char* sou
 static bool debuggerWorkspaceMaterialize(gx_app_context* ctx) {
     if (!debugUiCurrentAbiAvailable() || !DebugControllerIsActive(&g_debugController) ||
         g_debugController.debugHandle == 0 || g_debugController.sessionGeneration == 0 ||
+        ((!g_fileSystemContext.useBareMetalDebug && g_debugController.processId == 0) ||
+         (!g_fileSystemContext.useBareMetalDebug && g_debugController.nativeRuntimeId == 0)) ||
         !DebugDwarfMapperIsReady(&g_debugMapper)) return false;
     if (g_debuggerWorkspaceMaterializedGeneration == g_debugController.sessionGeneration) return true;
-    // Mark the attempt before sending commands. A fatal manager rejection must
-    // not cause later UI polls to replay a partially accepted plan.
-    g_debuggerWorkspaceMaterializedGeneration = g_debugController.sessionGeneration;
     DebuggerWorkspaceMaterializationEntry plan[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
     const uint32_t count = BuildDebuggerWorkspaceMaterializationPlan(
         g_debuggerWorkspace, plan, guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints);
+    char materializeMarker[96] = {};
+    copyText(materializeMarker, sizeof(materializeMarker),
+             "DEVELOPER_STUDIO_PHASE28U_HOST MATERIALIZE_PLAN count=");
+    appendUnsigned(materializeMarker, sizeof(materializeMarker), count);
+    appendText(materializeMarker, sizeof(materializeMarker), " workspace=");
+    appendUnsigned(materializeMarker, sizeof(materializeMarker), g_debuggerWorkspace.breakpointCount);
+    appendText(materializeMarker, sizeof(materializeMarker), " enabled=");
+    uint32_t enabledCount = 0;
+    for (uint32_t i = 0; i < g_debuggerWorkspace.breakpointCount &&
+         i < guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints; ++i)
+        if (g_debuggerWorkspace.breakpoints[i].enabled) ++enabledCount;
+    appendUnsigned(materializeMarker, sizeof(materializeMarker), enabledCount);
+    logMarker(ctx, materializeMarker);
     for (uint32_t i = 0; i < count; ++i) {
         const DebuggerWorkspaceMaterializationEntry& entry = plan[i];
         uint32_t status = GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_NONE;
         if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_ADD_SOURCE_BREAKPOINT, 0,
-                                   entry.sourcePath, entry.line, 0,
+                                   entry.sourcePath, entry.line, entry.column,
                                    entry.condition[0] != '\0' ? entry.condition : nullptr,
                                    GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
                                    GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE, 0, nullptr, &status)) {
+            char rejectedMarker[96] = {};
+            copyText(rejectedMarker, sizeof(rejectedMarker),
+                     "DEVELOPER_STUDIO_PHASE28U_HOST MATERIALIZE_REJECT status=");
+            appendUnsigned(rejectedMarker, sizeof(rejectedMarker), status);
+            logMarker(ctx, rejectedMarker);
             // The current manager reports source-not-found/line-not-mapped as
             // INVALID for a validated source identity and default add policy.
             if (status != GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_INVALID &&
-                status != GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_NOT_FOUND) return false;
+                status != GX_DEVELOPMENT_DEBUG_BREAKPOINT_STATUS_NOT_FOUND) {
+                g_debuggerWorkspaceMaterializationFailed = true;
+                return false;
+            }
             debuggerWorkspaceMarkUnresolved(ctx, entry.sourcePath, entry.line, "source mapping rejected");
             continue;
         }
@@ -9384,9 +9625,16 @@ static bool debuggerWorkspaceMaterialize(gx_app_context* ctx) {
                 break;
             }
         }
-        if (!added) return false;
+        if (!added) {
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28U_HOST MATERIALIZE_NO_ADDED_BREAKPOINT");
+            g_debuggerWorkspaceMaterializationFailed = true;
+            return false;
+        }
         if (!added->sourceMappingValid || added->targetAddress == 0) {
-            if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_REMOVE_SOURCE_BREAKPOINT, managerId)) return false;
+            if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_REMOVE_SOURCE_BREAKPOINT, managerId)) {
+                g_debuggerWorkspaceMaterializationFailed = true;
+                return false;
+            }
             debuggerWorkspaceMarkUnresolved(ctx, entry.sourcePath, entry.line, "source line is not mapped");
             continue;
         }
@@ -9394,7 +9642,10 @@ static bool debuggerWorkspaceMaterialize(gx_app_context* ctx) {
                                    managerId, nullptr, 0, 0, entry.condition,
                                    entry.action == 1 ? GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG :
                                        GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK,
-                                   entry.hitPolicy, entry.hitThreshold, entry.logTemplate)) return false;
+                                   entry.hitPolicy, entry.hitThreshold, entry.logTemplate)) {
+            g_debuggerWorkspaceMaterializationFailed = true;
+            return false;
+        }
         // The command response is authoritative; retain policy text only in
         // transient UI metadata because snapshots expose hashes/lengths.
         for (uint32_t n = 0; n < g_debugUiBreakpointSnapshot.breakpointCount &&
@@ -9419,12 +9670,22 @@ static bool debuggerWorkspaceMaterialize(gx_app_context* ctx) {
                     &g_debugController, g_controller.model.project.projectId,
                     g_controller.model.project.rootPath, g_controller.model.projectGeneration,
                     remote.sourcePath, remote.sourceLine, remote.sourceColumn,
-                    sourceGeneration, &localId, &error)) return false;
+                    sourceGeneration, &localId, &error)) {
+                g_debuggerWorkspaceMaterializationFailed = true;
+                return false;
+            }
             debugUiBindLocalMirror(managerId, remote.sourcePath, remote.sourceLine, remote.targetAddress);
+            phase28u_host_trace(ctx, "DEBUG_UI_MATERIALIZE_LOCAL_BREAKPOINT");
             break;
         }
     }
-    if (!debugUiRefreshBreakpoints()) return false;
+    if (!debugUiRefreshBreakpoints()) {
+        g_debuggerWorkspaceMaterializationFailed = true;
+        return false;
+    }
+    g_debuggerWorkspaceMaterializedGeneration = g_debugController.sessionGeneration;
+    g_debuggerWorkspaceMaterializationFailed = false;
+    phase28u_host_trace(ctx, "DEBUG_UI_MATERIALIZE_DONE");
     if (g_phase28oDiagnostic) {
         uint64_t currentIds[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
         uint32_t currentCount = 0;
@@ -10026,12 +10287,15 @@ static void phase28qPump(gx_app_context* ctx) {
         break;
     }
     case 2:
+        phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_ENTRY");
         requestDebug(ctx);
+        phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_RETURN");
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DEBUG_START_PASS");
         phase28qWaitFor(ctx);
         g_phase28qStage = 3;
         break;
     case 3:
+        phase28u_host_trace(ctx, "PHASE28Q_DEBUG_WAIT_POLL");
         if (g_debugController.state == DebugSessionState::Failed ||
             (!g_debugWaitingForBuild && !DebugControllerIsActive(&g_debugController))) {
             phase28qFail(ctx, "debug_start");

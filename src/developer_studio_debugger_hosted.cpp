@@ -19,6 +19,16 @@ static void copyText(char* output, uint32_t outputSize, const char* input) {
     output[length] = '\0';
 }
 
+static bool textEquals(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t index = 0;
+    while (left[index] != '\0' && right[index] != '\0') {
+        if (left[index] != right[index]) return false;
+        ++index;
+    }
+    return left[index] == right[index];
+}
+
 static RunRequest makeRunRequest(const DebugTarget& target) {
     RunRequest request = {};
     copyText(request.projectRoot, sizeof(request.projectRoot), target.projectRoot);
@@ -41,6 +51,7 @@ static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generati
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
     switch (backend.runController.state) {
+    case RunState::Exited:
     case RunState::Completed:
     case RunState::Cancelled:
         snapshot->state = DebugSessionState::Exited;
@@ -149,7 +160,22 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
     const uint64_t handle = backend->runController.result.handle;
     if (!RunControllerPoll(&backend->runController, backend->runService)) return false;
     snapshotFromRun(*backend, generation, outSnapshot);
+    // The run deployment owns publication of the authenticated process/runtime
+    // identity. During the short Launching boundary the target may already be
+    // registered but the snapshot can still carry zero identity fields. Do
+    // not send a debugger command with an incomplete identity and turn that
+    // expected publication delay into a failed session; the next owner poll
+    // will retry after the run service publishes both IDs.
+    // Hosted deployments publish both process and NativeElf runtime identity
+    // through the deployment snapshot before debugger commands are safe.  A
+    // bare-metal NativeElf deployment deliberately leaves processId empty and
+    // publishes its generation through the debugger snapshot instead; gating
+    // that backend on hosted identity prevents the first entry-breakpoint poll
+    // from ever reaching the debugger.
+    const bool runtimeIdentityReady = outSnapshot->processId != 0 && outSnapshot->nativeRuntimeId != 0;
+    const bool bareMetalIdentityIsDebuggerOwned = backend->runService.backend == RunBackendKind::BareMetal;
     if (backend->runService.debugCommand && handle != 0 &&
+        (runtimeIdentityReady || bareMetalIdentityIsDebuggerOwned) &&
         (outSnapshot->state == DebugSessionState::Running || outSnapshot->state == DebugSessionState::Launching)) {
         HostedDebugResult debugResult = {};
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
@@ -165,6 +191,16 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             }
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
+        }
+        if (textEquals(debugResult.errorMessage, "NativeElf target exited")) {
+            // Debug polling has observed the target return.  The second run
+            // poll is lifecycle acknowledgement only: it consumes the durable
+            // EXITED metadata and performs the owner-side release.  It does
+            // not dispatch NativeElf execution again.
+            if (!RunControllerPoll(&backend->runController, backend->runService)) return false;
+            snapshotFromRun(*backend, generation, outSnapshot);
+            return outSnapshot->state == DebugSessionState::Exited ||
+                outSnapshot->state == DebugSessionState::Failed;
         }
         // Bare-metal run snapshots deliberately omit process/runtime identity;
         // the authenticated debugger snapshot is the authoritative source for
@@ -552,7 +588,17 @@ static bool stop(void* userData, uint64_t generation) {
         backend->lastStopStatus = result.status;
         if (!cancelled) { backend->lastStopRoute = 8; return false; }
         if (result.status != 1u && result.status != 4u) { backend->lastStopRoute = 9; return false; }
-        backend->runController.closeRequested = true;
+        // CancelExecution releases a paused NativeElf trap, but it does not
+        // itself publish the deployment-owned close request.  Keep the two
+        // ownership transitions ordered: first release the execution gate,
+        // then ask the run service to enqueue the terminal close event.  A
+        // local flag alone lets the target resume without ever receiving the
+        // close event, leaving the controller in Stopping forever.
+        if (!RunControllerRequestClose(&backend->runController, backend->runService)) {
+            backend->lastStopRoute = 12;
+            backend->lastStopFallbackFailed = true;
+            return false;
+        }
         backend->lastSnapshot.state = DebugSessionState::Stopping;
         backend->lastSnapshot.stopReason = DebugStopReason::UserRequested;
         backend->lastStopRoute = 10;
