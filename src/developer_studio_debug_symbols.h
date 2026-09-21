@@ -44,8 +44,11 @@ static const uint32_t kDebugMapperMaxExecutableSegments = 32;
 static const uint32_t kDebugMapperMaxFunctionNameBytes = 128;
 static const uint32_t kDebugDwarfMaxCompilationUnits = 32;
 #if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
-static const uint32_t kDebugDwarfMaxDies = 256u;
-static const uint32_t kDebugDwarfMaxAbbreviations = 32u;
+// Clang's small hosted debugger fixture currently emits 397 DIEs and 41
+// abbreviation declarations. Keep the freestanding tables bounded while
+// leaving room for that valid artifact shape.
+static const uint32_t kDebugDwarfMaxDies = 512u;
+static const uint32_t kDebugDwarfMaxAbbreviations = 64u;
 #else
 static const uint32_t kDebugDwarfMaxDies = 8192;
 static const uint32_t kDebugDwarfMaxAbbreviations = 256;

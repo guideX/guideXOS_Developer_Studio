@@ -14431,9 +14431,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 pollBuild(ctx);
                 pollRun(ctx);
                 pollDebug(ctx);
+                // The event pass may observe the target's terminal state after
+                // the normal diagnostic pump at the top of this loop. Publish
+                // the existing Phase 28Q terminal markers immediately so the
+                // acceptance state cannot wait behind a redraw boundary.
+                phase28qPump(ctx);
                 pollProjectSearch(ctx);
                 pollReferences(ctx);
-                drawShell(ctx);
+                if (!g_requestExit) drawShell(ctx);
             } else if (result != GX_OK && result != GX_ERROR_TIMEOUT) {
                 markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER event_loop=FAIL", "poll_event");
                 running = false;
