@@ -3,6 +3,7 @@
 
 namespace guidexos {
 namespace developer_studio {
+
 namespace {
 
 struct DebugBreakpointConditionStorage {
@@ -13,6 +14,13 @@ struct DebugBreakpointConditionStorage {
 };
 
 static DebugBreakpointConditionStorage g_conditionStorages[kDebugMaxConditionStorages] = {};
+// Backend snapshots contain bounded debugger payload arrays. Keep the
+// controller's callback-facing work buffers in owned storage rather than
+// placing snapshot-sized frames on the NativeElf callback stack.
+static DebugBackendSnapshot g_debugStartSnapshot = {};
+static DebugBackendSnapshot g_debugPollSnapshot = {};
+static DebugBackendSnapshot g_debugReleaseSnapshot = {};
+static DebugControllerTraceHook g_debugControllerTraceHook = nullptr;
 
 static void releaseConditionStorages(const DebugController* owner) {
     if (!owner) return;
@@ -99,7 +107,8 @@ static bool isSlash(char value) { return value == '/' || value == static_cast<ch
 
 static void clearSnapshot(DebugBackendSnapshot* snapshot) {
     if (!snapshot) return;
-    *snapshot = DebugBackendSnapshot();
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(snapshot);
+    for (uint32_t i = 0; i < sizeof(DebugBackendSnapshot); ++i) bytes[i] = 0;
     snapshot->state = DebugSessionState::Idle;
     snapshot->stopReason = DebugStopReason::None;
     snapshot->executionState = DebugBackendExecutionState::None;
@@ -129,7 +138,8 @@ static void appendEvent(DebugController* controller, DebugEventKind kind, DebugS
         controller->eventCount = kDebugMaxEvents - 1;
     }
     DebugEvent& event = controller->events[controller->eventCount++];
-    event = DebugEvent();
+    unsigned char* eventBytes = reinterpret_cast<unsigned char*>(&event);
+    for (uint32_t i = 0; i < sizeof(event); ++i) eventBytes[i] = 0;
     event.sequence = controller->nextEventSequence == 0 ? 1 : controller->nextEventSequence;
     controller->nextEventSequence = event.sequence == UINT64_MAX ? 1 : event.sequence + 1;
     event.sessionGeneration = controller->sessionGeneration;
@@ -228,24 +238,66 @@ static bool currentCallStackIsFresh(const DebugController* controller) {
 
 static void clearCallStack(DebugController* controller) {
     if (!controller) return;
-    unsigned char* bytes = reinterpret_cast<unsigned char*>(&controller->callStack);
-    for (uint32_t i = 0; i < sizeof(DebugCallStack); ++i) bytes[i] = 0;
+    // The frame payload is a large durable snapshot.  Invalidation must not
+    // clear it from the NativeElf callback stack; readers are gated by the
+    // metadata below and a later build overwrites the payload it publishes.
+    DebugCallStack& callStack = controller->callStack;
+    callStack.valid = false;
+    callStack.stale = true;
+    callStack.reserved = 0;
+    callStack.sessionGeneration = 0;
+    callStack.processId = 0;
+    callStack.nativeRuntimeId = 0;
+    callStack.threadId = 0;
+    callStack.stopGeneration = 0;
+    callStack.selectedFrameIndex = 0;
+    callStack.mapperGeneration = 0;
+    callStack.artifactSha256[0] = '\0';
+    callStack.unwinderName[0] = '\0';
+    callStack.result.frameCount = 0;
+    callStack.result.truncated = false;
+    callStack.result.terminationReason = DebugUnwindTerminationReason::None;
+    callStack.result.status[0] = '\0';
 }
 
 static void clearVariableView(DebugDwarfVariableView* view) {
     if (!view) return;
-    unsigned char* bytes = reinterpret_cast<unsigned char*>(view);
-    for (uint32_t i = 0; i < sizeof(DebugDwarfVariableView); ++i) bytes[i] = 0;
+    // Keep the bounded variable/node payload in owned storage.  Clearing the
+    // full view here can consume the NativeElf callback stack budget while a
+    // stopped target is being resumed.
+    view->valid = false;
+    view->stale = true;
+    view->frameIndex = 0;
+    view->processId = 0;
+    view->nativeRuntimeId = 0;
+    view->threadId = 0;
+    view->sessionGeneration = 0;
+    view->stopGeneration = 0;
+    view->artifactGeneration = 0;
+    view->artifactSha256[0] = '\0';
+    view->frameInstructionAddress = 0;
+    view->functionIndex = 0;
+    view->functionName[0] = '\0';
+    view->variableCount = 0;
+    view->argumentCount = 0;
+    view->localCount = 0;
+    view->status[0] = '\0';
+    view->nodeCount = 0;
+    view->materializedNodeCount = 0;
+    view->targetMemoryReadCount = 0;
 }
 
 static void clearStoppedContext(DebugController* controller) {
     if (!controller) return;
-    controller->currentInstructionAddress = DebugAddress();
-    controller->currentLocation = DebugSourceLocation();
+    unsigned char* addressBytes = reinterpret_cast<unsigned char*>(&controller->currentInstructionAddress);
+    for (uint32_t i = 0; i < sizeof(controller->currentInstructionAddress); ++i) addressBytes[i] = 0;
+    unsigned char* locationBytes = reinterpret_cast<unsigned char*>(&controller->currentLocation);
+    for (uint32_t i = 0; i < sizeof(controller->currentLocation); ++i) locationBytes[i] = 0;
     controller->currentThreadId = 0;
     controller->reportedInstructionPointer = 0;
     controller->stopGeneration = 0;
-    controller->stoppedContext = DebugRegisterContext();
+    unsigned char* contextBytes = reinterpret_cast<unsigned char*>(&controller->stoppedContext);
+    for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) contextBytes[i] = 0;
     controller->conditionResumePending = false;
     controller->conditionEvaluationPending = false;
     clearVariableView(&controller->variables);
@@ -703,7 +755,8 @@ static bool processSourceStepTrap(DebugController* controller, const DebugBacken
     const bool accepted = backend.stepInstruction && backend.stepInstruction(
         backend.userData, controller->sessionGeneration, controller->stoppedContext,
         0, 0, 0, false);
-    controller->stoppedContext = DebugRegisterContext();
+    unsigned char* contextBytes = reinterpret_cast<unsigned char*>(&controller->stoppedContext);
+    for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) contextBytes[i] = 0;
     if (!accepted) {
         controller->error = DebugErrorCode::SourceStepFailed;
         setMessage(controller, "Source step instruction request was rejected");
@@ -1116,6 +1169,14 @@ static bool processStepOutInternalTrap(DebugController* controller, const DebugB
 
 } // namespace
 
+void DebugControllerSetTraceHook(DebugControllerTraceHook hook) {
+    g_debugControllerTraceHook = hook;
+}
+
+void DebugControllerTrace(const char* event) {
+    if (g_debugControllerTraceHook && event) g_debugControllerTraceHook(event);
+}
+
 bool DebugRegisterContextIsValidForController(const DebugRegisterContext& context) {
     if (DebugRegisterContextIsValid(context)) return true;
     return context.valid && context.architecture != DebugArchitecture::Unknown &&
@@ -1380,8 +1441,9 @@ bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
                           uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
     if (!target) { if (error) *error = DebugErrorCode::InvalidRequest; return false; }
-    *target = DebugTarget();
-    RunRequest request = {};
+    __builtin_memset(target, 0, sizeof(*target));
+    static RunRequest request = {};
+    __builtin_memset(&request, 0, sizeof(request));
     RunErrorCode runError = RunErrorCode::None;
     if (!RunRequestFromBuild(project, build, &request, &runError)) {
         if (error) *error = runError == RunErrorCode::BuildRequired ? DebugErrorCode::NoRunnableTarget : DebugErrorCode::InvalidRequest;
@@ -1496,6 +1558,7 @@ void DebugControllerClearBreakpoints(DebugController* controller) {
 
 bool DebugControllerStart(DebugController* controller, const DebugBackend& backend,
                            const DebugTarget& target, DebugErrorCode* error) {
+    DebugControllerTrace("DEBUG_CONTROLLER_START_ENTRY");
     if (error) *error = DebugErrorCode::None;
     if (!controller || !backend.launch || !backend.capabilities.canLaunch || target.projectId[0] == '\0' ||
         target.executablePath[0] == '\0') {
@@ -1528,23 +1591,29 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->targetExecutionReleased = false;
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
-    controller->stoppedContext = DebugRegisterContext();
+    unsigned char* startContextBytes = reinterpret_cast<unsigned char*>(&controller->stoppedContext);
+    for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) startContextBytes[i] = 0;
     controller->pauseRequestPending = false;
     controller->pauseRequestGeneration = 0;
     controller->conditionResumePending = false;
     controller->conditionEvaluationPending = false;
     if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
-    controller->currentInstructionAddress = DebugAddress();
-    controller->currentLocation = DebugSourceLocation();
+    unsigned char* addressBytes = reinterpret_cast<unsigned char*>(&controller->currentInstructionAddress);
+    for (uint32_t i = 0; i < sizeof(controller->currentInstructionAddress); ++i) addressBytes[i] = 0;
+    unsigned char* locationBytes = reinterpret_cast<unsigned char*>(&controller->currentLocation);
+    for (uint32_t i = 0; i < sizeof(controller->currentLocation); ++i) locationBytes[i] = 0;
     controller->currentThreadId = 0;
     controller->reportedInstructionPointer = 0;
     controller->lastBreakpointId = 0;
     if (controller->nextTemporaryBreakpointId < 0x8000000000000001ull)
         controller->nextTemporaryBreakpointId = 0x8000000000000001ull;
-    controller->sourceStep = DebugSourceStepOperation();
-    controller->stepOver = DebugStepOverOperation();
-    controller->stepOut = DebugStepOutOperation();
+    unsigned char* sourceStepBytes = reinterpret_cast<unsigned char*>(&controller->sourceStep);
+    for (uint32_t i = 0; i < sizeof(controller->sourceStep); ++i) sourceStepBytes[i] = 0;
+    unsigned char* stepOverBytes = reinterpret_cast<unsigned char*>(&controller->stepOver);
+    for (uint32_t i = 0; i < sizeof(controller->stepOver); ++i) stepOverBytes[i] = 0;
+    unsigned char* stepOutBytes = reinterpret_cast<unsigned char*>(&controller->stepOut);
+    for (uint32_t i = 0; i < sizeof(controller->stepOut); ++i) stepOutBytes[i] = 0;
     controller->lastTransitionSource = DebugSessionState::Idle;
     controller->lastTransitionDestination = DebugSessionState::Launching;
     controller->lastRejectedTransition = DebugErrorCode::None;
@@ -1558,6 +1627,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->lastBindingInstalled = false;
     setMessage(controller, "Launching debug target");
     appendEvent(controller, DebugEventKind::Launched, DebugSessionState::Launching, DebugStopReason::None, "Debug target launch requested");
+    DebugControllerTrace("DEBUG_CONTROLLER_START_BEFORE_BACKEND_LAUNCH");
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
         breakpoint.sessionGeneration = controller->sessionGeneration;
@@ -1572,7 +1642,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
             setBreakpointMessage(breakpoint, "Pending: source mapping unavailable");
         }
     }
-    DebugBackendSnapshot snapshot;
+    DebugBackendSnapshot& snapshot = g_debugStartSnapshot;
     clearSnapshot(&snapshot);
     snapshot.sessionGeneration = controller->sessionGeneration;
     if (!backend.launch(backend.userData, target, controller->sessionGeneration, &snapshot)) {
@@ -1584,6 +1654,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
         if (error) *error = controller->error;
         return false;
     }
+    DebugControllerTrace("DEBUG_CONTROLLER_START_AFTER_BACKEND_LAUNCH");
     if (snapshot.sessionGeneration == 0) snapshot.sessionGeneration = controller->sessionGeneration;
     if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot)) {
         if (error) *error = controller->error;
@@ -1684,7 +1755,8 @@ bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionG
 bool DebugControllerPoll(DebugController* controller, const DebugBackend& backend,
                          const DebugDwarfMapper* mapper) {
     if (!controller || !controller->active || !backend.poll) return false;
-    DebugBackendSnapshot snapshot;
+    DebugControllerTrace("DEBUGGER_POLL_BACKEND_ENTRY");
+    DebugBackendSnapshot& snapshot = g_debugPollSnapshot;
     clearSnapshot(&snapshot);
     snapshot.sessionGeneration = controller->sessionGeneration;
     if (!backend.poll(backend.userData, controller->sessionGeneration, &snapshot)) {
@@ -1695,24 +1767,25 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
     }
+    DebugControllerTrace("DEBUGGER_POLL_BACKEND_RETURN");
     if (!bindAndReleaseIfReady(controller, backend, &snapshot)) {
         recordStateTransition(controller, DebugSessionState::Failed);
         controller->active = false;
         appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
         return false;
     }
+    DebugControllerTrace("DEBUGGER_POLL_BIND_RETURN");
     if (controller->state == DebugSessionState::Stopping) {
         // A stop request owns the remainder of this session lifecycle. The
         // backend can still report a queued breakpoint/single-step trap while
         // the target is being terminated; those traps are no longer debugger
         // operations and must not be reinterpreted as stale Step Over/Out.
         if (snapshot.state == DebugSessionState::Exited || snapshot.state == DebugSessionState::Failed) {
-            DebugBackendSnapshot shutdownSnapshot = snapshot;
-            shutdownSnapshot.breakpointTrap = false;
-            shutdownSnapshot.internalBreakpointTrap = false;
-            shutdownSnapshot.singleStepTrap = false;
-            shutdownSnapshot.executionState = DebugBackendExecutionState::None;
-            return DebugControllerApplySnapshot(controller, controller->sessionGeneration, shutdownSnapshot);
+            snapshot.breakpointTrap = false;
+            snapshot.internalBreakpointTrap = false;
+            snapshot.singleStepTrap = false;
+            snapshot.executionState = DebugBackendExecutionState::None;
+            return DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot);
         }
         return true;
     }
@@ -1825,8 +1898,14 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         clearSourceStep(controller, DebugSourceStepStatus::Failed, controller->lastMessage);
         return false;
     }
+    DebugControllerTrace("DEBUGGER_POLL_APPLY_ENTRY");
     if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot)) return false;
-    return processPendingBreakpointCondition(controller, backend, mapper);
+    DebugControllerTrace("DEBUGGER_POLL_APPLY_RETURN");
+    DebugControllerTrace("DEBUGGER_POLL_CONDITION_ENTRY");
+    const bool conditionResult = processPendingBreakpointCondition(controller, backend, mapper);
+    DebugControllerTrace(conditionResult ? "DEBUGGER_POLL_CONDITION_RETURN" :
+                         "DEBUGGER_POLL_CONDITION_FAILED");
+    return conditionResult;
 }
 
 bool DebugControllerReleaseDeferredExecution(DebugController* controller,
@@ -1842,7 +1921,7 @@ bool DebugControllerReleaseDeferredExecution(DebugController* controller,
         setMessage(controller, "Hosted debugger startup is waiting for a runtime identity");
         return false;
     }
-    DebugBackendSnapshot snapshot;
+    DebugBackendSnapshot& snapshot = g_debugReleaseSnapshot;
     clearSnapshot(&snapshot);
     snapshot.sessionGeneration = controller->sessionGeneration;
     snapshot.state = controller->state;
@@ -1899,7 +1978,8 @@ bool DebugControllerRequestStop(DebugController* controller, const DebugBackend&
     controller->stopReason = DebugStopReason::UserRequested;
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
-    controller->stoppedContext = DebugRegisterContext();
+    unsigned char* stopContextBytes = reinterpret_cast<unsigned char*>(&controller->stoppedContext);
+    for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) stopContextBytes[i] = 0;
     controller->pauseRequestPending = false;
     controller->pauseRequestGeneration = 0;
     clearSourceStep(controller, DebugSourceStepStatus::Cancelled, "Source step cancelled by stop request");
@@ -1970,6 +2050,25 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
             if (error) *error = controller->error;
             setMessage(controller, "User-pause Continue was rejected; target remains paused");
             return false;
+        }
+        if (backend.consumeResumeTerminal) {
+            DebugBackendSnapshot& terminalSnapshot = g_debugPollSnapshot;
+            clearSnapshot(&terminalSnapshot);
+            terminalSnapshot.sessionGeneration = controller->sessionGeneration;
+            if (backend.consumeResumeTerminal(backend.userData, controller->sessionGeneration,
+                                              &terminalSnapshot) &&
+                (terminalSnapshot.state == DebugSessionState::Exited ||
+                 terminalSnapshot.state == DebugSessionState::Failed)) {
+                // The backend has already consumed only durable lifecycle
+                // metadata. Apply the terminal generation directly so a
+                // synchronous target return cannot be republished as Running.
+                if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration,
+                                                  terminalSnapshot)) {
+                    if (error) *error = controller->error;
+                    return false;
+                }
+                return true;
+            }
         }
         recordStateTransition(controller, DebugSessionState::Running);
         controller->stopReason = DebugStopReason::None;

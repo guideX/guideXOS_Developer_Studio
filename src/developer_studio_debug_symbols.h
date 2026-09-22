@@ -538,6 +538,10 @@ struct DebugDwarfMapper {
     uint32_t directoryCount;
     uint16_t currentFileSources[kDebugMapperMaxFiles + 1];
     uint32_t currentFileCount;
+    // Reset must not trust count fields from a pristine NativeElf image. The
+    // application loader owns the storage, so this cookie is the durable
+    // publication boundary for a previously initialized mapper.
+    uint32_t resetCookie;
 };
 
 const char* DebugDwarfMapperStateName(DebugDwarfMapperState state);

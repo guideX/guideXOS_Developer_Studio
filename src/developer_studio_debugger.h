@@ -528,6 +528,11 @@ typedef bool (*DebugBackendStepFn)(void* userData, uint64_t sessionGeneration,
                                    uint64_t targetAddress, bool reinstallBreakpoint);
 typedef bool (*DebugBackendResumeFn)(void* userData, uint64_t sessionGeneration,
                                      const DebugRegisterContext& context);
+// A resume can synchronously observe a durable terminal transition.  This
+// callback lets the controller consume that generation-scoped snapshot before
+// it publishes a stale Running state; it must not execute target work.
+typedef bool (*DebugBackendResumeTerminalFn)(void* userData, uint64_t sessionGeneration,
+                                             DebugBackendSnapshot* snapshot);
 typedef bool (*DebugBackendReadMemoryFn)(void* userData, uint64_t sessionGeneration,
                                          uint64_t processId, uint64_t nativeRuntimeId,
                                          uint64_t address, uint8_t* bytes, uint32_t requested,
@@ -558,6 +563,7 @@ struct DebugBackend {
     DebugBackendContinueFn continueExecution;
     DebugBackendStepFn stepInstruction;
     DebugBackendResumeFn resumeExecution;
+    DebugBackendResumeTerminalFn consumeResumeTerminal;
     DebugBackendBindFn bindSoftwareBreakpoint;
     DebugBackendCommandFn debugCommand;
     DebugBackendReadMemoryFn readMemory;
@@ -722,6 +728,10 @@ bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities);
 bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities);
 bool DebugRegisterContextIsValid(const DebugRegisterContext& context);
 bool DebugRegisterContextIsValidForController(const DebugRegisterContext& context);
+
+using DebugControllerTraceHook = void (*)(const char* event);
+void DebugControllerSetTraceHook(DebugControllerTraceHook hook);
+void DebugControllerTrace(const char* event);
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
                           uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error);

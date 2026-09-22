@@ -515,6 +515,7 @@ using guidexos::developer_studio::DebugControllerSetBreakpointEnabled;
 using guidexos::developer_studio::DebugControllerSetBreakpointCondition;
 using guidexos::developer_studio::DebugControllerClearBreakpointCondition;
 using guidexos::developer_studio::DebugControllerIsConditionResumePending;
+using guidexos::developer_studio::DebugControllerSetTraceHook;
 using guidexos::developer_studio::DebugControllerSetProjectContext;
 using guidexos::developer_studio::DebugControllerStart;
 using guidexos::developer_studio::DebugControllerStepInto;
@@ -845,6 +846,10 @@ static DebugWatchCollection g_debugWatches = {};
 static DebugWatchCollection& debugWatches() { return g_debugWatches; }
 static DebugDwarfMapper g_debugMapper = {};
 static unsigned char g_debugArtifactBytes[guidexos::developer_studio::kDebugMapperMaxElfBytes] = {};
+// The launch target contains several bounded path/argument buffers and is
+// live across symbol loading and controller startup. Keep it out of the
+// NativeElf callback stack.
+static DebugTarget g_debugLaunchTarget = {};
 static HostedDebugBackend g_hostedDebugBackend = {};
 static DebugBackend g_debugBackend = {};
 struct DebugUiWatch {
@@ -858,6 +863,9 @@ static gx_development_debug_call_stack g_debugUiCallStack = {};
 static gx_development_debug_variables g_debugUiVariables = {};
 static gx_development_debug_snapshot g_debugUiBreakpointSnapshot = {};
 static gx_development_debug_snapshot g_debugUiOutputSnapshot = {};
+// General NativeElf debugger commands use one bounded response at a time.
+// Keeping it in owned storage avoids a snapshot-sized callback-stack frame.
+static gx_development_debug_snapshot g_debugUiCommandSnapshot = {};
 static uint64_t g_debugUiSessionGeneration = 0;
 static uint64_t g_debugUiStopGeneration = 0;
 static uint32_t g_debugUiOutputHistoryDropped = 0;
@@ -905,6 +913,12 @@ static bool g_phase28nDiagnostic = false;
 static bool g_phase28oDiagnostic = false;
 static bool g_phase28pDiagnostic = false;
 static bool g_phase28qDiagnostic = false;
+static uint32_t g_phase28vStartupTraceCount = 0;
+static uint32_t g_phase28vStartupLastStage = 0;
+static uint32_t g_phase28vStartupEventCount = 0;
+static uint32_t g_phase28vDebuggerTraceCount = 0;
+static uint32_t g_phase28vLoopTraceMask = 0;
+static uint32_t g_phase28vAfterContinueTraceMask = 0;
 static bool g_phase28oDiagnosticLatched = false;
 static bool g_phase28oFinished = false;
 static bool g_phase28oFailed = false;
@@ -941,6 +955,10 @@ static int64_t g_phase28qFirstProgress = 0;
 static int64_t g_phase28qSecondProgress = 0;
 static bool g_phase28qFirstProgressValid = false;
 static bool g_phase28qSecondProgressValid = false;
+// Expression responses are bounded ABI records. Keep the Phase 28Q scratch
+// response in owned storage so the pause/continue pump does not reserve an
+// additional callback-sized frame on the NativeElf application stack.
+static gx_development_debug_expression g_phase28qExpression = {};
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
@@ -1183,6 +1201,7 @@ static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControll
 static bool debugUiCurrentAbiAvailable();
 static bool debugUiSyncControllerCallStack();
 static void debugUiMirrorCallStackToController();
+static void debugUiResetDebugSnapshotMetadata(gx_development_debug_snapshot* snapshot);
 static bool debugUiRefresh(gx_app_context* ctx);
 static bool debugUiAddWatch(gx_app_context* ctx, const char* expression);
 static bool debugUiEditWatch(gx_app_context* ctx, uint32_t index, const char* expression);
@@ -1214,6 +1233,10 @@ static bool phase28mToggleLine(gx_app_context* ctx, const char* path, uint32_t o
 static bool phase28pHoverToken(gx_app_context* ctx, const char* path, uint32_t oneBasedLine,
                                const char* identifier, uint32_t frameIndex, const char* expectedValue);
 static bool debugUiReleaseExecution(gx_app_context* ctx);
+static void phase28v_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name);
+static void phase28v_startup_event(gx_app_context* ctx, const char* event, const char* reason = nullptr);
+static void phase28v_early_event(gx_app_context* ctx, const char* event);
+static bool phase28qSentinelPresent();
 static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
 static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
@@ -1221,6 +1244,16 @@ static void debugDataTipInvalidate(gx_app_context* ctx, const char* reason = nul
 static bool debugDataTipHandleMove(gx_app_context* ctx, int x, int y);
 static bool debugDataTipBounds(DebugDataTipPopupBounds* bounds);
 static void drawDebugDataTip(gx_app_context* ctx);
+
+static void initializeDebugLaunchStorage() {
+    // NativeElf owns the image's BSS, but first-launch readiness must not
+    // depend on the loader having preserved C++ static initialization. These
+    // application-owned static buffers get an explicit first-use boundary
+    // before workspace, build, or debugger services can publish readiness.
+    // Do not move either object to a launch callback stack.
+    __builtin_memset(&g_debugMapper, 0, sizeof(g_debugMapper));
+    __builtin_memset(g_debugArtifactBytes, 0, sizeof(g_debugArtifactBytes));
+}
 
 static void refreshDebugMappings() {
     if (DebugDwarfMapperIsReady(&g_debugMapper)) {
@@ -1412,6 +1445,228 @@ static void phase28u_host_trace(gx_app_context* ctx, const char* event) {
     appendText(marker, sizeof(marker), " workspace_enabled=");
     appendUnsigned(marker, sizeof(marker), workspaceEnabled);
     logMarker(ctx, marker);
+}
+
+static void debuggerTraceHook(const char* event) {
+    if (!g_phase28qDiagnostic || !g_fileSystemContext.app || !event ||
+        g_phase28vDebuggerTraceCount >= 256) return;
+    ++g_phase28vDebuggerTraceCount;
+    char marker[128] = {};
+    copyText(marker, sizeof(marker), "DEVELOPER_STUDIO_PHASE28V_DEBUGGER ");
+    appendText(marker, sizeof(marker), event);
+    logMarker(g_fileSystemContext.app, marker);
+}
+
+static void phase28v_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name) {
+    if (!g_phase28qDiagnostic || !name || stage == 0 || stage <= g_phase28vStartupLastStage ||
+        g_phase28vStartupTraceCount >= 64) return;
+    g_phase28vStartupLastStage = stage;
+    ++g_phase28vStartupTraceCount;
+    switch (stage) {
+    case 1: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_01_APPLICATION_STARTED"); break;
+    case 2: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_02_PROJECT_FIXTURE_SELECTED"); break;
+    case 3: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_03_BUILD_ARTIFACT_LOCATED"); break;
+    case 4: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_04_LAUNCH_REQUEST_ISSUED"); break;
+    case 5: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_05_NATIVEELF_EXECUTABLE_VALIDATED"); break;
+    case 6: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_06_NATIVEELF_IMAGE_LOADED"); break;
+    case 7: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_07_PROCESS_OBJECT_ALLOCATED"); break;
+    case 8: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_08_LAUNCH_GENERATION_ASSIGNED"); break;
+    case 9: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_09_DEBUGGER_SESSION_ALLOCATED"); break;
+    case 10: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_10_DEBUGGER_BOUND_TO_PROCESS"); break;
+    case 11: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_11_TERMINAL_SESSION_ATTACHED"); break;
+    case 12: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_12_SCHEDULER_REGISTRATION_CREATED"); break;
+    case 13: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_13_INITIAL_TARGET_STATE_PUBLISHED"); break;
+    case 14: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_14_DEBUGGER_START_REQUEST_ISSUED"); break;
+    case 15: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_15_DEBUG_START_COMPLETION_PUBLISHED"); break;
+    case 16: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_16_TARGET_READY_FOR_DEBUG_COMMANDS"); break;
+    case 17: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_17_FIRST_SCHEDULER_DISPATCH_PERMITTED"); break;
+    case 18: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_18_TARGET_ENTRY_REACHED"); break;
+    case 19: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_STAGE_19_PHASE28Q_FIXTURE_EXECUTION_BEGINS"); break;
+    default: break;
+    }
+}
+
+static void phase28v_startup_event(gx_app_context* ctx, const char* event, const char* reason) {
+    if (!g_phase28qDiagnostic || !event || g_phase28vStartupEventCount >= 192) return;
+    ++g_phase28vStartupEventCount;
+    if (phase28u_host_event_equals(event, "DEBUG_START_REQUEST_ISSUED"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_START_REQUEST_ISSUED");
+    else if (phase28u_host_event_equals(event, "BUILD_CONTROLLER_START_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_CONTROLLER_START_ENTRY");
+    else if (phase28u_host_event_equals(event, "BUILD_REQUEST_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_REQUEST_READY");
+    else if (phase28u_host_event_equals(event, "BUILD_OUTPUT_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_OUTPUT_READY");
+    else if (phase28u_host_event_equals(event, "BUILD_SERVICE_START_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_SERVICE_START_ENTRY");
+    else if (phase28u_host_event_equals(event, "BUILD_SERVICE_START_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_SERVICE_START_RETURN");
+    else if (phase28u_host_event_equals(event, "BUILD_CONTROLLER_START_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_CONTROLLER_START_RETURN");
+    else if (phase28u_host_event_equals(event, "BUILD_FIRST_POLL_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_FIRST_POLL_ENTRY");
+    else if (phase28u_host_event_equals(event, "BUILD_DEBUG_WAITING_PUBLISHED"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "true")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_DEBUG_WAITING_PUBLISHED_TRUE"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_DEBUG_WAITING_PUBLISHED_FALSE");
+    else if (phase28u_host_event_equals(event, "BUILD_DEBUG_WAITING_CONSUME"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "true")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_DEBUG_WAITING_CONSUME_TRUE"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_DEBUG_WAITING_CONSUME_FALSE");
+    else if (phase28u_host_event_equals(event, "BUILD_DEBUG_WAITING_CLEARED"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_DEBUG_WAITING_CLEARED");
+    else if (phase28u_host_event_equals(event, "DEBUG_BEGIN_MODEL_CHECK"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_MODEL_CHECK");
+    else if (phase28u_host_event_equals(event, "DEBUG_BEGIN_MODEL_NOT_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_MODEL_NOT_READY");
+    else if (phase28u_host_event_equals(event, "DEBUG_BEGIN_PROJECT_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_PROJECT_READY");
+    else if (phase28u_host_event_equals(event, "DEBUG_BEGIN_TARGET_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_TARGET_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_BEGIN_TARGET_FAILED"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_TARGET_FAILED");
+    else if (phase28u_host_event_equals(event, "DEBUG_BEGIN_TARGET_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_TARGET_READY");
+    else if (phase28u_host_event_equals(event, "DEBUG_POLL_AFTER_CONTINUE_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_AFTER_CONTINUE_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_POLL_AFTER_CONTINUE_CONTROLLER_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_AFTER_CONTINUE_CONTROLLER_RETURN");
+    else if (phase28u_host_event_equals(event, "DEBUG_POLL_AFTER_CONTINUE_UI_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_AFTER_CONTINUE_UI_RETURN");
+    else if (phase28u_host_event_equals(event, "DEBUG_POLL_AFTER_CONTINUE_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_AFTER_CONTINUE_RETURN");
+    else if (phase28u_host_event_equals(event, "MAIN_AFTER_DEBUG_POLL_AFTER_CONTINUE"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_MAIN_AFTER_DEBUG_POLL_AFTER_CONTINUE");
+    else if (phase28u_host_event_equals(event, "SYMBOL_LOAD_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_LOAD_ENTRY");
+    else if (phase28u_host_event_equals(event, "SYMBOL_PATH_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_PATH_READY");
+    else if (phase28u_host_event_equals(event, "SYMBOL_STAT_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_STAT_READY");
+    else if (phase28u_host_event_equals(event, "SYMBOL_READ_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_READ_READY");
+    else if (phase28u_host_event_equals(event, "SYMBOL_HASH_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_HASH_READY");
+    else if (phase28u_host_event_equals(event, "SYMBOL_MAPPER_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ENTRY");
+    else if (phase28u_host_event_equals(event, "SYMBOL_MAPPER_ERROR")) {
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ERROR");
+        if (reason && phase28u_host_event_equals(reason, "malformed_dwarf"))
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ERROR_MALFORMED_DWARF");
+        else if (reason && phase28u_host_event_equals(reason, "malformed_elf"))
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ERROR_MALFORMED_ELF");
+        else if (reason && phase28u_host_event_equals(reason, "artifact_changed"))
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ERROR_ARTIFACT_CHANGED");
+        else if (reason && phase28u_host_event_equals(reason, "limit_exceeded"))
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ERROR_LIMIT");
+    }
+    else if (phase28u_host_event_equals(event, "SYMBOL_MAPPER_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RETURN");
+    else if (phase28u_host_event_equals(event, "DEBUG_POLL_EXITED_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_EXITED_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_POLL_EXITED_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_EXITED_RETURN");
+    else if (phase28u_host_event_equals(event, "DEBUG_TERMINAL_RESET_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_TERMINAL_RESET_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_TERMINAL_RESET_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_TERMINAL_RESET_RETURN");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_STAGE_7_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_STAGE_7_ENTRY");
+    else if (phase28u_host_event_equals(event, "UI_REFRESH_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_ENTRY");
+    else if (phase28u_host_event_equals(event, "UI_REFRESH_RETURN"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "ready")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_RETURN_READY"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_RETURN_PENDING");
+    else if (phase28u_host_event_equals(event, "UI_REFRESH_REJECT"))
+        logMarker(ctx, phase28u_host_event_equals(reason, "debug_abi_unavailable")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_REJECT_ABI"
+            : (phase28u_host_event_equals(reason, "controller_inactive")
+                ? "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_REJECT_CONTROLLER"
+                : "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_REJECT_HANDLE"));
+    else if (phase28u_host_event_equals(event, "UI_WORKSPACE_MATERIALIZE_BEGIN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_WORKSPACE_MATERIALIZE_BEGIN");
+    else if (phase28u_host_event_equals(event, "UI_WORKSPACE_MATERIALIZE_FAIL"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_WORKSPACE_MATERIALIZE_FAIL");
+    else if (phase28u_host_event_equals(event, "UI_WORKSPACE_MATERIALIZE_DONE"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_WORKSPACE_MATERIALIZE_DONE");
+    else if (phase28u_host_event_equals(event, "UI_BREAKPOINT_REFRESH_BEGIN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_BREAKPOINT_REFRESH_BEGIN");
+    else if (phase28u_host_event_equals(event, "UI_BREAKPOINT_REFRESH_DONE"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_BREAKPOINT_REFRESH_DONE");
+    else if (phase28u_host_event_equals(event, "UI_BREAKPOINT_REFRESH_FAIL"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_BREAKPOINT_REFRESH_FAIL");
+    else if (phase28u_host_event_equals(event, "UI_OUTPUT_REFRESH_BEGIN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_OUTPUT_REFRESH_BEGIN");
+    else if (phase28u_host_event_equals(event, "UI_OUTPUT_REFRESH_DONE"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_OUTPUT_REFRESH_DONE");
+    else if (phase28u_host_event_equals(event, "UI_OUTPUT_REFRESH_FAIL"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_OUTPUT_REFRESH_FAIL");
+    else if (phase28u_host_event_equals(event, "UI_REFRESH_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_REFRESH_READY");
+    else if (phase28u_host_event_equals(event, "MAIN_LOOP_AFTER_DEBUG_READY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_MAIN_LOOP_AFTER_DEBUG_READY");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_PUMP_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PUMP_ENTRY");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_PUMP_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PUMP_RETURN");
+    else if (phase28u_host_event_equals(event, "EVENT_POLL_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_EVENT_POLL_ENTRY");
+    else if (phase28u_host_event_equals(event, "EVENT_POLL_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_EVENT_POLL_RETURN");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_CONTINUE_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTINUE_ENTRY");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_CONTINUE_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTINUE_RETURN");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_RESUME_BACKEND_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_BACKEND_ENTRY");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_RESUME_BACKEND_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_BACKEND_RETURN");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_PROJECT_OPEN_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PROJECT_OPEN_ENTRY");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_PROJECT_OPEN_RETURN"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "opened")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PROJECT_OPEN_RETURN_OPENED"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PROJECT_OPEN_RETURN_REJECTED");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_FIXTURE_DOCUMENT_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_FIXTURE_DOCUMENT_ENTRY");
+    else if (phase28u_host_event_equals(event, "PHASE28Q_FIXTURE_DOCUMENT_RETURN"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "opened")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_FIXTURE_DOCUMENT_RETURN_OPENED"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_FIXTURE_DOCUMENT_RETURN_REJECTED");
+    else if (phase28u_host_event_equals(event, "DEBUG_PAUSE_CONTROLLER_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_PAUSE_CONTROLLER_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_PAUSE_CONTROLLER_RETURN"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "accepted")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_PAUSE_CONTROLLER_RETURN_ACCEPTED"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_PAUSE_CONTROLLER_RETURN_REJECTED");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_STATE_PROCESS_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_STATE_PROCESS_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_EVENTS_DONE"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_EVENTS_DONE");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_TRANSITION_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_TRANSITION_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_PAUSED_ENTRY"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_PAUSED_ENTRY");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_STOP_MAPPING_RETURN"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "resolved")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_STOP_MAPPING_RESOLVED"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_STOP_MAPPING_UNRESOLVED");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_CALL_STACK_RETURN"))
+        logMarker(ctx, reason && phase28u_host_event_equals(reason, "built")
+            ? "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_CALL_STACK_BUILT"
+            : "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_CALL_STACK_PARTIAL");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_VARIABLES_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_VARIABLES_RETURN");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_EDITOR_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_EDITOR_RETURN");
+    else if (phase28u_host_event_equals(event, "DEBUG_POST_REFRESH_TRANSITION_RETURN"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POST_REFRESH_TRANSITION_RETURN");
+}
+
+static void phase28v_early_event(gx_app_context* ctx, const char* event) {
+    if (!g_phase28qDiagnostic || !event) return;
+    logMarker(ctx, event);
 }
 
 static uint32_t debugTraceUserOwnerCount() {
@@ -3793,11 +4048,19 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
         command == HostedDebugCommand::ContinueBreakpoint;
     if (traceContinue) logMarker(context ? context->app : nullptr,
         "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ENTRY");
+    const bool tracePhase28qResume = g_phase28qDiagnostic &&
+        command == HostedDebugCommand::Resume;
+    if (tracePhase28qResume) logMarker(context ? context->app : nullptr,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_BACKEND_ENTRY");
     const bool traceCancel = g_phase28mDiagnostic &&
         command == HostedDebugCommand::CancelExecution;
     if (traceCancel) logMarker(context ? context->app : nullptr,
         "DEVELOPER_STUDIO_PHASE28M_CANCEL_BACKEND_ENTRY");
-    if (outResult) *outResult = HostedDebugResult();
+    const bool tracePhase28qPause = g_phase28qDiagnostic &&
+        command == HostedDebugCommand::Pause;
+    if (tracePhase28qPause) logMarker(context ? context->app : nullptr,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PAUSE_BACKEND_ENTRY");
+    if (outResult) __builtin_memset(outResult, 0, sizeof(*outResult));
     const gx_host_calls* host = context && context->app ? context->app->host : nullptr;
     if (!host || !outResult) {
         if (traceContinue) logMarker(context ? context->app : nullptr,
@@ -3833,12 +4096,19 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     request.stopGeneration = stopGeneration;
     request.auxiliaryAddress = auxiliaryAddress;
     request.readByteCount = readByteCount;
-    gx_development_debug_snapshot snapshot = {};
+    static gx_development_debug_snapshot snapshot = {};
+    __builtin_memset(&snapshot, 0, sizeof(snapshot));
     snapshot.size = sizeof(snapshot);
     snapshot.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
     const gx_result result = context->useBareMetalDebug
         ? host->bare_metal_development_debug(context->app, &request, &snapshot)
         : host->development_debug(context->app, &request, &snapshot);
+    if (tracePhase28qPause) logMarker(context->app,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PAUSE_BACKEND_RETURN");
+    if (tracePhase28qResume) logMarker(context->app,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_BACKEND_RETURN");
+    if (tracePhase28qResume) logMarker(context->app,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_RESULT_MAP_ENTRY");
     if (result != GX_OK) {
         if (tracePhase28mPoll) {
             logMarker(context ? context->app : nullptr,
@@ -3900,6 +4170,8 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->registerContext.rflags = snapshot.context.rflags;
     outResult->registerContext.rsp = snapshot.context.rsp;
     outResult->registerContext.rbp = snapshot.context.rbp;
+    if (tracePhase28qResume) logMarker(context->app,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_RESULT_MAP_RETURN");
     outResult->registerContext.rax = snapshot.context.rax;
     outResult->registerContext.rbx = snapshot.context.rbx;
     outResult->registerContext.rcx = snapshot.context.rcx;
@@ -3915,6 +4187,8 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->registerContext.r14 = snapshot.context.r14;
     outResult->registerContext.r15 = snapshot.context.r15;
     copyText(outResult->errorMessage, sizeof(outResult->errorMessage), snapshot.errorMessage);
+    if (tracePhase28qResume) logMarker(context->app,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_RESULT_MAP_COMPLETE");
     if (tracePhase28mPoll) {
         if (snapshot.status == GX_DEVELOPMENT_DEBUG_STATUS_TRAP &&
             snapshot.trapKind == GX_DEVELOPMENT_DEBUG_TRAP_BREAKPOINT)
@@ -3966,6 +4240,8 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     if (traceContinue) logMarker(context->app, outResult->status == 6 ?
         "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ACK_PASS" :
         "DEVELOPER_STUDIO_PHASE28M_CONTINUE_BACKEND_ACK_OTHER");
+    if (tracePhase28qResume) logMarker(context->app,
+        "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_RESUME_HOST_COMMAND_RETURN");
     return true;
 }
 
@@ -4130,28 +4406,30 @@ static void reportBuildResult(gx_app_context* ctx) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=FAILED", BuildErrorName(result.error));
         if (result.error == BuildErrorCode::BuildTimeout) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_timeout=TRUE");
     }
-    char marker[96] = {};
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_process_exit=");
-    appendSigned(marker, sizeof(marker), result.exitCode);
-    logMarker(ctx, marker);
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_warning_count=");
-    appendUnsigned(marker, sizeof(marker), result.warningCount);
-    logMarker(ctx, marker);
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_error_count=");
-    appendUnsigned(marker, sizeof(marker), result.errorCount);
-    logMarker(ctx, marker);
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_source_files=");
-    appendUnsigned(marker, sizeof(marker), result.sourceFileCount);
-    logMarker(ctx, marker);
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_compiled_modules=");
-    appendUnsigned(marker, sizeof(marker), result.compiledModuleCount);
-    logMarker(ctx, marker);
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_cached_modules=");
-    appendUnsigned(marker, sizeof(marker), result.cachedModuleCount);
-    logMarker(ctx, marker);
-    copyText(marker, sizeof(marker), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_linked_modules=");
-    appendUnsigned(marker, sizeof(marker), result.linkedModuleCount);
-    logMarker(ctx, marker);
+    // Keep the completion report out of the NativeElf application stack.  The
+    // host log contract rejects stack-backed strings, so these diagnostics are
+    // intentionally formatted in the application's owned scratch storage.
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_process_exit=");
+    appendSigned(g_textScratch, sizeof(g_textScratch), result.exitCode);
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_warning_count=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), result.warningCount);
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_error_count=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), result.errorCount);
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_source_files=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), result.sourceFileCount);
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_compiled_modules=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), result.compiledModuleCount);
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_cached_modules=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), result.cachedModuleCount);
+    logMarker(ctx, g_textScratch);
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_linked_modules=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), result.linkedModuleCount);
+    logMarker(ctx, g_textScratch);
     g_buildTerminalReported = true;
 }
 
@@ -4165,8 +4443,11 @@ static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision, bo
     }
     BuildErrorCode error = BuildErrorCode::None;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_request=PASS");
+    phase28v_startup_event(ctx, "BUILD_CONTROLLER_START_ENTRY");
     g_buildTerminalReported = false;
-    if (!BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error, &g_outputService, debugInfo)) {
+    const bool started = BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error, &g_outputService, debugInfo);
+    phase28v_startup_event(ctx, "BUILD_CONTROLLER_START_RETURN");
+    if (!started) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(error));
         if (g_buildController.result.state == BuildState::Failed || g_buildController.result.state == BuildState::Cancelled) reportBuildResult(ctx);
         return false;
@@ -4254,11 +4535,14 @@ static bool beginRunDeployment(gx_app_context* ctx) {
 static void pollBuild(gx_app_context* ctx) {
     if (!BuildControllerIsActive(&g_buildController)) return;
     phase28u_host_trace(ctx, "POLL_BUILD_ENTRY");
+    phase28v_startup_event(ctx, "BUILD_FIRST_POLL_ENTRY");
     BuildControllerPoll(&g_buildController, buildService());
     phase28u_host_trace(ctx, "POLL_BUILD_AFTER_CONTROLLER");
     if (!BuildControllerIsActive(&g_buildController) && !g_buildTerminalReported) {
         phase28u_host_trace(ctx, "POLL_BUILD_TERMINAL");
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_RESULT_REPORT_ENTRY");
         reportBuildResult(ctx);
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BUILD_RESULT_REPORT_RETURN");
         if (g_runWaitingForBuild) {
             g_runWaitingForBuild = false;
             if (g_buildController.result.state == BuildState::Succeeded) {
@@ -4272,11 +4556,16 @@ static void pollBuild(gx_app_context* ctx) {
                 completeRunWithoutDeployment("Build failed; deployment skipped");
             }
         }
+        phase28v_startup_event(ctx, "BUILD_DEBUG_WAITING_CONSUME",
+                               g_debugWaitingForBuild ? "true" : "false");
         if (g_debugWaitingForBuild) {
             g_debugWaitingForBuild = false;
+            phase28v_startup_event(ctx, "BUILD_DEBUG_WAITING_CLEARED", nullptr);
             if (g_buildController.result.state == BuildState::Succeeded) {
                 phase28u_host_trace(ctx, "POLL_BUILD_DEBUG_BEGIN");
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_PREPARE");
                 writeStudioOutput("Debug: build completed");
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_AFTER_OUTPUT");
                 if (!beginDebugSession(ctx)) writeStudioOutput("Debug: deployment skipped");
             } else {
                 copyText(g_textScratch, sizeof(g_textScratch), "Debug: build failed | ");
@@ -4635,8 +4924,34 @@ static void phase28mDebugMapperProgress(void* userData, uint32_t stage) {
     }
 }
 
+static void phase28vDebugMapperProgress(void* userData, uint32_t stage) {
+    if (!g_phase28qDiagnostic) return;
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    switch (stage) {
+    case 0: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RESET_ENTRY"); break;
+    case 1: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RESET"); break;
+    case 2: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_PARSE"); break;
+    case 3: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RESET_TABLES_1"); break;
+    case 4: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RESET_TABLES_2"); break;
+    case 5: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RESET_TABLES_3"); break;
+    case 6: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_RESET_TABLES_4"); break;
+    case 7: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_FOOTER_RECOGNIZED"); break;
+    case 8: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_HEADER_VALIDATED"); break;
+    case 9: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_PAYLOAD_VALIDATED"); break;
+    case 10: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_HEADER"); break;
+    case 11: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ELF"); break;
+    case 12: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_FILES"); break;
+    case 13: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_FUNCTIONS"); break;
+    case 14: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_ROWS"); break;
+    case 15: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_SORT_BEGIN"); break;
+    case 16: logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_SYMBOL_MAPPER_SORT_END"); break;
+    default: break;
+    }
+}
+
 static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) {
     if (!target) return false;
+    phase28v_startup_event(ctx, "SYMBOL_LOAD_ENTRY", nullptr);
     char absolutePath[kMaxPathBytes] = {};
     if (!JoinWorkspacePath(target->projectRoot, target->executablePath, absolutePath, sizeof(absolutePath))) {
         if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_PATH_FAIL");
@@ -4646,6 +4961,7 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         reportDebugMessage(ctx, "Debug info: artifact path rejected");
         return false;
     }
+    phase28v_startup_event(ctx, "SYMBOL_PATH_READY", nullptr);
     FileInfo info = {};
     if (!fsStat(&g_fileSystemContext, absolutePath, &info) || info.kind != FileInfoKind::RegularFile ||
         info.size == 0 || info.size > guidexos::developer_studio::kDebugMapperMaxElfBytes) {
@@ -4657,6 +4973,7 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         reportDebugMessage(ctx, "Debug info: executable could not be read");
         return false;
     }
+    phase28v_startup_event(ctx, "SYMBOL_STAT_READY", nullptr);
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_STAT_PASS");
     uint32_t bytesRead = 0;
     if (!fsRead(&g_fileSystemContext, absolutePath, reinterpret_cast<char*>(g_debugArtifactBytes),
@@ -4668,6 +4985,7 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         reportDebugMessage(ctx, "Debug info: executable read was incomplete");
         return false;
     }
+    phase28v_startup_event(ctx, "SYMBOL_READ_READY", nullptr);
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_READ_PASS");
     target->artifactSize = info.size;
     char actualSha256[65] = {};
@@ -4681,17 +4999,25 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         reportDebugMessage(ctx, "Debug info: captured executable identity does not match the build result");
         return false;
     }
+    phase28v_startup_event(ctx, "SYMBOL_HASH_READY", nullptr);
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_HASH_PASS");
     DebugDwarfError error = DebugDwarfError::None;
+    phase28v_startup_event(ctx, "SYMBOL_MAPPER_ENTRY", nullptr);
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_MAPPER_BEGIN");
     guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(
-        g_phase28mDiagnostic ? phase28mDebugMapperProgress : nullptr, ctx);
+        g_phase28qDiagnostic ? phase28vDebugMapperProgress :
+            (g_phase28mDiagnostic ? phase28mDebugMapperProgress : nullptr), ctx);
     const bool loaded = DebugDwarfMapperLoad(&g_debugMapper, target->projectRoot, target->projectId,
         target->targetProfile, target->architecture, target->executablePath, info.size,
         target->artifactSha256, target->projectGeneration, g_debugArtifactBytes, bytesRead,
         static_cast<uint32_t>(target->projectGeneration), &error);
     guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(nullptr, nullptr);
+    phase28v_startup_event(ctx, "SYMBOL_MAPPER_RETURN", nullptr);
     if (!loaded) {
+        phase28v_startup_event(ctx, "SYMBOL_MAPPER_ERROR", DebugDwarfErrorName(error));
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28V_STARTUP_FAILURE symbol_mapper=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfErrorName(error));
+        logMarker(ctx, g_textScratch);
         if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_MAPPER_FAIL");
         if (g_phase28mDiagnostic) {
             switch (error) {
@@ -4732,23 +5058,50 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
 
 static bool beginDebugSession(gx_app_context* ctx) {
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_ENTRY");
+    phase28v_startup_stage(ctx, 3, "BUILD_ARTIFACT_LOCATED");
+    phase28v_startup_stage(ctx, 4, "LAUNCH_REQUEST_ISSUED");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_SESSION_BEGIN");
+    phase28v_startup_event(ctx, "DEBUG_BEGIN_MODEL_CHECK");
     if (!g_controller.model.open || !g_controller.model.hasProject) {
+        phase28v_startup_event(ctx, "DEBUG_BEGIN_MODEL_NOT_READY");
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28V_STARTUP_FAILURE model_open=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.open ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " has_project=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.hasProject ? 1u : 0u);
+        logMarker(ctx, g_textScratch);
         writeStudioOutput("Debug requires an open project");
         return false;
     }
-    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_PROJECT_READY");
-    DebugTarget target = {};
+    phase28v_startup_event(ctx, "DEBUG_BEGIN_PROJECT_READY");
+    DebugTarget& target = g_debugLaunchTarget;
+    __builtin_memset(&target, 0, sizeof(target));
     DebugErrorCode error = DebugErrorCode::None;
+    phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_ENTRY");
     if (!DebugTargetFromBuild(g_controller.model.project, g_buildController.result,
                               g_controller.model.projectGeneration, &target, &error)) {
-        phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_TARGET_FAILED");
+        phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_FAILED");
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28V_STARTUP_FAILURE target_construct error=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        appendText(g_textScratch, sizeof(g_textScratch), " project_valid=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.project.valid ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " project_kind=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_controller.model.project.kind));
+        appendText(g_textScratch, sizeof(g_textScratch), " build_state=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_buildController.result.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " artifact_valid=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactValid ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " entry_point=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactEntryPoint ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " artifact_hash=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactSha256[0] != '\0' ? 1u : 0u);
+        logMarker(ctx, g_textScratch);
         copyText(g_textScratch, sizeof(g_textScratch), "Debug target unavailable: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
-    phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_TARGET_READY");
+    phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_READY");
+    phase28v_startup_stage(ctx, 5, "NATIVEELF_EXECUTABLE_VALIDATED");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_TARGET_READY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_BEGIN");
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_ENTRY");
@@ -4758,17 +5111,21 @@ static bool beginDebugSession(gx_app_context* ctx) {
         return false;
     }
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_READY");
+    phase28v_startup_stage(ctx, 6, "NATIVEELF_IMAGE_LOADED");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_RETURNED");
     const bool currentDebugAbi = debugUiCurrentAbiAvailable();
     const bool useManagerWorkspace = currentDebugAbi && g_fileSystemContext.useBareMetalDebug;
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_ENTRY");
     // Discard the prior generation before the controller can rebind its old
     // transient table. Rebuild legacy controller rows from persisted intent;
     // NativeElf current-ABI sessions install through the manager after launch;
     // hosted sessions retain the controller-owned mapping/binding path.
     debugUiResetRuntimeState(true);
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_RETURN");
     DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
     g_debugController.target = target;
     if (!useManagerWorkspace && !debuggerWorkspaceMaterializeLegacy(ctx)) return false;
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BREAKPOINT_MAP_ENTRY");
     DebugErrorCode mappingError = DebugErrorCode::None;
     if (!DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError)) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch skipped: source breakpoint mapping failed | ");
@@ -4783,6 +5140,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
             return false;
         }
     }
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BREAKPOINT_MAP_RETURN");
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_BREAKPOINTS_READY");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_BEGIN");
     phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_ENTRY");
@@ -4792,6 +5150,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
     // deployments publish their runtime identity asynchronously, so their
     // controller remains the deferred-release owner.
     DebugControllerSetExecutionReleaseDeferred(&g_debugController, !useManagerWorkspace);
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_CONTROLLER_START_ENTRY");
     if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
         phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_FAILED");
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
@@ -4803,8 +5162,13 @@ static bool beginDebugSession(gx_app_context* ctx) {
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
+    logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_CONTROLLER_START_RETURN");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_PASS");
     phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_RETURN");
+    phase28v_startup_stage(ctx, 7, "PROCESS_OBJECT_ALLOCATED");
+    phase28v_startup_stage(ctx, 8, "LAUNCH_GENERATION_ASSIGNED");
+    phase28v_startup_stage(ctx, 9, "DEBUGGER_SESSION_ALLOCATED");
+    phase28v_startup_stage(ctx, 10, "DEBUGGER_BOUND_TO_PROCESS");
     g_debugUiSessionGeneration = g_debugController.sessionGeneration;
     g_debugUiStopGeneration = 0;
     debugUiResetRuntimeState(true, !useManagerWorkspace);
@@ -4820,6 +5184,8 @@ static bool beginDebugSession(gx_app_context* ctx) {
             (void)DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
             return false;
         }
+        phase28v_startup_stage(ctx, 11, "TERMINAL_SESSION_ATTACHED");
+        phase28v_startup_stage(ctx, 12, "SCHEDULER_REGISTRATION_CREATED");
         DebugErrorCode handshakeError = DebugErrorCode::None;
         if (!DebugControllerAcceptExternalExecutionRelease(&g_debugController,
                                                             g_debugController.sessionGeneration,
@@ -4829,6 +5195,9 @@ static bool beginDebugSession(gx_app_context* ctx) {
             (void)DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
             return false;
         }
+        phase28v_startup_stage(ctx, 13, "INITIAL_TARGET_STATE_PUBLISHED");
+        phase28v_startup_stage(ctx, 14, "DEBUGGER_START_REQUEST_ISSUED");
+        phase28v_startup_stage(ctx, 15, "DEBUG_START_COMPLETION_PUBLISHED");
         phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_RELEASED");
     } else {
         // The local controller already owns this generation's mapped source
@@ -4886,6 +5255,7 @@ static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecisio
         return false;
     }
     g_debugWaitingForBuild = true;
+    phase28v_startup_event(ctx, "BUILD_DEBUG_WAITING_PUBLISHED", "true");
     g_debugTerminalReported = false;
     if (!beginBuild(ctx, dirtyDecision, true)) {
         g_debugWaitingForBuild = false;
@@ -4990,13 +5360,16 @@ static bool requestDebugPause(gx_app_context* ctx) {
         return false;
     }
     DebugErrorCode error = DebugErrorCode::None;
+    phase28v_startup_event(ctx, "DEBUG_PAUSE_CONTROLLER_ENTRY", nullptr);
     if (!DebugControllerPause(&g_debugController, g_debugBackend, &error)) {
+        phase28v_startup_event(ctx, "DEBUG_PAUSE_CONTROLLER_RETURN", "rejected");
         copyText(g_textScratch, sizeof(g_textScratch), "Debug pause failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_UI_PAUSE_REQUEST_REJECT");
         return false;
     }
+    phase28v_startup_event(ctx, "DEBUG_PAUSE_CONTROLLER_RETURN", "accepted");
     reportDebugMessage(ctx, "Debug: pause requested; waiting for a safe execution boundary");
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_UI_PAUSE_REQUEST_PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_pause=requested");
@@ -5274,14 +5647,22 @@ static bool navigateDebugStackFrame(gx_app_context* ctx, uint32_t frameIndex) {
 }
 
 static void pollDebug(gx_app_context* ctx) {
+    if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 1u)) {
+        phase28v_startup_event(ctx, "DEBUG_POLL_AFTER_CONTINUE_ENTRY");
+        g_phase28vAfterContinueTraceMask |= 1u;
+    }
     if (!DebugControllerIsActive(&g_debugController)) {
+        phase28v_startup_event(ctx, "DEBUG_POLL_EXITED_ENTRY", nullptr);
         if (g_debugUiSessionGeneration != 0) {
+            phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_ENTRY", nullptr);
             debugUiResetRuntimeState(true);
             g_debugUiSessionGeneration = 0;
             g_debugUiStopGeneration = 0;
+            phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_RETURN", nullptr);
         }
         debugEditorClearRuntime(ctx);
         completeDebugShutdownIfReady(ctx);
+        phase28v_startup_event(ctx, "DEBUG_POLL_EXITED_RETURN", nullptr);
         return;
     }
     if (!g_controller.model.hasProject || !PathsEqual(g_controller.model.project.projectId, g_debugController.projectId)) {
@@ -5304,7 +5685,15 @@ static void pollDebug(gx_app_context* ctx) {
         !g_phase28mUiPollTraced;
     if (tracePhase28mPoll)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_ENTRY");
+    phase28u_host_trace(ctx, "DEBUG_CONTROLLER_POLL_ENTRY");
     const bool controllerPollReady = DebugControllerPoll(&g_debugController, g_debugBackend, &g_debugMapper);
+    if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 2u)) {
+        phase28v_startup_event(ctx, "DEBUG_POLL_AFTER_CONTINUE_CONTROLLER_RETURN");
+        g_phase28vAfterContinueTraceMask |= 2u;
+    }
+    phase28u_host_trace(ctx, controllerPollReady ? "DEBUG_CONTROLLER_POLL_RETURN" : "DEBUG_CONTROLLER_POLL_FAILED");
+    const bool tracePhase28qStopProcessing = g_phase28qDiagnostic &&
+        g_phase28qStage >= 6 && g_debugController.state != previous;
     if (!controllerPollReady) {
         debugEditorClearRuntime(ctx);
         if (tracePhase28mPoll) {
@@ -5362,7 +5751,13 @@ static void pollDebug(gx_app_context* ctx) {
         g_phase28mUiPollTraced = true;
     }
     const bool debugUiReady = debugUiRefresh(ctx);
-    phase28u_host_trace(ctx, debugUiReady ? "DEBUG_UI_REFRESH_READY" : "DEBUG_UI_REFRESH_PENDING");
+    if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 4u)) {
+        phase28v_startup_event(ctx, "DEBUG_POLL_AFTER_CONTINUE_UI_RETURN");
+        g_phase28vAfterContinueTraceMask |= 4u;
+    }
+    phase28v_startup_event(ctx, "UI_REFRESH_RETURN", debugUiReady ? "ready" : "pending");
+    if (tracePhase28qStopProcessing)
+        phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_STATE_PROCESS_ENTRY", nullptr);
     if (!debugUiReady && g_debuggerWorkspaceMaterializationFailed &&
         g_debugController.state == DebugSessionState::Launching) {
         if (!g_debugTerminalReported) {
@@ -5372,10 +5767,19 @@ static void pollDebug(gx_app_context* ctx) {
         DebugErrorCode stopError = DebugErrorCode::None;
         DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
     }
-    if (debugUiReady && debugUiCurrentAbiAvailable() &&
+    // Hosted launches publish the process/runtime identity from the run
+    // service on a later poll than the initial debugger snapshot.  Deferred
+    // execution must remain closed until that identity is durable; releasing
+    // here with a zero identity turns a normal publication boundary into a
+    // fatal startup handshake error.  Bare-metal NativeElf deliberately uses
+    // a debugger-owned identity, so it keeps the existing generation gate.
+    const bool debugStartIdentityReady = g_fileSystemContext.useBareMetalDebug ||
+        (g_debugController.processId != 0 && g_debugController.nativeRuntimeId != 0);
+    if (debugUiReady && debugUiCurrentAbiAvailable() && debugStartIdentityReady &&
         (g_debugController.state == DebugSessionState::Launching ||
          g_debugController.state == DebugSessionState::Running) &&
         !g_debugController.targetExecutionReleased) {
+        phase28v_startup_stage(ctx, 14, "DEBUGGER_START_REQUEST_ISSUED");
         DebugErrorCode releaseError = DebugErrorCode::None;
         if (!DebugControllerReleaseDeferredExecution(&g_debugController, g_debugBackend, &releaseError)) {
             phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_RELEASE_FAILED");
@@ -5389,6 +5793,7 @@ static void pollDebug(gx_app_context* ctx) {
             DebugErrorCode stopError = DebugErrorCode::None;
             DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
         } else {
+            phase28v_startup_stage(ctx, 15, "DEBUG_START_COMPLETION_PUBLISHED");
             phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_RELEASED");
         }
     }
@@ -5397,6 +5802,7 @@ static void pollDebug(gx_app_context* ctx) {
         g_debugController.targetExecutionReleased &&
         (!debugUiCurrentAbiAvailable() || debugUiReady)) {
         g_debugReadyReported = true;
+        phase28v_startup_stage(ctx, 16, "TARGET_READY_FOR_DEBUG_COMMANDS");
         phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_READY");
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28U_DEBUG_START_READY_PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS");
@@ -5427,7 +5833,11 @@ static void pollDebug(gx_app_context* ctx) {
         }
         g_debugReportedEventSequence = event->sequence;
     }
+    if (tracePhase28qStopProcessing)
+        phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_EVENTS_DONE", nullptr);
     if (g_debugController.state != previous) {
+        if (tracePhase28qStopProcessing)
+            phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_TRANSITION_ENTRY", nullptr);
         if (g_debugController.state == DebugSessionState::Running) {
             reportDebugMessage(ctx, "Debug: process running");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING");
@@ -5437,12 +5847,18 @@ static void pollDebug(gx_app_context* ctx) {
             reportDebugMessage(ctx, "Debug: stopping target");
         } else if (g_debugController.state == DebugSessionState::Paused &&
                    !DebugControllerIsConditionResumePending(&g_debugController)) {
+            if (tracePhase28qStopProcessing)
+                phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_PAUSED_ENTRY", nullptr);
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_trap_backend=PASS");
             DebugErrorCode stopMappingError = DebugErrorCode::None;
             const bool resolved = DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
+            if (tracePhase28qStopProcessing)
+                phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_STOP_MAPPING_RETURN", resolved ? "resolved" : "unresolved");
             DebugErrorCode stackError = DebugErrorCode::None;
             const bool stackBuilt = DebugControllerBuildCallStack(&g_debugController, g_debugBackend,
                                                                    &g_debugMapper, &stackError);
+            if (tracePhase28qStopProcessing)
+                phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_CALL_STACK_RETURN", stackBuilt ? "built" : "partial");
             if (stackBuilt) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS");
             else logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PARTIAL");
             DebugErrorCode variablesError = DebugErrorCode::None;
@@ -5452,7 +5868,11 @@ static void pollDebug(gx_app_context* ctx) {
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS");
             else
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PARTIAL");
+            if (tracePhase28qStopProcessing)
+                phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_VARIABLES_RETURN", nullptr);
             const bool editorExecution = debugEditorUpdateExecution(ctx, true);
+            if (g_phase28qDiagnostic)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_PAUSED_EDITOR_EXECUTION_RETURN");
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");
             appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
             if (resolved && g_debugController.currentLocation.relativePath[0]) {
@@ -5506,11 +5926,19 @@ static void pollDebug(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController) &&
         (g_debugController.state == DebugSessionState::Exited ||
          g_debugController.state == DebugSessionState::Failed) && g_debugUiSessionGeneration != 0) {
+        phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_ENTRY", nullptr);
         debugUiResetRuntimeState(true);
         g_debugUiSessionGeneration = 0;
         g_debugUiStopGeneration = 0;
+        phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_RETURN", nullptr);
     }
     completeDebugShutdownIfReady(ctx);
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_POLL_RETURN_READY");
+    if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 8u)) {
+        phase28v_startup_event(ctx, "DEBUG_POLL_AFTER_CONTINUE_RETURN");
+        g_phase28vAfterContinueTraceMask |= 8u;
+    }
 }
 
 static void requestRunClose(gx_app_context* ctx) {
@@ -5617,14 +6045,15 @@ static void debuggerWorkspaceReportStatus(gx_app_context* ctx, const char* actio
     if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_WORKSPACE_STATUS");
 }
 
-static void debuggerWorkspaceReset() {
+static void debuggerWorkspaceReset(bool resetRuntime = true) {
     DebuggerWorkspaceInit(&g_debuggerWorkspace);
-    debugUiResetRuntimeState(false);
+    if (resetRuntime) debugUiResetRuntimeState(false);
     g_debuggerWorkspaceStatus[0] = '\0';
 }
 
 static void debuggerWorkspaceApplyWatches() {
-    for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i] = DebugUiWatch();
+    for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i)
+        __builtin_memset(&g_debugUiWatches[i], 0, sizeof(g_debugUiWatches[i]));
     g_debugUiWatchCount = g_debuggerWorkspace.watchCount < kDebugUiMaxWatches ?
         g_debuggerWorkspace.watchCount : kDebugUiMaxWatches;
     for (uint32_t i = 0; i < g_debugUiWatchCount; ++i) {
@@ -8291,7 +8720,7 @@ static void debugUiAdoptBareRuntimeIdentity(uint64_t sessionGeneration,
 static bool debugUiCallGeneral(const gx_development_debug_request& request,
                                gx_development_debug_snapshot* snapshot) {
     if (snapshot) {
-        *snapshot = gx_development_debug_snapshot();
+        debugUiResetDebugSnapshotMetadata(snapshot);
         snapshot->size = sizeof(*snapshot);
         snapshot->version = GX_DEVELOPMENT_DEBUG_API_VERSION;
     }
@@ -8308,7 +8737,11 @@ static bool debugUiCallGeneral(const gx_development_debug_request& request,
 
 static bool debugUiCallStack() {
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_CALL_STACK);
-    gx_development_debug_call_stack result = {};
+    // The NativeElf callback can re-enter the application through a nested
+    // scheduler dispatch. Keep the bounded response in owned storage instead
+    // of adding another call-stack-sized frame to that callback path.
+    static gx_development_debug_call_stack result = {};
+    __builtin_memset(&result, 0, sizeof(result));
     result.size = sizeof(result);
     result.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
     const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
@@ -8342,7 +8775,10 @@ static bool debugUiSyncControllerCallStack() {
 static bool debugUiVariables() {
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_INSPECT_VARIABLES);
     request.auxiliaryAddress = g_debugUiSelectedFrame;
-    gx_development_debug_variables result = {};
+    // Variable metadata is large and is queried from the same nested host
+    // callback as the call stack. Own the response across the callback.
+    static gx_development_debug_variables result = {};
+    __builtin_memset(&result, 0, sizeof(result));
     result.size = sizeof(result);
     result.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
     const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
@@ -8368,7 +8804,8 @@ static bool debugUiEvaluateExpressionText(const char* expression,
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_EVALUATE_EXPRESSION);
     request.expression = expression;
     request.auxiliaryAddress = g_debugUiSelectedFrame;
-    gx_development_debug_expression result = {};
+    static gx_development_debug_expression result = {};
+    __builtin_memset(&result, 0, sizeof(result));
     result.size = sizeof(result);
     result.version = GX_DEVELOPMENT_DEBUG_API_VERSION;
     const gx_host_calls* host = g_fileSystemContext.app ? g_fileSystemContext.app->host : nullptr;
@@ -8886,7 +9323,7 @@ static bool debugUiRefreshBreakpoints() {
         return true;
     }
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_LIST_SOURCE_BREAKPOINTS);
-    gx_development_debug_snapshot snapshot = {};
+    gx_development_debug_snapshot& snapshot = g_debugUiCommandSnapshot;
     if (!debugUiCallGeneral(request, &snapshot)) return false;
     if (!debuggerWorkspaceMergeLiveSnapshot(snapshot)) return false;
     if (g_debugUiSelectedBreakpoint >= snapshot.breakpointCount && snapshot.breakpointCount != 0)
@@ -8898,7 +9335,7 @@ static bool debugUiRefreshBreakpoints() {
 
 static bool debugUiRefreshOutput() {
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_DRAIN_OUTPUT);
-    gx_development_debug_snapshot snapshot = {};
+    gx_development_debug_snapshot& snapshot = g_debugUiCommandSnapshot;
     if (!debugUiCallGeneral(request, &snapshot)) return false;
     if (!debugUiIdentityMatches(snapshot.sessionGeneration, snapshot.processId,
                                 snapshot.nativeRuntimeId, 0, 0, false)) return false;
@@ -8934,17 +9371,106 @@ static bool debugUiRefreshOutput() {
     return true;
 }
 
+static void debugUiResetDebugSnapshotMetadata(gx_development_debug_snapshot* snapshot) {
+    if (!snapshot) return;
+    snapshot->size = 0;
+    snapshot->version = 0;
+    snapshot->status = GX_DEVELOPMENT_DEBUG_STATUS_NONE;
+    snapshot->trapKind = GX_DEVELOPMENT_DEBUG_TRAP_NONE;
+    snapshot->bindingId = 0;
+    snapshot->processId = 0;
+    snapshot->nativeRuntimeId = 0;
+    snapshot->threadId = 0;
+    snapshot->instructionPointer = 0;
+    snapshot->targetAddress = 0;
+    snapshot->originalByte = 0;
+    snapshot->installedByte = 0;
+    snapshot->originalByteValid = 0;
+    snapshot->bindingInstalled = 0;
+    snapshot->bindingCount = 0;
+    snapshot->errorMessage[0] = '\0';
+    snapshot->context.valid = 0;
+    snapshot->context.processId = 0;
+    snapshot->context.nativeRuntimeId = 0;
+    snapshot->context.threadId = 0;
+    snapshot->context.sessionGeneration = 0;
+    snapshot->context.stopGeneration = 0;
+    snapshot->stackLow = 0;
+    snapshot->stackHigh = 0;
+    snapshot->sessionGeneration = 0;
+    snapshot->pauseReason = 0;
+    snapshot->functionName[0] = '\0';
+    snapshot->rawTrapRip = 0;
+    snapshot->sourcePath[0] = '\0';
+    snapshot->sourceLine = 0;
+    snapshot->sourceColumn = 0;
+    snapshot->sourceMappingValid = 0;
+    snapshot->breakpointCount = 0;
+    snapshot->breakpointCapacity = 0;
+    snapshot->breakpointOperationStatus = 0;
+    snapshot->breakpointReserved = 0;
+    snapshot->outputCount = 0;
+    snapshot->outputCapacity = 0;
+    snapshot->outputDroppedCount = 0;
+    snapshot->outputOperationStatus = 0;
+}
+
+static void debugUiResetSnapshotMetadata() {
+    g_debugUiCallStack.size = 0;
+    g_debugUiCallStack.version = 0;
+    g_debugUiCallStack.status = GX_DEVELOPMENT_DEBUG_CALL_STACK_STATUS_NONE;
+    g_debugUiCallStack.frameCount = 0;
+    g_debugUiCallStack.truncated = 0;
+    g_debugUiCallStack.reserved = 0;
+    g_debugUiCallStack.handle = 0;
+    g_debugUiCallStack.processId = 0;
+    g_debugUiCallStack.nativeRuntimeId = 0;
+    g_debugUiCallStack.threadId = 0;
+    g_debugUiCallStack.sessionGeneration = 0;
+    g_debugUiCallStack.stopGeneration = 0;
+    g_debugUiCallStack.stackLow = 0;
+    g_debugUiCallStack.stackHigh = 0;
+    g_debugUiCallStack.errorMessage[0] = '\0';
+
+    g_debugUiVariables.size = 0;
+    g_debugUiVariables.version = 0;
+    g_debugUiVariables.status = GX_DEVELOPMENT_DEBUG_VARIABLES_STATUS_NONE;
+    g_debugUiVariables.variableCount = 0;
+    g_debugUiVariables.truncated = 0;
+    g_debugUiVariables.reserved = 0;
+    g_debugUiVariables.handle = 0;
+    g_debugUiVariables.processId = 0;
+    g_debugUiVariables.nativeRuntimeId = 0;
+    g_debugUiVariables.threadId = 0;
+    g_debugUiVariables.sessionGeneration = 0;
+    g_debugUiVariables.stopGeneration = 0;
+    g_debugUiVariables.instructionPointer = 0;
+    g_debugUiVariables.framePointer = 0;
+    g_debugUiVariables.stackLow = 0;
+    g_debugUiVariables.stackHigh = 0;
+    g_debugUiVariables.functionName[0] = '\0';
+    g_debugUiVariables.sourcePath[0] = '\0';
+    g_debugUiVariables.errorMessage[0] = '\0';
+
+    debugUiResetDebugSnapshotMetadata(&g_debugUiBreakpointSnapshot);
+    debugUiResetDebugSnapshotMetadata(&g_debugUiOutputSnapshot);
+    debugUiResetDebugSnapshotMetadata(&g_debugUiCommandSnapshot);
+}
+
 static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControllerBreakpoints) {
     debugDataTipInvalidate(nullptr, "runtime_reset");
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_TIP_DONE");
     debuggerWorkspaceResetRuntime(preserveControllerBreakpoints);
-    // These ABI snapshots contain bounded output/source metadata arrays. A
-    // value-initialized temporary for each assignment consumes tens of
-    // kilobytes of the hosted NativeElf call stack before the reset call can
-    // return. Clear the already-owned storage in place instead.
-    __builtin_memset(&g_debugUiCallStack, 0, sizeof(g_debugUiCallStack));
-    __builtin_memset(&g_debugUiVariables, 0, sizeof(g_debugUiVariables));
-    __builtin_memset(&g_debugUiBreakpointSnapshot, 0, sizeof(g_debugUiBreakpointSnapshot));
-    __builtin_memset(&g_debugUiOutputSnapshot, 0, sizeof(g_debugUiOutputSnapshot));
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_WORKSPACE_DONE");
+    // These ABI snapshots contain bounded output/source payload arrays. Reset
+    // their durable metadata and validity boundary in place; the payload is
+    // inaccessible while its count/status fields are cleared, and avoiding a
+    // bulk payload clear keeps this callback bounded on the first launch.
+    debugUiResetSnapshotMetadata();
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_SNAPSHOTS_DONE");
     g_debugUiCallStackValid = false;
     g_debugUiVariablesValid = false;
     g_debugUiBreakpointValid = false;
@@ -8956,14 +9482,21 @@ static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControll
     g_debugUiEditingWatchIndex = 0xFFFFFFFFu;
     g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
     DebugEditorModelResetRuntime(&g_debugEditor);
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_EDITOR_DONE");
     debugEditorRefreshBreakpoints();
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_BREAKPOINTS_DONE");
     if (!preserveWatches) {
-        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i] = DebugUiWatch();
+        for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i)
+            __builtin_memset(&g_debugUiWatches[i], 0, sizeof(g_debugUiWatches[i]));
         g_debugUiWatchCount = 0;
     } else {
         for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i)
             __builtin_memset(&g_debugUiWatches[i].result, 0, sizeof(g_debugUiWatches[i].result));
     }
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_WATCHES_DONE");
 }
 
 static void debugUiMirrorCallStackToController() {
@@ -9063,26 +9596,55 @@ static bool debugUiRefreshPaused(gx_app_context* ctx) {
         }
     }
     else if (stack) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_locals=PARTIAL");
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_PAUSED_WATCH_REFRESH_BEGIN");
     bool watchSuccess = false;
     for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i)
         if (g_debugUiWatches[i].used) watchSuccess = debugUiEvaluateWatch(i) || watchSuccess;
     if (watchSuccess) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watches=PASS");
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_PAUSED_WATCH_REFRESH_DONE");
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_PAUSED_BREAKPOINT_REFRESH_BEGIN");
     if (debugUiRefreshBreakpoints()) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoints=PASS");
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_PAUSED_BREAKPOINT_REFRESH_DONE");
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_PAUSED_OUTPUT_REFRESH_BEGIN");
     debugUiRefreshOutput();
+    if (g_phase28qDiagnostic)
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_UI_PAUSED_OUTPUT_REFRESH_DONE");
     return stack;
 }
 
 static bool debugUiRefresh(gx_app_context* ctx) {
-    if (!debugUiCurrentAbiAvailable() || !DebugControllerIsActive(&g_debugController) ||
-        g_debugController.debugHandle == 0) return false;
+    phase28v_startup_event(ctx, "UI_REFRESH_ENTRY");
+    if (!debugUiCurrentAbiAvailable()) {
+        phase28v_startup_event(ctx, "UI_REFRESH_REJECT", "debug_abi_unavailable");
+        return false;
+    }
+    if (!DebugControllerIsActive(&g_debugController)) {
+        phase28v_startup_event(ctx, "UI_REFRESH_REJECT", "controller_inactive");
+        return false;
+    }
+    if (g_debugController.debugHandle == 0) {
+        phase28v_startup_event(ctx, "UI_REFRESH_REJECT", "debug_handle_missing");
+        return false;
+    }
     if (g_debugUiSessionGeneration != g_debugController.sessionGeneration) {
         g_debugUiSessionGeneration = g_debugController.sessionGeneration;
         g_debugUiStopGeneration = 0;
         debugUiResetRuntimeState(true);
     }
     if (g_fileSystemContext.useBareMetalDebug &&
-        g_debuggerWorkspaceMaterializedGeneration != g_debugController.sessionGeneration &&
-        !debuggerWorkspaceMaterialize(ctx)) return false;
+        g_debuggerWorkspaceMaterializedGeneration != g_debugController.sessionGeneration) {
+        phase28v_startup_event(ctx, "UI_WORKSPACE_MATERIALIZE_BEGIN");
+        if (!debuggerWorkspaceMaterialize(ctx)) {
+            phase28v_startup_event(ctx, "UI_WORKSPACE_MATERIALIZE_FAIL");
+            return false;
+        }
+        phase28v_startup_event(ctx, "UI_WORKSPACE_MATERIALIZE_DONE");
+    }
     if (g_debugController.state == DebugSessionState::Paused &&
         g_debugController.stopGeneration != 0 &&
         g_debugUiStopGeneration != g_debugController.stopGeneration) {
@@ -9092,9 +9654,14 @@ static bool debugUiRefresh(gx_app_context* ctx) {
         g_debugUiCallStackValid = false;
         g_debugUiVariablesValid = false;
         for (uint32_t i = 0; i < kDebugUiMaxWatches; ++i) g_debugUiWatches[i].result = gx_development_debug_expression();
-        debugUiRefreshBreakpoints();
-        debugUiRefreshOutput();
+        phase28v_startup_event(ctx, "UI_BREAKPOINT_REFRESH_BEGIN");
+        const bool breakpointsReady = debugUiRefreshBreakpoints();
+        phase28v_startup_event(ctx, breakpointsReady ? "UI_BREAKPOINT_REFRESH_DONE" : "UI_BREAKPOINT_REFRESH_FAIL");
+        phase28v_startup_event(ctx, "UI_OUTPUT_REFRESH_BEGIN");
+        const bool outputReady = debugUiRefreshOutput();
+        phase28v_startup_event(ctx, outputReady ? "UI_OUTPUT_REFRESH_DONE" : "UI_OUTPUT_REFRESH_FAIL");
     }
+    phase28v_startup_event(ctx, "UI_REFRESH_READY");
     return true;
 }
 
@@ -9116,7 +9683,7 @@ static bool debugUiManagerCommand(gx_app_context* ctx, uint32_t command,
     request.hitCountPolicy = hitPolicy;
     request.hitCountThreshold = hitThreshold;
     request.logTemplate = logTemplate;
-    gx_development_debug_snapshot snapshot = {};
+    gx_development_debug_snapshot& snapshot = g_debugUiCommandSnapshot;
     const bool accepted = debugUiCallGeneral(request, &snapshot);
     if (operationStatus) *operationStatus = snapshot.breakpointOperationStatus;
     if (accepted) {
@@ -9192,7 +9759,7 @@ static void debugEditorRefreshBreakpoints() {
     for (uint32_t i = 0; i < configuredCount && rowCount < kDebugEditorMaxProjectionRows; ++i) {
         const DebuggerWorkspaceBreakpoint& configured = g_debuggerWorkspace.breakpoints[i];
         DebugEditorBreakpoint& row = g_debugEditorRows[rowCount++];
-        row = DebugEditorBreakpoint();
+        __builtin_memset(&row, 0, sizeof(row));
         row.used = configured.sourcePath[0] != '\0' && configured.line != 0;
         row.configured = true;
         row.unresolved = configured.enabled && debugEditorBreakpointUnresolvedAt(g_controller.model.project.projectId,
@@ -9220,7 +9787,7 @@ static void debugEditorRefreshBreakpoints() {
                 if (remote.sessionGeneration != 0 &&
                     remote.sessionGeneration != g_debugController.sessionGeneration) continue;
                 DebugEditorBreakpoint& row = g_debugEditorRows[rowCount++];
-                row = DebugEditorBreakpoint();
+                __builtin_memset(&row, 0, sizeof(row));
                 row.used = remote.breakpointId != 0 && remote.sourcePath[0] != '\0' &&
                     remote.sourceLine != 0;
                 row.configured = false;
@@ -9246,7 +9813,7 @@ static void debugEditorRefreshBreakpoints() {
         for (uint32_t i = 0; i < count && rowCount < kDebugEditorMaxProjectionRows; ++i) {
             const DebugBreakpoint& local = g_debugController.breakpoints[i];
             DebugEditorBreakpoint& row = g_debugEditorRows[rowCount++];
-            row = DebugEditorBreakpoint();
+            __builtin_memset(&row, 0, sizeof(row));
             row.used = local.id != 0 && local.location.relativePath[0] != '\0' &&
                 local.location.line != 0;
             row.configured = false;
@@ -9432,7 +9999,7 @@ static bool debugUiAddBreakpointAtCaret(gx_app_context* ctx) {
 
 static bool debugUiReleaseExecution(gx_app_context* ctx) {
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_RELEASE_EXECUTION);
-    gx_development_debug_snapshot snapshot = {};
+    gx_development_debug_snapshot& snapshot = g_debugUiCommandSnapshot;
     if (!debugUiCallGeneral(request, &snapshot)) {
         if (ctx && snapshot.errorMessage[0]) writeStudioOutput(snapshot.errorMessage);
         return false;
@@ -9459,14 +10026,30 @@ static void debugUiBindLocalMirror(uint64_t managerId, const char* sourcePath,
 }
 
 static void debuggerWorkspaceResetRuntime(bool preserveControllerBreakpoints) {
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_WORKSPACE_ENTRY");
     g_debuggerWorkspaceMaterializedGeneration = 0;
-    for (DebugEditorBreakpoint& row : g_debuggerWorkspaceUnresolved) row = DebugEditorBreakpoint();
+    // `used` is the ownership boundary for unresolved rows.  The payload is
+    // durable global storage and every reader is gated by this bit; avoid a
+    // full row sweep during first-launch initialization.
+    for (DebugEditorBreakpoint& row : g_debuggerWorkspaceUnresolved) {
+        row.used = false;
+        row.configured = false;
+        row.unresolved = false;
+        row.id = 0;
+        row.line = 0;
+    }
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_UNRESOLVED_DONE");
     if (!preserveControllerBreakpoints) {
         DebugControllerClearBreakpoints(&g_debugController);
-        // ClearBreakpoints releases condition storage; also erase the unused slots
-        // so no old ID, address, mapping or hit display survives the boundary.
-        for (DebugBreakpoint& row : g_debugController.breakpoints) row = DebugBreakpoint();
+        // ClearBreakpoints releases condition storage and sets the live count
+        // to zero.  That count is the publication boundary for the bounded
+        // breakpoint table; leave the durable payload in place until a later
+        // insertion overwrites the selected slot.
     }
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_CONTROLLER_BREAKPOINTS_DONE");
     g_debugController.lastBreakpointId = 0;
     g_debugController.lastBindingId = 0;
     g_debugController.lastBindingAddress = 0;
@@ -9478,13 +10061,48 @@ static void debuggerWorkspaceResetRuntime(bool preserveControllerBreakpoints) {
     g_debugEditingWatchId = 0;
     g_debugEditingBreakpointId = 0;
     for (uint64_t& node : g_debugVisibleValueNodes) node = 0;
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_SELECTIONS_DONE");
     __builtin_memset(&g_debugController.callStack, 0, sizeof(g_debugController.callStack));
-    __builtin_memset(&g_debugController.variables, 0, sizeof(g_debugController.variables));
-    __builtin_memset(&g_debugWatches.tree, 0, sizeof(g_debugWatches.tree));
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_CALLSTACK_DONE");
+    // The variable/node payload is a bounded durable snapshot.  Its validity
+    // metadata is the publication boundary, so invalidate the view in place
+    // instead of clearing the full payload during the NativeElf startup
+    // callback.  The latter can cross the small application-stack/runtime
+    // boundary even though the storage itself is global.
+    g_debugController.variables.valid = false;
+    g_debugController.variables.stale = true;
+    g_debugController.variables.frameIndex = 0;
+    g_debugController.variables.processId = 0;
+    g_debugController.variables.nativeRuntimeId = 0;
+    g_debugController.variables.threadId = 0;
+    g_debugController.variables.sessionGeneration = 0;
+    g_debugController.variables.stopGeneration = 0;
+    g_debugController.variables.artifactGeneration = 0;
+    g_debugController.variables.artifactSha256[0] = '\0';
+    g_debugController.variables.frameInstructionAddress = 0;
+    g_debugController.variables.functionIndex = 0;
+    g_debugController.variables.functionName[0] = '\0';
+    g_debugController.variables.variableCount = 0;
+    g_debugController.variables.argumentCount = 0;
+    g_debugController.variables.localCount = 0;
+    g_debugController.variables.status[0] = '\0';
+    g_debugController.variables.nodeCount = 0;
+    g_debugController.variables.materializedNodeCount = 0;
+    g_debugController.variables.targetMemoryReadCount = 0;
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_VARIABLES_DONE");
+    // The watch tree is a bounded DWARF view.  Its validity/stale metadata
+    // is the ownership boundary; retain the payload until the next valid
+    // refresh instead of clearing the entire tree on the NativeElf stack.
     g_debugWatches.treeValid = false;
-    g_debugWatches.treeStale = false;
-    for (auto& watch : g_debugWatches.items)
-        watch.result = guidexos::developer_studio::DebugWatchResult();
+    g_debugWatches.treeStale = true;
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_WATCH_TREE_DONE");
+    DebugWatchCollectionMarkStale(&g_debugWatches);
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_WATCH_ITEMS_DONE");
     for (uint32_t i = 0; i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
         g_debugUiBreakpointIds[i] = 0;
         g_debugUiBreakpointConditions[i][0] = '\0';
@@ -9493,6 +10111,8 @@ static void debuggerWorkspaceResetRuntime(bool preserveControllerBreakpoints) {
         g_debugUiBreakpointPolicies[i] = 0;
         g_debugUiBreakpointThresholds[i] = 0;
     }
+    if (g_phase28qDiagnostic)
+        logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_WORKSPACE_RETURN");
 }
 
 static bool debuggerWorkspaceMaterializeLegacy(gx_app_context* ctx) {
@@ -9554,7 +10174,7 @@ static void debuggerWorkspaceMarkUnresolved(gx_app_context* ctx, const char* sou
                                             uint32_t line, const char* reason) {
     for (DebugEditorBreakpoint& row : g_debuggerWorkspaceUnresolved) {
         if (row.used && !(row.line == line && PathsEqual(row.sourcePath, sourcePath))) continue;
-        row = DebugEditorBreakpoint();
+        __builtin_memset(&row, 0, sizeof(row));
         row.used = true;
         row.configured = true;
         row.unresolved = true;
@@ -10240,6 +10860,24 @@ static void phase28qWaitFor(gx_app_context* ctx) {
 static void phase28qFail(gx_app_context* ctx, const char* reason) {
     if (g_phase28qFailed) return;
     g_phase28qFailed = true;
+    if (reason && phase28u_host_event_equals(reason, "pause_not_captured"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_PAUSE_NOT_CAPTURED");
+    else if (reason && phase28u_host_event_equals(reason, "completed_before_second_pause"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_COMPLETED_BEFORE_SECOND_PAUSE");
+    else if (reason && phase28u_host_event_equals(reason, "second_pause_request"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_SECOND_PAUSE_REQUEST");
+    else if (reason && phase28u_host_event_equals(reason, "second_pause_not_captured"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_SECOND_PAUSE_NOT_CAPTURED");
+    else if (reason && phase28u_host_event_equals(reason, "second_stop_identity"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_SECOND_STOP_IDENTITY");
+    else if (reason && phase28u_host_event_equals(reason, "second_continue"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_SECOND_CONTINUE");
+    else if (reason && phase28u_host_event_equals(reason, "continue_after_pause"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_CONTINUE_AFTER_PAUSE");
+    else if (reason && phase28u_host_event_equals(reason, "final_result"))
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_FINAL_RESULT");
+    else
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_FAIL_REASON_OTHER");
     copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28Q_FAIL reason=");
     appendText(g_textScratch, sizeof(g_textScratch), reason ? reason : "unknown");
     logMarker(ctx, g_textScratch);
@@ -10253,6 +10891,10 @@ static void phase28qFail(gx_app_context* ctx, const char* reason) {
 
 static void phase28qPump(gx_app_context* ctx) {
     if (!g_phase28qDiagnostic || g_phase28qFinished) return;
+    if (g_phase28qStage == 7 && !(g_phase28vLoopTraceMask & 32u)) {
+        phase28v_startup_event(ctx, "PHASE28Q_STAGE_7_ENTRY", nullptr);
+        g_phase28vLoopTraceMask |= 32u;
+    }
     ++g_phase28qStepCount;
     if (g_phase28qDeadline != 0 &&
         (gx_get_ticks_ms(ctx) > g_phase28qDeadline || g_phase28qStepCount >= 12000)) {
@@ -10271,11 +10913,17 @@ static void phase28qPump(gx_app_context* ctx) {
 
     switch (g_phase28qStage) {
     case 1: {
+        phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_ENTRY", nullptr);
         SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
         g_controller.symbolDatabase = nullptr;
         const bool projectOpened = WorkspaceControllerOpenProject(&g_controller, "/P28Q");
         g_controller.symbolDatabase = diagnosticSymbolDatabase;
-        if (!projectOpened || !phase28mOpenDocument(ctx, "src/main.cpp")) {
+        phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_RETURN", projectOpened ? "opened" : "rejected");
+        phase28v_startup_event(ctx, "PHASE28Q_FIXTURE_DOCUMENT_ENTRY", nullptr);
+        const bool fixtureDocumentOpened = phase28mOpenDocument(ctx, "src/main.cpp");
+        phase28v_startup_event(ctx, "PHASE28Q_FIXTURE_DOCUMENT_RETURN",
+                               fixtureDocumentOpened ? "opened" : "rejected");
+        if (!projectOpened || !fixtureDocumentOpened) {
             if (g_phase28qStepCount < 8) break;
             phase28qFail(ctx, "open_project");
             return;
@@ -10283,10 +10931,12 @@ static void phase28qPump(gx_app_context* ctx) {
         g_debugPanelOpen = true;
         g_debugPanelTab = 1;
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PROJECT_OPEN_PASS");
+        phase28v_startup_stage(ctx, 2, "PROJECT_FIXTURE_SELECTED");
         g_phase28qStage = 2;
         break;
     }
     case 2:
+        phase28v_startup_event(ctx, "DEBUG_START_REQUEST_ISSUED");
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_ENTRY");
         requestDebug(ctx);
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_RETURN");
@@ -10303,6 +10953,9 @@ static void phase28qPump(gx_app_context* ctx) {
         }
         if (g_debugController.state == DebugSessionState::Running &&
             g_debugController.targetExecutionReleased) {
+            phase28v_startup_stage(ctx, 17, "FIRST_SCHEDULER_DISPATCH_PERMITTED");
+            phase28v_startup_stage(ctx, 18, "TARGET_ENTRY_REACHED");
+            phase28v_startup_stage(ctx, 19, "PHASE28Q_FIXTURE_EXECUTION_BEGINS");
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_RUNNING_PASS");
             if (!requestDebugPause(ctx)) {
                 phase28qFail(ctx, "pause_ui_request");
@@ -10314,8 +10967,11 @@ static void phase28qPump(gx_app_context* ctx) {
                 phase28qFail(ctx, "pause_request_not_pending");
                 return;
             }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_FIRST_PAUSE_REQUEST_RETURN");
             phase28qWaitFor(ctx);
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_FIRST_PAUSE_WAIT_SET");
             g_phase28qStage = 4;
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_FIRST_PAUSE_STAGE_SET");
         }
         break;
     case 4: {
@@ -10348,16 +11004,15 @@ static void phase28qPump(gx_app_context* ctx) {
         else
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_LOCALS_NOT_LIVE");
 
-        gx_development_debug_expression counter = {};
-        if (debugUiEvaluateExpressionText("counter", &counter) &&
-            counter.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
-            g_phase28qFirstProgress = counter.signedValue;
+        if (debugUiEvaluateExpressionText("counter", &g_phase28qExpression) &&
+            g_phase28qExpression.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
+            g_phase28qFirstProgress = g_phase28qExpression.signedValue;
             g_phase28qFirstProgressValid = true;
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_WATCH_PASS");
             if (g_debugController.currentLocation.relativePath[0] &&
                 g_debugController.currentLocation.line != 0) {
                 char expected[48] = {};
-                appendSigned(expected, sizeof(expected), counter.signedValue);
+                appendSigned(expected, sizeof(expected), g_phase28qExpression.signedValue);
                 if (phase28pHoverToken(ctx, g_debugController.currentLocation.relativePath,
                                        g_debugController.currentLocation.line,
                                        "counter", 0, expected))
@@ -10372,11 +11027,14 @@ static void phase28qPump(gx_app_context* ctx) {
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DATA_TIP_NOT_LIVE");
         }
         g_debugPanelOpen = true;
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_PRE_CONTINUE_KEY");
+        phase28v_startup_event(ctx, "PHASE28Q_CONTINUE_ENTRY");
         if (!handleDebugPanelKey(ctx, 116, GX_KEY_ACTION_DOWN, 0) ||
-            g_debugController.state != DebugSessionState::Running) {
+             g_debugController.state != DebugSessionState::Running) {
             phase28qFail(ctx, "continue_after_pause");
             return;
         }
+        phase28v_startup_event(ctx, "PHASE28Q_CONTINUE_RETURN");
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_PASS");
         phase28qWaitFor(ctx);
         g_phase28qStage = 5;
@@ -10387,12 +11045,16 @@ static void phase28qPump(gx_app_context* ctx) {
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_RUNNING_AFTER_CONTINUE_PASS");
             if (!g_debugUiCallStackValid && !g_debugUiVariablesValid)
                 logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_MARKER_CLEAR_PASS");
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_SECOND_PAUSE_REQUEST_ENTRY");
             if (!requestDebugPause(ctx)) {
                 phase28qFail(ctx, "second_pause_request");
                 return;
             }
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_SECOND_PAUSE_REQUEST_RETURN");
             phase28qWaitFor(ctx);
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_SECOND_PAUSE_WAIT_SET");
             g_phase28qStage = 6;
+            logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_SECOND_PAUSE_STAGE_SET");
         } else if (g_debugController.state == DebugSessionState::Exited ||
                    g_debugController.state == DebugSessionState::Failed) {
             phase28qFail(ctx, "completed_before_second_pause");
@@ -10411,10 +11073,9 @@ static void phase28qPump(gx_app_context* ctx) {
         else {
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_SECOND_PAUSE_PASS");
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_NEW_STOP_PASS");
-            gx_development_debug_expression counter = {};
-            if (debugUiEvaluateExpressionText("counter", &counter) &&
-                counter.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
-                g_phase28qSecondProgress = counter.signedValue;
+            if (debugUiEvaluateExpressionText("counter", &g_phase28qExpression) &&
+                g_phase28qExpression.status == GX_DEVELOPMENT_DEBUG_EXPRESSION_STATUS_SUCCESS) {
+                g_phase28qSecondProgress = g_phase28qExpression.signedValue;
                 g_phase28qSecondProgressValid = true;
             }
             if (!g_phase28qFirstProgressValid || !g_phase28qSecondProgressValid ||
@@ -10424,7 +11085,8 @@ static void phase28qPump(gx_app_context* ctx) {
                 logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_PROGRESS_PASS");
             g_debugPanelOpen = true;
             if (!handleDebugPanelKey(ctx, 116, GX_KEY_ACTION_DOWN, 0) ||
-                g_debugController.state != DebugSessionState::Running) {
+                (g_debugController.state != DebugSessionState::Running &&
+                 g_debugController.state != DebugSessionState::Exited)) {
                 phase28qFail(ctx, "second_continue");
                 return;
             }
@@ -11364,9 +12026,56 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
         return true;
     }
     if (keyCode == 116) {
-        if (DebugControllerCanContinue(&g_debugController)) {
+        if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CAN_CONTINUE_ENTRY");
+        const bool canContinue = DebugControllerCanContinue(&g_debugController);
+        if (g_phase28qDiagnostic) logMarker(ctx, canContinue ?
+            "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CAN_CONTINUE_TRUE" :
+            "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CAN_CONTINUE_FALSE");
+        if (g_phase28qDiagnostic && !canContinue) {
+            if (!DebugControllerIsActive(&g_debugController))
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_INACTIVE");
+            else if (g_debugController.state != DebugSessionState::Paused)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_STATE");
+            else if (!DebugRegisterContextIsValid(g_debugController.stoppedContext) &&
+                     !(g_debugController.stoppedContext.valid &&
+                       g_debugController.stoppedContext.architecture != guidexos::developer_studio::DebugArchitecture::Unknown &&
+                       g_debugController.stoppedContext.processId == 0 &&
+                       g_debugController.stoppedContext.nativeRuntimeId != 0 &&
+                       g_debugController.stoppedContext.threadId != 0 &&
+                       g_debugController.stoppedContext.sessionGeneration != 0 &&
+                       g_debugController.stoppedContext.stopGeneration != 0))
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_CONTEXT");
+            else if (!g_debugController.capabilities.canContinue)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_CAPABILITY");
+            else if (g_debugController.stopReason == DebugStopReason::UserPause &&
+                     g_debugController.backendExecutionState != DebugBackendExecutionState::PausedAtUserPause)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_USER_PAUSE_STATE");
+            else if (g_debugController.stopReason == DebugStopReason::Step)
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_STEP_STATE");
+            else
+                logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_CONTINUE_REJECT_STOP_STATE");
+        }
+        if (canContinue) {
+            if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTROLLER_CONTINUE_ENTRY");
             DebugErrorCode error = DebugErrorCode::None;
             const bool accepted = DebugControllerContinue(&g_debugController, g_debugBackend, &error);
+            if (g_phase28qDiagnostic) logMarker(ctx, accepted ?
+                "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTROLLER_CONTINUE_RETURN_TRUE" :
+                "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTROLLER_CONTINUE_RETURN_FALSE");
+            if (g_phase28qDiagnostic && accepted &&
+                g_debugController.state != DebugSessionState::Running) {
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "DEVELOPER_STUDIO_PHASE28V_CONTINUE_STATE_AFTER_RETURN=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                               static_cast<uint32_t>(g_debugController.state));
+                appendText(g_textScratch, sizeof(g_textScratch), " backend=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                               static_cast<uint32_t>(g_debugController.backendExecutionState));
+                appendText(g_textScratch, sizeof(g_textScratch), " active=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                               g_debugController.active ? 1u : 0u);
+                logMarker(ctx, g_textScratch);
+            }
             if (g_phase28mDiagnostic) logMarker(ctx, accepted ?
                 "DEVELOPER_STUDIO_PHASE28M_CONTINUE_ACCEPTED" :
                 "DEVELOPER_STUDIO_PHASE28M_CONTINUE_REJECTED");
@@ -14288,6 +14997,7 @@ static bool requestApplicationClose(gx_app_context* ctx, gx_handle window) {
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!ctx || !ctx->host) return GX_ERROR_INVALID_ARGUMENT;
+    initializeDebugLaunchStorage();
     // Phase 28O diagnostic mode deliberately re-enters the real application
     // lifecycle after the first close. Keep that re-entry on this invocation's
     // stack instead of recursively calling gx_main; the latter can leave the
@@ -14298,17 +15008,29 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     const bool hasBareBuildCallbacks = ctx->host->size >= offsetof(gx_host_calls, bare_metal_build_project_release) + sizeof(ctx->host->bare_metal_build_project_release) &&
         ctx->host->bare_metal_build_project_start && ctx->host->bare_metal_build_project_poll && ctx->host->bare_metal_build_project_release;
     if (!ctx->host->get_api_version || !ctx->host->log || (!ctx->host->request_window && !hasBareBuildCallbacks)) return GX_ERROR_UNSUPPORTED;
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_GX_MAIN_ENTRY");
     const guidexos::developer_studio::TargetProfile& target = InitialTargetProfile();
     if (!IsValidTargetProfile(target)) return GX_ERROR_FAILED;
 
     g_fileSystemContext.app = ctx;
+    g_phase28qDiagnostic = phase28qSentinelPresent();
+    DebugControllerSetTraceHook(debuggerTraceHook);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_FILESYSTEM_CONTEXT_READY");
     WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite, fsCreateDirectory, fsRemovePath };
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_CONTROLLER_INIT_ENTRY");
     WorkspaceControllerInit(&g_controller, fileSystem);
-    debuggerWorkspaceReset();
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_CONTROLLER_INIT_DONE");
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_RESET_ENTRY");
+    // The first workspace reset is metadata-only.  The runtime reset touches
+    // debugger/editor/watch state and is intentionally deferred until those
+    // services have completed explicit initialization below.
+    debuggerWorkspaceReset(false);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_RESET_DONE");
     SymbolDatabaseInit(&g_symbolDatabase, g_symbolProjectStorage, kSymbolMaxProjectSymbols,
                        g_symbolDocumentStorage, kSymbolMaxDocuments,
                        g_symbolScratchStorage, kSymbolMaxDocumentSymbols);
     WorkspaceControllerAttachSymbolDatabase(&g_controller, &g_symbolDatabase);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_SYMBOL_DATABASE_READY");
     SymbolRelationshipGraphStorageInit(&g_relationshipStorage,
                                        g_relationshipGroups, kStudioRelationshipGroupCapacity,
                                        g_relationshipEdges, kStudioRelationshipEdgeCapacity,
@@ -14358,6 +15080,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                               g_ownershipRelationshipIdentities, kStudioOwnershipCandidateCapacity * 16u,
                               g_ownershipIncludeQueue, kIncludeGraphMaxNodes,
                               g_ownershipIncludeVisited, kIncludeGraphMaxNodes);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_SERVICES_READY");
     g_ownershipOperationId = 0;
     g_ownershipPanelOpen = false;
     g_ownershipPickerOpen = false;
@@ -14410,6 +15133,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_syntaxFallbackMarkerReported = false;
     g_syntaxRenderMarkerReported = false;
     FindSessionInit(&g_findSession);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_SEARCH_SERVICES_READY");
     g_findBarOpen = false;
     g_findReplaceMode = false;
     g_findField = FindField::Query;
@@ -14447,6 +15171,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_nextReferenceQueryId = 1;
     RenameModelInit(&g_renameModel);
     RenameUndoManagerInit(&g_renameUndo);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_RENAME_SERVICES_READY");
     g_renamePanelOpen = false;
     g_renameSearchPending = false;
     g_renameTargetPickerPending = false;
@@ -14475,24 +15200,32 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_definitionStatus[0] = '\0';
     g_nextDefinitionQueryId = 1;
     OutputServiceInit(&g_outputService);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_OUTPUT_SERVICE_READY");
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_STUDIO_OPERATION_ENTRY");
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_STUDIO_OPERATION_DONE");
     g_runOperationId = 0;
     g_outputProblemsTab = false;
     g_outputFocused = false;
     g_outputScroll = 0;
     g_outputFollowTail = true;
     g_problemSelected = 0;
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_BUILD_CONTROLLER_INIT_ENTRY");
     BuildControllerInit(&g_buildController);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_BUILD_CONTROLLER_READY");
     g_buildTerminalReported = false;
     RunControllerInit(&g_runController);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_RUN_CONTROLLER_READY");
     g_runWaitingForBuild = false;
     g_lastRunState = RunState::Idle;
     g_runTerminalReported = false;
     DebugControllerInit(&g_debugController);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_DEBUG_CONTROLLER_READY");
     if (phase28oRecursiveRelaunch)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_DEBUG_CONTROLLER_INIT");
     DebugEditorModelInit(&g_debugEditor);
     DebugDataTipInit(&g_debugDataTip);
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_DEBUG_EDITOR_READY");
     if (phase28oRecursiveRelaunch)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_EDITOR_INIT");
     // The first diagnostic app instance has not started a Debug session yet,
@@ -14500,14 +15233,48 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     // boundary. Re-zeroing the large bounded collection during same-stack
     // diagnostic re-entry can starve the tiny NativeElf app stack; preserve
     // the initialized storage and invalidate only its runtime view.
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WATCH_INIT_ENTRY");
     if (phase28oRecursiveRelaunch)
         DebugWatchCollectionMarkStale(&g_debugWatches);
-    else
-        DebugWatchCollectionInit(&g_debugWatches);
+    else {
+        // g_debugWatches is static zero-initialized storage.  The first
+        // diagnostic app instance has no persisted watch items yet, so a
+        // collection-sized clear here only burns the tiny NativeElf startup
+        // budget.  Publish the empty metadata explicitly and keep the
+        // payload untouched until a watch is actually added.
+        g_debugWatches.nextId = 1;
+        g_debugWatches.count = 0;
+        for (uint32_t i = 0; i < kDebugWatchMaxWatches; ++i) {
+            g_debugWatches.items[i].used = false;
+            g_debugWatches.items[i].id = 0;
+        }
+        g_debugWatches.treeValid = false;
+        g_debugWatches.treeStale = true;
+        g_debugWatches.tree.valid = false;
+        g_debugWatches.tree.stale = true;
+        g_debugWatches.tree.frameIndex = 0;
+        g_debugWatches.tree.processId = 0;
+        g_debugWatches.tree.nativeRuntimeId = 0;
+        g_debugWatches.tree.threadId = 0;
+        g_debugWatches.tree.sessionGeneration = 0;
+        g_debugWatches.tree.stopGeneration = 0;
+        g_debugWatches.tree.artifactGeneration = 0;
+        g_debugWatches.tree.frameInstructionAddress = 0;
+        g_debugWatches.tree.functionIndex = 0;
+        g_debugWatches.tree.variableCount = 0;
+        g_debugWatches.tree.argumentCount = 0;
+        g_debugWatches.tree.localCount = 0;
+        g_debugWatches.tree.status[0] = '\0';
+        g_debugWatches.tree.nodeCount = 0;
+        g_debugWatches.tree.materializedNodeCount = 0;
+        g_debugWatches.tree.targetMemoryReadCount = 0;
+    }
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WATCH_INIT_DONE");
     if (phase28oRecursiveRelaunch)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_WATCH_INIT");
     g_debugController.watches = &g_debugWatches;
     HostedDebugBackendInit(&g_hostedDebugBackend, developmentRunService());
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_HOSTED_BACKEND_INIT_DONE");
     g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);
     g_debugWaitingForBuild = false;
     g_debugTerminalReported = false;
@@ -14520,6 +15287,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugPanelTab = 0;
     g_debugSelectedBreakpoint = 0;
     writeOutput("Ready");
+    phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_READY_OUTPUT_DONE");
     const bool phase28qSentinel = phase28qSentinelPresent();
     const bool phase28nSentinel = phase28nSentinelPresent();
     const bool phase28oSentinel = phase28oSentinelPresent();
@@ -14566,6 +15334,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28mStepCount = 0;
     g_phase28qFinished = false;
     g_phase28qFailed = false;
+    g_phase28vStartupTraceCount = 0;
+    g_phase28vStartupLastStage = 0;
+    g_phase28vStartupEventCount = 0;
+    g_phase28vLoopTraceMask = 0;
+    g_phase28vAfterContinueTraceMask = 0;
     g_phase28qStage = g_phase28qDiagnostic ? 1u : 0u;
     g_phase28qDeadline = g_phase28qDiagnostic ? gx_get_ticks_ms(ctx) + 120000 : 0;
     g_phase28qStepCount = 0;
@@ -14578,11 +15351,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28qSecondProgress = 0;
     g_phase28qFirstProgressValid = false;
     g_phase28qSecondProgressValid = false;
+    g_phase28qExpression = {};
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_BEGIN");
     if (g_phase28nDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_BEGIN");
     if (g_phase28oDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_BEGIN");
     if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_BEGIN");
     if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_BEGIN");
+    phase28v_startup_stage(ctx, 1, "APPLICATION_STARTED");
 
 #if defined(GXOS_PHASE12_SMOKE)
     if (hasBareBuildCallbacks) return runPhase12Smoke(ctx) ? GX_OK : GX_ERROR_FAILED;
@@ -14626,8 +15401,24 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             pollBuild(ctx);
             pollRun(ctx);
             pollDebug(ctx);
+            if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 16u)) {
+                phase28v_startup_event(ctx, "MAIN_AFTER_DEBUG_POLL_AFTER_CONTINUE");
+                g_phase28vAfterContinueTraceMask |= 16u;
+            }
+            if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 1u)) {
+                phase28v_startup_event(ctx, "MAIN_LOOP_AFTER_DEBUG_READY");
+                g_phase28vLoopTraceMask |= 1u;
+            }
             phase28oPump(ctx);
+            if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 2u)) {
+                phase28v_startup_event(ctx, "PHASE28Q_PUMP_ENTRY");
+                g_phase28vLoopTraceMask |= 2u;
+            }
             phase28qPump(ctx);
+            if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 4u)) {
+                phase28v_startup_event(ctx, "PHASE28Q_PUMP_RETURN");
+                g_phase28vLoopTraceMask |= 4u;
+            }
             phase28mPump(ctx);
             if (g_phase28oDiagnostic && !g_phase28oFailed && !g_phase28oFinished &&
                 g_phase28mFinished && g_requestExit &&
@@ -14658,10 +15449,18 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             gx_event event;
             clear_event(&event);
             const uint32_t eventPollTimeout = g_phase28oDiagnostic ? 50u : 500u;
+            if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 8u)) {
+                phase28v_startup_event(ctx, "EVENT_POLL_ENTRY");
+                g_phase28vLoopTraceMask |= 8u;
+            }
             gx_result result = ctx->host->poll_event(ctx, &event,
                 (IncludeGraphIsActive(&g_includeGraphOperation) || OwnershipGraphBuildIsActive(&g_ownershipService) ||
                  ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ?
                     50 : eventPollTimeout);
+            if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 16u)) {
+                phase28v_startup_event(ctx, "EVENT_POLL_RETURN");
+                g_phase28vLoopTraceMask |= 16u;
+            }
             if (result == GX_OK && event.window == g_window) {
                 if (gx_event_is_paint(&event)) drawShell(ctx);
                 else if (gx_event_is_close(&event)) {

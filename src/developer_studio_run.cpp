@@ -118,7 +118,7 @@ const char* RunErrorName(RunErrorCode error) {
 bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRequest* request, RunErrorCode* error) {
     if (error) *error = RunErrorCode::None;
     if (!request) { if (error) *error = RunErrorCode::InvalidRequest; return false; }
-    *request = RunRequest();
+    __builtin_memset(request, 0, sizeof(*request));
     ProjectErrorCode projectError = ProjectErrorCode::None;
     if (!project.valid || project.kind != ProjectKind::NativeGuiApplication || build.state != BuildState::Succeeded) {
         if (error) *error = RunErrorCode::BuildRequired;
@@ -150,7 +150,7 @@ bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRe
 
 bool RunControllerInit(RunController* controller) {
     if (!controller) return false;
-    *controller = RunController();
+    __builtin_memset(controller, 0, sizeof(*controller));
     controller->state = RunState::Idle;
     controller->result.state = RunState::Idle;
     controller->result.error = RunErrorCode::None;
@@ -173,13 +173,14 @@ bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunS
     }
     OutputService* output = controller->output;
     const uint64_t operationId = controller->operationId;
-    *controller = RunController();
+    __builtin_memset(controller, 0, sizeof(*controller));
     controller->output = output;
     controller->operationId = operationId;
     controller->state = RunState::Validating;
     controller->result.state = RunState::Validating;
     controller->request = request;
-    RunResult result = {};
+    RunResult& result = controller->result;
+    __builtin_memset(&result, 0, sizeof(result));
     uint64_t handle = 0;
     const bool prepared = service.prepare(service.userData, request, &handle, &result);
     if (!prepared || handle == 0 || result.state == RunState::Failed) {
@@ -189,14 +190,12 @@ bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunS
             else if (handle == 0) copyText(result.errorMessage, sizeof(result.errorMessage), "development run prepare returned a zero handle");
             else if (result.state == RunState::Failed) copyText(result.errorMessage, sizeof(result.errorMessage), "development run prepare returned Failed");
         }
-        controller->result = result;
         if (handle != 0 && service.release) service.release(service.userData, handle);
         setFailure(controller, RunState::Failed, local);
         if (error) *error = local;
         return false;
     }
     controller->handle = handle;
-    controller->result = result;
     controller->publishedOutputCount = 0;
     controller->state = result.state == RunState::Registered ? RunState::Prepared : result.state;
     controller->result.state = controller->state;
@@ -216,17 +215,15 @@ bool RunControllerStart(RunController* controller, const HostedDevelopmentRunSer
         if (error) *error = RunErrorCode::ServiceUnavailable;
         return false;
     }
-    RunResult result = controller->result;
+    RunResult& result = controller->result;
     if (!service.start(service.userData, controller->handle, &result)) {
         const RunErrorCode local = result.error == RunErrorCode::None ? RunErrorCode::LaunchFailed : result.error;
-        controller->result = result;
         if (service.release) service.release(service.userData, controller->handle);
         controller->handle = 0;
         setFailure(controller, RunState::Failed, local);
         if (error) *error = local;
         return false;
     }
-    controller->result = result;
     controller->state = result.state == RunState::Idle ? RunState::Launching : result.state;
     controller->result.state = controller->state;
     appendRunText(controller, OutputSeverity::Information, "Application launching");
@@ -235,17 +232,15 @@ bool RunControllerStart(RunController* controller, const HostedDevelopmentRunSer
 
 bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunService& service) {
     if (!controller || !controller->active || !service.poll) return false;
-    RunResult result = controller->result;
+    RunResult& result = controller->result;
     if (!service.poll(service.userData, controller->handle, &result)) {
         result.error = result.error == RunErrorCode::None ? RunErrorCode::ServiceUnavailable : result.error;
-        controller->result = result;
         setFailure(controller, RunState::Failed, result.error);
         if (service.release) service.release(service.userData, controller->handle);
         controller->handle = 0;
         return false;
     }
     const RunState previous = controller->state;
-    controller->result = result;
     controller->state = result.state;
     if (controller->output && controller->operationId != 0) {
         const uint32_t count = result.outputCount > kMaxRunOutputLines ? kMaxRunOutputLines : result.outputCount;

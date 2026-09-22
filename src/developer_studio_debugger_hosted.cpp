@@ -29,26 +29,26 @@ static bool textEquals(const char* left, const char* right) {
     return left[index] == right[index];
 }
 
-static RunRequest makeRunRequest(const DebugTarget& target) {
-    RunRequest request = {};
-    copyText(request.projectRoot, sizeof(request.projectRoot), target.projectRoot);
-    copyText(request.projectId, sizeof(request.projectId), target.projectId);
-    copyText(request.projectKind, sizeof(request.projectKind), "native-gui-application");
-    copyText(request.targetProfile, sizeof(request.targetProfile), target.targetProfile);
-    copyText(request.manifestPath, sizeof(request.manifestPath), target.manifestPath);
-    copyText(request.artifactPath, sizeof(request.artifactPath), target.executablePath);
-    request.artifactSize = target.artifactSize;
-    copyText(request.artifactSha256, sizeof(request.artifactSha256), target.artifactSha256);
-    copyText(request.artifactArchitecture, sizeof(request.artifactArchitecture), target.architecture);
-    copyText(request.artifactAbi, sizeof(request.artifactAbi), target.abi);
-    request.debugControlled = true;
-    return request;
+static void makeRunRequest(const DebugTarget& target, RunRequest* request) {
+    if (!request) return;
+    __builtin_memset(request, 0, sizeof(*request));
+    copyText(request->projectRoot, sizeof(request->projectRoot), target.projectRoot);
+    copyText(request->projectId, sizeof(request->projectId), target.projectId);
+    copyText(request->projectKind, sizeof(request->projectKind), "native-gui-application");
+    copyText(request->targetProfile, sizeof(request->targetProfile), target.targetProfile);
+    copyText(request->manifestPath, sizeof(request->manifestPath), target.manifestPath);
+    copyText(request->artifactPath, sizeof(request->artifactPath), target.executablePath);
+    request->artifactSize = target.artifactSize;
+    copyText(request->artifactSha256, sizeof(request->artifactSha256), target.artifactSha256);
+    copyText(request->artifactArchitecture, sizeof(request->artifactArchitecture), target.architecture);
+    copyText(request->artifactAbi, sizeof(request->artifactAbi), target.abi);
+    request->debugControlled = true;
 }
 
 static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generation,
                             DebugBackendSnapshot* snapshot) {
     if (!snapshot) return;
-    *snapshot = DebugBackendSnapshot();
+    __builtin_memset(snapshot, 0, sizeof(*snapshot));
     snapshot->sessionGeneration = generation;
     switch (backend.runController.state) {
     case RunState::Exited:
@@ -94,7 +94,17 @@ static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generati
 static void applyRegisterSnapshot(const HostedDebugResult& result,
                                   DebugBackendSnapshot* snapshot) {
     if (!snapshot) return;
-    snapshot->registerContext.valid = result.registerContext.valid;
+    // Some NativeElf pause paths publish the complete register payload and
+    // generation identity before the transport validity bit is copied into
+    // the hosted result. Treat that publication as valid only when the
+    // complete resume identity is present; never manufacture a context from
+    // an address alone.
+    const bool completeRegisterPublication = result.registerContext.threadId != 0 &&
+        result.registerContext.sessionGeneration != 0 &&
+        result.registerContext.stopGeneration != 0 &&
+        result.registerContext.rip != 0 && result.registerContext.rsp != 0 &&
+        result.registerContext.rbp != 0;
+    snapshot->registerContext.valid = result.registerContext.valid || completeRegisterPublication;
     snapshot->registerContext.architecture = static_cast<DebugArchitecture>(result.registerContext.architecture);
     snapshot->registerContext.processId = result.registerContext.processId;
     snapshot->registerContext.nativeRuntimeId = result.registerContext.nativeRuntimeId;
@@ -130,9 +140,12 @@ static bool launch(void* userData, const DebugTarget& target, uint64_t generatio
     backend->userPauseStopPending = false;
     backend->userStepStopPending = false;
     backend->internalTrapStopPending = false;
-    backend->lastSnapshot = DebugBackendSnapshot();
+    backend->resumeTerminalPending = false;
+    backend->resumeTerminalGeneration = 0;
+    __builtin_memset(&backend->lastSnapshot, 0, sizeof(backend->lastSnapshot));
     backend->lastSnapshotValid = false;
-    const RunRequest request = makeRunRequest(target);
+    static RunRequest request = {};
+    makeRunRequest(target, &request);
     RunErrorCode error = RunErrorCode::None;
     if (!RunControllerPrepare(&backend->runController, backend->runService, request, &error) ||
         !RunControllerStart(&backend->runController, backend->runService, &error)) {
@@ -159,6 +172,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
     }
     const uint64_t handle = backend->runController.result.handle;
     if (!RunControllerPoll(&backend->runController, backend->runService)) return false;
+    DebugControllerTrace("HOSTED_POLL_RUN_RETURN");
     snapshotFromRun(*backend, generation, outSnapshot);
     // The run deployment owns publication of the authenticated process/runtime
     // identity. During the short Launching boundary the target may already be
@@ -177,7 +191,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
     if (backend->runService.debugCommand && handle != 0 &&
         (runtimeIdentityReady || bareMetalIdentityIsDebuggerOwned) &&
         (outSnapshot->state == DebugSessionState::Running || outSnapshot->state == DebugSessionState::Launching)) {
-        HostedDebugResult debugResult = {};
+        HostedDebugResult& debugResult = backend->commandResult;
+        __builtin_memset(&debugResult, 0, sizeof(debugResult));
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
                                               generation, outSnapshot->processId, outSnapshot->nativeRuntimeId,
                                               0, 0, backend->runController.request.artifactSha256, 0, 0, false, 0, 0, &debugResult)) {
@@ -192,6 +207,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             copyText(outSnapshot->errorMessage, sizeof(outSnapshot->errorMessage), debugResult.errorMessage[0] ? debugResult.errorMessage : "Hosted debugger trap poll failed");
             return false;
         }
+        DebugControllerTrace("HOSTED_POLL_DEBUG_RETURN");
         if (textEquals(debugResult.errorMessage, "NativeElf target exited")) {
             // Debug polling has observed the target return.  The second run
             // poll is lifecycle acknowledgement only: it consumes the durable
@@ -356,6 +372,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
     }
     backend->lastSnapshot = *outSnapshot;
     backend->lastSnapshotValid = true;
+    DebugControllerTrace("HOSTED_POLL_SNAPSHOT_RETURN");
     return true;
 }
 
@@ -365,7 +382,8 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !outBinding || !backend->runService.debugCommand || !breakpoint.location.instructionAddress.valid) return false;
     *outBinding = DebugBackendBinding();
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::BindSoftwareBreakpoint,
                                           backend->runController.result.handle, sessionGeneration, processId,
                                           nativeRuntimeId, breakpoint.id, breakpoint.location.instructionAddress.value,
@@ -400,7 +418,8 @@ static bool pause(void* userData, uint64_t sessionGeneration) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || backend->runController.result.handle == 0)
         return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Pause,
                                           backend->runController.result.handle, sessionGeneration,
                                           0, backend->runController.result.nativeRuntimeId,
@@ -415,7 +434,8 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
     (void)bindingId;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ContinueBreakpoint,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
@@ -430,7 +450,8 @@ static bool stepInstruction(void* userData, uint64_t sessionGeneration,
     (void)bindingId;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     const HostedDebugCommand command = backend->internalTrapStopPending ?
         HostedDebugCommand::StepInternalTrap : HostedDebugCommand::StepInstruction;
     if (!backend->runService.debugCommand(backend->runService.userData, command,
@@ -451,7 +472,8 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
                             const DebugRegisterContext& context) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     const HostedDebugCommand command = backend->userPauseStopPending ?
         HostedDebugCommand::Resume : (backend->internalTrapStopPending ?
         HostedDebugCommand::ResumeInternalTrap : HostedDebugCommand::ResumeStep);
@@ -462,10 +484,30 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
                                           backend->runController.request.artifactSha256, context.threadId,
                                           context.stopGeneration, false, targetAddress, 0, &result)) return false;
     if (result.status != 1 && result.status != 3 && result.status != 6) return false;
+    if (textEquals(result.errorMessage, "NativeElf target exited")) {
+        // Continue may synchronously consume the target's final scheduler
+        // slice. Consume the already-published durable run metadata here so
+        // the next controller poll observes EXITED rather than stale RUNNING.
+        (void)RunControllerPoll(&backend->runController, backend->runService);
+        backend->resumeTerminalPending = true;
+        backend->resumeTerminalGeneration = sessionGeneration;
+    }
     backend->userPauseStopPending = false;
     backend->userStepStopPending = false;
     backend->internalTrapStopPending = false;
     return true;
+}
+
+static bool consumeResumeTerminal(void* userData, uint64_t sessionGeneration,
+                                  DebugBackendSnapshot* snapshot) {
+    HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    if (!backend || !snapshot || !backend->resumeTerminalPending ||
+        backend->resumeTerminalGeneration != sessionGeneration) return false;
+    backend->resumeTerminalPending = false;
+    backend->resumeTerminalGeneration = 0;
+    snapshotFromRun(*backend, sessionGeneration, snapshot);
+    return snapshot->state == DebugSessionState::Exited ||
+        snapshot->state == DebugSessionState::Failed;
 }
 
 static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t processId,
@@ -475,7 +517,8 @@ static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t proc
     if (returned) *returned = 0;
     if (!backend || !backend->runService.debugCommand || !bytes || requested == 0 || requested > kDebugMaxInstructionBytes)
         return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ReadMemory,
                                           backend->runController.result.handle, sessionGeneration, processId,
                                           nativeRuntimeId, 0, address, backend->runController.request.artifactSha256,
@@ -494,7 +537,8 @@ static bool readTargetMemory(void* userData, uint64_t sessionGeneration, uint64_
     if (returned) *returned = 0;
     if (!backend || !backend->runService.debugCommand || !bytes || requested == 0 ||
         requested > kDebugMaxInstructionBytes || threadId == 0 || stopGeneration == 0) return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ReadMemory,
                                           backend->runController.result.handle, sessionGeneration,
                                           processId, nativeRuntimeId, 0, address,
@@ -511,7 +555,8 @@ static bool stepOverCall(void* userData, uint64_t sessionGeneration,
                          uint64_t returnAddress, uint64_t temporaryBreakpointId) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepOverCall,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, temporaryBreakpointId,
@@ -534,7 +579,8 @@ static bool stepOutReturn(void* userData, uint64_t sessionGeneration,
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid ||
         targetAddress == 0 || returnAddress == 0 || temporaryBreakpointId == 0) return false;
-    HostedDebugResult result = {};
+    HostedDebugResult& result = backend->commandResult;
+    __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::StepOutReturn,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, temporaryBreakpointId,
@@ -579,7 +625,8 @@ static bool stop(void* userData, uint64_t generation) {
         // Bare-metal NativeElf uses processId == 0 by ABI; its runtime
         // registration generation is the authenticated identity instead.
         if (runtimeId == 0) { backend->lastStopRoute = 7; return false; }
-        HostedDebugResult result = {};
+        HostedDebugResult& result = backend->commandResult;
+        __builtin_memset(&result, 0, sizeof(result));
         const bool cancelled = backend->runService.debugCommand(
                 backend->runService.userData, HostedDebugCommand::CancelExecution,
                 backend->runController.result.handle, generation, processId, runtimeId,
@@ -615,7 +662,9 @@ static bool stop(void* userData, uint64_t generation) {
 void HostedDebugBackendInit(HostedDebugBackend* backend,
                             const HostedDevelopmentRunService& runService) {
     if (!backend) return;
-    *backend = HostedDebugBackend();
+    // This backend owns bounded command-response storage. Clear it in place so
+    // initialization does not materialize the whole backend on the app stack.
+    __builtin_memset(backend, 0, sizeof(*backend));
     backend->runService = runService;
     RunControllerInit(&backend->runController);
 }
@@ -658,6 +707,7 @@ DebugBackend HostedDebugBackendCreate(HostedDebugBackend* backend) {
     result.continueExecution = continueExecution;
     result.stepInstruction = stepInstruction;
     result.resumeExecution = resumeExecution;
+    result.consumeResumeTerminal = consumeResumeTerminal;
     result.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     result.debugCommand = debugCommand;
     result.readMemory = readMemory;

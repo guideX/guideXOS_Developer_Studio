@@ -1032,7 +1032,7 @@ static bool evaluateNode(uint16_t nodeIndex, const DebugExpressionAst& ast,
 
 static void clearResult(DebugWatchResult* result, uint64_t id) {
     if (!result) return;
-    *result = DebugWatchResult();
+    __builtin_memset(result, 0, sizeof(*result));
     result->watchId = id;
     result->state = DebugWatchState::Stale;
     copyText(result->valueDisplay, sizeof(result->valueDisplay), "<stale>");

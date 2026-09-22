@@ -320,8 +320,29 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
 
 static void clearVariableView(DebugDwarfVariableView* view) {
     if (!view) return;
-    unsigned char* bytes = reinterpret_cast<unsigned char*>(view);
-    for (uint32_t i = 0; i < sizeof(DebugDwarfVariableView); ++i) bytes[i] = 0;
+    // Keep the bounded variable/node payload in owned storage.  Invalidation
+    // is the publication boundary; clearing the full view here can consume
+    // the NativeElf callback stack budget.
+    view->valid = false;
+    view->stale = true;
+    view->frameIndex = 0;
+    view->processId = 0;
+    view->nativeRuntimeId = 0;
+    view->threadId = 0;
+    view->sessionGeneration = 0;
+    view->stopGeneration = 0;
+    view->artifactGeneration = 0;
+    view->artifactSha256[0] = '\0';
+    view->frameInstructionAddress = 0;
+    view->functionIndex = 0;
+    view->functionName[0] = '\0';
+    view->variableCount = 0;
+    view->argumentCount = 0;
+    view->localCount = 0;
+    view->status[0] = '\0';
+    view->nodeCount = 0;
+    view->materializedNodeCount = 0;
+    view->targetMemoryReadCount = 0;
 }
 
 bool DebugControllerBuildVariables(DebugController* controller, const DebugBackend& backend,

@@ -128,6 +128,10 @@ struct OutputOperation {
 struct OutputService {
     OutputRecord records[kMaxOutputRecords];
     OutputOperation operations[kMaxOutputOperations];
+    // Output append is reached from the NativeElf application stack during
+    // debugger startup. Keep its normalization buffer owned by the service
+    // instead of creating several large OutputRecord temporaries there.
+    OutputRecord appendScratch;
     uint32_t recordCount;
     uint32_t operationCount;
     uint64_t nextSequence;

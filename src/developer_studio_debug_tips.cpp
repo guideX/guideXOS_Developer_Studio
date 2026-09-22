@@ -128,7 +128,7 @@ bool DebugDataTipExtractIdentifier(const char* text, uint32_t length, uint32_t o
 
 void DebugDataTipInit(DebugDataTipModel* model) {
     if (!model) return;
-    *model = DebugDataTipModel();
+    __builtin_memset(model, 0, sizeof(*model));
     model->state = DebugDataTipState::Empty;
 }
 
@@ -136,7 +136,7 @@ void DebugDataTipInvalidate(DebugDataTipModel* model) {
     if (!model) return;
     const int anchorX = model->anchorX;
     const int anchorY = model->anchorY;
-    *model = DebugDataTipModel();
+    __builtin_memset(model, 0, sizeof(*model));
     model->anchorX = anchorX;
     model->anchorY = anchorY;
     model->state = DebugDataTipState::Empty;

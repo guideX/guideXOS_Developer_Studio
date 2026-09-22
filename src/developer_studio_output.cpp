@@ -145,26 +145,27 @@ static void setError(OutputErrorCode* error, OutputErrorCode value) {
 static bool appendRecordUnbounded(OutputService* service, int operation, const OutputRecord& input, OutputErrorCode* error) {
     if (!service || operation < 0 || static_cast<uint32_t>(operation) >= service->operationCount) { setError(error, OutputErrorCode::OperationNotFound); return false; }
     if (!reserveRecord(service)) { setError(error, OutputErrorCode::RecordLimit); return false; }
-    OutputRecord record = {};
-    record.sequence = service->nextSequence++;
-    record.operationId = service->operations[operation].operationId;
-    record.source = input.source;
-    record.severity = input.severity;
-    record.category = input.category;
-    record.stream = input.stream;
+    OutputRecord* record = &service->records[service->recordCount];
+    clearBytes(record, sizeof(*record));
+    record->sequence = service->nextSequence++;
+    record->operationId = service->operations[operation].operationId;
+    record->source = input.source;
+    record->severity = input.severity;
+    record->category = input.category;
+    record->stream = input.stream;
     bool truncated = input.isTruncated;
-    copyBounded(record.text, sizeof(record.text), input.text, true, &truncated);
-    copyBounded(record.projectId, sizeof(record.projectId), input.projectId[0] ? input.projectId : service->operations[operation].projectId, false, &truncated);
-    copyBounded(record.relativeFilePath, sizeof(record.relativeFilePath), input.relativeFilePath, false, &truncated);
-    copyBounded(record.diagnosticCode, sizeof(record.diagnosticCode), input.diagnosticCode, false, &truncated);
-    record.line = input.line;
-    record.column = input.column;
-    record.endLine = input.endLine;
-    record.endColumn = input.endColumn;
-    record.hasLocation = input.hasLocation;
-    record.isTruncated = truncated;
-    record.isTerminal = input.isTerminal;
-    service->records[service->recordCount++] = record;
+    copyBounded(record->text, sizeof(record->text), input.text, true, &truncated);
+    copyBounded(record->projectId, sizeof(record->projectId), input.projectId[0] ? input.projectId : service->operations[operation].projectId, false, &truncated);
+    copyBounded(record->relativeFilePath, sizeof(record->relativeFilePath), input.relativeFilePath, false, &truncated);
+    copyBounded(record->diagnosticCode, sizeof(record->diagnosticCode), input.diagnosticCode, false, &truncated);
+    record->line = input.line;
+    record->column = input.column;
+    record->endLine = input.endLine;
+    record->endColumn = input.endColumn;
+    record->hasLocation = input.hasLocation;
+    record->isTruncated = truncated;
+    record->isTerminal = input.isTerminal;
+    ++service->recordCount;
     ++service->operations[operation].retainedRecordCount;
     setError(error, truncated ? OutputErrorCode::TextTruncated : OutputErrorCode::None);
     return true;
@@ -174,14 +175,14 @@ static bool appendTruncationNotice(OutputService* service, int operation) {
     if (!service || operation < 0 || service->operations[operation].truncationPublished) return true;
     const uint64_t id = service->operations[operation].operationId;
     if (service->operations[operation].retainedRecordCount >= kMaxOutputRecordsPerOperation) removeOldestRecordForOperation(service, id);
-    OutputRecord record = {};
-    record.source = OutputSource::DeveloperStudio;
-    record.severity = OutputSeverity::Warning;
-    record.category = OutputCategory::Internal;
-    record.stream = OutputStream::Unknown;
-    copyBounded(record.text, sizeof(record.text), "Output truncated: record limit reached.", true, nullptr);
-    record.isTruncated = true;
-    if (!appendRecordUnbounded(service, operation, record, nullptr)) return false;
+    clearBytes(&service->appendScratch, sizeof(service->appendScratch));
+    service->appendScratch.source = OutputSource::DeveloperStudio;
+    service->appendScratch.severity = OutputSeverity::Warning;
+    service->appendScratch.category = OutputCategory::Internal;
+    service->appendScratch.stream = OutputStream::Unknown;
+    copyBounded(service->appendScratch.text, sizeof(service->appendScratch.text), "Output truncated: record limit reached.", true, nullptr);
+    service->appendScratch.isTruncated = true;
+    if (!appendRecordUnbounded(service, operation, service->appendScratch, nullptr)) return false;
     service->operations[operation].truncationPublished = true;
     return true;
 }
@@ -454,22 +455,30 @@ bool OutputServiceAppendRecord(OutputService* service, uint64_t operationId, con
     setError(error, OutputErrorCode::None);
     const int operation = operationIndex(service, operationId);
     if (operation < 0) { setError(error, OutputErrorCode::OperationNotFound); return false; }
-    OutputRecord normalized = record;
-    if (normalized.projectId[0] == '\0') copyBounded(normalized.projectId, sizeof(normalized.projectId), service->operations[operation].projectId, false, nullptr);
-    return appendNormal(service, operation, normalized, error);
+    if (&record != &service->appendScratch) {
+        clearBytes(&service->appendScratch, sizeof(service->appendScratch));
+        const unsigned char* source = reinterpret_cast<const unsigned char*>(&record);
+        unsigned char* destination = reinterpret_cast<unsigned char*>(&service->appendScratch);
+        for (uint32_t i = 0; i < sizeof(record); ++i) destination[i] = source[i];
+    }
+    if (service->appendScratch.projectId[0] == '\0')
+        copyBounded(service->appendScratch.projectId, sizeof(service->appendScratch.projectId),
+                    service->operations[operation].projectId, false, nullptr);
+    return appendNormal(service, operation, service->appendScratch, error);
 }
 
 bool OutputServiceAppendText(OutputService* service, uint64_t operationId, OutputSource source, OutputSeverity severity,
                              OutputCategory category, OutputStream stream, const char* text,
                              const char* projectId, OutputErrorCode* error) {
-    OutputRecord record = {};
-    record.source = source;
-    record.severity = severity;
-    record.category = category;
-    record.stream = stream;
-    copyBounded(record.text, sizeof(record.text), text, true, &record.isTruncated);
-    copyBounded(record.projectId, sizeof(record.projectId), projectId, false, &record.isTruncated);
-    return OutputServiceAppendRecord(service, operationId, record, error);
+    if (!service) { setError(error, OutputErrorCode::OperationNotFound); return false; }
+    clearBytes(&service->appendScratch, sizeof(service->appendScratch));
+    service->appendScratch.source = source;
+    service->appendScratch.severity = severity;
+    service->appendScratch.category = category;
+    service->appendScratch.stream = stream;
+    copyBounded(service->appendScratch.text, sizeof(service->appendScratch.text), text, true, &service->appendScratch.isTruncated);
+    copyBounded(service->appendScratch.projectId, sizeof(service->appendScratch.projectId), projectId, false, &service->appendScratch.isTruncated);
+    return OutputServiceAppendRecord(service, operationId, service->appendScratch, error);
 }
 
 bool ParseBuildDiagnostic(const char* projectRoot, const char* projectId, const char* text, OutputStream stream,

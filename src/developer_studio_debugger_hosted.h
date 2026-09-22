@@ -19,6 +19,11 @@ struct HostedDebugBackend {
     bool lastStopFallbackFailed;
     uint64_t stopProcessId;
     uint64_t stopRuntimeId;
+    bool resumeTerminalPending;
+    uint64_t resumeTerminalGeneration;
+    // Command responses contain bounded register/error storage. Keep the
+    // reusable response out of the NativeElf callback stack.
+    HostedDebugResult commandResult;
 };
 
 void HostedDebugBackendInit(HostedDebugBackend* backend,

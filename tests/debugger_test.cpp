@@ -54,6 +54,7 @@ struct FakeBackend {
     uint8_t installedByte = 0xCC;
     uint32_t continueCalls = 0;
     bool continuePending = false;
+    bool terminalOnResume = false;
     DebugRegisterContext lastContinueContext = {};
     uint64_t lastContinueBreakpointId = 0;
     uint64_t lastContinueBindingId = 0;
@@ -156,6 +157,21 @@ static bool resumeExecution(void* userData, uint64_t generation,
     return true;
 }
 
+static bool consumeResumeTerminal(void* userData, uint64_t generation,
+                                  DebugBackendSnapshot* snapshot) {
+    FakeBackend* fake = static_cast<FakeBackend*>(userData);
+    if (!fake || !snapshot || !fake->terminalOnResume) return false;
+    fake->terminalOnResume = false;
+    *snapshot = DebugBackendSnapshot();
+    snapshot->sessionGeneration = generation;
+    snapshot->state = DebugSessionState::Exited;
+    snapshot->stopReason = DebugStopReason::Exited;
+    snapshot->nativeRuntimeId = 77;
+    snapshot->exitCode = 0;
+    snapshot->cleanupComplete = true;
+    return true;
+}
+
 static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t,
                                    uint64_t, uint64_t, const DebugBreakpoint& breakpoint,
                                    DebugBackendBinding* binding) {
@@ -232,6 +248,7 @@ static DebugBackend makePauseBackend(FakeBackend* fake) {
     DebugBackend backend = makeBackend(fake);
     backend.capabilities.canPause = true;
     backend.resumeExecution = resumeExecution;
+    backend.consumeResumeTerminal = consumeResumeTerminal;
     return backend;
 }
 
@@ -349,6 +366,24 @@ int main() {
     assert(!pauseController.pauseRequestPending && pauseController.state == DebugSessionState::Stopping);
     assert(DebugControllerPoll(&pauseController, pauseBackend));
     assert(pauseController.state == DebugSessionState::Exited && !pauseController.active);
+
+    FakeBackend terminalResumeFake;
+    DebugBackend terminalResumeBackend = makePauseBackend(&terminalResumeFake);
+    static DebugController terminalResumeController = {};
+    assert(DebugControllerInit(&terminalResumeController));
+    assert(DebugControllerSetProjectContext(&terminalResumeController, project.projectId,
+                                            project.rootPath, 9));
+    assert(DebugControllerStart(&terminalResumeController, terminalResumeBackend, target, &error));
+    assert(DebugControllerPoll(&terminalResumeController, terminalResumeBackend));
+    assert(DebugControllerPause(&terminalResumeController, terminalResumeBackend, &error));
+    userPause.sessionGeneration = terminalResumeController.sessionGeneration;
+    userPause.registerContext.sessionGeneration = terminalResumeController.sessionGeneration;
+    assert(DebugControllerApplySnapshot(&terminalResumeController,
+                                        terminalResumeController.sessionGeneration, userPause));
+    terminalResumeFake.terminalOnResume = true;
+    assert(DebugControllerContinue(&terminalResumeController, terminalResumeBackend, &error));
+    assert(terminalResumeController.state == DebugSessionState::Exited &&
+           !terminalResumeController.active && !terminalResumeController.pauseRequestPending);
 
     FakeBackend completionFake;
     DebugBackend completionBackend = makePauseBackend(&completionFake);

@@ -211,6 +211,19 @@ int main() {
     assert(std::strcmp(shaOutput, "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD") == 0);
 
     std::vector<unsigned char> fixture = fixtureElf();
+    static DebugDwarfMapper resetProbe = {};
+    DebugDwarfMapperReset(&resetProbe);
+    resetProbe.state = DebugDwarfMapperState::Ready;
+    resetProbe.error = DebugDwarfError::MalformedDwarf;
+    resetProbe.lineRowCount = 17;
+    resetProbe.rows[0].address = 0x401000;
+    resetProbe.directories[0][0] = 'x';
+    resetProbe.currentFileCount = 3;
+    DebugDwarfMapperReset(&resetProbe);
+    assert(resetProbe.state == DebugDwarfMapperState::Empty);
+    assert(resetProbe.error == DebugDwarfError::None);
+    assert(resetProbe.lineRowCount == 0 && resetProbe.rows[0].address == 0);
+    assert(resetProbe.directories[0][0] == '\0' && resetProbe.currentFileCount == 0);
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
     const bool loaded = DebugDwarfMapperLoad(&mapper, "D:/fixture", "fixture", "target", "amd64",
@@ -225,6 +238,14 @@ int main() {
     assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src\\main.cpp", 42, addresses, 8, &count, &primary, &error));
     assert(count == 3 && primary == 0x401000 && addresses[1] == 0x401004 && addresses[2] == 0x402000);
     assert(mapper.sequenceCount == 2);
+
+    static DebugDwarfMapper pristineMapper;
+    std::memset(&pristineMapper, 0xA5, sizeof(pristineMapper));
+    assert(DebugDwarfMapperLoad(&pristineMapper, "D:/fixture", "fixture", "target", "amd64",
+                                "build/bin/fixture.elf", fixture.size(),
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                7, &fixture[0], fixture.size(), 1, &error));
+    assert(pristineMapper.state == DebugDwarfMapperState::Ready);
 
     std::vector<unsigned char> symbolFixture = symbolFixtureElf();
     static DebugDwarfMapper symbolMapper = {};

@@ -11,6 +11,13 @@ static void reportMapperProgress(uint32_t stage) {
     if (s_mapperProgressCallback) s_mapperProgressCallback(s_mapperProgressUserData, stage);
 }
 
+static void clearMapperArray(void* data, uint32_t elementBytes, uint32_t count,
+                             uint32_t capacity) {
+    if (!data || elementBytes == 0 || count == 0) return;
+    if (count > capacity) count = capacity;
+    __builtin_memset(data, 0, static_cast<__SIZE_TYPE__>(elementBytes) * count);
+}
+
 static const uint16_t kElfTypeExec = 2;
 static const uint16_t kElfMachineAmd64 = 62;
 static const uint32_t kSectionTypeString = 3;
@@ -854,6 +861,7 @@ static const uint32_t kBootstrapVariableBytes = 100u;
 static const uint32_t kBootstrapFooterBytes = 8u;
 static const uint16_t kBootstrapVersion = 1u;
 static const uint16_t kBootstrapVersionWithVariables = 2u;
+static const uint32_t kDebugDwarfMapperResetCookie = 0x4758534Du;
 
 static bool bootstrapFixedTextValid(const unsigned char* bytes, uint32_t capacity) {
     if (!bytes || capacity == 0) return false;
@@ -881,11 +889,13 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
     const uint64_t footerOffset = size - kBootstrapFooterBytes;
     if (readU32(bytes, footerOffset) != 0x454D5847u) return false;
     if (recognized) *recognized = true;
+    reportMapperProgress(7);
     const uint32_t payload = readU32(bytes, footerOffset + 4u);
     if (payload < 40u + kBootstrapFooterBytes || payload > size) {
         mapper->error = DebugDwarfError::MalformedDwarf;
         return false;
     }
+    reportMapperProgress(8);
     const uint64_t start = size - payload;
     const uint16_t version = readU16(bytes, start + 4u);
     const uint32_t headerBytes = version == kBootstrapVersionWithVariables ? 48u : 40u;
@@ -897,6 +907,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         mapper->error = DebugDwarfError::MalformedDwarf;
         return false;
     }
+    reportMapperProgress(9);
     reportMapperProgress(10);
 
     const uint32_t fileCount = readU16(bytes, start + 8u);
@@ -1380,14 +1391,70 @@ bool DebugDwarfComputeSha256(const unsigned char* bytes, uint64_t size,
 
 void DebugDwarfMapperReset(DebugDwarfMapper* mapper) {
     if (!mapper) return;
-    // The mapper is a large, fixed-capacity object. Clear it in naturally
-    // aligned machine-word stores so the freestanding Debug build does not
-    // spend an excessive amount of guest time zeroing it byte by byte.
-    uint64_t* words = reinterpret_cast<uint64_t*>(mapper);
-    const uint32_t wordCount = static_cast<uint32_t>(sizeof(DebugDwarfMapper) / sizeof(uint64_t));
-    for (uint32_t i = 0; i < wordCount; ++i) words[i] = 0;
+    // The mapper is application-owned, but its fixed-capacity tables are
+    // intentionally large (about 20 MB in the freestanding build). Clearing
+    // the complete object at first launch makes startup depend on the guest's
+    // emulated memory bandwidth. Reset the scalar header and only the entries
+    // owned by the previous generation. Every parser appends from a zeroed
+    // count, so inactive capacity does not participate in the next load.
+    // Only a mapper that crossed the explicit reset publication boundary may
+    // contribute old counts. A fresh NativeElf image must never infer that
+    // boundary from state/count bytes that may contain stale memory.
+    const bool initialized = mapper->resetCookie == kDebugDwarfMapperResetCookie;
+    const uint32_t oldBootstrapVariableCount = initialized ? mapper->bootstrapVariableCount : 0;
+    const uint32_t oldCompilationUnitCount = initialized ? mapper->debugInfoCompilationUnitCount : 0;
+    const uint32_t oldDieCount = initialized ? mapper->debugInfoDieCount : 0;
+    const uint32_t oldDebugFunctionCount = initialized ? mapper->debugInfoFunctionCount : 0;
+    const uint32_t oldDebugVariableCount = initialized ? mapper->debugInfoVariableCount : 0;
+    const uint32_t oldSourceFileCount = initialized ? mapper->sourceFileCount : 0;
+    const uint32_t oldLineKeyCount = initialized ? mapper->lineKeyCount : 0;
+    const uint32_t oldLineRowCount = initialized ? mapper->lineRowCount : 0;
+    const uint32_t oldAddressOrderCount = initialized ? mapper->addressOrderCount : 0;
+    const uint32_t oldFunctionSymbolCount = initialized ? mapper->functionSymbolCount : 0;
+    const uint32_t oldExecutableSegmentCount = initialized ? mapper->executableSegmentCount : 0;
+    const uint32_t oldDirectoryCount = initialized ? mapper->directoryCount : 0;
+    const uint32_t oldCurrentFileCount = initialized ? mapper->currentFileCount : 0;
+
+    __builtin_memset(&mapper->state, 0,
+                     static_cast<__SIZE_TYPE__>(reinterpret_cast<unsigned char*>(&mapper->bootstrapVariables) -
+                                                 reinterpret_cast<unsigned char*>(&mapper->state)));
+    clearMapperArray(mapper->bootstrapVariables, sizeof(mapper->bootstrapVariables[0]),
+                     oldBootstrapVariableCount, kDebugDwarfMaxVariables);
+    clearMapperArray(mapper->compilationUnits, sizeof(mapper->compilationUnits[0]),
+                     oldCompilationUnitCount, kDebugDwarfMaxCompilationUnits);
+    clearMapperArray(mapper->dies, sizeof(mapper->dies[0]), oldDieCount, kDebugDwarfMaxDies);
+    clearMapperArray(mapper->debugFunctions, sizeof(mapper->debugFunctions[0]),
+                     oldDebugFunctionCount, kDebugDwarfMaxFunctions);
+    clearMapperArray(mapper->debugVariables, sizeof(mapper->debugVariables[0]),
+                     oldDebugVariableCount, kDebugDwarfMaxVariables);
+    reportMapperProgress(3);
+    clearMapperArray(mapper->sourceFiles, sizeof(mapper->sourceFiles[0]),
+                     oldSourceFileCount, kDebugMapperMaxSourceFiles);
+    clearMapperArray(mapper->lineKeys, sizeof(mapper->lineKeys[0]),
+                     oldLineKeyCount, kDebugMapperMaxLineKeys);
+    clearMapperArray(mapper->rows, sizeof(mapper->rows[0]), oldLineRowCount, kDebugMapperMaxLineRows);
+    reportMapperProgress(4);
+    clearMapperArray(mapper->addressOrder, sizeof(mapper->addressOrder[0]),
+                     oldAddressOrderCount, kDebugMapperMaxLineRows);
+    clearMapperArray(mapper->functionSymbols, sizeof(mapper->functionSymbols[0]),
+                     oldFunctionSymbolCount, kDebugMapperMaxFunctionSymbols);
+    clearMapperArray(mapper->executableSegments, sizeof(mapper->executableSegments[0]),
+                     oldExecutableSegmentCount, kDebugMapperMaxExecutableSegments);
+    reportMapperProgress(5);
+    clearMapperArray(mapper->directories, sizeof(mapper->directories[0]),
+                     oldDirectoryCount, kDebugMapperMaxDirectories);
+    clearMapperArray(mapper->currentFileSources, sizeof(mapper->currentFileSources[0]),
+                     oldCurrentFileCount + 1u, kDebugMapperMaxFiles + 1u);
+
+    __builtin_memset(mapper->directories, 0, sizeof(mapper->directories[0]) * kDebugMapperMaxDirectories);
+    __builtin_memset(mapper->currentFileSources, 0,
+                     sizeof(mapper->currentFileSources[0]) * (kDebugMapperMaxFiles + 1u));
+    mapper->directoryCount = 0;
+    mapper->currentFileCount = 0;
+    reportMapperProgress(6);
     mapper->state = DebugDwarfMapperState::Empty;
     mapper->error = DebugDwarfError::None;
+    mapper->resetCookie = kDebugDwarfMapperResetCookie;
 }
 
 bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
@@ -1403,6 +1470,7 @@ bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
         if (error) *error = DebugDwarfError::MalformedElf;
         return false;
     }
+    reportMapperProgress(0);
     DebugDwarfMapperReset(mapper);
     reportMapperProgress(1);
     copyText(mapper->identity.executablePath, sizeof(mapper->identity.executablePath), executablePath);
