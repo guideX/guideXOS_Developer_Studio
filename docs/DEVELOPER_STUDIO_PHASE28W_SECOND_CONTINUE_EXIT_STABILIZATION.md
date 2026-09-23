@@ -255,12 +255,22 @@ race. No startup diagnostics were removed or weakened.
 
 ## Part N — hosted control
 
-The prior Phase 28V hosted smoke control was successful and remains the hosted
-baseline. A new final hosted run was not used as the acceptance result in this
-phase; the repaired boundary was exercised directly through the rebuilt
-NativeElf/QEMU path. Hosted mode did not provide a deterministic reproduction
-of the QEMU timing race, so hosted results are not represented as a new
-10/10 claim.
+The real hosted Native ELF control was rerun with the rebuilt server and the
+Continue variant. It passed the hosted desktop launch, project open, real
+source breakpoint pause, source navigation, call stack, locals, F5 Continue /
+single-step and breakpoint rebind, exact target identity publication, targeted
+stop, durable EXITED teardown, window release, and clean Server exit. The
+control ended with:
+
+```text
+Developer Studio Debugger Phase 3B end-to-end smoke PASS
+hosted Server exits cleanly after the debugger proof (exit code 0)
+```
+
+This hosted smoke is a control for the live Native ELF lifecycle. It does not
+run the Phase 28Q two-Pause/two-Continue acceptance sequence and did not
+reproduce the QEMU timing race deterministically; therefore it is not counted
+as a new 10/10 claim.
 
 ## Part O — fresh QEMU acceptance
 
@@ -315,4 +325,3 @@ Remaining acceptance work is the independent paused-context refresh failure
 that can reject the second Continue before command dispatch. The targeted
 post-exit Continue lifecycle defect is repaired and covered by deterministic
 tests plus the successful fresh QEMU trace.
-
