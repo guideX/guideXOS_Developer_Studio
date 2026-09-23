@@ -55,6 +55,7 @@ struct FakeBackend {
     uint32_t continueCalls = 0;
     bool continuePending = false;
     bool terminalOnResume = false;
+    bool terminalOnContinue = false;
     DebugRegisterContext lastContinueContext = {};
     uint64_t lastContinueBreakpointId = 0;
     uint64_t lastContinueBindingId = 0;
@@ -143,7 +144,7 @@ static bool continueExecution(void* userData, uint64_t generation, const DebugRe
     fake->lastContinueBindingId = bindingId;
     fake->lastContinueAddress = targetAddress;
     fake->lastContinueReinstall = reinstallBreakpoint;
-    fake->continuePending = true;
+    fake->continuePending = !fake->terminalOnContinue;
     return true;
 }
 
@@ -153,15 +154,16 @@ static bool resumeExecution(void* userData, uint64_t generation,
     if (!fake || !context.valid || context.sessionGeneration != generation) return false;
     ++fake->continueCalls;
     fake->lastContinueContext = context;
-    fake->continuePending = true;
+    fake->continuePending = !fake->terminalOnResume;
     return true;
 }
 
 static bool consumeResumeTerminal(void* userData, uint64_t generation,
                                   DebugBackendSnapshot* snapshot) {
     FakeBackend* fake = static_cast<FakeBackend*>(userData);
-    if (!fake || !snapshot || !fake->terminalOnResume) return false;
+    if (!fake || !snapshot || (!fake->terminalOnResume && !fake->terminalOnContinue)) return false;
     fake->terminalOnResume = false;
+    fake->terminalOnContinue = false;
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
     snapshot->state = DebugSessionState::Exited;
@@ -241,6 +243,7 @@ static DebugBackend makeBreakpointBackend(FakeBackend* fake) {
     backend.bindSoftwareBreakpoint = bindSoftwareBreakpoint;
     backend.debugCommand = debugCommand;
     backend.continueExecution = continueExecution;
+    backend.consumeResumeTerminal = consumeResumeTerminal;
     return backend;
 }
 
@@ -505,6 +508,56 @@ int main() {
     assert(hitFake.lastContinueContext.sessionGeneration == hit.sessionGeneration &&
            hitFake.lastContinueContext.stopGeneration == 1 &&
            hitFake.lastContinueContext.threadId == 44);
+
+    // Phase 28W: Continue can be accepted at a valid breakpoint stop while
+    // the target returns before the normal acknowledgement path.  The
+    // terminal hook must complete the same command exactly once, and a late
+    // duplicate must not re-enter the backend.
+    FakeBackend breakpointExitFake;
+    breakpointExitFake.trapOnSecondPoll = true;
+    DebugBackend breakpointExitBackend = makeBreakpointBackend(&breakpointExitFake);
+    static DebugController breakpointExit = {};
+    assert(DebugControllerInit(&breakpointExit));
+    assert(DebugControllerSetProjectContext(&breakpointExit, project.projectId, project.rootPath, 9));
+    uint64_t breakpointExitId = 0;
+    assert(DebugControllerToggleBreakpoint(&breakpointExit, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 71, 0, 3, &breakpointExitId, &error));
+    prepareMappedBreakpoint(&breakpointExit, breakpointExitId);
+    assert(DebugControllerStart(&breakpointExit, breakpointExitBackend, target, &error));
+    assert(DebugControllerPoll(&breakpointExit, breakpointExitBackend));
+    assert(DebugControllerPoll(&breakpointExit, breakpointExitBackend));
+    assert(breakpointExit.state == DebugSessionState::Paused);
+    const uint32_t continueCallsBeforeExit = breakpointExitFake.continueCalls;
+    breakpointExitFake.terminalOnContinue = true;
+    assert(DebugControllerContinue(&breakpointExit, breakpointExitBackend, &error));
+    assert(breakpointExit.state == DebugSessionState::Exited && !breakpointExit.active);
+    assert(breakpointExitFake.continueCalls == continueCallsBeforeExit + 1);
+    assert(!DebugControllerContinue(&breakpointExit, breakpointExitBackend, &error));
+    assert(breakpointExitFake.continueCalls == continueCallsBeforeExit + 1);
+
+    // A fresh launch generation cannot consume the previous generation's
+    // terminal completion.  The controller must establish a new stop before
+    // accepting another Continue.
+    FakeBackend relaunchFake;
+    DebugBackend relaunchBackend = makePauseBackend(&relaunchFake);
+    static DebugController relaunch = {};
+    assert(DebugControllerInit(&relaunch));
+    assert(DebugControllerSetProjectContext(&relaunch, project.projectId, project.rootPath, 9));
+    assert(DebugControllerStart(&relaunch, relaunchBackend, target, &error));
+    assert(DebugControllerPoll(&relaunch, relaunchBackend));
+    assert(DebugControllerPause(&relaunch, relaunchBackend, &error));
+    userPause.sessionGeneration = relaunch.sessionGeneration;
+    userPause.registerContext.sessionGeneration = relaunch.sessionGeneration;
+    assert(DebugControllerApplySnapshot(&relaunch, relaunch.sessionGeneration, userPause));
+    relaunchFake.terminalOnResume = true;
+    const uint64_t relaunchGeneration = relaunch.sessionGeneration;
+    assert(DebugControllerContinue(&relaunch, relaunchBackend, &error));
+    assert(relaunch.state == DebugSessionState::Exited);
+    relaunchFake.polls = 0;
+    assert(DebugControllerStart(&relaunch, relaunchBackend, target, &error));
+    assert(relaunch.sessionGeneration != relaunchGeneration);
+    assert(relaunch.state == DebugSessionState::Launching);
+    assert(!DebugControllerContinue(&relaunch, relaunchBackend, &error));
 
     FakeBackend partialFake;
     partialFake.failBindAt = 2;

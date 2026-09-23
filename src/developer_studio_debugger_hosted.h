@@ -19,6 +19,9 @@ struct HostedDebugBackend {
     bool lastStopFallbackFailed;
     uint64_t stopProcessId;
     uint64_t stopRuntimeId;
+    // Generic Continue terminal completion.  The historical field name is
+    // retained for source compatibility; it is used by both user-pause
+    // Resume and breakpoint Continue.
     bool resumeTerminalPending;
     uint64_t resumeTerminalGeneration;
     // Command responses contain bounded register/error storage. Keep the

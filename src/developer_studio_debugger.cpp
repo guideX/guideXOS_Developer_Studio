@@ -2032,6 +2032,7 @@ bool DebugControllerPause(DebugController* controller, const DebugBackend& backe
 
 bool DebugControllerContinue(DebugController* controller, const DebugBackend& backend,
                              DebugErrorCode* error) {
+    DebugControllerTrace("DEBUGGER_CONTINUE_ENTRY");
     if (error) *error = DebugErrorCode::None;
     if (!controller || !controller->active || controller->state != DebugSessionState::Paused ||
         !debugRegisterContextValidForController(controller->stoppedContext) ||
@@ -2046,6 +2047,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
             return false;
         }
         if (!backend.resumeExecution(backend.userData, controller->sessionGeneration, controller->stoppedContext)) {
+            DebugControllerTrace("DEBUGGER_CONTINUE_BACKEND_REJECTED");
             controller->error = DebugErrorCode::BackendError;
             if (error) *error = controller->error;
             setMessage(controller, "User-pause Continue was rejected; target remains paused");
@@ -2055,6 +2057,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
             DebugBackendSnapshot& terminalSnapshot = g_debugPollSnapshot;
             clearSnapshot(&terminalSnapshot);
             terminalSnapshot.sessionGeneration = controller->sessionGeneration;
+            DebugControllerTrace("DEBUGGER_CONTINUE_TERMINAL_CHECK");
             if (backend.consumeResumeTerminal(backend.userData, controller->sessionGeneration,
                                               &terminalSnapshot) &&
                 (terminalSnapshot.state == DebugSessionState::Exited ||
@@ -2067,6 +2070,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
                     if (error) *error = controller->error;
                     return false;
                 }
+                DebugControllerTrace("DEBUGGER_CONTINUE_TERMINAL_APPLIED");
                 return true;
             }
         }
@@ -2078,6 +2082,7 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
         appendEvent(controller, DebugEventKind::ContinueRequested, controller->state,
                     DebugStopReason::UserPause, "User-pause Continue requested");
         setMessage(controller, "User-pause stop resumed");
+        DebugControllerTrace("DEBUGGER_CONTINUE_RUNNING");
         return true;
     }
     if (controller->stopReason == DebugStopReason::Step) {
@@ -2147,10 +2152,30 @@ bool DebugControllerContinue(DebugController* controller, const DebugBackend& ba
         controller->error = DebugErrorCode::BackendError;
         setMessage(controller, "Breakpoint continuation was rejected; target remains paused");
         if (error) *error = controller->error;
+        DebugControllerTrace("DEBUGGER_CONTINUE_BREAKPOINT_REJECTED");
         return false;
+    }
+    if (backend.consumeResumeTerminal) {
+        DebugBackendSnapshot& terminalSnapshot = g_debugPollSnapshot;
+        clearSnapshot(&terminalSnapshot);
+        terminalSnapshot.sessionGeneration = controller->sessionGeneration;
+        DebugControllerTrace("DEBUGGER_CONTINUE_BREAKPOINT_TERMINAL_CHECK");
+        if (backend.consumeResumeTerminal(backend.userData, controller->sessionGeneration,
+                                          &terminalSnapshot) &&
+            (terminalSnapshot.state == DebugSessionState::Exited ||
+             terminalSnapshot.state == DebugSessionState::Failed)) {
+            if (!DebugControllerApplySnapshot(controller, controller->sessionGeneration,
+                                              terminalSnapshot)) {
+                if (error) *error = controller->error;
+                return false;
+            }
+            DebugControllerTrace("DEBUGGER_CONTINUE_BREAKPOINT_TERMINAL_APPLIED");
+            return true;
+        }
     }
     controller->backendExecutionState = DebugBackendExecutionState::SingleStepPending;
     setMessage(controller, "Original breakpoint instruction restored; internal single-step pending");
+    DebugControllerTrace("DEBUGGER_CONTINUE_BREAKPOINT_PENDING");
     return true;
 }
 

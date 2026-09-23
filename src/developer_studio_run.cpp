@@ -230,7 +230,8 @@ bool RunControllerStart(RunController* controller, const HostedDevelopmentRunSer
     return true;
 }
 
-bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunService& service) {
+bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunService& service,
+                       bool releaseTerminal) {
     if (!controller || !controller->active || !service.poll) return false;
     RunResult& result = controller->result;
     if (!service.poll(service.userData, controller->handle, &result)) {
@@ -264,7 +265,7 @@ bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunServ
         else if (result.state == RunState::Exited) appendRunText(controller, OutputSeverity::Information, "Application exited");
         else if (result.state == RunState::CleaningUp) appendRunText(controller, OutputSeverity::Information, "Deployment cleanup started");
     }
-    if (isTerminal(result.state) && result.cleanupComplete) {
+    if (isTerminal(result.state) && result.cleanupComplete && releaseTerminal) {
         if (result.errorMessage[0] != '\0' && controller->output && controller->operationId != 0) {
             OutputServiceAppendText(controller->output, controller->operationId, OutputSource::Runtime,
                                     OutputSeverity::Error, OutputCategory::RuntimeDiagnostic,

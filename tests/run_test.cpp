@@ -152,6 +152,23 @@ int main() {
     for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
     assert(terminalCount == 1);
 
+    FakeRun deferred;
+    deferred.emitExited = true;
+    service.userData = &deferred;
+    assert(RunControllerInit(&controller));
+    assert(RunControllerPrepare(&controller, service, request, &error));
+    assert(RunControllerStart(&controller, service, &error));
+    assert(RunControllerPoll(&controller, service));
+    assert(controller.state == RunState::Running && RunControllerIsActive(&controller));
+    // A debugger Continue observes EXITED without releasing the operation;
+    // the following ordinary lifecycle poll owns the release.
+    assert(RunControllerPoll(&controller, service, false));
+    assert(controller.state == RunState::Exited && RunControllerIsActive(&controller));
+    assert(!deferred.released);
+    assert(RunControllerPoll(&controller, service));
+    assert(controller.state == RunState::Exited && !RunControllerIsActive(&controller));
+    assert(deferred.released);
+
     FakeRun startFailure;
     startFailure.startFails = true;
     service.userData = &startFailure;

@@ -29,6 +29,30 @@ static bool textEquals(const char* left, const char* right) {
     return left[index] == right[index];
 }
 
+static bool isTargetExitResult(const HostedDebugResult& result) {
+    return textEquals(result.errorMessage, "NativeElf target exited");
+}
+
+static bool publishContinueTerminal(HostedDebugBackend* backend, uint64_t generation) {
+    if (!backend) return false;
+    DebugControllerTrace("HOSTED_CONTINUE_TERMINAL_POLL_ENTRY");
+    const bool polled = RunControllerPoll(&backend->runController, backend->runService, false);
+    DebugControllerTrace(polled ? "HOSTED_CONTINUE_TERMINAL_POLL_RETURN" :
+                         "HOSTED_CONTINUE_TERMINAL_POLL_FAILED");
+    // The NativeElf debug response is the authoritative exit observation.  A
+    // failed metadata poll must not turn that fact back into a pending target
+    // acknowledgement; retain a terminal lifecycle snapshot for the
+    // controller and let the ordinary run poll perform any later release.
+    if (!polled) {
+        backend->runController.state = RunState::Exited;
+        backend->runController.result.state = RunState::Exited;
+    }
+    backend->resumeTerminalPending = true;
+    backend->resumeTerminalGeneration = generation;
+    DebugControllerTrace("HOSTED_CONTINUE_TERMINAL_PENDING");
+    return true;
+}
+
 static void makeRunRequest(const DebugTarget& target, RunRequest* request) {
     if (!request) return;
     __builtin_memset(request, 0, sizeof(*request));
@@ -433,6 +457,7 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
                               uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint) {
     (void)bindingId;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    DebugControllerTrace("HOSTED_CONTINUE_COMMAND_ENTRY");
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
     HostedDebugResult& result = backend->commandResult;
     __builtin_memset(&result, 0, sizeof(result));
@@ -440,7 +465,17 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, reinstallBreakpoint, 0, 0, &result)) return false;
+                                          context.stopGeneration, reinstallBreakpoint, 0, 0, &result)) {
+        DebugControllerTrace("HOSTED_CONTINUE_COMMAND_FAILED");
+        return false;
+    }
+    if (isTargetExitResult(result)) {
+        publishContinueTerminal(backend, sessionGeneration);
+        DebugControllerTrace("HOSTED_CONTINUE_COMMAND_EXIT_RESOLVED");
+        return true;
+    }
+    DebugControllerTrace(result.status == 6 ? "HOSTED_CONTINUE_COMMAND_ACK" :
+                         "HOSTED_CONTINUE_COMMAND_REJECTED");
     return result.status == 6;
 }
 
@@ -471,6 +506,7 @@ static bool stepInstruction(void* userData, uint64_t sessionGeneration,
 static bool resumeExecution(void* userData, uint64_t sessionGeneration,
                             const DebugRegisterContext& context) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    DebugControllerTrace("HOSTED_RESUME_COMMAND_ENTRY");
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
     HostedDebugResult& result = backend->commandResult;
     __builtin_memset(&result, 0, sizeof(result));
@@ -482,15 +518,18 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, 0, 0,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, false, targetAddress, 0, &result)) return false;
-    if (result.status != 1 && result.status != 3 && result.status != 6) return false;
-    if (textEquals(result.errorMessage, "NativeElf target exited")) {
-        // Continue may synchronously consume the target's final scheduler
-        // slice. Consume the already-published durable run metadata here so
-        // the next controller poll observes EXITED rather than stale RUNNING.
-        (void)RunControllerPoll(&backend->runController, backend->runService);
-        backend->resumeTerminalPending = true;
-        backend->resumeTerminalGeneration = sessionGeneration;
+                                          context.stopGeneration, false, targetAddress, 0, &result)) {
+        DebugControllerTrace("HOSTED_RESUME_COMMAND_FAILED");
+        return false;
+    }
+    if (isTargetExitResult(result)) {
+        publishContinueTerminal(backend, sessionGeneration);
+        DebugControllerTrace("HOSTED_RESUME_COMMAND_EXIT_RESOLVED");
+    } else if (result.status != 1 && result.status != 3 && result.status != 6) {
+        DebugControllerTrace("HOSTED_RESUME_COMMAND_REJECTED");
+        return false;
+    } else {
+        DebugControllerTrace("HOSTED_RESUME_COMMAND_ACK");
     }
     backend->userPauseStopPending = false;
     backend->userStepStopPending = false;
@@ -501,13 +540,20 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
 static bool consumeResumeTerminal(void* userData, uint64_t sessionGeneration,
                                   DebugBackendSnapshot* snapshot) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
+    DebugControllerTrace("HOSTED_CONTINUE_TERMINAL_CONSUME_ENTRY");
     if (!backend || !snapshot || !backend->resumeTerminalPending ||
-        backend->resumeTerminalGeneration != sessionGeneration) return false;
+        backend->resumeTerminalGeneration != sessionGeneration) {
+        DebugControllerTrace("HOSTED_CONTINUE_TERMINAL_CONSUME_IGNORED");
+        return false;
+    }
     backend->resumeTerminalPending = false;
     backend->resumeTerminalGeneration = 0;
     snapshotFromRun(*backend, sessionGeneration, snapshot);
-    return snapshot->state == DebugSessionState::Exited ||
+    const bool terminal = snapshot->state == DebugSessionState::Exited ||
         snapshot->state == DebugSessionState::Failed;
+    DebugControllerTrace(terminal ? "HOSTED_CONTINUE_TERMINAL_CONSUME_RETURN" :
+                         "HOSTED_CONTINUE_TERMINAL_CONSUME_NONTERMINAL");
+    return terminal;
 }
 
 static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t processId,

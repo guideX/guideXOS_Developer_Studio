@@ -218,7 +218,13 @@ bool RunControllerInit(RunController* controller);
 void RunControllerAttachOutput(RunController* controller, OutputService* output, uint64_t operationId);
 bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunService& service, const RunRequest& request, RunErrorCode* error);
 bool RunControllerStart(RunController* controller, const HostedDevelopmentRunService& service, RunErrorCode* error);
-bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunService& service);
+// When releaseTerminal is false, a terminal snapshot is observed and retained
+// for the caller without releasing the service handle.  This is required when
+// a synchronous debugger command observes target exit: the debugger must
+// consume the authoritative lifecycle snapshot before ordinary run teardown
+// reaps the operation.
+bool RunControllerPoll(RunController* controller, const HostedDevelopmentRunService& service,
+                       bool releaseTerminal = true);
 bool RunControllerRequestClose(RunController* controller, const HostedDevelopmentRunService& service);
 bool RunControllerIsActive(const RunController* controller);
 bool RunControllerIsTransitionActive(const RunController* controller);
