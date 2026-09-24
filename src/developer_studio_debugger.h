@@ -728,6 +728,10 @@ bool DebugCapabilitiesHasPause(const DebugCapabilities& capabilities);
 bool DebugCapabilitiesHasContinue(const DebugCapabilities& capabilities);
 bool DebugRegisterContextIsValid(const DebugRegisterContext& context);
 bool DebugRegisterContextIsValidForController(const DebugRegisterContext& context);
+// A context is usable only while it still belongs to the controller's exact
+// session/runtime/process/thread/stop tuple.  This is stronger than payload
+// validity and is the ownership gate for all paused-state operations.
+bool DebugControllerStoppedContextIsCurrent(const DebugController* controller);
 
 using DebugControllerTraceHook = void (*)(const char* event);
 void DebugControllerSetTraceHook(DebugControllerTraceHook hook);

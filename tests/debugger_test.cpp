@@ -348,12 +348,39 @@ int main() {
     userPause.registerContext.rflags = 0x202;
     userPause.registerContext.rsp = 0x700008;
     userPause.registerContext.rbp = 0x700100;
+    // A paused lifecycle state is not publishable without the exact stop
+    // context.  The controller must reject both an incomplete publication and
+    // a context whose generation no longer belongs to this stop while it is
+    // still Running.
+    DebugBackendSnapshot incompletePause = userPause;
+    incompletePause.registerContext.valid = false;
+    assert(!DebugControllerApplySnapshot(&pauseController, pauseController.sessionGeneration, incompletePause));
+    assert(pauseController.state == DebugSessionState::Running &&
+           pauseController.error == DebugErrorCode::StaleStopContext);
+    DebugBackendSnapshot stalePause = userPause;
+    stalePause.registerContext.stopGeneration = 3;
+    assert(!DebugControllerApplySnapshot(&pauseController, pauseController.sessionGeneration, stalePause));
+    assert(pauseController.state == DebugSessionState::Running &&
+           pauseController.error == DebugErrorCode::StaleStopContext);
     assert(DebugControllerApplySnapshot(&pauseController, pauseController.sessionGeneration, userPause));
     assert(pauseController.state == DebugSessionState::Paused);
     assert(pauseController.stopReason == DebugStopReason::UserPause);
     assert(pauseController.backendExecutionState == DebugBackendExecutionState::PausedAtUserPause);
     assert(pauseController.currentInstructionAddress.valid &&
            pauseController.currentInstructionAddress.value == 0x401234);
+    assert(DebugControllerStoppedContextIsCurrent(&pauseController));
+    pauseController.stoppedContext.threadId = 2;
+    assert(!DebugControllerStoppedContextIsCurrent(&pauseController) &&
+           !DebugControllerCanContinue(&pauseController));
+    pauseController.stoppedContext.threadId = userPause.registerContext.threadId;
+    pauseController.stoppedContext.nativeRuntimeId = 76;
+    assert(!DebugControllerStoppedContextIsCurrent(&pauseController) &&
+           !DebugControllerCanContinue(&pauseController));
+    pauseController.stoppedContext.nativeRuntimeId = userPause.registerContext.nativeRuntimeId;
+    pauseController.stoppedContext.sessionGeneration = pauseController.sessionGeneration + 1;
+    assert(!DebugControllerStoppedContextIsCurrent(&pauseController) &&
+           !DebugControllerCanContinue(&pauseController));
+    pauseController.stoppedContext.sessionGeneration = pauseController.sessionGeneration;
     assert(!pauseController.pauseRequestPending && DebugControllerCanContinue(&pauseController));
     assert(!DebugControllerPause(&pauseController, pauseBackend, &error));
     assert(error == DebugErrorCode::AlreadyPaused);
@@ -686,7 +713,7 @@ int main() {
     missingTrap.processId = 12;
     missingTrap.nativeRuntimeId = 77;
     assert(!DebugControllerApplySnapshot(&unexpected, unexpected.sessionGeneration, missingTrap));
-    assert(unexpected.error == DebugErrorCode::BackendError && unexpected.state == DebugSessionState::Running);
+    assert(unexpected.error == DebugErrorCode::StaleStopContext && unexpected.state == DebugSessionState::Running);
     assert(DebugControllerPoll(&unexpected, unexpectedBackend));
     assert(unexpected.state == DebugSessionState::Exited);
 
