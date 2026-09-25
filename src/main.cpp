@@ -919,6 +919,11 @@ static uint32_t g_phase28vStartupEventCount = 0;
 static uint32_t g_phase28vDebuggerTraceCount = 0;
 static uint32_t g_phase28vLoopTraceMask = 0;
 static uint32_t g_phase28vAfterContinueTraceMask = 0;
+static uint32_t g_phase28yStartupTraceCount = 0;
+static uint32_t g_phase28yStartupEventCount = 0;
+static uint32_t g_phase28yLoopTraceMask = 0;
+static uint32_t g_phase28yLastPhase28mStage = 0xFFFFFFFFu;
+static uint32_t g_phase28yLastPhase28qStage = 0xFFFFFFFFu;
 static bool g_phase28oDiagnosticLatched = false;
 static bool g_phase28oFinished = false;
 static bool g_phase28oFailed = false;
@@ -1236,6 +1241,8 @@ static bool debugUiReleaseExecution(gx_app_context* ctx);
 static void phase28v_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name);
 static void phase28v_startup_event(gx_app_context* ctx, const char* event, const char* reason = nullptr);
 static void phase28v_early_event(gx_app_context* ctx, const char* event);
+static void phase28y_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name);
+static void phase28y_startup_event(gx_app_context* ctx, const char* event, const char* reason = nullptr);
 static bool phase28qSentinelPresent();
 static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
@@ -1667,6 +1674,66 @@ static void phase28v_startup_event(gx_app_context* ctx, const char* event, const
 static void phase28v_early_event(gx_app_context* ctx, const char* event) {
     if (!g_phase28qDiagnostic || !event) return;
     logMarker(ctx, event);
+}
+
+static void phase28y_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name) {
+    if (!ctx || !name || stage == 0 || g_phase28yStartupTraceCount >= 32) return;
+    ++g_phase28yStartupTraceCount;
+    // Keep stage markers as literals.  The bare-metal host logger is the
+    // authoritative serial boundary, and fixed markers make this trace
+    // independently searchable even if a future compiler/runtime changes
+    // handling of stack-built strings.
+    switch (stage) {
+    case 1: logMarker(ctx, "P28Y STARTUP 01 gx_main_entered"); break;
+    case 2: logMarker(ctx, "P28Y STARTUP 02 initial_sentinel_probe_complete"); break;
+    case 3: logMarker(ctx, "P28Y STARTUP 03 final_sentinel_probe_complete"); break;
+    case 4: logMarker(ctx, "P28Y STARTUP 04 window_create_requested"); break;
+    case 5: logMarker(ctx, "P28Y STARTUP 05 window_created"); break;
+    case 6: logMarker(ctx, "P28Y STARTUP 06 initial_render_complete"); break;
+    case 7: logMarker(ctx, "P28Y STARTUP 07 event_loop_entered"); break;
+    case 8: logMarker(ctx, "P28Y STARTUP 08 first_event_loop_iteration"); break;
+    default: break;
+    }
+}
+
+static void phase28y_startup_event(gx_app_context* ctx, const char* event, const char* reason) {
+    if (!ctx || !event || g_phase28yStartupEventCount >= 96) return;
+    ++g_phase28yStartupEventCount;
+    if (phase28u_host_event_equals(event, "initial_q_sentinel")) {
+        logMarker(ctx, phase28u_host_event_equals(reason, "present")
+            ? "P28Y STARTUP EVENT initial_q_sentinel present"
+            : "P28Y STARTUP EVENT initial_q_sentinel absent");
+    } else if (phase28u_host_event_equals(event, "final_q_sentinel")) {
+        logMarker(ctx, phase28u_host_event_equals(reason, "present")
+            ? "P28Y STARTUP EVENT final_q_sentinel present"
+            : "P28Y STARTUP EVENT final_q_sentinel absent");
+    } else if (phase28u_host_event_equals(event, "final_m_sentinel")) {
+        logMarker(ctx, phase28u_host_event_equals(reason, "present")
+            ? "P28Y STARTUP EVENT final_m_sentinel present"
+            : "P28Y STARTUP EVENT final_m_sentinel absent");
+    } else if (phase28u_host_event_equals(event, "debug_launch_mode")) {
+        logMarker(ctx, phase28u_host_event_equals(reason, "phase28q_enabled")
+            ? "P28Y STARTUP EVENT debug_launch_mode phase28q_enabled"
+            : "P28Y STARTUP EVENT debug_launch_mode phase28q_disabled");
+    } else if (phase28u_host_event_equals(event, "phase28q_stage")) {
+        if (phase28u_host_event_equals(reason, "stage=0")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_0");
+        else if (phase28u_host_event_equals(reason, "stage=1")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_1");
+        else if (phase28u_host_event_equals(reason, "stage=2")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_2");
+        else if (phase28u_host_event_equals(reason, "stage=3")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_3");
+        else if (phase28u_host_event_equals(reason, "stage=4")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_4");
+        else if (phase28u_host_event_equals(reason, "stage=5")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_5");
+        else if (phase28u_host_event_equals(reason, "stage=6")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_6");
+        else if (phase28u_host_event_equals(reason, "stage=7")) logMarker(ctx, "P28Y STARTUP EVENT phase28q_stage_7");
+    } else if (phase28u_host_event_equals(event, "phase28m_stage")) {
+        if (phase28u_host_event_equals(reason, "stage=0")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_0");
+        else if (phase28u_host_event_equals(reason, "stage=1")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_1");
+        else if (phase28u_host_event_equals(reason, "stage=2")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_2");
+        else if (phase28u_host_event_equals(reason, "stage=3")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_3");
+        else if (phase28u_host_event_equals(reason, "stage=4")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_4");
+        else if (phase28u_host_event_equals(reason, "stage=5")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_5");
+        else if (phase28u_host_event_equals(reason, "stage=6")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_6");
+        else if (phase28u_host_event_equals(reason, "stage=7")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_7");
+    }
 }
 
 static uint32_t debugTraceUserOwnerCount() {
@@ -15013,7 +15080,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!IsValidTargetProfile(target)) return GX_ERROR_FAILED;
 
     g_fileSystemContext.app = ctx;
+    g_phase28yStartupTraceCount = 0;
+    g_phase28yStartupEventCount = 0;
+    g_phase28yLoopTraceMask = 0;
+    g_phase28yLastPhase28mStage = 0xFFFFFFFFu;
+    g_phase28yLastPhase28qStage = 0xFFFFFFFFu;
+    phase28y_startup_stage(ctx, 1, "gx_main_entered");
     g_phase28qDiagnostic = phase28qSentinelPresent();
+    phase28y_startup_stage(ctx, 2, "initial_sentinel_probe_complete");
+    phase28y_startup_event(ctx, "initial_q_sentinel", g_phase28qDiagnostic ? "present" : "absent");
     DebugControllerSetTraceHook(debuggerTraceHook);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_FILESYSTEM_CONTEXT_READY");
     WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite, fsCreateDirectory, fsRemovePath };
@@ -15292,6 +15367,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     const bool phase28nSentinel = phase28nSentinelPresent();
     const bool phase28oSentinel = phase28oSentinelPresent();
     const bool phase28pSentinel = phase28pSentinelPresent();
+    const bool phase28mSentinel = phase28mSentinelPresent();
+    phase28y_startup_stage(ctx, 3, "final_sentinel_probe_complete");
+    phase28y_startup_event(ctx, "final_q_sentinel", phase28qSentinel ? "present" : "absent");
+    phase28y_startup_event(ctx, "final_m_sentinel", phase28mSentinel ? "present" : "absent");
     bool phase28oWorkspace = false;
     if (phase28oSentinel || phase28pSentinel || phase28oRecursiveRelaunch) {
         g_phase28oDiagnosticLatched = true;
@@ -15311,7 +15390,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28pDiagnostic = phase28pSentinel ||
         (phase28oRecursiveRelaunch && g_phase28pDiagnostic);
     g_phase28nDiagnostic = phase28nSentinel || g_phase28oDiagnostic;
-    g_phase28mDiagnostic = phase28mSentinelPresent() || g_phase28nDiagnostic || g_phase28pDiagnostic;
+    g_phase28mDiagnostic = phase28mSentinel || g_phase28nDiagnostic || g_phase28pDiagnostic;
     g_phase28qDiagnostic = phase28qSentinel;
     g_phase28oRelaunched = g_phase28oDiagnostic &&
         (phase28oWorkspace || phase28oRecursiveRelaunch);
@@ -15371,6 +15450,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER filesystem_api=workspace_extensions");
 
     gx_result windowResult = GX_ERROR_FAILED;
+    phase28y_startup_stage(ctx, 4, "window_create_requested");
     if (ctx->host->request_window_ex) {
         windowResult = ctx->host->request_window_ex(ctx, "guideXOS Developer Studio", kWindowRect.width, kWindowRect.height, GX_WINDOW_FLAG_RESIZABLE | GX_WINDOW_FLAG_CENTERED, &g_window);
     } else {
@@ -15381,10 +15461,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         return windowResult;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS");
+    phase28y_startup_stage(ctx, 5, "window_created");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_APP_LAUNCH_PASS");
     if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_APP_LAUNCH_PASS");
     drawShell(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS");
+    phase28y_startup_stage(ctx, 6, "initial_render_complete");
     if (g_phase28mDiagnostic) {
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_WINDOW_VISIBLE_PASS");
         if (g_phase28pDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28P_APP_LAUNCH_PASS");
@@ -15393,7 +15475,28 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
     bool running = true;
     if (ctx->host->poll_event) {
+        phase28y_startup_stage(ctx, 7, "event_loop_entered");
         while (running) {
+            if (!(g_phase28yLoopTraceMask & 1u)) {
+                phase28y_startup_stage(ctx, 8, "first_event_loop_iteration");
+                phase28y_startup_event(ctx, "debug_launch_mode",
+                                       g_phase28qDiagnostic ? "phase28q_enabled" : "phase28q_disabled");
+                g_phase28yLoopTraceMask |= 1u;
+            }
+            if (g_phase28qDiagnostic && g_phase28yLastPhase28qStage != g_phase28qStage) {
+                char reason[32] = {};
+                copyText(reason, sizeof(reason), "stage=");
+                appendUnsigned(reason, sizeof(reason), static_cast<int32_t>(g_phase28qStage));
+                phase28y_startup_event(ctx, "phase28q_stage", reason);
+                g_phase28yLastPhase28qStage = g_phase28qStage;
+            }
+            if (g_phase28mDiagnostic && g_phase28yLastPhase28mStage != g_phase28mStage) {
+                char reason[32] = {};
+                copyText(reason, sizeof(reason), "stage=");
+                appendUnsigned(reason, sizeof(reason), static_cast<int32_t>(g_phase28mStage));
+                phase28y_startup_event(ctx, "phase28m_stage", reason);
+                g_phase28yLastPhase28mStage = g_phase28mStage;
+            }
             pollIncludeGraph(ctx);
             pollOwnership(ctx);
             pollProjectSearch(ctx);
