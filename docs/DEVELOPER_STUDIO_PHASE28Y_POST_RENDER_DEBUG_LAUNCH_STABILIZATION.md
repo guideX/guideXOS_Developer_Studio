@@ -199,9 +199,10 @@ justify a speculative debugger change.
 ### Stress
 
 The 25-cycle lifecycle stress gate was **not run** because the required 10/10
-fresh-boot prerequisite was not achieved. No suitable executable 25-cycle
-fixture was present that could be run without broadening the failing QEMU
-acceptance scope.
+fresh-boot prerequisite was not achieved. The repository does contain the
+hosted `tests/smoke-developer-studio-debugger-soak.ps1` fixture, but running it
+before the fresh-QEMU gate would not validate the required fresh-boot lifecycle
+and would broaden the failing acceptance scope.
 
 Physical hardware: **Not tested**.
 
@@ -214,4 +215,3 @@ and the 10-boot run stalled inside Phase 28Q project open after
 `initial_render=PASS`. Resolving that independent Native ELF/project-open
 runtime issue is outside the evidence-supported Phase 28Y repair and must not
 weaken Phase 28X context ownership.
-
