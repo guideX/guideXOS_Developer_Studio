@@ -313,6 +313,25 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
         stack->stale = false;
         return false;
     }
+    // Cooperative NativeElf pauses retain the raw runtime-helper RIP for
+    // control and ownership, while the backend may also publish a validated
+    // application call-site for source mapping.  Keep the raw register
+    // context intact but bind frame zero to that source-bearing address when
+    // the ordinary frame-pointer unwinder could not map the helper RIP.
+    if (stack->result.frameCount != 0 && controller->currentInstructionAddress.valid &&
+        controller->currentInstructionAddress.value != controller->stoppedContext.rip &&
+        DebugDwarfMapperIsExecutableAddress(mapper, controller->currentInstructionAddress.value)) {
+        DebugStackFrame& current = stack->result.frames[0];
+        if (current.current && current.mapping != DebugStackFrameMappingState::Mapped) {
+            clearFrame(&current, 0);
+            current.current = true;
+            current.confidence = DebugStackFrameConfidence::ExactCurrent;
+            current.rsp = controller->stoppedContext.rsp;
+            current.rbp = controller->stoppedContext.rbp;
+            mapFrame(&current, mapper, controller->currentInstructionAddress.value,
+                     controller->currentInstructionAddress.value);
+        }
+    }
     stack->valid = true;
     stack->stale = false;
     return true;

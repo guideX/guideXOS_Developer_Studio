@@ -5997,6 +5997,46 @@ static void pollDebug(gx_app_context* ctx) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_trap_backend=PASS");
             DebugErrorCode stopMappingError = DebugErrorCode::None;
             const bool resolved = DebugControllerResolveCurrentStop(&g_debugController, &g_debugMapper, &stopMappingError);
+            if (tracePhase28qStopProcessing) {
+                const Document* workspaceDocument = WorkspaceControllerActiveDocument(&g_controller);
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "DEVELOPER_STUDIO_PHASE29A_STOP_MAPPING_DIAGNOSTIC session=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " target_gen=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.target.projectGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " stop=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " context_session=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.sessionGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " context_stop=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.stopGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " pc=");
+                if (g_debugController.currentInstructionAddress.valid)
+                    appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.currentInstructionAddress.value);
+                else appendText(g_textScratch, sizeof(g_textScratch), "invalid");
+                appendText(g_textScratch, sizeof(g_textScratch), " reported_rip=");
+                appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.reportedInstructionPointer);
+                appendText(g_textScratch, sizeof(g_textScratch), " module_gen=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " symbols_gen=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " mapper_project_gen=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.projectGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " project_gen=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.projectGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " source_gen=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.sourceGeneration);
+                appendText(g_textScratch, sizeof(g_textScratch), " source=");
+                appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath[0]
+                    ? g_debugController.currentLocation.relativePath : "<none>");
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+                appendText(g_textScratch, sizeof(g_textScratch), " workspace=");
+                appendText(g_textScratch, sizeof(g_textScratch), workspaceDocument ? workspaceDocument->path : "<none>");
+                appendText(g_textScratch, sizeof(g_textScratch), " result=");
+                appendText(g_textScratch, sizeof(g_textScratch), resolved ? "resolved" : DebugErrorName(stopMappingError));
+                logMarker(ctx, g_textScratch);
+            }
             if (tracePhase28qStopProcessing)
                 phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_STOP_MAPPING_RETURN", resolved ? "resolved" : "unresolved");
             DebugErrorCode stackError = DebugErrorCode::None;
@@ -6016,6 +6056,14 @@ static void pollDebug(gx_app_context* ctx) {
             if (tracePhase28qStopProcessing)
                 phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_VARIABLES_RETURN", nullptr);
             const bool editorExecution = debugEditorUpdateExecution(ctx, true);
+            if (tracePhase28qStopProcessing) {
+                const DebugStackFrame* mappedFrame = DebugControllerCallStackFrameAt(&g_debugController, 0);
+                const bool workspaceMapping = resolved && stackBuilt && mappedFrame && mappedFrame->current &&
+                    mappedFrame->mapping == DebugStackFrameMappingState::Mapped &&
+                    mappedFrame->sourcePath[0] && mappedFrame->sourceLine != 0 && editorExecution;
+                logMarker(ctx, workspaceMapping ? "DEVELOPER_STUDIO_PHASE29A_STOP_MAPPING_PASS" :
+                          "DEVELOPER_STUDIO_PHASE29A_STOP_MAPPING_FAIL");
+            }
             if (g_phase28qDiagnostic)
                 logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_PAUSED_EDITOR_EXECUTION_RETURN");
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: paused | ");

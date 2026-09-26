@@ -328,6 +328,25 @@ int main() {
     assert(DebugControllerResolveCurrentStop(&controller, &mapper, &controllerError));
     assert(std::strcmp(controller.currentLocation.relativePath, "src/main.cpp") == 0 &&
            controller.currentLocation.line == 42);
+    static DebugDwarfMapper staleProjectMapper;
+    staleProjectMapper = mapper;
+    staleProjectMapper.identity.projectGeneration = 6;
+    assert(!DebugControllerResolveCurrentStop(&controller, &staleProjectMapper, &controllerError));
+    assert(controllerError == DebugErrorCode::ProjectGenerationMismatch &&
+           controller.currentLocation.relativePath[0] == '\0');
+    static DebugDwarfMapper staleArtifactMapper;
+    staleArtifactMapper = mapper;
+    staleArtifactMapper.identity.sha256[0] = 'b';
+    assert(!DebugControllerResolveCurrentStop(&controller, &staleArtifactMapper, &controllerError));
+    assert(controllerError == DebugErrorCode::ModuleGenerationMismatch);
+    controller.currentInstructionAddress.valid = false;
+    controller.reportedInstructionPointer = 0x205346;
+    assert(!DebugControllerResolveCurrentStop(&controller, &mapper, &controllerError));
+    assert(controllerError == DebugErrorCode::PcOutsideModule);
+    controller.currentInstructionAddress.valid = true;
+    controller.currentInstructionAddress.value = 0x401000;
+    controller.reportedInstructionPointer = 0;
+    assert(DebugControllerResolveCurrentStop(&controller, &mapper, &controllerError));
     DebugControllerMarkArtifactStale(&controller, "test stale");
     mapped = DebugControllerBreakpointAt(&controller, 0);
     assert(mapped && mapped->state == DebugBreakpointState::Stale);

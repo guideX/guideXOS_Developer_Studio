@@ -529,6 +529,12 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
         (snapshot.stopReason == DebugStopReason::Breakpoint ||
          snapshot.stopReason == DebugStopReason::UserPause) &&
         snapshot.executionState != DebugBackendExecutionState::SingleStepPending) {
+        // A new stop owns a new source/workspace mapping.  Retire the prior
+        // location and inspection snapshots before publishing the new stop so
+        // a refresh cannot leave an old source location looking current.
+        controller->currentLocation = DebugSourceLocation();
+        clearCallStack(controller);
+        clearVariableView(&controller->variables);
         if (snapshot.targetAddress.valid) {
             controller->currentInstructionAddress = snapshot.targetAddress;
             controller->reportedInstructionPointer = snapshot.instructionPointer;
@@ -1285,6 +1291,16 @@ const char* DebugErrorName(DebugErrorCode error) {
     case DebugErrorCode::BreakpointNotFound: return "breakpoint_not_found";
     case DebugErrorCode::BreakpointRejected: return "breakpoint_rejected";
     case DebugErrorCode::SourceMappingUnavailable: return "source_mapping_unavailable";
+    case DebugErrorCode::PcInvalid: return "pc_invalid";
+    case DebugErrorCode::PcOutsideModule: return "pc_outside_module";
+    case DebugErrorCode::ModuleNotFound: return "module_not_found";
+    case DebugErrorCode::ModuleGenerationMismatch: return "module_generation_mismatch";
+    case DebugErrorCode::SymbolsNotCurrent: return "symbols_not_current";
+    case DebugErrorCode::DwarfRangeNotFound: return "dwarf_range_not_found";
+    case DebugErrorCode::DwarfLineNotFound: return "dwarf_line_not_found";
+    case DebugErrorCode::SourceIdentityNotFound: return "source_identity_not_found";
+    case DebugErrorCode::WorkspaceDocumentNotFound: return "workspace_document_not_found";
+    case DebugErrorCode::SelectedFrameBindingFailure: return "selected_frame_binding_failure";
     case DebugErrorCode::ProjectGenerationMismatch: return "project_generation_mismatch";
     case DebugErrorCode::BackendError: return "backend_error";
     case DebugErrorCode::NoDebugInfo: return "no_debug_info";
@@ -2776,7 +2792,11 @@ bool DebugControllerApplyBreakpointBinding(DebugController* controller, uint64_t
 
 void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t projectGeneration) {
     if (!controller) return;
-    if (controller->projectGeneration != projectGeneration) clearCallStack(controller);
+    if (controller->projectGeneration != projectGeneration) {
+        clearCallStack(controller);
+        controller->currentLocation = DebugSourceLocation();
+        clearVariableView(&controller->variables);
+    }
     controller->projectGeneration = projectGeneration;
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
@@ -2789,6 +2809,8 @@ void DebugControllerMarkProjectGeneration(DebugController* controller, uint64_t 
 void DebugControllerMarkArtifactStale(DebugController* controller, const char* message) {
     if (!controller) return;
     clearCallStack(controller);
+    controller->currentLocation = DebugSourceLocation();
+    clearVariableView(&controller->variables);
     if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
@@ -2905,10 +2927,43 @@ void DebugControllerMarkSourceGeneration(DebugController* controller, const char
 bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugDwarfMapper* mapper,
                                        DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
-    if (!controller || !mapper || controller->state != DebugSessionState::Paused ||
-        !DebugControllerStoppedContextIsCurrent(controller) ||
-        !controller->currentInstructionAddress.valid || !DebugDwarfMapperIsReady(mapper)) {
-        if (error) *error = DebugErrorCode::SourceMappingUnavailable;
+    if (!controller || !mapper || controller->state != DebugSessionState::Paused) {
+        if (error) *error = DebugErrorCode::StaleStopContext;
+        return false;
+    }
+    controller->currentLocation = DebugSourceLocation();
+    if (!DebugControllerStoppedContextIsCurrent(controller)) {
+        if (error) *error = DebugErrorCode::StaleStopContext;
+        return false;
+    }
+    if (!controller->currentInstructionAddress.valid) {
+        if (error) *error = controller->reportedInstructionPointer == 0
+            ? DebugErrorCode::PcInvalid : DebugErrorCode::PcOutsideModule;
+        return false;
+    }
+    if (!DebugDwarfMapperIsReady(mapper)) {
+        if (error) *error = mapper->error == DebugDwarfError::NoDebugInfo
+            ? DebugErrorCode::NoDebugInfo : DebugErrorCode::SymbolsNotCurrent;
+        return false;
+    }
+    if (mapper->identity.projectGeneration != controller->target.projectGeneration) {
+        if (error) *error = DebugErrorCode::ProjectGenerationMismatch;
+        return false;
+    }
+    if (!DebugDwarfMapperMatchesArtifact(mapper, controller->target.projectRoot,
+                                         controller->target.projectId, controller->target.targetProfile,
+                                         controller->target.architecture, controller->target.executablePath,
+                                         controller->target.artifactSize, controller->target.artifactSha256,
+                                         controller->target.projectGeneration)) {
+        if (error) *error = DebugErrorCode::ModuleGenerationMismatch;
+        return false;
+    }
+    // Some bounded unit fixtures carry a valid line table without PT_LOAD
+    // metadata.  When executable ranges are present they are authoritative;
+    // otherwise the exact mapper/source lookup below remains the authority.
+    if (mapper->executableSegmentCount != 0 &&
+        !DebugDwarfMapperIsExecutableAddress(mapper, controller->currentInstructionAddress.value)) {
+        if (error) *error = DebugErrorCode::PcOutsideModule;
         return false;
     }
     DebugSourceLocation location = {};
@@ -2919,7 +2974,10 @@ bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugD
     if (!DebugDwarfMapperMapAddressToSource(mapper, controller->currentInstructionAddress.value,
                                             location.relativePath, sizeof(location.relativePath),
                                             &location.line, &location.column, &mappingError)) {
-        if (error) *error = mapDwarfError(mappingError);
+        if (error) *error = mappingError == DebugDwarfError::SourceNotFound
+            ? DebugErrorCode::SourceIdentityNotFound
+            : mappingError == DebugDwarfError::LineNotMapped
+                ? DebugErrorCode::DwarfLineNotFound : mapDwarfError(mappingError);
         return false;
     }
     if (controller->stopReason == DebugStopReason::Breakpoint) {

@@ -171,6 +171,24 @@ int main() {
     DebugErrorCode controllerError = DebugErrorCode::None;
     assert(DebugControllerBuildCallStack(&controller, backend, &mapper, &controllerError));
     assert(controller.callStack.valid && controller.callStack.selectedFrameIndex == 0);
+    // A cooperative NativeElf user pause can report a runtime-helper RIP
+    // while the backend supplies a validated application call-site for source
+    // mapping.  The raw context remains intact, but frame zero must bind to
+    // the source-bearing address.
+    controller.stopReason = DebugStopReason::UserPause;
+    controller.currentInstructionAddress.valid = true;
+    controller.currentInstructionAddress.value = 0x40121f;
+    controller.stoppedContext.rip = 0x205346;
+    assert(DebugControllerBuildCallStack(&controller, backend, &mapper, &controllerError));
+    const DebugStackFrame* sourceOnlyFrame = DebugControllerCallStackFrameAt(&controller, 0);
+    assert(sourceOnlyFrame && sourceOnlyFrame->current &&
+           sourceOnlyFrame->mapping == DebugStackFrameMappingState::Mapped &&
+           std::strcmp(sourceOnlyFrame->functionName, "main") == 0 &&
+           std::strcmp(sourceOnlyFrame->sourcePath, "src/main.cpp") == 0 &&
+           sourceOnlyFrame->sourceLine == 28);
+    controller.stopReason = DebugStopReason::Breakpoint;
+    controller.currentInstructionAddress.value = 0x401010;
+    controller.stoppedContext.rip = 0x401010;
     assert(DebugControllerSelectCallStackFrame(&controller, 2, &controllerError));
     assert(controller.callStack.selectedFrameIndex == 2);
     assert(!DebugControllerSelectCallStackFrame(&controller, 20, &controllerError));
