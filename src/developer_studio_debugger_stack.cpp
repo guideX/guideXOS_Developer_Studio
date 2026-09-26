@@ -315,21 +315,37 @@ bool DebugControllerBuildCallStack(DebugController* controller, const DebugBacke
     }
     // Cooperative NativeElf pauses retain the raw runtime-helper RIP for
     // control and ownership, while the backend may also publish a validated
-    // application call-site for source mapping.  Keep the raw register
-    // context intact but bind frame zero to that source-bearing address when
-    // the ordinary frame-pointer unwinder could not map the helper RIP.
-    if (stack->result.frameCount != 0 && controller->currentInstructionAddress.valid &&
+    // application call-site for source mapping. Keep the raw register
+    // context intact, and use the already-resolved stop location for frame
+    // zero even when the helper RIP happens to carry a plausible mapping.
+    if (stack->result.frameCount != 0 && controller->stopReason == DebugStopReason::UserPause &&
+        controller->currentInstructionAddress.valid &&
         controller->currentInstructionAddress.value != controller->stoppedContext.rip &&
         DebugDwarfMapperIsExecutableAddress(mapper, controller->currentInstructionAddress.value)) {
         DebugStackFrame& current = stack->result.frames[0];
-        if (current.current && current.mapping != DebugStackFrameMappingState::Mapped) {
-            clearFrame(&current, 0);
+        if (current.current && controller->currentLocation.mapping == DebugMappingState::Mapped &&
+            controller->currentLocation.relativePath[0] && controller->currentLocation.line != 0) {
+            const uint32_t index = current.index;
+            const uint64_t rsp = current.rsp;
+            const uint64_t rbp = current.rbp;
+            current = DebugStackFrame();
+            current.index = index;
             current.current = true;
             current.confidence = DebugStackFrameConfidence::ExactCurrent;
-            current.rsp = controller->stoppedContext.rsp;
-            current.rbp = controller->stoppedContext.rbp;
-            mapFrame(&current, mapper, controller->currentInstructionAddress.value,
-                     controller->currentInstructionAddress.value);
+            current.rsp = rsp;
+            current.rbp = rbp;
+            current.instructionAddress = controller->currentInstructionAddress.value;
+            current.lookupAddress = controller->currentInstructionAddress.value;
+            current.mapping = DebugStackFrameMappingState::Mapped;
+            copyText(current.sourcePath, sizeof(current.sourcePath),
+                     controller->currentLocation.relativePath);
+            current.sourceLine = controller->currentLocation.line;
+            current.sourceColumn = controller->currentLocation.column;
+            DebugDwarfError symbolError = DebugDwarfError::None;
+            DebugDwarfMapperLookupFunction(mapper, current.lookupAddress,
+                                           current.functionName, sizeof(current.functionName),
+                                           &current.functionStartAddress, &current.functionSize,
+                                           &symbolError);
         }
     }
     stack->valid = true;

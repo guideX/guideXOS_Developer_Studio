@@ -179,6 +179,10 @@ int main() {
     controller.currentInstructionAddress.valid = true;
     controller.currentInstructionAddress.value = 0x40121f;
     controller.stoppedContext.rip = 0x205346;
+    controller.currentLocation.mapping = DebugMappingState::Mapped;
+    std::strcpy(controller.currentLocation.relativePath, "src/main.cpp");
+    controller.currentLocation.line = 28;
+    controller.currentLocation.column = 1;
     assert(DebugControllerBuildCallStack(&controller, backend, &mapper, &controllerError));
     const DebugStackFrame* sourceOnlyFrame = DebugControllerCallStackFrameAt(&controller, 0);
     assert(sourceOnlyFrame && sourceOnlyFrame->current &&
