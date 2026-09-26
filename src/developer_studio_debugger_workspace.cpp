@@ -334,8 +334,14 @@ static bool parseBreakpoint(Cursor& cursor, DebuggerWorkspace* workspace) {
 
 void DebuggerWorkspaceInit(DebuggerWorkspace* workspace) {
     if (!workspace) return;
-    __builtin_memset(workspace, 0, sizeof(*workspace));
-    clearError(workspace);
+    // Counts are the publication boundary for the fixed-capacity payload. A
+    // fresh NativeElf image may retain backing bytes, but no reader may use
+    // them while these counts are zero. Avoid clearing every persisted
+    // breakpoint/watch payload on the application stack during first launch.
+    workspace->breakpointCount = 0;
+    workspace->watchCount = 0;
+    workspace->lastError = DebuggerWorkspaceErrorCode::None;
+    workspace->lastErrorMessage[0] = '\0';
 }
 
 uint32_t BuildDebuggerWorkspaceMaterializationPlan(const DebuggerWorkspace& workspace,

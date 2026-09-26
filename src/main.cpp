@@ -174,6 +174,7 @@ using guidexos::developer_studio::WorkspaceControllerCloseWorkspace;
 using guidexos::developer_studio::WorkspaceControllerEnterSelected;
 using guidexos::developer_studio::WorkspaceControllerGoUp;
 using guidexos::developer_studio::WorkspaceControllerInit;
+using guidexos::developer_studio::WorkspaceControllerSetProjectOpenObserver;
 using guidexos::developer_studio::WorkspaceControllerOpenDocument;
 using guidexos::developer_studio::WorkspaceControllerOpenWorkspace;
 using guidexos::developer_studio::WorkspaceControllerRefresh;
@@ -181,6 +182,8 @@ using guidexos::developer_studio::WorkspaceControllerSaveActive;
 using guidexos::developer_studio::WorkspaceControllerSaveAll;
 using guidexos::developer_studio::WorkspaceControllerSaveDocument;
 using guidexos::developer_studio::WorkspaceFileSystem;
+using guidexos::developer_studio::WorkspaceProjectOpenState;
+using guidexos::developer_studio::WorkspaceProjectOpenStateName;
 using guidexos::developer_studio::DebuggerWorkspace;
 using guidexos::developer_studio::DebuggerWorkspaceBreakpoint;
 using guidexos::developer_studio::kDebugWatchMaxExpressionBytes;
@@ -964,6 +967,10 @@ static bool g_phase28qSecondProgressValid = false;
 // response in owned storage so the pause/continue pump does not reserve an
 // additional callback-sized frame on the NativeElf application stack.
 static gx_development_debug_expression g_phase28qExpression = {};
+static uint32_t g_phase28zStartupTraceCount = 0;
+static uint32_t g_phase28zFsTraceCount = 0;
+static uint32_t g_phase28zProjectTraceCount = 0;
+static bool g_phase28zRawEntryReported = false;
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
 static bool g_syntaxFallbackMarkerReported = false;
@@ -1247,19 +1254,25 @@ static bool phase28qSentinelPresent();
 static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
 static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
+static void logMarker(gx_app_context* ctx, const char* marker);
 static void debugDataTipInvalidate(gx_app_context* ctx, const char* reason = nullptr);
 static bool debugDataTipHandleMove(gx_app_context* ctx, int x, int y);
 static bool debugDataTipBounds(DebugDataTipPopupBounds* bounds);
 static void drawDebugDataTip(gx_app_context* ctx);
 
-static void initializeDebugLaunchStorage() {
+static void initializeDebugLaunchStorage(gx_app_context* ctx) {
     // NativeElf owns the image's BSS, but first-launch readiness must not
     // depend on the loader having preserved C++ static initialization. These
-    // application-owned static buffers get an explicit first-use boundary
-    // before workspace, build, or debugger services can publish readiness.
-    // Do not move either object to a launch callback stack.
-    __builtin_memset(&g_debugMapper, 0, sizeof(g_debugMapper));
-    __builtin_memset(g_debugArtifactBytes, 0, sizeof(g_debugArtifactBytes));
+    // application-owned buffers get an explicit first-use boundary before
+    // workspace, build, or debugger services can publish readiness. The
+    // mapper reset clears only its scalar header and entries published by a
+    // prior generation; a full fixed-capacity wipe would block first render
+    // on the guest's emulated memory bandwidth. The artifact buffer is gated
+    // by the bytesRead count at every consumer, so it needs no bulk clear.
+    logMarker(ctx, "P28Z APP 00a debug_mapper_reset_begin");
+    DebugDwarfMapperReset(&g_debugMapper);
+    logMarker(ctx, "P28Z APP 00b debug_mapper_reset");
+    logMarker(ctx, "P28Z APP 00c debug_artifact_ready");
 }
 
 static void refreshDebugMappings() {
@@ -1734,6 +1747,64 @@ static void phase28y_startup_event(gx_app_context* ctx, const char* event, const
         else if (phase28u_host_event_equals(reason, "stage=6")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_6");
         else if (phase28u_host_event_equals(reason, "stage=7")) logMarker(ctx, "P28Y STARTUP EVENT phase28m_stage_7");
     }
+}
+
+static void phase28z_startup_stage(gx_app_context* ctx, uint32_t stage) {
+    if (!ctx || !g_phase28qDiagnostic || stage == 0 || g_phase28zStartupTraceCount >= 32) return;
+    ++g_phase28zStartupTraceCount;
+    switch (stage) {
+    case 1: logMarker(ctx, "P28Z APP 01 gx_main_entered"); break;
+    case 2: logMarker(ctx, "P28Z APP 02 initial_render_pass"); break;
+    case 3: logMarker(ctx, "P28Z APP 03 project_open_request_observed"); break;
+    case 4: logMarker(ctx, "P28Z APP 04 project_open_entry"); break;
+    case 5: logMarker(ctx, "P28Z APP 05 project_open_return"); break;
+    case 6: logMarker(ctx, "P28Z APP 06 project_ready"); break;
+    case 7: logMarker(ctx, "P28Z APP 07 debugger_launch_request"); break;
+    case 8: logMarker(ctx, "P28Z APP 08 debugger_launch_processed"); break;
+    default: break;
+    }
+}
+
+static void phase28z_project_open_observer(void* userData, WorkspaceProjectOpenState state,
+                                           uint64_t requestId, uint64_t projectGeneration,
+                                           const char* path) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (!ctx || !g_phase28qDiagnostic || g_phase28zStartupTraceCount >= 32) return;
+    if (state == WorkspaceProjectOpenState::Ready) phase28z_startup_stage(ctx, 6);
+    if (g_phase28zProjectTraceCount >= 16) return;
+    ++g_phase28zProjectTraceCount;
+    switch (state) {
+    case WorkspaceProjectOpenState::LoadStarted: logMarker(ctx, "P28Z PROJECT state=load_started"); break;
+    case WorkspaceProjectOpenState::Loaded: logMarker(ctx, "P28Z PROJECT state=loaded"); break;
+    case WorkspaceProjectOpenState::RefreshStarted: logMarker(ctx, "P28Z PROJECT state=refresh_started"); break;
+    case WorkspaceProjectOpenState::Ready: logMarker(ctx, "P28Z PROJECT state=ready"); break;
+    case WorkspaceProjectOpenState::Failed: logMarker(ctx, "P28Z PROJECT state=failed"); break;
+    default: break;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "P28Z PROJECT state=");
+    appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(state));
+    appendText(g_textScratch, sizeof(g_textScratch), " request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), requestId);
+    appendText(g_textScratch, sizeof(g_textScratch), " generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " path=");
+    appendText(g_textScratch, sizeof(g_textScratch), path ? path : "");
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase28z_fs_event(gx_app_context* ctx, const char* operation,
+                              const char* path, bool entering, bool ok) {
+    if (!ctx || !g_phase28qDiagnostic || g_phase28zFsTraceCount >= 96) return;
+    ++g_phase28zFsTraceCount;
+    copyText(g_textScratch, sizeof(g_textScratch), "P28Z FS ");
+    appendText(g_textScratch, sizeof(g_textScratch), operation ? operation : "unknown");
+    appendText(g_textScratch, sizeof(g_textScratch), entering ? "_BEGIN path=" : "_RETURN path=");
+    appendText(g_textScratch, sizeof(g_textScratch), path ? path : "");
+    if (!entering) {
+        appendText(g_textScratch, sizeof(g_textScratch), " ok=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), ok ? 1u : 0u);
+    }
+    logMarker(ctx, g_textScratch);
 }
 
 static uint32_t debugTraceUserOwnerCount() {
@@ -3549,11 +3620,13 @@ static bool startProjectSearch(gx_app_context* ctx) {
 static bool fsStat(void* userData, const char* path, FileInfo* outInfo) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     if (!context || !context->app || !context->app->host || !outInfo) return false;
+    phase28z_fs_event(context->app, "STAT", path, true, false);
     gx_file_info info = {};
     const gx_host_calls* host = context->app->host;
     const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_stat) + sizeof(host->bare_metal_file_stat) && host->bare_metal_file_stat;
     const bool ok = bare ? host->bare_metal_file_stat(context->app, path, &info) == GX_OK :
         (host->file_stat && host->file_stat(context->app, path, &info) == GX_OK);
+    phase28z_fs_event(context->app, "STAT", path, false, ok);
     if (!ok) return false;
     outInfo->kind = info.type == GX_FILE_TYPE_DIRECTORY ? FileInfoKind::Directory :
         (info.type == GX_FILE_TYPE_REGULAR ? FileInfoKind::RegularFile : FileInfoKind::Unknown);
@@ -3566,6 +3639,7 @@ static bool fsList(void* userData, const char* path, FileListEntry* entries, uin
     if (outCount) *outCount = 0;
     if (outTruncated) *outTruncated = false;
     if (!context || !context->app || !context->app->host || !entries || capacity == 0 || !outCount) return false;
+    phase28z_fs_event(context->app, "LIST", path, true, false);
     if (capacity > kMaxWorkspaceEntries) capacity = kMaxWorkspaceEntries;
     gx_file_entry* nativeEntries = g_fsListEntries;
     for (uint32_t i = 0; i < kMaxWorkspaceEntries; ++i) nativeEntries[i] = {};
@@ -3575,6 +3649,7 @@ static bool fsList(void* userData, const char* path, FileListEntry* entries, uin
     const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_list) + sizeof(host->bare_metal_file_list) && host->bare_metal_file_list;
     const gx_result listResult = bare ? host->bare_metal_file_list(context->app, path, nativeEntries, capacity, &count, &truncated) :
         (host->file_list ? host->file_list(context->app, path, nativeEntries, capacity, &count, &truncated) : GX_ERROR_UNSUPPORTED);
+    phase28z_fs_event(context->app, "LIST", path, false, listResult == GX_OK);
     if (listResult != GX_OK) return false;
     for (uint32_t i = 0; i < count && i < capacity; ++i) {
         copyText(entries[i].name, sizeof(entries[i].name), nativeEntries[i].name);
@@ -3590,10 +3665,13 @@ static bool fsList(void* userData, const char* path, FileListEntry* entries, uin
 static bool fsRead(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     if (!context || !context->app || !context->app->host || !buffer || !outBytes) return false;
+    phase28z_fs_event(context->app, "READ", path, true, false);
     const gx_host_calls* host = context->app->host;
     const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_read_workspace) + sizeof(host->bare_metal_file_read_workspace) && host->bare_metal_file_read_workspace;
-    return (bare ? host->bare_metal_file_read_workspace(context->app, path, buffer, capacity, outBytes) :
+    const bool ok = (bare ? host->bare_metal_file_read_workspace(context->app, path, buffer, capacity, outBytes) :
         (host->file_read_workspace ? host->file_read_workspace(context->app, path, buffer, capacity, outBytes) : GX_ERROR_UNSUPPORTED)) == GX_OK;
+    phase28z_fs_event(context->app, "READ", path, false, ok);
+    return ok;
 }
 
 static bool fsWrite(void* userData, const char* path, const char* buffer, uint32_t bytes, uint32_t* outBytes) {
@@ -10980,12 +11058,15 @@ static void phase28qPump(gx_app_context* ctx) {
 
     switch (g_phase28qStage) {
     case 1: {
+        phase28z_startup_stage(ctx, 3);
+        phase28z_startup_stage(ctx, 4);
         phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_ENTRY", nullptr);
         SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
         g_controller.symbolDatabase = nullptr;
         const bool projectOpened = WorkspaceControllerOpenProject(&g_controller, "/P28Q");
         g_controller.symbolDatabase = diagnosticSymbolDatabase;
         phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_RETURN", projectOpened ? "opened" : "rejected");
+        phase28z_startup_stage(ctx, 5);
         phase28v_startup_event(ctx, "PHASE28Q_FIXTURE_DOCUMENT_ENTRY", nullptr);
         const bool fixtureDocumentOpened = phase28mOpenDocument(ctx, "src/main.cpp");
         phase28v_startup_event(ctx, "PHASE28Q_FIXTURE_DOCUMENT_RETURN",
@@ -11003,10 +11084,12 @@ static void phase28qPump(gx_app_context* ctx) {
         break;
     }
     case 2:
+        phase28z_startup_stage(ctx, 7);
         phase28v_startup_event(ctx, "DEBUG_START_REQUEST_ISSUED");
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_ENTRY");
         requestDebug(ctx);
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_RETURN");
+        phase28z_startup_stage(ctx, 8);
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DEBUG_START_PASS");
         phase28qWaitFor(ctx);
         g_phase28qStage = 3;
@@ -15064,7 +15147,11 @@ static bool requestApplicationClose(gx_app_context* ctx, gx_handle window) {
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!ctx || !ctx->host) return GX_ERROR_INVALID_ARGUMENT;
-    initializeDebugLaunchStorage();
+    if (!g_phase28zRawEntryReported) {
+        logMarker(ctx, "P28Z APP 00 gx_main_entry_raw");
+        g_phase28zRawEntryReported = true;
+    }
+    initializeDebugLaunchStorage(ctx);
     // Phase 28O diagnostic mode deliberately re-enters the real application
     // lifecycle after the first close. Keep that re-entry on this invocation's
     // stack instead of recursively calling gx_main; the latter can leave the
@@ -15087,6 +15174,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28yLastPhase28qStage = 0xFFFFFFFFu;
     phase28y_startup_stage(ctx, 1, "gx_main_entered");
     g_phase28qDiagnostic = phase28qSentinelPresent();
+    g_phase28zStartupTraceCount = 0;
+    g_phase28zFsTraceCount = 0;
+    g_phase28zProjectTraceCount = 0;
+    phase28z_startup_stage(ctx, 1);
     phase28y_startup_stage(ctx, 2, "initial_sentinel_probe_complete");
     phase28y_startup_event(ctx, "initial_q_sentinel", g_phase28qDiagnostic ? "present" : "absent");
     DebugControllerSetTraceHook(debuggerTraceHook);
@@ -15094,6 +15185,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     WorkspaceFileSystem fileSystem = { &g_fileSystemContext, fsStat, fsList, fsRead, fsWrite, fsCreateDirectory, fsRemovePath };
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_CONTROLLER_INIT_ENTRY");
     WorkspaceControllerInit(&g_controller, fileSystem);
+    WorkspaceControllerSetProjectOpenObserver(&g_controller, phase28z_project_open_observer, ctx);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_CONTROLLER_INIT_DONE");
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_RESET_ENTRY");
     // The first workspace reset is metadata-only.  The runtime reset touches
@@ -15466,6 +15558,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_APP_LAUNCH_PASS");
     drawShell(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS");
+    phase28z_startup_stage(ctx, 2);
     phase28y_startup_stage(ctx, 6, "initial_render_complete");
     if (g_phase28mDiagnostic) {
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_WINDOW_VISIBLE_PASS");

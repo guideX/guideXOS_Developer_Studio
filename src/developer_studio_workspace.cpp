@@ -6,6 +6,74 @@ namespace {
 
 static FileListEntry g_workspaceRefreshEntries[kMaxWorkspaceEntries];
 static char g_workspaceDocumentReadBuffer[kMaxEditorBytes + 1];
+static WorkspaceModel g_workspaceProjectCandidate = {};
+
+static void setControllerError(WorkspaceController* controller, ModelErrorCode code);
+static void setProjectError(WorkspaceController* controller, ProjectErrorCode code);
+static bool pathForBrowse(const WorkspaceModel& model, char* output, uint32_t outputSize);
+static bool copyEntryName(char* output, uint32_t outputSize, const char* input);
+
+static void notifyProjectOpen(WorkspaceController* controller, WorkspaceProjectOpenState state, const char* path) {
+    if (!controller) return;
+    controller->projectOpenState = state;
+    if (controller->projectOpenObserver) {
+        controller->projectOpenObserver(controller->projectOpenObserverUserData, state,
+                                        controller->projectOpenRequestId,
+                                        controller->projectOpenGeneration, path);
+    }
+}
+
+static bool refreshWorkspaceModel(WorkspaceController* controller, WorkspaceModel* model,
+                                  bool* outTruncated) {
+    if (!controller || !model || !model->open || !controller->fileSystem.list) {
+        if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen);
+        return false;
+    }
+    char directory[kMaxPathBytes];
+    if (!pathForBrowse(*model, directory, sizeof(directory))) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    FileListEntry* entries = g_workspaceRefreshEntries;
+    bool truncated = false;
+    uint32_t count = 0;
+    if (!controller->fileSystem.list(controller->fileSystem.userData, directory, entries,
+                                     kMaxWorkspaceEntries, &count, &truncated)) {
+        setControllerError(controller, ModelErrorCode::ReadFailed);
+        return false;
+    }
+    WorkspaceModelClearEntries(model);
+    if (outTruncated) *outTruncated = truncated;
+    for (uint32_t i = 0; i < count && i < kMaxWorkspaceEntries; ++i) {
+        if (entries[i].name[0] == '\0' || PathContainsTraversal(entries[i].name)) continue;
+        WorkspaceEntry entry;
+        for (uint32_t j = 0; j < sizeof(entry.name); ++j) entry.name[j] = '\0';
+        for (uint32_t j = 0; j < sizeof(entry.relativePath); ++j) entry.relativePath[j] = '\0';
+        if (!copyEntryName(entry.name, sizeof(entry.name), entries[i].name)) continue;
+        uint32_t browseLength = 0;
+        while (browseLength + 1 < sizeof(model->browsePath) && model->browsePath[browseLength] != '\0') ++browseLength;
+        uint32_t nameLength = 0;
+        while (nameLength + 1 < sizeof(entry.name) && entry.name[nameLength] != '\0') ++nameLength;
+        char relative[kMaxPathBytes];
+        uint32_t out = 0;
+        for (uint32_t j = 0; j < browseLength && out + 1 < sizeof(relative); ++j) relative[out++] = model->browsePath[j];
+        if (browseLength > 0 && out + 1 < sizeof(relative)) relative[out++] = '/';
+        for (uint32_t j = 0; j < nameLength && out + 1 < sizeof(relative); ++j) relative[out++] = entry.name[j];
+        relative[out] = '\0';
+        if (!copyEntryName(entry.relativePath, sizeof(entry.relativePath), relative)) continue;
+        entry.size = entries[i].size;
+        entry.depth = 0;
+        for (uint32_t j = 0; relative[j] != '\0'; ++j) if (relative[j] == '/') ++entry.depth;
+        entry.kind = entries[i].kind == FileInfoKind::Directory ? WorkspaceEntryKind::Directory :
+            (IsSupportedTextPath(entry.name) ? WorkspaceEntryKind::SupportedTextFile : WorkspaceEntryKind::UnsupportedFile);
+        WorkspaceModelAddEntry(model, entry);
+    }
+    WorkspaceModelSortEntries(model);
+    model->selectedEntry = model->entryCount == 0 ? 0 :
+        (model->selectedEntry < model->entryCount ? model->selectedEntry : 0);
+    setControllerError(controller, ModelErrorCode::None);
+    return true;
+}
 
 static void setControllerError(WorkspaceController* controller, ModelErrorCode code) {
     if (!controller) return;
@@ -101,6 +169,11 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
     controller->lastError = ModelErrorCode::None;
     controller->lastProjectError = ProjectErrorCode::None;
     controller->symbolDatabase = nullptr;
+    controller->projectOpenRequestId = 0;
+    controller->projectOpenGeneration = 0;
+    controller->projectOpenState = WorkspaceProjectOpenState::Idle;
+    controller->projectOpenObserver = nullptr;
+    controller->projectOpenObserverUserData = nullptr;
 }
 
 void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, SymbolDatabase* database) {
@@ -118,6 +191,30 @@ void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, Sy
                                         controller->model.projectGeneration);
     }
 #endif
+}
+
+void WorkspaceControllerSetProjectOpenObserver(WorkspaceController* controller,
+                                               WorkspaceProjectOpenObserver observer,
+                                               void* userData) {
+    if (!controller) return;
+    controller->projectOpenObserver = observer;
+    controller->projectOpenObserverUserData = userData;
+}
+
+WorkspaceProjectOpenState WorkspaceControllerProjectOpenState(const WorkspaceController* controller) {
+    return controller ? controller->projectOpenState : WorkspaceProjectOpenState::Failed;
+}
+
+const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state) {
+    switch (state) {
+    case WorkspaceProjectOpenState::Idle: return "idle";
+    case WorkspaceProjectOpenState::LoadStarted: return "load_started";
+    case WorkspaceProjectOpenState::Loaded: return "loaded";
+    case WorkspaceProjectOpenState::RefreshStarted: return "refresh_started";
+    case WorkspaceProjectOpenState::Ready: return "ready";
+    case WorkspaceProjectOpenState::Failed: return "failed";
+    }
+    return "unknown";
 }
 
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path) {
@@ -145,35 +242,51 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
         if (controller) setProjectError(controller, ProjectErrorCode::NullInput);
         return false;
     }
+    ++controller->projectOpenRequestId;
+    controller->projectOpenGeneration = 0;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::LoadStarted, path);
     if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
         setControllerError(controller, ModelErrorCode::UnsavedChanges);
         setProjectError(controller, ProjectErrorCode::UnsavedChanges);
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, path);
         return false;
     }
     ProjectOperationResult result;
     if (!LoadProject(controller->fileSystem, path, &result)) {
         setProjectError(controller, result.error);
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, path);
         return false;
     }
-    if (!WorkspaceModelSetRoot(&controller->model, result.project.rootPath, result.project.displayName)) {
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Loaded, result.project.rootPath);
+    WorkspaceModelInit(&g_workspaceProjectCandidate);
+    if (!WorkspaceModelSetRoot(&g_workspaceProjectCandidate, result.project.rootPath, result.project.displayName)) {
         setProjectError(controller, ProjectErrorCode::InvalidParentPath);
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath);
         return false;
     }
-    controller->model.hasProject = true;
-    controller->model.project = result.project;
-    controller->lastProjectError = ProjectErrorCode::None;
-#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
-    if (controller->symbolDatabase) SymbolDatabaseClear(controller->symbolDatabase);
-#endif
-    if (!WorkspaceControllerRefresh(controller)) {
+    g_workspaceProjectCandidate.hasProject = true;
+    g_workspaceProjectCandidate.project = result.project;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::RefreshStarted, result.project.rootPath);
+    // Symbol publication is deliberately deferred until the candidate model
+    // has passed refresh and is committed below.
+    bool candidateListingTruncated = false;
+    if (!refreshWorkspaceModel(controller, &g_workspaceProjectCandidate, &candidateListingTruncated)) {
         setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath);
         return false;
     }
+    controller->model = g_workspaceProjectCandidate;
+    controller->listingTruncated = candidateListingTruncated;
+    controller->lastProjectError = ProjectErrorCode::None;
+    controller->projectOpenGeneration = controller->model.projectGeneration;
 #if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
-    if (controller->symbolDatabase)
+    if (controller->symbolDatabase) {
+        SymbolDatabaseClear(controller->symbolDatabase);
         SymbolDatabaseIndexProject(controller->symbolDatabase, controller->fileSystem, controller->model.rootPath,
                                     controller->model.documents, kMaxOpenDocuments, controller->model.projectGeneration);
+    }
 #endif
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Ready, controller->model.rootPath);
     return true;
 }
 
@@ -230,46 +343,9 @@ bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
 }
 
 bool WorkspaceControllerRefresh(WorkspaceController* controller) {
-    if (!controller || !controller->model.open || !controller->fileSystem.list) { if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen); return false; }
-    char directory[kMaxPathBytes];
-    if (!pathForBrowse(controller->model, directory, sizeof(directory))) { setControllerError(controller, ModelErrorCode::InvalidPath); return false; }
-    FileListEntry* entries = g_workspaceRefreshEntries;
     bool truncated = false;
-    uint32_t count = 0;
-    if (!controller->fileSystem.list(controller->fileSystem.userData, directory, entries, kMaxWorkspaceEntries, &count, &truncated)) {
-        setControllerError(controller, ModelErrorCode::ReadFailed);
-        return false;
-    }
-    WorkspaceModelClearEntries(&controller->model);
+    if (!refreshWorkspaceModel(controller, controller ? &controller->model : nullptr, &truncated)) return false;
     controller->listingTruncated = truncated;
-    for (uint32_t i = 0; i < count && i < kMaxWorkspaceEntries; ++i) {
-        if (entries[i].name[0] == '\0' || PathContainsTraversal(entries[i].name)) continue;
-        WorkspaceEntry entry;
-        for (uint32_t j = 0; j < sizeof(entry.name); ++j) entry.name[j] = '\0';
-        for (uint32_t j = 0; j < sizeof(entry.relativePath); ++j) entry.relativePath[j] = '\0';
-        if (!copyEntryName(entry.name, sizeof(entry.name), entries[i].name)) continue;
-        uint32_t browseLength = 0;
-        while (browseLength + 1 < sizeof(controller->model.browsePath) && controller->model.browsePath[browseLength] != '\0') ++browseLength;
-        uint32_t nameLength = 0;
-        while (nameLength + 1 < sizeof(entry.name) && entry.name[nameLength] != '\0') ++nameLength;
-        char relative[kMaxPathBytes];
-        uint32_t out = 0;
-        for (uint32_t j = 0; j < browseLength && out + 1 < sizeof(relative); ++j) relative[out++] = controller->model.browsePath[j];
-        if (browseLength > 0 && out + 1 < sizeof(relative)) relative[out++] = '/';
-        for (uint32_t j = 0; j < nameLength && out + 1 < sizeof(relative); ++j) relative[out++] = entry.name[j];
-        relative[out] = '\0';
-        if (!copyEntryName(entry.relativePath, sizeof(entry.relativePath), relative)) continue;
-        entry.size = entries[i].size;
-        entry.depth = 0;
-        for (uint32_t j = 0; relative[j] != '\0'; ++j) if (relative[j] == '/') ++entry.depth;
-        entry.kind = entries[i].kind == FileInfoKind::Directory ? WorkspaceEntryKind::Directory :
-            (IsSupportedTextPath(entry.name) ? WorkspaceEntryKind::SupportedTextFile : WorkspaceEntryKind::UnsupportedFile);
-        WorkspaceModelAddEntry(&controller->model, entry);
-    }
-    WorkspaceModelSortEntries(&controller->model);
-    controller->model.selectedEntry = controller->model.entryCount == 0 ? 0 :
-        (controller->model.selectedEntry < controller->model.entryCount ? controller->model.selectedEntry : 0);
-    setControllerError(controller, ModelErrorCode::None);
     return true;
 }
 

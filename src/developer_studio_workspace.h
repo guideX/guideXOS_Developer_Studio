@@ -18,6 +18,21 @@ struct ProjectSourceFile {
     uint64_t size;
 };
 
+enum class WorkspaceProjectOpenState {
+    Idle = 0,
+    LoadStarted,
+    Loaded,
+    RefreshStarted,
+    Ready,
+    Failed
+};
+
+using WorkspaceProjectOpenObserver = void (*)(void* userData,
+                                               WorkspaceProjectOpenState state,
+                                               uint64_t requestId,
+                                               uint64_t projectGeneration,
+                                               const char* path);
+
 struct WorkspaceController {
     WorkspaceModel model;
     WorkspaceFileSystem fileSystem;
@@ -25,10 +40,20 @@ struct WorkspaceController {
     ModelErrorCode lastError;
     ProjectErrorCode lastProjectError;
     SymbolDatabase* symbolDatabase;
+    uint64_t projectOpenRequestId;
+    uint64_t projectOpenGeneration;
+    WorkspaceProjectOpenState projectOpenState;
+    WorkspaceProjectOpenObserver projectOpenObserver;
+    void* projectOpenObserverUserData;
 };
 
 void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFileSystem& fileSystem);
 void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, SymbolDatabase* database);
+void WorkspaceControllerSetProjectOpenObserver(WorkspaceController* controller,
+                                               WorkspaceProjectOpenObserver observer,
+                                               void* userData);
+WorkspaceProjectOpenState WorkspaceControllerProjectOpenState(const WorkspaceController* controller);
+const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state);
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path);
 bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char* path);
 bool WorkspaceControllerCreateProject(WorkspaceController* controller, const ProjectCreateRequest& request, ProjectOperationResult* result);

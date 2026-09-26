@@ -13,6 +13,11 @@ namespace fs = std::filesystem;
 
 struct TestContext {
     bool failMainWrite = false;
+    bool failList = false;
+    uint32_t observerCount = 0;
+    WorkspaceProjectOpenState lastProjectState = WorkspaceProjectOpenState::Idle;
+    uint64_t lastProjectRequestId = 0;
+    uint64_t lastProjectGeneration = 0;
 };
 
 static bool statFile(void*, const char* path, FileInfo* outInfo) {
@@ -24,7 +29,9 @@ static bool statFile(void*, const char* path, FileInfo* outInfo) {
     return !ec;
 }
 
-static bool listFiles(void*, const char* path, FileListEntry* entries, uint32_t capacity, uint32_t* outCount, bool* outTruncated) {
+static bool listFiles(void* userData, const char* path, FileListEntry* entries, uint32_t capacity, uint32_t* outCount, bool* outTruncated) {
+    TestContext* context = static_cast<TestContext*>(userData);
+    if (context && context->failList) return false;
     *outCount = 0;
     *outTruncated = false;
     std::error_code ec;
@@ -39,6 +46,17 @@ static bool listFiles(void*, const char* path, FileListEntry* entries, uint32_t 
         ++*outCount;
     }
     return true;
+}
+
+static void projectOpenObserver(void* userData, WorkspaceProjectOpenState state,
+                                uint64_t requestId, uint64_t projectGeneration,
+                                const char*) {
+    TestContext* context = static_cast<TestContext*>(userData);
+    if (!context) return;
+    ++context->observerCount;
+    context->lastProjectState = state;
+    context->lastProjectRequestId = requestId;
+    context->lastProjectGeneration = projectGeneration;
 }
 
 static bool readFile(void*, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
@@ -233,13 +251,28 @@ int main(int argc, char** argv) {
 
     static WorkspaceController controller;
     WorkspaceControllerInit(&controller, fileSystem);
+    WorkspaceControllerSetProjectOpenObserver(&controller, projectOpenObserver, &context);
     assert(WorkspaceControllerOpenProject(&controller, generatedRoot.string().c_str()));
     assert(controller.model.hasProject);
     assert(std::strcmp(controller.model.project.projectId, request.projectId) == 0);
+    assert(context.lastProjectState == WorkspaceProjectOpenState::Ready);
+    assert(context.lastProjectRequestId == 1);
+    assert(context.lastProjectGeneration == controller.model.projectGeneration);
     assert(WorkspaceControllerOpenDocument(&controller, "src/main.cpp"));
     char oldRoot[kMaxPathBytes] = {};
     std::strcpy(oldRoot, controller.model.rootPath);
     const uint64_t oldDocumentId = WorkspaceControllerActiveDocument(&controller)->documentId;
+    const uint64_t oldProjectGeneration = controller.model.projectGeneration;
+    context.failList = true;
+    assert(!WorkspaceControllerOpenProject(&controller, generatedRoot.string().c_str()));
+    context.failList = false;
+    assert(controller.lastProjectError == ProjectErrorCode::RequiredFileMissing);
+    assert(context.lastProjectState == WorkspaceProjectOpenState::Failed);
+    assert(context.lastProjectRequestId == 2);
+    assert(controller.model.hasProject && std::strcmp(controller.model.rootPath, oldRoot) == 0);
+    assert(controller.model.projectGeneration == oldProjectGeneration);
+    assert(WorkspaceControllerActiveDocument(&controller) != nullptr &&
+           WorkspaceControllerActiveDocument(&controller)->documentId == oldDocumentId);
     fs::create_directories(testRoot / "invalid-project", ec);
     std::ofstream(testRoot / "invalid-project" / "guidexos.project") << "";
     assert(!WorkspaceControllerOpenProject(&controller, (testRoot / "invalid-project").string().c_str()));
