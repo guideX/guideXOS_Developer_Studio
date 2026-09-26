@@ -33,6 +33,7 @@ enum class ProjectValidationState {
 enum class ProjectErrorCode {
     None = 0,
     NullInput,
+    LoadInProgress,
     ProjectFileTooLarge,
     MalformedJson,
     DuplicateField,

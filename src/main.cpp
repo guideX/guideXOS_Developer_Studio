@@ -182,6 +182,7 @@ using guidexos::developer_studio::WorkspaceControllerSaveActive;
 using guidexos::developer_studio::WorkspaceControllerSaveAll;
 using guidexos::developer_studio::WorkspaceControllerSaveDocument;
 using guidexos::developer_studio::WorkspaceFileSystem;
+using guidexos::developer_studio::WorkspaceProjectOpenEvent;
 using guidexos::developer_studio::WorkspaceProjectOpenState;
 using guidexos::developer_studio::WorkspaceProjectOpenStateName;
 using guidexos::developer_studio::DebuggerWorkspace;
@@ -970,6 +971,7 @@ static gx_development_debug_expression g_phase28qExpression = {};
 static uint32_t g_phase28zStartupTraceCount = 0;
 static uint32_t g_phase28zFsTraceCount = 0;
 static uint32_t g_phase28zProjectTraceCount = 0;
+static uint32_t g_phase29cProjectTraceCount = 0;
 static bool g_phase28zRawEntryReported = false;
 static bool g_syntaxIncrementalMarkerReported = false;
 static bool g_syntaxConvergenceMarkerReported = false;
@@ -1765,30 +1767,61 @@ static void phase28z_startup_stage(gx_app_context* ctx, uint32_t stage) {
     }
 }
 
-static void phase28z_project_open_observer(void* userData, WorkspaceProjectOpenState state,
-                                           uint64_t requestId, uint64_t projectGeneration,
-                                           const char* path) {
+static void phase28z_project_open_observer(void* userData, const WorkspaceProjectOpenEvent& event) {
     gx_app_context* ctx = static_cast<gx_app_context*>(userData);
-    if (!ctx || !g_phase28qDiagnostic || g_phase28zStartupTraceCount >= 32) return;
-    if (state == WorkspaceProjectOpenState::Ready) phase28z_startup_stage(ctx, 6);
-    if (g_phase28zProjectTraceCount >= 16) return;
-    ++g_phase28zProjectTraceCount;
-    switch (state) {
+    if (!ctx || !g_phase28qDiagnostic) return;
+    if (event.state == WorkspaceProjectOpenState::Ready) phase28z_startup_stage(ctx, 6);
+    if (g_phase28zProjectTraceCount < 16) {
+        ++g_phase28zProjectTraceCount;
+        switch (event.state) {
     case WorkspaceProjectOpenState::LoadStarted: logMarker(ctx, "P28Z PROJECT state=load_started"); break;
     case WorkspaceProjectOpenState::Loaded: logMarker(ctx, "P28Z PROJECT state=loaded"); break;
     case WorkspaceProjectOpenState::RefreshStarted: logMarker(ctx, "P28Z PROJECT state=refresh_started"); break;
     case WorkspaceProjectOpenState::Ready: logMarker(ctx, "P28Z PROJECT state=ready"); break;
     case WorkspaceProjectOpenState::Failed: logMarker(ctx, "P28Z PROJECT state=failed"); break;
     default: break;
+        }
+        copyText(g_textScratch, sizeof(g_textScratch), "P28Z PROJECT state=");
+        appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(event.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " request=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.requestId);
+        appendText(g_textScratch, sizeof(g_textScratch), " generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.activeProjectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " path=");
+        appendText(g_textScratch, sizeof(g_textScratch), event.path ? event.path : "");
+        logMarker(ctx, g_textScratch);
     }
-    copyText(g_textScratch, sizeof(g_textScratch), "P28Z PROJECT state=");
-    appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(state));
+    if (g_phase29cProjectTraceCount >= 32) return;
+    ++g_phase29cProjectTraceCount;
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29C_PROJECT_LOAD_");
+    switch (event.state) {
+    case WorkspaceProjectOpenState::LoadStarted: appendText(g_textScratch, sizeof(g_textScratch), "REQUEST_ACCEPTED"); break;
+    case WorkspaceProjectOpenState::Loaded: appendText(g_textScratch, sizeof(g_textScratch), "FILES_LOADED"); break;
+    case WorkspaceProjectOpenState::CandidateAllocated: appendText(g_textScratch, sizeof(g_textScratch), "CANDIDATE_ALLOCATED"); break;
+    case WorkspaceProjectOpenState::RefreshStarted: appendText(g_textScratch, sizeof(g_textScratch), "REFRESH_STARTED"); break;
+    case WorkspaceProjectOpenState::Validated: appendText(g_textScratch, sizeof(g_textScratch), "VALIDATED"); break;
+    case WorkspaceProjectOpenState::Committing: appendText(g_textScratch, sizeof(g_textScratch), "COMMIT_STARTED"); break;
+    case WorkspaceProjectOpenState::Active: appendText(g_textScratch, sizeof(g_textScratch), "ACTIVE_PUBLISHED"); break;
+    case WorkspaceProjectOpenState::Ready: appendText(g_textScratch, sizeof(g_textScratch), "READY"); break;
+    case WorkspaceProjectOpenState::Failed: appendText(g_textScratch, sizeof(g_textScratch), "FAILED"); break;
+    default: appendText(g_textScratch, sizeof(g_textScratch), "UNKNOWN"); break;
+    }
+    appendText(g_textScratch, sizeof(g_textScratch), " worker=sync state=");
+    appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(event.state));
     appendText(g_textScratch, sizeof(g_textScratch), " request=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), requestId);
-    appendText(g_textScratch, sizeof(g_textScratch), " generation=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), projectGeneration);
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.requestId);
+    appendText(g_textScratch, sizeof(g_textScratch), " candidate=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.candidateId);
+    appendText(g_textScratch, sizeof(g_textScratch), " refresh=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.refreshGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " active_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.activeProjectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " candidate_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.candidateProjectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " error=");
+    appendText(g_textScratch, sizeof(g_textScratch), ProjectErrorName(event.error));
     appendText(g_textScratch, sizeof(g_textScratch), " path=");
-    appendText(g_textScratch, sizeof(g_textScratch), path ? path : "");
+    appendText(g_textScratch, sizeof(g_textScratch), event.path ? event.path : "");
     logMarker(ctx, g_textScratch);
 }
 
@@ -15225,6 +15258,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28zStartupTraceCount = 0;
     g_phase28zFsTraceCount = 0;
     g_phase28zProjectTraceCount = 0;
+    g_phase29cProjectTraceCount = 0;
     phase28z_startup_stage(ctx, 1);
     phase28y_startup_stage(ctx, 2, "initial_sentinel_probe_complete");
     phase28y_startup_event(ctx, "initial_q_sentinel", g_phase28qDiagnostic ? "present" : "absent");

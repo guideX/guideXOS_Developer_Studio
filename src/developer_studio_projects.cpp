@@ -789,6 +789,7 @@ const char* ProjectErrorName(ProjectErrorCode code) {
     switch (code) {
     case ProjectErrorCode::None: return "none";
     case ProjectErrorCode::NullInput: return "null_input";
+    case ProjectErrorCode::LoadInProgress: return "load_in_progress";
     case ProjectErrorCode::ProjectFileTooLarge: return "project_file_too_large";
     case ProjectErrorCode::MalformedJson: return "malformed_json";
     case ProjectErrorCode::DuplicateField: return "duplicate_field";
@@ -949,7 +950,10 @@ bool ParseProjectMetadata(const char* bytes, uint32_t length, Project* output, P
     if (error) *error = ProjectErrorCode::None;
     if (!bytes || !output) { if (error) *error = ProjectErrorCode::NullInput; return false; }
     if (length > kMaxProjectFileBytes) { if (error) *error = ProjectErrorCode::ProjectFileTooLarge; return false; }
-    static Project project = {};
+    // Keep parser state owned by this invocation.  Project loads can be
+    // retried or observed reentrantly; a function-static writable Project
+    // would let one parse retain or overwrite another parse's fields.
+    Project project = {};
     initializeProject(&project);
     JsonCursor cursor = { bytes, length, 0, ProjectErrorCode::MalformedJson };
     if (!parseProjectObject(cursor, &project)) { if (error) *error = cursor.error; return false; }

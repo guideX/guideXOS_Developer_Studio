@@ -6,32 +6,82 @@ namespace {
 
 static FileListEntry g_workspaceRefreshEntries[kMaxWorkspaceEntries];
 static char g_workspaceDocumentReadBuffer[kMaxEditorBytes + 1];
-static WorkspaceModel g_workspaceProjectCandidate = {};
+
+struct WorkspaceProjectLoadTransaction {
+    WorkspaceController* owner;
+    uint64_t requestId;
+    uint64_t candidateId;
+    uint64_t refreshGeneration;
+    bool active;
+    WorkspaceModel candidate;
+};
+
+static WorkspaceProjectLoadTransaction g_workspaceProjectLoad = {};
+static uint64_t g_nextWorkspaceProjectCandidateId = 1;
+static uint64_t g_nextWorkspaceProjectRefreshGeneration = 1;
 
 static void setControllerError(WorkspaceController* controller, ModelErrorCode code);
+static void setModelError(WorkspaceModel* model, ModelErrorCode code);
 static void setProjectError(WorkspaceController* controller, ProjectErrorCode code);
 static bool pathForBrowse(const WorkspaceModel& model, char* output, uint32_t outputSize);
 static bool copyEntryName(char* output, uint32_t outputSize, const char* input);
 
-static void notifyProjectOpen(WorkspaceController* controller, WorkspaceProjectOpenState state, const char* path) {
+static bool projectLoadIsCurrent(const WorkspaceController* controller, uint64_t requestId) {
+    return controller && controller->projectOpenInProgress && g_workspaceProjectLoad.active &&
+        g_workspaceProjectLoad.owner == controller && g_workspaceProjectLoad.requestId == requestId &&
+        controller->projectOpenRequestId == requestId;
+}
+
+static uint64_t nextWorkspaceProjectId(uint64_t* value) {
+    if (!value) return 0;
+    const uint64_t result = *value == 0 ? 1 : *value;
+    *value = result == UINT64_MAX ? 1 : result + 1;
+    return result;
+}
+
+static void releaseProjectLoadTransaction(WorkspaceController* controller) {
+    if (!controller) return;
+    controller->projectOpenInProgress = false;
+    if (g_workspaceProjectLoad.owner == controller) {
+        g_workspaceProjectLoad.active = false;
+        g_workspaceProjectLoad.owner = nullptr;
+        g_workspaceProjectLoad.requestId = 0;
+        g_workspaceProjectLoad.candidateId = 0;
+        g_workspaceProjectLoad.refreshGeneration = 0;
+        WorkspaceModelInit(&g_workspaceProjectLoad.candidate);
+    }
+}
+
+static void notifyProjectOpen(WorkspaceController* controller, WorkspaceProjectOpenState state,
+                              const char* path, ProjectErrorCode error) {
     if (!controller) return;
     controller->projectOpenState = state;
     if (controller->projectOpenObserver) {
-        controller->projectOpenObserver(controller->projectOpenObserverUserData, state,
-                                        controller->projectOpenRequestId,
-                                        controller->projectOpenGeneration, path);
+        WorkspaceProjectOpenEvent event = {};
+        event.state = state;
+        event.requestId = controller->projectOpenRequestId;
+        event.activeProjectGeneration = controller->model.projectGeneration;
+        event.candidateId = controller->projectOpenCandidateId;
+        event.candidateProjectGeneration = g_workspaceProjectLoad.active &&
+            g_workspaceProjectLoad.owner == controller ? g_workspaceProjectLoad.candidate.projectGeneration : 0;
+        event.refreshGeneration = controller->projectOpenRefreshGeneration;
+        event.error = error;
+        event.path = path;
+        controller->projectOpenObserver(controller->projectOpenObserverUserData, event);
     }
 }
 
 static bool refreshWorkspaceModel(WorkspaceController* controller, WorkspaceModel* model,
-                                  bool* outTruncated) {
+                                  bool* outTruncated, bool publishControllerError) {
     if (!controller || !model || !model->open || !controller->fileSystem.list) {
-        if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen);
+        if (model) setModelError(model, ModelErrorCode::WorkspaceNotOpen);
+        if (publishControllerError && controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen);
         return false;
     }
     char directory[kMaxPathBytes];
     if (!pathForBrowse(*model, directory, sizeof(directory))) {
-        setControllerError(controller, ModelErrorCode::InvalidPath);
+        setModelError(model, ModelErrorCode::InvalidPath);
+        if (publishControllerError) setControllerError(controller, ModelErrorCode::InvalidPath);
         return false;
     }
     FileListEntry* entries = g_workspaceRefreshEntries;
@@ -39,7 +89,8 @@ static bool refreshWorkspaceModel(WorkspaceController* controller, WorkspaceMode
     uint32_t count = 0;
     if (!controller->fileSystem.list(controller->fileSystem.userData, directory, entries,
                                      kMaxWorkspaceEntries, &count, &truncated)) {
-        setControllerError(controller, ModelErrorCode::ReadFailed);
+        setModelError(model, ModelErrorCode::ReadFailed);
+        if (publishControllerError) setControllerError(controller, ModelErrorCode::ReadFailed);
         return false;
     }
     WorkspaceModelClearEntries(model);
@@ -71,23 +122,35 @@ static bool refreshWorkspaceModel(WorkspaceController* controller, WorkspaceMode
     WorkspaceModelSortEntries(model);
     model->selectedEntry = model->entryCount == 0 ? 0 :
         (model->selectedEntry < model->entryCount ? model->selectedEntry : 0);
-    setControllerError(controller, ModelErrorCode::None);
+    setModelError(model, ModelErrorCode::None);
+    if (publishControllerError) setControllerError(controller, ModelErrorCode::None);
     return true;
 }
 
 static void setControllerError(WorkspaceController* controller, ModelErrorCode code) {
     if (!controller) return;
     controller->lastError = code;
-    for (uint32_t i = 0; i + 1 < sizeof(controller->model.lastError); ++i) {
-        controller->model.lastError[i] = ModelErrorName(code)[i];
+    setModelError(&controller->model, code);
+}
+
+static void setModelError(WorkspaceModel* model, ModelErrorCode code) {
+    if (!model) return;
+    for (uint32_t i = 0; i + 1 < sizeof(model->lastError); ++i) {
+        model->lastError[i] = ModelErrorName(code)[i];
         if (ModelErrorName(code)[i] == '\0') return;
     }
-    controller->model.lastError[sizeof(controller->model.lastError) - 1] = '\0';
+    model->lastError[sizeof(model->lastError) - 1] = '\0';
 }
 
 static void setProjectError(WorkspaceController* controller, ProjectErrorCode code) {
     if (!controller) return;
     controller->lastProjectError = code;
+}
+
+static bool rejectProjectLoadReentry(WorkspaceController* controller) {
+    if (!controller || !controller->projectOpenInProgress) return false;
+    setProjectError(controller, ProjectErrorCode::LoadInProgress);
+    return true;
 }
 
 static bool pathForBrowse(const WorkspaceModel& model, char* output, uint32_t outputSize) {
@@ -172,6 +235,10 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
     controller->projectOpenRequestId = 0;
     controller->projectOpenGeneration = 0;
     controller->projectOpenState = WorkspaceProjectOpenState::Idle;
+    controller->projectOpenInProgress = false;
+    controller->projectOpenCandidateId = 0;
+    controller->projectOpenRefreshGeneration = 0;
+    controller->projectOpenFailure = ProjectErrorCode::None;
     controller->projectOpenObserver = nullptr;
     controller->projectOpenObserverUserData = nullptr;
 }
@@ -210,7 +277,11 @@ const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state) {
     case WorkspaceProjectOpenState::Idle: return "idle";
     case WorkspaceProjectOpenState::LoadStarted: return "load_started";
     case WorkspaceProjectOpenState::Loaded: return "loaded";
+    case WorkspaceProjectOpenState::CandidateAllocated: return "candidate_allocated";
     case WorkspaceProjectOpenState::RefreshStarted: return "refresh_started";
+    case WorkspaceProjectOpenState::Validated: return "validated";
+    case WorkspaceProjectOpenState::Committing: return "committing";
+    case WorkspaceProjectOpenState::Active: return "active";
     case WorkspaceProjectOpenState::Ready: return "ready";
     case WorkspaceProjectOpenState::Failed: return "failed";
     }
@@ -219,6 +290,10 @@ const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state) {
 
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path) {
     if (!controller || !controller->fileSystem.stat || !controller->fileSystem.list) return false;
+    if (controller->projectOpenInProgress) {
+        setProjectError(controller, ProjectErrorCode::LoadInProgress);
+        return false;
+    }
     if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
         setControllerError(controller, ModelErrorCode::UnsavedChanges);
         return false;
@@ -242,43 +317,100 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
         if (controller) setProjectError(controller, ProjectErrorCode::NullInput);
         return false;
     }
+    if (controller->projectOpenInProgress || g_workspaceProjectLoad.active) {
+        setProjectError(controller, ProjectErrorCode::LoadInProgress);
+        return false;
+    }
     ++controller->projectOpenRequestId;
     controller->projectOpenGeneration = 0;
-    notifyProjectOpen(controller, WorkspaceProjectOpenState::LoadStarted, path);
+    controller->projectOpenInProgress = true;
+    controller->projectOpenCandidateId = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateId);
+    controller->projectOpenRefreshGeneration = 0;
+    controller->projectOpenFailure = ProjectErrorCode::None;
+    g_workspaceProjectLoad.owner = controller;
+    g_workspaceProjectLoad.requestId = controller->projectOpenRequestId;
+    g_workspaceProjectLoad.candidateId = controller->projectOpenCandidateId;
+    g_workspaceProjectLoad.refreshGeneration = 0;
+    g_workspaceProjectLoad.active = true;
+    WorkspaceModelInit(&g_workspaceProjectLoad.candidate);
+    const uint64_t requestId = controller->projectOpenRequestId;
+    const char* requestPath = path;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::LoadStarted, requestPath, ProjectErrorCode::None);
     if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
         setControllerError(controller, ModelErrorCode::UnsavedChanges);
         setProjectError(controller, ProjectErrorCode::UnsavedChanges);
-        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, path);
+        controller->projectOpenFailure = ProjectErrorCode::UnsavedChanges;
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, requestPath, ProjectErrorCode::UnsavedChanges);
+        setProjectError(controller, ProjectErrorCode::UnsavedChanges);
+        releaseProjectLoadTransaction(controller);
         return false;
     }
     ProjectOperationResult result;
     if (!LoadProject(controller->fileSystem, path, &result)) {
         setProjectError(controller, result.error);
-        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, path);
+        controller->projectOpenFailure = result.error;
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, requestPath, result.error);
+        setProjectError(controller, result.error);
+        releaseProjectLoadTransaction(controller);
         return false;
     }
-    notifyProjectOpen(controller, WorkspaceProjectOpenState::Loaded, result.project.rootPath);
-    WorkspaceModelInit(&g_workspaceProjectCandidate);
-    if (!WorkspaceModelSetRoot(&g_workspaceProjectCandidate, result.project.rootPath, result.project.displayName)) {
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Loaded, result.project.rootPath, ProjectErrorCode::None);
+    if (!projectLoadIsCurrent(controller, requestId)) {
+        setProjectError(controller, ProjectErrorCode::LoadInProgress);
+        controller->projectOpenFailure = ProjectErrorCode::LoadInProgress;
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath, ProjectErrorCode::LoadInProgress);
+        releaseProjectLoadTransaction(controller);
+        return false;
+    }
+    if (!WorkspaceModelSetRoot(&g_workspaceProjectLoad.candidate, result.project.rootPath, result.project.displayName)) {
         setProjectError(controller, ProjectErrorCode::InvalidParentPath);
-        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath);
+        controller->projectOpenFailure = ProjectErrorCode::InvalidParentPath;
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath, ProjectErrorCode::InvalidParentPath);
+        setProjectError(controller, ProjectErrorCode::InvalidParentPath);
+        releaseProjectLoadTransaction(controller);
         return false;
     }
-    g_workspaceProjectCandidate.hasProject = true;
-    g_workspaceProjectCandidate.project = result.project;
-    notifyProjectOpen(controller, WorkspaceProjectOpenState::RefreshStarted, result.project.rootPath);
+    g_workspaceProjectLoad.candidate.hasProject = true;
+    g_workspaceProjectLoad.candidate.project = result.project;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::CandidateAllocated,
+                      result.project.rootPath, ProjectErrorCode::None);
+    g_workspaceProjectLoad.refreshGeneration = nextWorkspaceProjectId(&g_nextWorkspaceProjectRefreshGeneration);
+    controller->projectOpenRefreshGeneration = g_workspaceProjectLoad.refreshGeneration;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::RefreshStarted, result.project.rootPath, ProjectErrorCode::None);
     // Symbol publication is deliberately deferred until the candidate model
     // has passed refresh and is committed below.
     bool candidateListingTruncated = false;
-    if (!refreshWorkspaceModel(controller, &g_workspaceProjectCandidate, &candidateListingTruncated)) {
-        setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
-        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath);
+    const bool refreshCurrent = projectLoadIsCurrent(controller, requestId);
+    const bool refreshSucceeded = refreshCurrent &&
+        refreshWorkspaceModel(controller, &g_workspaceProjectLoad.candidate, &candidateListingTruncated, false);
+    if (!refreshSucceeded) {
+        const ProjectErrorCode error = refreshCurrent ? ProjectErrorCode::RequiredFileMissing : ProjectErrorCode::LoadInProgress;
+        setProjectError(controller, error);
+        controller->projectOpenFailure = error;
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath, error);
+        setProjectError(controller, error);
+        releaseProjectLoadTransaction(controller);
         return false;
     }
-    controller->model = g_workspaceProjectCandidate;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Validated,
+                      result.project.rootPath, ProjectErrorCode::None);
+    if (!projectLoadIsCurrent(controller, requestId)) {
+        setProjectError(controller, ProjectErrorCode::LoadInProgress);
+        controller->projectOpenFailure = ProjectErrorCode::LoadInProgress;
+        notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed,
+                          result.project.rootPath, ProjectErrorCode::LoadInProgress);
+        setProjectError(controller, ProjectErrorCode::LoadInProgress);
+        releaseProjectLoadTransaction(controller);
+        return false;
+    }
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Committing,
+                      result.project.rootPath, ProjectErrorCode::None);
+    controller->model = g_workspaceProjectLoad.candidate;
     controller->listingTruncated = candidateListingTruncated;
     controller->lastProjectError = ProjectErrorCode::None;
     controller->projectOpenGeneration = controller->model.projectGeneration;
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Active,
+                      controller->model.rootPath, ProjectErrorCode::None);
 #if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     if (controller->symbolDatabase) {
         SymbolDatabaseClear(controller->symbolDatabase);
@@ -286,7 +418,10 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
                                     controller->model.documents, kMaxOpenDocuments, controller->model.projectGeneration);
     }
 #endif
-    notifyProjectOpen(controller, WorkspaceProjectOpenState::Ready, controller->model.rootPath);
+    notifyProjectOpen(controller, WorkspaceProjectOpenState::Ready, controller->model.rootPath, ProjectErrorCode::None);
+    setProjectError(controller, ProjectErrorCode::None);
+    controller->projectOpenFailure = ProjectErrorCode::None;
+    releaseProjectLoadTransaction(controller);
     return true;
 }
 
@@ -321,6 +456,7 @@ bool WorkspaceControllerCreateProject(WorkspaceController* controller, const Pro
 }
 
 bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
+    if (rejectProjectLoadReentry(controller)) return false;
     if (!controller || !controller->model.open || !controller->model.hasProject) {
         if (controller) setProjectError(controller, ProjectErrorCode::RequiredFileMissing);
         return false;
@@ -344,7 +480,11 @@ bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
 
 bool WorkspaceControllerRefresh(WorkspaceController* controller) {
     bool truncated = false;
-    if (!refreshWorkspaceModel(controller, controller ? &controller->model : nullptr, &truncated)) return false;
+    if (controller && controller->projectOpenInProgress) {
+        setProjectError(controller, ProjectErrorCode::LoadInProgress);
+        return false;
+    }
+    if (!refreshWorkspaceModel(controller, controller ? &controller->model : nullptr, &truncated, true)) return false;
     controller->listingTruncated = truncated;
     return true;
 }
@@ -442,6 +582,7 @@ bool WorkspaceControllerGoUp(WorkspaceController* controller) {
 }
 
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path) {
+    if (rejectProjectLoadReentry(controller)) return false;
     if (!controller || !controller->model.open || !controller->fileSystem.stat || !controller->fileSystem.read) { if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen); return false; }
     char normalized[kMaxPathBytes];
     if (!absolutePathForDocument(controller->model, path, normalized, sizeof(normalized)) || !isWithinRoot(controller->model, normalized)) { setControllerError(controller, ModelErrorCode::OutsideWorkspace); return false; }
@@ -466,6 +607,7 @@ bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char
 }
 
 bool WorkspaceControllerUpdateDocumentSymbols(WorkspaceController* controller, uint32_t documentIndex) {
+    if (rejectProjectLoadReentry(controller)) return false;
 #if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
     (void)controller;
     (void)documentIndex;
@@ -543,6 +685,7 @@ bool WorkspaceControllerOpenDocumentAtLocation(WorkspaceController* controller, 
 }
 
 bool WorkspaceControllerSaveDocument(WorkspaceController* controller, uint32_t documentIndex) {
+    if (rejectProjectLoadReentry(controller)) return false;
     if (!controller || documentIndex >= kMaxOpenDocuments || !controller->model.documents[documentIndex].used || !controller->fileSystem.write) { if (controller) setControllerError(controller, ModelErrorCode::DocumentNotFound); return false; }
     Document& document = controller->model.documents[documentIndex];
     uint32_t written = 0;
@@ -592,6 +735,7 @@ bool WorkspaceControllerSaveAllProjectDocuments(WorkspaceController* controller)
 }
 
 bool WorkspaceControllerCloseDocument(WorkspaceController* controller, uint32_t documentIndex, CloseDecision decision) {
+    if (rejectProjectLoadReentry(controller)) return false;
     if (!controller || documentIndex >= kMaxOpenDocuments || !controller->model.documents[documentIndex].used) { if (controller) setControllerError(controller, ModelErrorCode::DocumentNotFound); return false; }
     char closedPath[kMaxPathBytes] = {};
     for (uint32_t i = 0; i + 1 < sizeof(closedPath); ++i) {
@@ -613,6 +757,7 @@ bool WorkspaceControllerCloseDocument(WorkspaceController* controller, uint32_t 
 }
 
 bool WorkspaceControllerCloseWorkspace(WorkspaceController* controller, CloseDecision decision) {
+    if (rejectProjectLoadReentry(controller)) return false;
     if (!controller || !controller->model.open) return true;
     if (WorkspaceModelHasDirtyDocuments(&controller->model)) {
         if (decision == CloseDecision::Cancel) return false;

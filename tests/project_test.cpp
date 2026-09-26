@@ -18,6 +18,14 @@ struct TestContext {
     WorkspaceProjectOpenState lastProjectState = WorkspaceProjectOpenState::Idle;
     uint64_t lastProjectRequestId = 0;
     uint64_t lastProjectGeneration = 0;
+    uint64_t lastCandidateId = 0;
+    uint64_t lastRefreshGeneration = 0;
+    ProjectErrorCode lastProjectError = ProjectErrorCode::None;
+    WorkspaceController* controller = nullptr;
+    bool attemptReentrantOpen = false;
+    bool reentrantOpenAccepted = false;
+    ProjectErrorCode reentrantOpenError = ProjectErrorCode::None;
+    bool candidateVisibleBeforeCommit = false;
 };
 
 static bool statFile(void*, const char* path, FileInfo* outInfo) {
@@ -48,15 +56,25 @@ static bool listFiles(void* userData, const char* path, FileListEntry* entries, 
     return true;
 }
 
-static void projectOpenObserver(void* userData, WorkspaceProjectOpenState state,
-                                uint64_t requestId, uint64_t projectGeneration,
-                                const char*) {
+static void projectOpenObserver(void* userData, const WorkspaceProjectOpenEvent& event) {
     TestContext* context = static_cast<TestContext*>(userData);
     if (!context) return;
     ++context->observerCount;
-    context->lastProjectState = state;
-    context->lastProjectRequestId = requestId;
-    context->lastProjectGeneration = projectGeneration;
+    context->lastProjectState = event.state;
+    context->lastProjectRequestId = event.requestId;
+    context->lastProjectGeneration = event.activeProjectGeneration;
+    context->lastCandidateId = event.candidateId;
+    context->lastRefreshGeneration = event.refreshGeneration;
+    context->lastProjectError = event.error;
+    if (event.state == WorkspaceProjectOpenState::CandidateAllocated && context->controller) {
+        context->candidateVisibleBeforeCommit = context->controller->model.hasProject;
+    }
+    if (event.state == WorkspaceProjectOpenState::LoadStarted && context->attemptReentrantOpen &&
+        context->controller) {
+        context->attemptReentrantOpen = false;
+        context->reentrantOpenAccepted = WorkspaceControllerOpenProject(context->controller, event.path);
+        context->reentrantOpenError = context->controller->lastProjectError;
+    }
 }
 
 static bool readFile(void*, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
@@ -157,6 +175,10 @@ int main(int argc, char** argv) {
     assert(objectEnd != std::string::npos);
     unknownField.insert(objectEnd, ",\n  \"futureMetadata\": true");
     assert(!ParseProjectMetadata(unknownField.data(), static_cast<uint32_t>(unknownField.size()), &parsed, &error) && error == ProjectErrorCode::UnknownField);
+    // A rejected parse must not poison the next transaction with shared
+    // writable parser state.
+    assert(ParseProjectMetadata(serialized, serializedBytes, &parsed, &error));
+    assert(std::strcmp(parsed.projectId, project.projectId) == 0);
     const char duplicateJson[] = "{\"formatVersion\":1,\"formatVersion\":1}";
     assert(!ParseProjectMetadata(duplicateJson, sizeof(duplicateJson) - 1, &parsed, &error) && error == ProjectErrorCode::DuplicateField);
     assert(!ParseProjectMetadata("{\"formatVersion\":2}", 19, &parsed, &error) && error == ProjectErrorCode::MissingField);
@@ -251,13 +273,20 @@ int main(int argc, char** argv) {
 
     static WorkspaceController controller;
     WorkspaceControllerInit(&controller, fileSystem);
+    context.controller = &controller;
+    context.attemptReentrantOpen = true;
     WorkspaceControllerSetProjectOpenObserver(&controller, projectOpenObserver, &context);
     assert(WorkspaceControllerOpenProject(&controller, generatedRoot.string().c_str()));
+    assert(!context.reentrantOpenAccepted);
+    assert(context.reentrantOpenError == ProjectErrorCode::LoadInProgress);
     assert(controller.model.hasProject);
     assert(std::strcmp(controller.model.project.projectId, request.projectId) == 0);
     assert(context.lastProjectState == WorkspaceProjectOpenState::Ready);
     assert(context.lastProjectRequestId == 1);
     assert(context.lastProjectGeneration == controller.model.projectGeneration);
+    assert(context.lastCandidateId != 0);
+    assert(context.lastRefreshGeneration != 0);
+    assert(!context.candidateVisibleBeforeCommit);
     assert(WorkspaceControllerOpenDocument(&controller, "src/main.cpp"));
     char oldRoot[kMaxPathBytes] = {};
     std::strcpy(oldRoot, controller.model.rootPath);

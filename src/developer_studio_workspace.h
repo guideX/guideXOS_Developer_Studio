@@ -22,16 +22,28 @@ enum class WorkspaceProjectOpenState {
     Idle = 0,
     LoadStarted,
     Loaded,
+    CandidateAllocated,
     RefreshStarted,
+    Validated,
+    Committing,
+    Active,
     Ready,
     Failed
 };
 
+struct WorkspaceProjectOpenEvent {
+    WorkspaceProjectOpenState state;
+    uint64_t requestId;
+    uint64_t activeProjectGeneration;
+    uint64_t candidateId;
+    uint64_t candidateProjectGeneration;
+    uint64_t refreshGeneration;
+    ProjectErrorCode error;
+    const char* path;
+};
+
 using WorkspaceProjectOpenObserver = void (*)(void* userData,
-                                               WorkspaceProjectOpenState state,
-                                               uint64_t requestId,
-                                               uint64_t projectGeneration,
-                                               const char* path);
+                                               const WorkspaceProjectOpenEvent& event);
 
 struct WorkspaceController {
     WorkspaceModel model;
@@ -43,6 +55,10 @@ struct WorkspaceController {
     uint64_t projectOpenRequestId;
     uint64_t projectOpenGeneration;
     WorkspaceProjectOpenState projectOpenState;
+    bool projectOpenInProgress;
+    uint64_t projectOpenCandidateId;
+    uint64_t projectOpenRefreshGeneration;
+    ProjectErrorCode projectOpenFailure;
     WorkspaceProjectOpenObserver projectOpenObserver;
     void* projectOpenObserverUserData;
 };
