@@ -23,6 +23,7 @@
 #include "developer_studio_debug_editor.h"
 #include "developer_studio_debug_tips.h"
 #include "developer_studio_debugger_workspace.h"
+#include "developer_studio_startup.h"
 
 namespace {
 
@@ -185,6 +186,18 @@ using guidexos::developer_studio::WorkspaceFileSystem;
 using guidexos::developer_studio::WorkspaceProjectOpenEvent;
 using guidexos::developer_studio::WorkspaceProjectOpenState;
 using guidexos::developer_studio::WorkspaceProjectOpenStateName;
+using guidexos::developer_studio::DiagnosticStartupOwner;
+using guidexos::developer_studio::DiagnosticStartupState;
+using guidexos::developer_studio::DiagnosticStartupOwnerInit;
+using guidexos::developer_studio::DiagnosticStartupBegin;
+using guidexos::developer_studio::DiagnosticStartupResolveFixture;
+using guidexos::developer_studio::DiagnosticStartupMarkUiReady;
+using guidexos::developer_studio::DiagnosticStartupMarkPumpEntered;
+using guidexos::developer_studio::DiagnosticStartupConstructProjectRequest;
+using guidexos::developer_studio::DiagnosticStartupMarkRequestSubmitted;
+using guidexos::developer_studio::DiagnosticStartupObserveProjectAccepted;
+using guidexos::developer_studio::DiagnosticStartupRejectProjectRequest;
+using guidexos::developer_studio::DiagnosticStartupStateName;
 using guidexos::developer_studio::DebuggerWorkspace;
 using guidexos::developer_studio::DebuggerWorkspaceBreakpoint;
 using guidexos::developer_studio::kDebugWatchMaxExpressionBytes;
@@ -917,6 +930,15 @@ static bool g_phase28nDiagnostic = false;
 static bool g_phase28oDiagnostic = false;
 static bool g_phase28pDiagnostic = false;
 static bool g_phase28qDiagnostic = false;
+static DiagnosticStartupOwner g_phase29dStartupOwner = {};
+static const uint32_t kPhase29dStartupOwnerCookie = 0x29D051u;
+static const uint32_t kPhase29dStartupOwnerUninitializedCookie = 0x29D050u;
+static uint32_t g_phase29dStartupOwnerCookie = kPhase29dStartupOwnerUninitializedCookie;
+static uint64_t g_phase29dNextApplicationInstanceId = 1;
+static uint64_t g_phase29dNextStartupGeneration = 1;
+static uint64_t g_phase29dStartupFrameSequence = 0;
+static uint32_t g_phase29dStartupTraceSequence = 0;
+static char g_phase29dStartupTraceBuffer[384] = {};
 static uint32_t g_phase28vStartupTraceCount = 0;
 static uint32_t g_phase28vStartupLastStage = 0;
 static uint32_t g_phase28vStartupEventCount = 0;
@@ -1398,6 +1420,59 @@ static void logMarker(gx_app_context* ctx, const char* marker) {
     if (ctx && ctx->host && ctx->host->log && marker) ctx->host->log(ctx, marker);
 }
 
+static bool phase29dTextEquals(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t index = 0;
+    while (left[index] && right[index] && left[index] == right[index]) ++index;
+    return left[index] == right[index];
+}
+
+static void phase29dStartupTrace(gx_app_context* ctx, const char* transition,
+                                 const char* detail = nullptr) {
+    if (!ctx || !transition || g_phase29dStartupTraceSequence >= 48) return;
+    ++g_phase29dStartupTraceSequence;
+    copyText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+             "DEVELOPER_STUDIO_PHASE29D_STARTUP_");
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), transition);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " app=");
+    appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   g_phase29dStartupOwner.applicationInstanceId);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " generation=");
+    appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   g_phase29dStartupOwner.startupGeneration);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " fixture=");
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+               g_phase29dStartupOwner.diagnosticFixtureRecognized ? "present" :
+               (g_phase29dStartupOwner.state == DiagnosticStartupState::NoDiagnosticFixture ? "absent" : "pending"));
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " diagnostic=");
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+               g_phase29dStartupOwner.diagnosticFixtureRecognized ? "phase28q" : "off");
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " sequence=");
+    appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   g_phase29dStartupTraceSequence);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " frame=");
+    appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   g_phase29dStartupFrameSequence);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " state=");
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+               DiagnosticStartupStateName(g_phase29dStartupOwner.state));
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " request=");
+    appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   g_phase29dStartupOwner.request.requestId);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " project_request=");
+    appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   g_phase29dStartupOwner.request.projectLifecycleRequestId);
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " path=");
+    appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+               g_phase29dStartupOwner.request.projectPath[0] ?
+                   g_phase29dStartupOwner.request.projectPath : "-");
+    if (detail) {
+        appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " detail=");
+        appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), detail);
+    }
+    logMarker(ctx, g_phase29dStartupTraceBuffer);
+}
+
 // Phase 28U diagnostics are deliberately bounded and scoped to the real
 // Phase 28Q proof.  The proof currently publishes its request marker before
 // the asynchronous build/debug handshake has completed, so these markers
@@ -1770,6 +1845,18 @@ static void phase28z_startup_stage(gx_app_context* ctx, uint32_t stage) {
 static void phase28z_project_open_observer(void* userData, const WorkspaceProjectOpenEvent& event) {
     gx_app_context* ctx = static_cast<gx_app_context*>(userData);
     if (!ctx || !g_phase28qDiagnostic) return;
+    if (event.state == WorkspaceProjectOpenState::LoadStarted &&
+        g_phase29dStartupOwner.state == DiagnosticStartupState::RequestSubmitted &&
+        phase29dTextEquals(event.path, g_phase29dStartupOwner.request.projectPath)) {
+        if (DiagnosticStartupObserveProjectAccepted(
+                &g_phase29dStartupOwner,
+                g_phase29dStartupOwner.startupGeneration,
+                g_phase29dStartupOwner.request.requestId,
+                event.requestId)) {
+            phase29dStartupTrace(ctx, "PHASE29C_ACCEPTED");
+            phase29dStartupTrace(ctx, "REQUEST_HANDOFF_COMPLETE", "phase29c_load_started_observed");
+        }
+    }
     if (event.state == WorkspaceProjectOpenState::Ready) phase28z_startup_stage(ctx, 6);
     if (g_phase28zProjectTraceCount < 16) {
         ++g_phase28zProjectTraceCount;
@@ -11139,22 +11226,53 @@ static void phase28qPump(gx_app_context* ctx) {
 
     switch (g_phase28qStage) {
     case 1: {
+        uint64_t startupRequestId = 0;
+        if (!DiagnosticStartupConstructProjectRequest(&g_phase29dStartupOwner,
+                                                      g_phase29dStartupOwner.startupGeneration,
+                                                      "/P28Q", &startupRequestId)) {
+            phase29dStartupTrace(ctx, "REQUEST_CONSTRUCTION_FAILED", "owner_not_ready_or_invalid_path");
+            phase28qFail(ctx, "startup_request_construction");
+            return;
+        }
+        phase29dStartupTrace(ctx, "REQUEST_CREATED");
         phase28z_startup_stage(ctx, 3);
+        if (!DiagnosticStartupMarkRequestSubmitted(&g_phase29dStartupOwner,
+                                                   g_phase29dStartupOwner.startupGeneration,
+                                                   startupRequestId)) {
+            phase29dStartupTrace(ctx, "REQUEST_SUBMISSION_REJECTED", "owner_or_generation_mismatch");
+            phase28qFail(ctx, "startup_request_submission");
+            return;
+        }
+        phase29dStartupTrace(ctx, "REQUEST_SUBMITTED");
         phase28z_startup_stage(ctx, 4);
         phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_ENTRY", nullptr);
         SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
         g_controller.symbolDatabase = nullptr;
-        const bool projectOpened = WorkspaceControllerOpenProject(&g_controller, "/P28Q");
+        const bool projectOpened = WorkspaceControllerOpenProject(
+            &g_controller, g_phase29dStartupOwner.request.projectPath);
         g_controller.symbolDatabase = diagnosticSymbolDatabase;
         phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_RETURN", projectOpened ? "opened" : "rejected");
+        if (g_phase29dStartupOwner.state == DiagnosticStartupState::RequestSubmitted) {
+            if (DiagnosticStartupRejectProjectRequest(&g_phase29dStartupOwner,
+                                                      g_phase29dStartupOwner.startupGeneration,
+                                                      startupRequestId)) {
+                phase29dStartupTrace(ctx, "REQUEST_REJECTED", "project_lifecycle_did_not_accept");
+            }
+        }
+        if (!projectOpened ||
+            g_phase29dStartupOwner.state != DiagnosticStartupState::RequestAccepted) {
+            phase28z_startup_stage(ctx, 5);
+            phase28qFail(ctx, g_phase29dStartupOwner.state == DiagnosticStartupState::RequestAccepted ?
+                         "project_transaction_failed" : "startup_request_rejected");
+            return;
+        }
         phase28z_startup_stage(ctx, 5);
         phase28v_startup_event(ctx, "PHASE28Q_FIXTURE_DOCUMENT_ENTRY", nullptr);
         const bool fixtureDocumentOpened = phase28mOpenDocument(ctx, "src/main.cpp");
         phase28v_startup_event(ctx, "PHASE28Q_FIXTURE_DOCUMENT_RETURN",
                                fixtureDocumentOpened ? "opened" : "rejected");
-        if (!projectOpened || !fixtureDocumentOpened) {
-            if (g_phase28qStepCount < 8) break;
-            phase28qFail(ctx, "open_project");
+        if (!fixtureDocumentOpened) {
+            phase28qFail(ctx, "open_fixture_document");
             return;
         }
         g_debugPanelOpen = true;
@@ -15232,7 +15350,6 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         logMarker(ctx, "P28Z APP 00 gx_main_entry_raw");
         g_phase28zRawEntryReported = true;
     }
-    initializeDebugLaunchStorage(ctx);
     // Phase 28O diagnostic mode deliberately re-enters the real application
     // lifecycle after the first close. Keep that re-entry on this invocation's
     // stack instead of recursively calling gx_main; the latter can leave the
@@ -15247,6 +15364,37 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     const guidexos::developer_studio::TargetProfile& target = InitialTargetProfile();
     if (!IsValidTargetProfile(target)) return GX_ERROR_FAILED;
 
+    if (g_phase29dStartupOwnerCookie == kPhase29dStartupOwnerUninitializedCookie) {
+        DiagnosticStartupOwnerInit(&g_phase29dStartupOwner);
+        g_phase29dStartupOwnerCookie = kPhase29dStartupOwnerCookie;
+    } else if (g_phase29dStartupOwnerCookie != kPhase29dStartupOwnerCookie) {
+        logMarker(ctx, "DEVELOPER_STUDIO_PHASE29D_STARTUP_OWNER_STORAGE_INVALID");
+        return GX_ERROR_FAILED;
+    }
+    uint64_t applicationInstanceId = g_phase29dNextApplicationInstanceId++;
+    uint64_t startupGeneration = g_phase29dNextStartupGeneration++;
+    if (applicationInstanceId == 0) applicationInstanceId = g_phase29dNextApplicationInstanceId++;
+    if (startupGeneration == 0) startupGeneration = g_phase29dNextStartupGeneration++;
+    if (!DiagnosticStartupBegin(&g_phase29dStartupOwner, applicationInstanceId, startupGeneration)) {
+        copyText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                 "DEVELOPER_STUDIO_PHASE29D_STARTUP_REENTRY_REJECTED app=");
+        appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), applicationInstanceId);
+        appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " generation=");
+        appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), startupGeneration);
+        appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " owner_generation=");
+        appendUnsigned(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), g_phase29dStartupOwner.startupGeneration);
+        appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer), " owner_state=");
+        appendText(g_phase29dStartupTraceBuffer, sizeof(g_phase29dStartupTraceBuffer),
+                   DiagnosticStartupStateName(g_phase29dStartupOwner.state));
+        logMarker(ctx, g_phase29dStartupTraceBuffer);
+        return GX_ERROR_FAILED;
+    }
+    g_phase29dStartupFrameSequence = 0;
+    g_phase29dStartupTraceSequence = 0;
+    phase29dStartupTrace(ctx, "APPLICATION_CREATED");
+    phase29dStartupTrace(ctx, "GENERATION_INITIALIZED");
+    initializeDebugLaunchStorage(ctx);
+
     g_fileSystemContext.app = ctx;
     g_phase28yStartupTraceCount = 0;
     g_phase28yStartupEventCount = 0;
@@ -15255,6 +15403,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28yLastPhase28qStage = 0xFFFFFFFFu;
     phase28y_startup_stage(ctx, 1, "gx_main_entered");
     g_phase28qDiagnostic = phase28qSentinelPresent();
+    if (!DiagnosticStartupResolveFixture(&g_phase29dStartupOwner, startupGeneration,
+                                         g_phase28qDiagnostic)) {
+        phase29dStartupTrace(ctx, "SENTINEL_DECISION_REJECTED", "stale_generation_or_duplicate");
+        return GX_ERROR_FAILED;
+    }
+    phase29dStartupTrace(ctx, "SENTINEL_DECISION",
+                         g_phase28qDiagnostic ? "result=present path=/Apps/DeveloperStudio/.phase28q-diagnostic" :
+                                                "result=absent path=/Apps/DeveloperStudio/.phase28q-diagnostic");
     g_phase28zStartupTraceCount = 0;
     g_phase28zFsTraceCount = 0;
     g_phase28zProjectTraceCount = 0;
@@ -15269,12 +15425,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     WorkspaceControllerInit(&g_controller, fileSystem);
     WorkspaceControllerSetProjectOpenObserver(&g_controller, phase28z_project_open_observer, ctx);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_CONTROLLER_INIT_DONE");
+    phase29dStartupTrace(ctx, "WORKSPACE_CONTROLLER_READY");
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_RESET_ENTRY");
     // The first workspace reset is metadata-only.  The runtime reset touches
     // debugger/editor/watch state and is intentionally deferred until those
     // services have completed explicit initialization below.
     debuggerWorkspaceReset(false);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_RESET_DONE");
+    phase29dStartupTrace(ctx, "WORKSPACE_MODEL_RESET");
     SymbolDatabaseInit(&g_symbolDatabase, g_symbolProjectStorage, kSymbolMaxProjectSymbols,
                        g_symbolDocumentStorage, kSymbolMaxDocuments,
                        g_symbolScratchStorage, kSymbolMaxDocumentSymbols);
@@ -15330,6 +15488,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                               g_ownershipIncludeQueue, kIncludeGraphMaxNodes,
                               g_ownershipIncludeVisited, kIncludeGraphMaxNodes);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WORKSPACE_SERVICES_READY");
+    phase29dStartupTrace(ctx, "WORKSPACE_SERVICES_READY");
     g_ownershipOperationId = 0;
     g_ownershipPanelOpen = false;
     g_ownershipPickerOpen = false;
@@ -15421,6 +15580,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     RenameModelInit(&g_renameModel);
     RenameUndoManagerInit(&g_renameUndo);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_RENAME_SERVICES_READY");
+    phase29dStartupTrace(ctx, "RENAME_SERVICES_READY");
     g_renamePanelOpen = false;
     g_renameSearchPending = false;
     g_renameTargetPickerPending = false;
@@ -15439,6 +15599,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_outlineSelected = 0;
     g_outlineScroll = 0;
     NavigationHistoryInit(&g_navigationHistory);
+    phase29dStartupTrace(ctx, "NAVIGATION_READY");
     g_definitionResolution = {};
     g_definitionQuery = {};
     g_definitionOrigin = {};
@@ -15450,6 +15611,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_nextDefinitionQueryId = 1;
     OutputServiceInit(&g_outputService);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_OUTPUT_SERVICE_READY");
+    phase29dStartupTrace(ctx, "OUTPUT_SERVICE_READY");
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_STUDIO_OPERATION_ENTRY");
     g_studioOperationId = OutputServiceBeginOperation(&g_outputService, OutputOperationType::Internal, nullptr);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_STUDIO_OPERATION_DONE");
@@ -15470,6 +15632,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_runTerminalReported = false;
     DebugControllerInit(&g_debugController);
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_DEBUG_CONTROLLER_READY");
+    phase29dStartupTrace(ctx, "DEBUG_CONTROLLER_READY");
     if (phase28oRecursiveRelaunch)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_DEBUG_CONTROLLER_INIT");
     DebugEditorModelInit(&g_debugEditor);
@@ -15519,12 +15682,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         g_debugWatches.tree.targetMemoryReadCount = 0;
     }
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_WATCH_INIT_DONE");
+    phase29dStartupTrace(ctx, "WATCH_STATE_READY");
     if (phase28oRecursiveRelaunch)
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_RELAUNCH_WATCH_INIT");
     g_debugController.watches = &g_debugWatches;
     HostedDebugBackendInit(&g_hostedDebugBackend, developmentRunService());
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_HOSTED_BACKEND_INIT_DONE");
     g_debugBackend = HostedDebugBackendCreate(&g_hostedDebugBackend);
+    phase29dStartupTrace(ctx, "DEBUG_BACKEND_READY");
     g_debugWaitingForBuild = false;
     g_debugTerminalReported = false;
     g_debugReportedEventSequence = 0;
@@ -15537,7 +15702,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_debugSelectedBreakpoint = 0;
     writeOutput("Ready");
     phase28v_early_event(ctx, "DEVELOPER_STUDIO_PHASE28V_EARLY_READY_OUTPUT_DONE");
-    const bool phase28qSentinel = phase28qSentinelPresent();
+    // The Phase 28Q sentinel is level-triggered and latched at the gx_main
+    // filesystem boundary. A later second probe cannot revoke a positive
+    // startup decision because the VFS has already demonstrated visibility.
+    const bool phase28qSentinel = g_phase28qDiagnostic;
     const bool phase28nSentinel = phase28nSentinelPresent();
     const bool phase28oSentinel = phase28oSentinelPresent();
     const bool phase28pSentinel = phase28pSentinelPresent();
@@ -15593,6 +15761,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28vLoopTraceMask = 0;
     g_phase28vAfterContinueTraceMask = 0;
     g_phase28qStage = g_phase28qDiagnostic ? 1u : 0u;
+    phase29dStartupTrace(ctx, "DIAGNOSTIC_MODE_DECIDED",
+                         g_phase28qDiagnostic ? "phase28q=enabled" : "phase28q=disabled");
     g_phase28qDeadline = g_phase28qDiagnostic ? gx_get_ticks_ms(ctx) + 120000 : 0;
     g_phase28qStepCount = 0;
     g_phase28qFirstStopGeneration = 0;
@@ -15632,14 +15802,22 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     }
     if (windowResult != GX_OK) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=FAIL");
+        phase29dStartupTrace(ctx, "WINDOW_CREATE_FAILED", "request_window_failed");
         return windowResult;
     }
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS");
     phase28y_startup_stage(ctx, 5, "window_created");
+    phase29dStartupTrace(ctx, "WINDOW_CREATED");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_APP_LAUNCH_PASS");
     if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_APP_LAUNCH_PASS");
     drawShell(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS");
+    if (g_phase28qDiagnostic &&
+        !DiagnosticStartupMarkUiReady(&g_phase29dStartupOwner, startupGeneration)) {
+        phase29dStartupTrace(ctx, "UI_READY_REJECTED", "stale_generation_or_wrong_state");
+        return GX_ERROR_FAILED;
+    }
+    phase29dStartupTrace(ctx, "FIRST_FRAME_RENDERED");
     phase28z_startup_stage(ctx, 2);
     phase28y_startup_stage(ctx, 6, "initial_render_complete");
     if (g_phase28mDiagnostic) {
@@ -15651,11 +15829,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     bool running = true;
     if (ctx->host->poll_event) {
         phase28y_startup_stage(ctx, 7, "event_loop_entered");
+        phase29dStartupTrace(ctx, "EVENT_LOOP_ENTERED");
         while (running) {
             if (!(g_phase28yLoopTraceMask & 1u)) {
+                g_phase29dStartupFrameSequence = 1;
                 phase28y_startup_stage(ctx, 8, "first_event_loop_iteration");
                 phase28y_startup_event(ctx, "debug_launch_mode",
                                        g_phase28qDiagnostic ? "phase28q_enabled" : "phase28q_disabled");
+                phase29dStartupTrace(ctx, "EVENT_LOOP_FIRST_ITERATION");
                 g_phase28yLoopTraceMask |= 1u;
             }
             if (g_phase28qDiagnostic && g_phase28yLastPhase28qStage != g_phase28qStage) {
@@ -15691,6 +15872,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 2u)) {
                 phase28v_startup_event(ctx, "PHASE28Q_PUMP_ENTRY");
                 g_phase28vLoopTraceMask |= 2u;
+            }
+            if (g_phase28qDiagnostic &&
+                g_phase29dStartupOwner.state == DiagnosticStartupState::UiReady &&
+                DiagnosticStartupMarkPumpEntered(&g_phase29dStartupOwner, startupGeneration)) {
+                phase29dStartupTrace(ctx, "STARTUP_PUMP_ENTERED");
             }
             phase28qPump(ctx);
             if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 4u)) {
@@ -15786,6 +15972,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             }
         }
     } else if (ctx->host->wait_for_close) {
+        phase29dStartupTrace(ctx, "EVENT_LOOP_UNAVAILABLE", "poll_event_missing");
         gx_result waitResult = ctx->host->wait_for_close(ctx, g_window, 300000);
         if (waitResult == GX_OK) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS");
         else markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=FAIL", "wait_for_close");

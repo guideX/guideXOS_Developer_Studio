@@ -37,6 +37,7 @@ add_library(developer_studio_models STATIC
     src/developer_studio_debugger_hosted.cpp
     src/developer_studio_debug_editor.cpp
     src/developer_studio_debugger_workspace.cpp
+    src/developer_studio_startup.cpp
 )
 target_include_directories(developer_studio_models PUBLIC src)
 
@@ -58,6 +59,12 @@ target_link_libraries(developer_studio_project_test PRIVATE developer_studio_mod
 set_target_properties(developer_studio_project_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_model_test COMMAND developer_studio_model_test)
 add_test(NAME developer_studio_project_test COMMAND developer_studio_project_test)
+
+add_executable(developer_studio_startup_test
+    tests/startup_test.cpp
+)
+target_link_libraries(developer_studio_startup_test PRIVATE developer_studio_models)
+add_test(NAME developer_studio_startup_test COMMAND developer_studio_startup_test)
 
 add_executable(developer_studio_build_test
     tests/build_test.cpp
@@ -320,6 +327,7 @@ add_executable(developerstudio.elf
         src/developer_studio_debug_watches.cpp
         src/developer_studio_debugger_hosted.cpp
         src/developer_studio_debugger_workspace.cpp
+        src/developer_studio_startup.cpp
         src/freestanding_memory.cpp
         src/main.cpp
     )
