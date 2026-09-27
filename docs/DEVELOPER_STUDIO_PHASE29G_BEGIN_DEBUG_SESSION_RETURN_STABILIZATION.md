@@ -154,6 +154,8 @@ After the final standalone buffer fix, one completed fresh run passed 5/5: all f
 
 After the later Server close-ownership diagnostic change, a fresh 5-boot revalidation passed return and mapping on boots 1 and 2, then failed boot 3 before Server start. Its last successful Phase 29G operation was source initialization; `DebugControllerMapBreakpoints` returned `artifact_changed`, and `beginDebugSession` emitted an explicit failure return. Per the gate rule, the revalidation is failed at boot 3 (2 passed, 1 failed, 2 not run). The failed boot did not enter Server start, so it is a Phase 29F pre-start mapping regression, not a Server RUNNING or client post-start stall.
 
+After that failed revalidation, the standard GUI-automation close log was given the same ownership fields as the external close path. The final kernel source compiled successfully with `mingw32-make -C kernel ARCH=amd64`; no further QEMU boots were counted or used to restart the broken gate.
+
 ### Full acceptance and stress
 
 After the earlier 5/5 gate passed, the full-scenario probe was started. Its first boot reached project ready, then `DebugDwarfMapperLoad` returned `malformed_dwarf`; no Server start/RUNNING or successful Phase 29G return occurred. The client recorded an explicit failure return. This breaks the full 10-boot gate at its first boot; 10/10 was not achieved. A previous interrupted full run had reached `PHASE28Q_PASS` on its first boot, but it did not complete the requested 10 boots and the existing Phase 28Q acceptance set reported `LOCALS_NOT_LIVE` and `WATCH_NOT_LIVE`. The requested full sequence (locals, watches, and stepping included) was not proven.
