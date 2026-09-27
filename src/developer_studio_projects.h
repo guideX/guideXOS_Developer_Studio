@@ -48,12 +48,115 @@ struct ProjectCreateRequest {
     char targetProfileId[kMaxNameBytes];
 };
 
+struct ApplicationManifestEntry {
+    char architecture[32];
+    char path[kMaxProjectPathBytes];
+    char entryPoint[kMaxNameBytes];
+    char abi[kMaxNameBytes];
+    char runtime[32];
+};
+
+struct ApplicationManifest {
+    static const uint32_t kMaxEntries = 4;
+    uint32_t schemaVersion;
+    char id[kMaxProjectIdBytes];
+    char displayName[kMaxProjectDisplayNameBytes];
+    char kind[32];
+    char architecture[32];
+    char path[kMaxProjectPathBytes];
+    char entryPoint[kMaxNameBytes];
+    char abi[kMaxNameBytes];
+    char runtime[32];
+    ApplicationManifestEntry entries[kMaxEntries];
+    uint32_t entryCount;
+    bool hasSchema;
+    bool hasId;
+    bool hasDisplayName;
+    bool hasKind;
+    bool hasEntry;
+};
+
+struct ManifestValidationGeneration {
+    uint64_t requestId;
+    uint64_t requestGeneration;
+    uint64_t candidateId;
+    uint64_t candidateGeneration;
+    uint64_t expectedIdentityGeneration;
+    uint64_t parsedIdentityGeneration;
+};
+
+enum class ManifestIdentityMismatchField {
+    None = 0,
+    SchemaVersion,
+    AppId,
+    DisplayName,
+    Kind,
+    EntryCount,
+    Architecture,
+    Path,
+    EntryPoint,
+    Abi,
+    Runtime,
+    ExpectedGeneration,
+    ParsedGeneration,
+    CandidateGeneration
+};
+
+struct ManifestValidationDiagnostic {
+    bool available;
+    char manifestPath[kMaxPathBytes];
+    uint64_t manifestExpectedSize;
+    uint64_t manifestBytesRead;
+    uint64_t manifestContentHashFnv1a64;
+    uint64_t projectMetadataExpectedSize;
+    uint64_t projectMetadataBytesRead;
+    uint64_t projectMetadataHashFnv1a64;
+    ManifestValidationGeneration generation;
+    uint32_t expectedSchemaVersion;
+    uint32_t parsedSchemaVersion;
+    uint32_t expectedEntryCount;
+    uint32_t parsedEntryCount;
+    char expectedProjectId[kMaxProjectIdBytes];
+    char parsedAppId[kMaxProjectIdBytes];
+    char expectedDisplayName[kMaxProjectDisplayNameBytes];
+    char parsedDisplayName[kMaxProjectDisplayNameBytes];
+    char expectedKind[32];
+    char parsedKind[32];
+    char expectedArchitecture[32];
+    char parsedArchitecture[32];
+    char expectedPath[kMaxProjectPathBytes];
+    char parsedPath[kMaxProjectPathBytes];
+    char expectedEntryPoint[kMaxNameBytes];
+    char parsedEntryPoint[kMaxNameBytes];
+    char expectedAbi[kMaxNameBytes];
+    char parsedAbi[kMaxNameBytes];
+    char expectedRuntime[32];
+    char parsedRuntime[32];
+    char mismatchExpected[kMaxPathBytes];
+    char mismatchActual[kMaxPathBytes];
+    ManifestIdentityMismatchField mismatchField;
+    ProjectErrorCode resultCode;
+};
+
+/* Bounded per-load scratch. Runtime controllers own one instance so two
+ * project transactions cannot alias manifest bytes or parsed identity. */
+struct ProjectLoadScratch {
+    char normalizedPath[kMaxPathBytes];
+    char rootPath[kMaxPathBytes];
+    char metadataPath[kMaxPathBytes];
+    char metadataBytes[kMaxProjectFileBytes + 1];
+    char manifestPath[kMaxPathBytes];
+    char manifestBytes[kMaxProjectFileBytes + 1];
+    ApplicationManifest manifest;
+};
+
 struct ProjectOperationResult {
     bool success;
     bool rollbackAttempted;
     bool rollbackSucceeded;
     ProjectErrorCode error;
     Project project;
+    ManifestValidationDiagnostic manifestDiagnostic;
 };
 
 const char* ProjectErrorName(ProjectErrorCode code);
@@ -65,10 +168,19 @@ bool DeriveProjectFolderName(const char* displayName, char* output, uint32_t out
 bool DeriveProjectOutputName(const char* folderName, char* output, uint32_t outputSize);
 bool ValidateProjectMetadata(const Project& project, ProjectErrorCode* error);
 bool ParseProjectMetadata(const char* bytes, uint32_t length, Project* output, ProjectErrorCode* error);
+uint64_t ComputeManifestContentHashFnv1a64(const char* bytes, uint32_t length);
+bool ParseApplicationManifest(const char* bytes, uint32_t length, ApplicationManifest* output, ProjectErrorCode* error);
+bool ValidateApplicationManifestIdentity(const ApplicationManifest& manifest, const Project& project,
+                                         const ManifestValidationGeneration* generation,
+                                         ManifestValidationDiagnostic* diagnostic);
+const char* ManifestIdentityMismatchFieldName(ManifestIdentityMismatchField field);
 bool SerializeProjectMetadata(const Project& project, char* output, uint32_t outputSize, uint32_t* outBytes, ProjectErrorCode* error);
 bool ValidateProjectCreateRequest(const ProjectCreateRequest& request, ProjectErrorCode* error);
-bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCreateRequest& request, ProjectOperationResult* result);
-bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath, ProjectOperationResult* result);
+bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCreateRequest& request,
+                            ProjectOperationResult* result, ProjectLoadScratch* scratch = nullptr);
+bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath,
+                 ProjectOperationResult* result, ProjectLoadScratch* scratch = nullptr,
+                 const ManifestValidationGeneration* generation = nullptr);
 
 } // namespace developer_studio
 } // namespace guidexos

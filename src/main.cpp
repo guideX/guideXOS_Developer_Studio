@@ -139,6 +139,8 @@ using guidexos::developer_studio::ModelErrorName;
 using guidexos::developer_studio::ProjectCreateRequest;
 using guidexos::developer_studio::ProjectErrorCode;
 using guidexos::developer_studio::ProjectErrorName;
+using guidexos::developer_studio::ManifestIdentityMismatchFieldName;
+using guidexos::developer_studio::ManifestValidationDiagnostic;
 using guidexos::developer_studio::ProjectKind;
 using guidexos::developer_studio::ProjectOperationResult;
 using guidexos::developer_studio::TextBuffer;
@@ -845,6 +847,7 @@ static uint32_t g_outputScroll = 0;
 static bool g_outputFollowTail = true;
 static uint32_t g_problemSelected = 0;
 static char g_textScratch[256] = {};
+static char g_phase29eTraceBuffer[640] = {};
 static char g_lineScratch[256] = {};
 static SyntaxRenderRun g_renderRuns[9000] = {};
 static BuildController g_buildController = {};
@@ -1842,9 +1845,76 @@ static void phase28z_startup_stage(gx_app_context* ctx, uint32_t stage) {
     }
 }
 
+static void phase29eManifestTrace(gx_app_context* ctx, const WorkspaceProjectOpenEvent& event,
+                                  const ManifestValidationDiagnostic& diagnostic) {
+    if (!ctx || !diagnostic.available) return;
+    char* line = g_phase29eTraceBuffer;
+    const uint32_t capacity = sizeof(g_phase29eTraceBuffer);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_MANIFEST path=");
+    appendText(line, capacity, diagnostic.manifestPath);
+    appendText(line, capacity, " request_id="); appendUnsigned(line, capacity, event.requestId);
+    appendText(line, capacity, " request_generation="); appendUnsigned(line, capacity, event.requestGeneration);
+    appendText(line, capacity, " candidate_id="); appendUnsigned(line, capacity, event.candidateId);
+    appendText(line, capacity, " candidate_generation="); appendUnsigned(line, capacity, event.candidateGeneration);
+    appendText(line, capacity, " candidate_project_generation="); appendUnsigned(line, capacity, event.candidateProjectGeneration);
+    appendText(line, capacity, " expected_identity_generation="); appendUnsigned(line, capacity, diagnostic.generation.expectedIdentityGeneration);
+    appendText(line, capacity, " parsed_identity_generation="); appendUnsigned(line, capacity, diagnostic.generation.parsedIdentityGeneration);
+    logMarker(ctx, line);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_MANIFEST_READ");
+    appendText(line, capacity, " project_metadata_size="); appendUnsigned(line, capacity, diagnostic.projectMetadataExpectedSize);
+    appendText(line, capacity, " project_metadata_bytes="); appendUnsigned(line, capacity, diagnostic.projectMetadataBytesRead);
+    appendText(line, capacity, " project_metadata_hash_fnv1a64="); appendHexAddress(line, capacity, diagnostic.projectMetadataHashFnv1a64);
+    appendText(line, capacity, " manifest_size="); appendUnsigned(line, capacity, diagnostic.manifestExpectedSize);
+    appendText(line, capacity, " bytes_read="); appendUnsigned(line, capacity, diagnostic.manifestBytesRead);
+    appendText(line, capacity, " content_hash_fnv1a64="); appendHexAddress(line, capacity, diagnostic.manifestContentHashFnv1a64);
+    appendText(line, capacity, " result_code="); appendText(line, capacity, ProjectErrorName(diagnostic.resultCode));
+    logMarker(ctx, line);
+
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_IDENTITY project_id_expected=");
+    appendText(line, capacity, diagnostic.expectedProjectId);
+    appendText(line, capacity, " app_id_parsed="); appendText(line, capacity, diagnostic.parsedAppId);
+    appendText(line, capacity, " display_name_expected=");
+    appendText(line, capacity, diagnostic.expectedDisplayName);
+    appendText(line, capacity, " display_name_parsed="); appendText(line, capacity, diagnostic.parsedDisplayName);
+    logMarker(ctx, line);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_IDENTITY schema_expected=");
+    appendUnsigned(line, capacity, diagnostic.expectedSchemaVersion);
+    appendText(line, capacity, " schema_parsed="); appendUnsigned(line, capacity, diagnostic.parsedSchemaVersion);
+    appendText(line, capacity, " kind_expected="); appendText(line, capacity, diagnostic.expectedKind);
+    appendText(line, capacity, " kind_parsed="); appendText(line, capacity, diagnostic.parsedKind);
+    appendText(line, capacity, " entries_expected="); appendUnsigned(line, capacity, diagnostic.expectedEntryCount);
+    appendText(line, capacity, " entries_parsed="); appendUnsigned(line, capacity, diagnostic.parsedEntryCount);
+    logMarker(ctx, line);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_IDENTITY entry0_architecture_expected=");
+    appendText(line, capacity, diagnostic.expectedArchitecture);
+    appendText(line, capacity, " entry0_architecture_parsed="); appendText(line, capacity, diagnostic.parsedArchitecture);
+    appendText(line, capacity, " path_expected="); appendText(line, capacity, diagnostic.expectedPath);
+    appendText(line, capacity, " path_parsed="); appendText(line, capacity, diagnostic.parsedPath);
+    logMarker(ctx, line);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_IDENTITY entry_point_expected=");
+    appendText(line, capacity, diagnostic.expectedEntryPoint);
+    appendText(line, capacity, " entry_point_parsed="); appendText(line, capacity, diagnostic.parsedEntryPoint);
+    appendText(line, capacity, " abi_expected="); appendText(line, capacity, diagnostic.expectedAbi);
+    appendText(line, capacity, " abi_parsed="); appendText(line, capacity, diagnostic.parsedAbi);
+    appendText(line, capacity, " runtime_expected="); appendText(line, capacity, diagnostic.expectedRuntime);
+    appendText(line, capacity, " runtime_parsed="); appendText(line, capacity, diagnostic.parsedRuntime);
+    logMarker(ctx, line);
+
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_MISMATCH field=");
+    appendText(line, capacity, ManifestIdentityMismatchFieldName(diagnostic.mismatchField));
+    appendText(line, capacity, " expected="); appendText(line, capacity, diagnostic.mismatchExpected);
+    appendText(line, capacity, " actual="); appendText(line, capacity, diagnostic.mismatchActual);
+    appendText(line, capacity, " comparison=field_by_field_case_sensitive_exact_string_and_integer result=");
+    appendText(line, capacity, ProjectErrorName(diagnostic.resultCode));
+    logMarker(ctx, line);
+}
+
 static void phase28z_project_open_observer(void* userData, const WorkspaceProjectOpenEvent& event) {
     gx_app_context* ctx = static_cast<gx_app_context*>(userData);
     if (!ctx || !g_phase28qDiagnostic) return;
+    if ((event.state == WorkspaceProjectOpenState::Loaded || event.state == WorkspaceProjectOpenState::Failed) &&
+        event.manifestDiagnostic && event.manifestDiagnostic->available)
+        phase29eManifestTrace(ctx, event, *event.manifestDiagnostic);
     if (event.state == WorkspaceProjectOpenState::LoadStarted &&
         g_phase29dStartupOwner.state == DiagnosticStartupState::RequestSubmitted &&
         phase29dTextEquals(event.path, g_phase29dStartupOwner.request.projectPath)) {

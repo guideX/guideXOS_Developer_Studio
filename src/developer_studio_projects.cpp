@@ -206,7 +206,11 @@ static bool parseJsonString(JsonCursor& cursor, char* output, uint32_t outputSiz
     while (cursor.position < cursor.length) {
         char c = cursor.bytes[cursor.position++];
         if (c == '"') {
-            if (out >= outputSize) { cursor.error = ProjectErrorCode::MalformedJson; return false; }
+            if (out >= outputSize) {
+                cursor.error = cursor.error == ProjectErrorCode::ManifestMalformed ?
+                    ProjectErrorCode::ManifestStringTruncated : ProjectErrorCode::MalformedJson;
+                return false;
+            }
             output[out] = '\0';
             return true;
         }
@@ -222,7 +226,11 @@ static bool parseJsonString(JsonCursor& cursor, char* output, uint32_t outputSiz
             else if (escaped == 't') c = '\t';
             else { cursor.error = ProjectErrorCode::MalformedJson; return false; }
         }
-        if (out + 1 >= outputSize) { cursor.error = ProjectErrorCode::MalformedJson; return false; }
+        if (out + 1 >= outputSize) {
+            cursor.error = cursor.error == ProjectErrorCode::ManifestMalformed ?
+                ProjectErrorCode::ManifestStringTruncated : ProjectErrorCode::MalformedJson;
+            return false;
+        }
         output[out++] = c;
     }
     cursor.error = ProjectErrorCode::MalformedJson;
@@ -353,33 +361,6 @@ static bool appendProjectNumberField(char* output, uint32_t size, uint32_t& leng
     return appendText(output, size, length, "  ") && appendJsonString(output, size, length, name) && appendText(output, size, length, ": ") && appendNumber(output, size, length, value);
 }
 
-struct ManifestInfo {
-    struct Entry {
-        char architecture[32];
-        char path[kMaxProjectPathBytes];
-        char entryPoint[kMaxNameBytes];
-        char abi[kMaxNameBytes];
-        char runtime[32];
-    };
-    static const uint32_t kMaxEntries = 4;
-    uint32_t schemaVersion;
-    char id[kMaxProjectIdBytes];
-    char displayName[kMaxProjectDisplayNameBytes];
-    char kind[32];
-    char architecture[32];
-    char path[kMaxProjectPathBytes];
-    char entryPoint[kMaxNameBytes];
-    char abi[kMaxNameBytes];
-    char runtime[32];
-    Entry entries[kMaxEntries];
-    uint32_t entryCount;
-    bool hasSchema;
-    bool hasId;
-    bool hasDisplayName;
-    bool hasKind;
-    bool hasEntry;
-};
-
 static bool skipJsonValue(JsonCursor& cursor, uint32_t depth);
 
 static bool skipJsonString(JsonCursor& cursor) {
@@ -447,7 +428,7 @@ static bool skipJsonValue(JsonCursor& cursor, uint32_t depth) {
     return false;
 }
 
-static bool parseManifestEntries(JsonCursor& cursor, ManifestInfo& manifest) {
+static bool parseManifestEntries(JsonCursor& cursor, ApplicationManifest& manifest) {
     if (!expect(cursor, '[')) return false;
     uint32_t count = 0;
     skipWhitespace(cursor);
@@ -486,8 +467,8 @@ static bool parseManifestEntries(JsonCursor& cursor, ManifestInfo& manifest) {
             return false;
         }
         if (!entryClosed) { cursor.error = ProjectErrorCode::ManifestMalformed; return false; }
-        if (count >= ManifestInfo::kMaxEntries) { cursor.error = ProjectErrorCode::ManifestMalformed; return false; }
-        ManifestInfo::Entry& stored = manifest.entries[count++];
+        if (count >= ApplicationManifest::kMaxEntries) { cursor.error = ProjectErrorCode::ManifestMalformed; return false; }
+        ApplicationManifestEntry& stored = manifest.entries[count++];
         copyText(stored.architecture, sizeof(stored.architecture), architecture);
         copyText(stored.path, sizeof(stored.path), path);
         copyText(stored.entryPoint, sizeof(stored.entryPoint), entryPoint);
@@ -510,38 +491,44 @@ static bool parseManifestEntries(JsonCursor& cursor, ManifestInfo& manifest) {
     return count > 0;
 }
 
-static bool parseManifest(const char* bytes, uint32_t length, ManifestInfo* output) {
+static bool parseManifest(const char* bytes, uint32_t length, ApplicationManifest* output,
+                          ProjectErrorCode* error) {
+    if (error) *error = ProjectErrorCode::ManifestMalformed;
     if (!bytes || !output || length == 0 || length > kMaxProjectFileBytes) return false;
     __builtin_memset(output, 0, sizeof(*output));
     JsonCursor cursor = { bytes, length, 0, ProjectErrorCode::ManifestMalformed };
-    if (!expect(cursor, '{')) return false;
+    if (!expect(cursor, '{')) { if (error) *error = ProjectErrorCode::ManifestMalformed; return false; }
     bool closed = false;
     while (cursor.position < cursor.length) {
         char key[64] = {};
-        if (!parseJsonString(cursor, key, sizeof(key)) || !expect(cursor, ':')) return false;
+        if (!parseJsonString(cursor, key, sizeof(key)) || !expect(cursor, ':')) { if (error) *error = cursor.error; return false; }
         if (equalText(key, "schemaVersion")) {
-            if (output->hasSchema || !parseNumber(cursor, &output->schemaVersion)) return false;
+            if (output->hasSchema || !parseNumber(cursor, &output->schemaVersion)) { if (error) *error = ProjectErrorCode::ManifestMalformed; return false; }
             output->hasSchema = true;
         } else if (equalText(key, "id")) {
-            if (output->hasId || !parseJsonString(cursor, output->id, sizeof(output->id))) return false;
+            if (output->hasId || !parseJsonString(cursor, output->id, sizeof(output->id))) { if (error) *error = cursor.error; return false; }
             output->hasId = true;
         } else if (equalText(key, "displayName")) {
-            if (output->hasDisplayName || !parseJsonString(cursor, output->displayName, sizeof(output->displayName))) return false;
+            if (output->hasDisplayName || !parseJsonString(cursor, output->displayName, sizeof(output->displayName))) { if (error) *error = cursor.error; return false; }
             output->hasDisplayName = true;
         } else if (equalText(key, "kind")) {
-            if (output->hasKind || !parseJsonString(cursor, output->kind, sizeof(output->kind))) return false;
+            if (output->hasKind || !parseJsonString(cursor, output->kind, sizeof(output->kind))) { if (error) *error = cursor.error; return false; }
             output->hasKind = true;
         } else if (equalText(key, "entries")) {
-            if (output->hasEntry || !parseManifestEntries(cursor, *output)) return false;
+            if (output->hasEntry || !parseManifestEntries(cursor, *output)) { if (error) *error = cursor.error; return false; }
             output->hasEntry = true;
-        } else if (!skipJsonValue(cursor, 0)) return false;
+        } else if (!skipJsonValue(cursor, 0)) { if (error) *error = ProjectErrorCode::ManifestMalformed; return false; }
         skipWhitespace(cursor);
         if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ',') { ++cursor.position; continue; }
         if (cursor.position < cursor.length && cursor.bytes[cursor.position] == '}') { ++cursor.position; closed = true; break; }
+        if (error) *error = ProjectErrorCode::ManifestMalformed;
         return false;
     }
     skipWhitespace(cursor);
-    return closed && cursor.position == cursor.length && output->hasSchema && output->hasId && output->hasDisplayName && output->hasKind && output->hasEntry;
+    const bool valid = closed && cursor.position == cursor.length && output->hasSchema && output->hasId &&
+        output->hasDisplayName && output->hasKind && output->hasEntry;
+    if (!valid && error) *error = ProjectErrorCode::ManifestMalformed;
+    return valid;
 }
 
 static bool expectedManifestPath(const Project& project, const char* architecture, char* output, uint32_t outputSize) {
@@ -728,36 +715,138 @@ static bool generateMemory(char* output, uint32_t outputSize, uint32_t* outBytes
     return true;
 }
 
-static bool validateManifestAgainstProject(const ManifestInfo& manifest, const Project& project) {
-    if (!manifest.schemaVersion || manifest.schemaVersion != 1 || !manifest.hasId || !manifest.hasDisplayName ||
-        !manifest.hasKind || !manifest.hasEntry || !equalText(manifest.id, project.projectId) ||
-        !equalText(manifest.displayName, project.displayName) || !equalText(manifest.kind, "NativeElf")) return false;
-    if (equalText(project.architecture, "multi")) {
-        if (manifest.entryCount < 2) return false;
-        bool arm64 = false;
-        bool amd64 = false;
-        for (uint32_t i = 0; i < manifest.entryCount; ++i) {
-            const ManifestInfo::Entry& entry = manifest.entries[i];
-            char expectedPath[kMaxProjectPathBytes] = {};
-            if (!expectedManifestPath(project, entry.architecture, expectedPath, sizeof(expectedPath)) ||
-                !equalText(entry.entryPoint, project.entryPoint) || !equalText(entry.abi, project.abi) ||
-                !equalText(entry.runtime, "native-elf") || !equalText(entry.path, expectedPath)) return false;
-            if (equalText(entry.architecture, "arm64")) {
-                if (arm64) return false;
-                arm64 = true;
-            } else if (equalText(entry.architecture, "amd64")) {
-                if (amd64) return false;
-                amd64 = true;
-            } else return false;
-        }
-        return arm64 && amd64;
+static void formatUnsigned(uint32_t value, char* output, uint32_t outputSize) {
+    if (!output || outputSize == 0) return;
+    char digits[12] = {};
+    uint32_t count = 0;
+    do { digits[count++] = static_cast<char>('0' + value % 10u); value /= 10u; } while (value && count < sizeof(digits));
+    uint32_t out = 0;
+    while (count > 0 && out + 1 < outputSize) output[out++] = digits[--count];
+    output[out] = '\0';
+}
+
+static ProjectErrorCode recordManifestMismatch(ManifestValidationDiagnostic* diagnostic,
+                                                ManifestIdentityMismatchField field,
+                                                ProjectErrorCode code,
+                                                const char* expected, const char* actual) {
+    if (diagnostic) {
+        diagnostic->mismatchField = field;
+        copyText(diagnostic->mismatchExpected, sizeof(diagnostic->mismatchExpected), expected);
+        copyText(diagnostic->mismatchActual, sizeof(diagnostic->mismatchActual), actual);
+        diagnostic->resultCode = code;
     }
-    if (manifest.entryCount != 1) return false;
-    const ManifestInfo::Entry& entry = manifest.entries[0];
-    char expectedPath[kMaxProjectPathBytes] = {};
-    return equalText(entry.architecture, project.architecture) && equalText(entry.entryPoint, project.entryPoint) &&
-        equalText(entry.abi, project.abi) && equalText(entry.runtime, "native-elf") &&
-        expectedManifestPath(project, project.architecture, expectedPath, sizeof(expectedPath)) && equalText(entry.path, expectedPath);
+    return code;
+}
+
+static ProjectErrorCode validateManifestAgainstProject(const ApplicationManifest& manifest,
+                                                        const Project& project,
+                                                        ManifestValidationDiagnostic* diagnostic) {
+    if (diagnostic) {
+        diagnostic->expectedSchemaVersion = 1;
+        diagnostic->parsedSchemaVersion = manifest.schemaVersion;
+        diagnostic->expectedEntryCount = equalText(project.architecture, "multi") ? 2u : 1u;
+        diagnostic->parsedEntryCount = manifest.entryCount;
+        copyText(diagnostic->expectedProjectId, sizeof(diagnostic->expectedProjectId), project.projectId);
+        copyText(diagnostic->parsedAppId, sizeof(diagnostic->parsedAppId), manifest.id);
+        copyText(diagnostic->expectedDisplayName, sizeof(diagnostic->expectedDisplayName), project.displayName);
+        copyText(diagnostic->parsedDisplayName, sizeof(diagnostic->parsedDisplayName), manifest.displayName);
+        copyText(diagnostic->expectedKind, sizeof(diagnostic->expectedKind), "NativeElf");
+        copyText(diagnostic->parsedKind, sizeof(diagnostic->parsedKind), manifest.kind);
+        copyText(diagnostic->expectedArchitecture, sizeof(diagnostic->expectedArchitecture), project.architecture);
+        copyText(diagnostic->expectedEntryPoint, sizeof(diagnostic->expectedEntryPoint), project.entryPoint);
+        copyText(diagnostic->expectedAbi, sizeof(diagnostic->expectedAbi), project.abi);
+        copyText(diagnostic->expectedRuntime, sizeof(diagnostic->expectedRuntime), "native-elf");
+        if (manifest.entryCount > 0) {
+            const ApplicationManifestEntry& first = manifest.entries[0];
+            copyText(diagnostic->parsedArchitecture, sizeof(diagnostic->parsedArchitecture), first.architecture);
+            copyText(diagnostic->parsedPath, sizeof(diagnostic->parsedPath), first.path);
+            copyText(diagnostic->parsedEntryPoint, sizeof(diagnostic->parsedEntryPoint), first.entryPoint);
+            copyText(diagnostic->parsedAbi, sizeof(diagnostic->parsedAbi), first.abi);
+            copyText(diagnostic->parsedRuntime, sizeof(diagnostic->parsedRuntime), first.runtime);
+        }
+        const char* pathArchitecture = equalText(project.architecture, "multi") && manifest.entryCount > 0 ?
+            manifest.entries[0].architecture : project.architecture;
+        expectedManifestPath(project, pathArchitecture, diagnostic->expectedPath, sizeof(diagnostic->expectedPath));
+    }
+    if (manifest.schemaVersion != 1) {
+        char expected[16] = {}; char actual[16] = {};
+        formatUnsigned(1, expected, sizeof(expected)); formatUnsigned(manifest.schemaVersion, actual, sizeof(actual));
+        return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::SchemaVersion,
+                                      ProjectErrorCode::ManifestIdentitySchemaMismatch, expected, actual);
+    }
+    if (!equalText(manifest.id, project.projectId))
+        return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::AppId,
+                                      ProjectErrorCode::ManifestIdentityAppIdMismatch, project.projectId, manifest.id);
+    if (!equalText(manifest.displayName, project.displayName))
+        return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::DisplayName,
+                                      ProjectErrorCode::ManifestIdentityDisplayNameMismatch, project.displayName, manifest.displayName);
+    if (!equalText(manifest.kind, "NativeElf"))
+        return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Kind,
+                                      ProjectErrorCode::ManifestIdentityKindMismatch, "NativeElf", manifest.kind);
+
+    const bool multiTarget = equalText(project.architecture, "multi");
+    const uint32_t requiredEntryCount = multiTarget ? 2u : 1u;
+    if (manifest.entryCount != requiredEntryCount) {
+        char expected[16] = {}; char actual[16] = {};
+        formatUnsigned(requiredEntryCount, expected, sizeof(expected)); formatUnsigned(manifest.entryCount, actual, sizeof(actual));
+        return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::EntryCount,
+                                      ProjectErrorCode::ManifestIdentityEntryCountMismatch, expected, actual);
+    }
+    if (!multiTarget) {
+        const ApplicationManifestEntry& entry = manifest.entries[0];
+        if (!equalText(entry.architecture, project.architecture))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Architecture,
+                                          ProjectErrorCode::ManifestIdentityArchitectureMismatch, project.architecture, entry.architecture);
+        if (!equalText(entry.entryPoint, project.entryPoint))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::EntryPoint,
+                                          ProjectErrorCode::ManifestIdentityEntryPointMismatch, project.entryPoint, entry.entryPoint);
+        if (!equalText(entry.abi, project.abi))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Abi,
+                                          ProjectErrorCode::ManifestIdentityAbiMismatch, project.abi, entry.abi);
+        if (!equalText(entry.runtime, "native-elf"))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Runtime,
+                                          ProjectErrorCode::ManifestIdentityRuntimeMismatch, "native-elf", entry.runtime);
+        char expectedPath[kMaxProjectPathBytes] = {};
+        if (!expectedManifestPath(project, project.architecture, expectedPath, sizeof(expectedPath)) || !equalText(entry.path, expectedPath))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Path,
+                                          ProjectErrorCode::ManifestIdentityPathMismatch, expectedPath, entry.path);
+        if (diagnostic) copyText(diagnostic->expectedPath, sizeof(diagnostic->expectedPath), expectedPath);
+        return ProjectErrorCode::None;
+    }
+
+    bool arm64 = false;
+    bool amd64 = false;
+    for (uint32_t i = 0; i < manifest.entryCount; ++i) {
+        const ApplicationManifestEntry& entry = manifest.entries[i];
+        if (equalText(entry.architecture, "arm64")) {
+            if (arm64) return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Architecture,
+                ProjectErrorCode::ManifestIdentityArchitectureMismatch, "one arm64 entry", "duplicate arm64 entry");
+            arm64 = true;
+        } else if (equalText(entry.architecture, "amd64")) {
+            if (amd64) return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Architecture,
+                ProjectErrorCode::ManifestIdentityArchitectureMismatch, "one amd64 entry", "duplicate amd64 entry");
+            amd64 = true;
+        } else return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Architecture,
+            ProjectErrorCode::ManifestIdentityArchitectureMismatch, "amd64 or arm64", entry.architecture);
+        char expectedPath[kMaxProjectPathBytes] = {};
+        if (!expectedManifestPath(project, entry.architecture, expectedPath, sizeof(expectedPath)) || !equalText(entry.path, expectedPath))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Path,
+                                          ProjectErrorCode::ManifestIdentityPathMismatch, expectedPath, entry.path);
+        if (!equalText(entry.entryPoint, project.entryPoint))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::EntryPoint,
+                                          ProjectErrorCode::ManifestIdentityEntryPointMismatch, project.entryPoint, entry.entryPoint);
+        if (!equalText(entry.abi, project.abi))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Abi,
+                                          ProjectErrorCode::ManifestIdentityAbiMismatch, project.abi, entry.abi);
+        if (!equalText(entry.runtime, "native-elf"))
+            return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Runtime,
+                                          ProjectErrorCode::ManifestIdentityRuntimeMismatch, "native-elf", entry.runtime);
+    }
+    if (!arm64 || !amd64)
+        return recordManifestMismatch(diagnostic, ManifestIdentityMismatchField::Architecture,
+                                      ProjectErrorCode::ManifestIdentityArchitectureMismatch,
+                                      "amd64 and arm64", arm64 ? "missing amd64" : "missing arm64");
+    return ProjectErrorCode::None;
 }
 
 static bool verifyRequiredFiles(const ProjectFileSystem& fileSystem, const Project& project) {
@@ -784,6 +873,96 @@ static bool verifyRequiredFiles(const ProjectFileSystem& fileSystem, const Proje
 }
 
 } // namespace
+
+uint64_t ComputeManifestContentHashFnv1a64(const char* bytes, uint32_t length) {
+    uint64_t hash = 14695981039346656037ull;
+    if (!bytes) return hash;
+    for (uint32_t i = 0; i < length; ++i) {
+        hash ^= static_cast<uint8_t>(bytes[i]);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+bool ParseApplicationManifest(const char* bytes, uint32_t length, ApplicationManifest* output,
+                              ProjectErrorCode* error) {
+    if (error) *error = ProjectErrorCode::None;
+    if (!bytes || !output) {
+        if (error) *error = ProjectErrorCode::NullInput;
+        return false;
+    }
+    ProjectErrorCode parseError = ProjectErrorCode::ManifestMalformed;
+    if (!parseManifest(bytes, length, output, &parseError)) {
+        if (error) *error = parseError == ProjectErrorCode::ManifestStringTruncated ?
+            parseError : ProjectErrorCode::ManifestMalformed;
+        return false;
+    }
+    return true;
+}
+
+const char* ManifestIdentityMismatchFieldName(ManifestIdentityMismatchField field) {
+    switch (field) {
+    case ManifestIdentityMismatchField::None: return "none";
+    case ManifestIdentityMismatchField::SchemaVersion: return "schema_version";
+    case ManifestIdentityMismatchField::AppId: return "app_id";
+    case ManifestIdentityMismatchField::DisplayName: return "display_name";
+    case ManifestIdentityMismatchField::Kind: return "kind";
+    case ManifestIdentityMismatchField::EntryCount: return "entry_count";
+    case ManifestIdentityMismatchField::Architecture: return "architecture";
+    case ManifestIdentityMismatchField::Path: return "path";
+    case ManifestIdentityMismatchField::EntryPoint: return "entry_point";
+    case ManifestIdentityMismatchField::Abi: return "abi";
+    case ManifestIdentityMismatchField::Runtime: return "runtime";
+    case ManifestIdentityMismatchField::ExpectedGeneration: return "expected_generation";
+    case ManifestIdentityMismatchField::ParsedGeneration: return "parsed_generation";
+    case ManifestIdentityMismatchField::CandidateGeneration: return "candidate_generation";
+    }
+    return "unknown";
+}
+
+bool ValidateApplicationManifestIdentity(const ApplicationManifest& manifest, const Project& project,
+                                         const ManifestValidationGeneration* generation,
+                                         ManifestValidationDiagnostic* diagnostic) {
+    if (diagnostic) {
+        __builtin_memset(diagnostic, 0, sizeof(*diagnostic));
+        diagnostic->available = true;
+        if (generation) diagnostic->generation = *generation;
+    }
+    if (!manifest.hasSchema || !manifest.hasId || !manifest.hasDisplayName || !manifest.hasKind || !manifest.hasEntry) {
+        if (diagnostic) diagnostic->resultCode = ProjectErrorCode::ManifestMalformed;
+        return false;
+    }
+    if (generation) {
+        const bool generationContextPresent = generation->requestId || generation->requestGeneration || generation->candidateId ||
+            generation->candidateGeneration || generation->expectedIdentityGeneration || generation->parsedIdentityGeneration;
+        if (generationContextPresent) {
+            if (!generation->candidateGeneration || generation->requestGeneration != generation->candidateGeneration) {
+                if (diagnostic) {
+                    diagnostic->mismatchField = ManifestIdentityMismatchField::CandidateGeneration;
+                    diagnostic->resultCode = ProjectErrorCode::ManifestCandidateGenerationStale;
+                }
+                return false;
+            }
+            if (generation->expectedIdentityGeneration != generation->candidateGeneration) {
+                if (diagnostic) {
+                    diagnostic->mismatchField = ManifestIdentityMismatchField::ExpectedGeneration;
+                    diagnostic->resultCode = ProjectErrorCode::ManifestExpectedGenerationStale;
+                }
+                return false;
+            }
+            if (generation->parsedIdentityGeneration != generation->candidateGeneration) {
+                if (diagnostic) {
+                    diagnostic->mismatchField = ManifestIdentityMismatchField::ParsedGeneration;
+                    diagnostic->resultCode = ProjectErrorCode::ManifestParsedGenerationStale;
+                }
+                return false;
+            }
+        }
+    }
+    const ProjectErrorCode result = validateManifestAgainstProject(manifest, project, diagnostic);
+    if (diagnostic) diagnostic->resultCode = result;
+    return result == ProjectErrorCode::None;
+}
 
 const char* ProjectErrorName(ProjectErrorCode code) {
     switch (code) {
@@ -815,9 +994,25 @@ const char* ProjectErrorName(ProjectErrorCode code) {
     case ProjectErrorCode::DirectoryCreateFailed: return "directory_create_failed";
     case ProjectErrorCode::FileWriteFailed: return "file_write_failed";
     case ProjectErrorCode::FileReadFailed: return "file_read_failed";
+    case ProjectErrorCode::ProjectMetadataReadPartial: return "project_metadata_read_partial";
     case ProjectErrorCode::RequiredFileMissing: return "required_file_missing";
     case ProjectErrorCode::ManifestMalformed: return "manifest_malformed";
     case ProjectErrorCode::ManifestIdentityMismatch: return "manifest_identity_mismatch";
+    case ProjectErrorCode::ManifestReadPartial: return "manifest_read_partial";
+    case ProjectErrorCode::ManifestStringTruncated: return "manifest_string_truncated";
+    case ProjectErrorCode::ManifestIdentitySchemaMismatch: return "manifest_id_mismatch_schema_version";
+    case ProjectErrorCode::ManifestIdentityAppIdMismatch: return "manifest_id_mismatch_app_id";
+    case ProjectErrorCode::ManifestIdentityDisplayNameMismatch: return "manifest_id_mismatch_display_name";
+    case ProjectErrorCode::ManifestIdentityKindMismatch: return "manifest_id_mismatch_kind";
+    case ProjectErrorCode::ManifestIdentityEntryCountMismatch: return "manifest_id_mismatch_entry_count";
+    case ProjectErrorCode::ManifestIdentityArchitectureMismatch: return "manifest_id_mismatch_architecture";
+    case ProjectErrorCode::ManifestIdentityPathMismatch: return "manifest_id_mismatch_path";
+    case ProjectErrorCode::ManifestIdentityEntryPointMismatch: return "manifest_id_mismatch_entry_point";
+    case ProjectErrorCode::ManifestIdentityAbiMismatch: return "manifest_id_mismatch_abi";
+    case ProjectErrorCode::ManifestIdentityRuntimeMismatch: return "manifest_id_mismatch_runtime";
+    case ProjectErrorCode::ManifestExpectedGenerationStale: return "manifest_expected_generation_stale";
+    case ProjectErrorCode::ManifestParsedGenerationStale: return "manifest_parsed_generation_stale";
+    case ProjectErrorCode::ManifestCandidateGenerationStale: return "manifest_candidate_generation_stale";
     case ProjectErrorCode::ProjectIdCollision: return "project_id_collision";
     case ProjectErrorCode::RollbackFailed: return "rollback_failed";
     default: return "unknown";
@@ -1008,10 +1203,18 @@ bool ValidateProjectCreateRequest(const ProjectCreateRequest& request, ProjectEr
     return local == ProjectErrorCode::None;
 }
 
-bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCreateRequest& request, ProjectOperationResult* result) {
+bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCreateRequest& request,
+                            ProjectOperationResult* result, ProjectLoadScratch* scratch) {
     if (!result) return false;
     *result = ProjectOperationResult();
     initializeProject(&result->project);
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+    if (!scratch) { setResult(result, ProjectErrorCode::NullInput); return false; }
+#else
+    ProjectLoadScratch localScratch = {};
+    if (!scratch) scratch = &localScratch;
+#endif
+    __builtin_memset(scratch, 0, sizeof(*scratch));
     ProjectErrorCode validation = ProjectErrorCode::None;
     if (!fileSystem.stat || !fileSystem.list || !fileSystem.write || !fileSystem.createDirectory || !fileSystem.removePath) { setResult(result, ProjectErrorCode::NullInput); return false; }
     if (!ValidateProjectCreateRequest(request, &validation)) { setResult(result, validation); return false; }
@@ -1075,20 +1278,21 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
     if (!fileSystem.createDirectory(fileSystem.userData, appDirectory) || !addTrackedPath(createdDirectories, directoryCount, appDirectory)) return fail(ProjectErrorCode::DirectoryCreateFailed);
     if (!fileSystem.createDirectory(fileSystem.userData, sourceDirectory) || !addTrackedPath(createdDirectories, directoryCount, sourceDirectory)) return fail(ProjectErrorCode::DirectoryCreateFailed);
 
-    static char content[kMaxProjectFileBytes] = {};
+    char* content = scratch->metadataBytes;
+    const uint32_t contentCapacity = sizeof(scratch->metadataBytes);
     uint32_t bytes = 0;
     ProjectErrorCode contentError = ProjectErrorCode::None;
     char path[kMaxPathBytes] = {};
-    if (!joinProjectPath(root, kProjectFileName, path, sizeof(path)) || !SerializeProjectMetadata(project, content, sizeof(content), &bytes, &contentError) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(contentError == ProjectErrorCode::None ? ProjectErrorCode::FileWriteFailed : contentError);
-    if (!joinProjectPath(root, "CMakeLists.txt", path, sizeof(path)) || !generateCMake(project, content, sizeof(content), &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
-    if (!joinProjectPath(root, "build.ps1", path, sizeof(path)) || !generateBuildScript(project, content, sizeof(content), &bytes)) return fail(ProjectErrorCode::FileWriteFailed);
+    if (!joinProjectPath(root, kProjectFileName, path, sizeof(path)) || !SerializeProjectMetadata(project, content, contentCapacity, &bytes, &contentError) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(contentError == ProjectErrorCode::None ? ProjectErrorCode::FileWriteFailed : contentError);
+    if (!joinProjectPath(root, "CMakeLists.txt", path, sizeof(path)) || !generateCMake(project, content, contentCapacity, &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
+    if (!joinProjectPath(root, "build.ps1", path, sizeof(path)) || !generateBuildScript(project, content, contentCapacity, &bytes)) return fail(ProjectErrorCode::FileWriteFailed);
     if (!writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
-    if (!joinProjectPath(root, "README.md", path, sizeof(path)) || !generateReadme(project, content, sizeof(content), &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
-    if (!joinProjectPath(root, "app/app.json", path, sizeof(path)) || !generateManifest(project, content, sizeof(content), &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
-    if (!joinProjectPath(root, "src/main.cpp", path, sizeof(path)) || !generateMain(project, content, sizeof(content), &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
-    if (!joinProjectPath(root, "src/freestanding_memory.cpp", path, sizeof(path)) || !generateMemory(content, sizeof(content), &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
+    if (!joinProjectPath(root, "README.md", path, sizeof(path)) || !generateReadme(project, content, contentCapacity, &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
+    if (!joinProjectPath(root, "app/app.json", path, sizeof(path)) || !generateManifest(project, content, contentCapacity, &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
+    if (!joinProjectPath(root, "src/main.cpp", path, sizeof(path)) || !generateMain(project, content, contentCapacity, &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
+    if (!joinProjectPath(root, "src/freestanding_memory.cpp", path, sizeof(path)) || !generateMemory(content, contentCapacity, &bytes) || !writeTrackedFile(fileSystem, path, content, bytes, createdFiles, fileCount)) return fail(ProjectErrorCode::FileWriteFailed);
     if (!verifyRequiredFiles(fileSystem, project)) return fail(ProjectErrorCode::RequiredFileMissing);
-    if (!LoadProject(fileSystem, root, result)) return fail(result->error == ProjectErrorCode::None ? ProjectErrorCode::ManifestMalformed : result->error);
+    if (!LoadProject(fileSystem, root, result, scratch)) return fail(result->error == ProjectErrorCode::None ? ProjectErrorCode::ManifestMalformed : result->error);
     result->success = true;
     result->rollbackAttempted = false;
     result->rollbackSucceeded = true;
@@ -1096,50 +1300,126 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
     return true;
 }
 
-bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath, ProjectOperationResult* result) {
+bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath,
+                 ProjectOperationResult* result, ProjectLoadScratch* scratch,
+                 const ManifestValidationGeneration* generation) {
     if (!result) return false;
     // ProjectOperationResult owns the bounded project metadata buffers. Do
     // not materialize a second full result temporary on the NativeElf stack.
     __builtin_memset(result, 0, sizeof(*result));
     initializeProject(&result->project);
     if (!fileSystem.stat || !fileSystem.read || !rootOrMetadataPath) { setResult(result, ProjectErrorCode::NullInput); return false; }
-    // NativeElf invokes this boundary on a bounded cooperative stack. Keep
-    // the existing scratch-buffer model for the path and manifest work so a
-    // hosted call cannot reserve the entire project loader frame at once.
-    static char normalized[kMaxPathBytes] = {};
-    if (PathContainsTraversal(rootOrMetadataPath) || !NormalizePath(rootOrMetadataPath, normalized, sizeof(normalized))) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+    if (!scratch) { setResult(result, ProjectErrorCode::NullInput); return false; }
+#else
+    ProjectLoadScratch localScratch = {};
+    if (!scratch) scratch = &localScratch;
+#endif
+    // The controller owns this bounded storage on bare metal. Hosted direct
+    // calls use a private frame-local instance, so no invocation shares parser
+    // or read buffers with another transaction.
+    __builtin_memset(scratch, 0, sizeof(*scratch));
+    char* normalized = scratch->normalizedPath;
+    if (PathContainsTraversal(rootOrMetadataPath) || !NormalizePath(rootOrMetadataPath, normalized, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
     FileInfo inputInfo = {};
     if (!fileSystem.stat(fileSystem.userData, normalized, &inputInfo)) { setResult(result, ProjectErrorCode::ParentNotFound); return false; }
-    static char root[kMaxPathBytes] = {};
-    if (inputInfo.kind == FileInfoKind::Directory) copyText(root, sizeof(root), normalized);
+    char* root = scratch->rootPath;
+    if (inputInfo.kind == FileInfoKind::Directory) copyText(root, kMaxPathBytes, normalized);
     else if (inputInfo.kind == FileInfoKind::RegularFile && equalTextFolded(BaseName(normalized), kProjectFileName)) {
-        if (!parentPath(normalized, root, sizeof(root))) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
+        if (!parentPath(normalized, root, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
     } else { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
-    static char metadataPath[kMaxPathBytes] = {};
-    if (!joinProjectPath(root, kProjectFileName, metadataPath, sizeof(metadataPath))) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
+    char* metadataPath = scratch->metadataPath;
+    if (!joinProjectPath(root, kProjectFileName, metadataPath, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
     FileInfo metadataInfo = {};
     if (!fileSystem.stat(fileSystem.userData, metadataPath, &metadataInfo) || metadataInfo.kind != FileInfoKind::RegularFile) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
     if (metadataInfo.size > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::ProjectFileTooLarge); return false; }
-    static char metadata[kMaxProjectFileBytes + 1] = {};
+    char* metadata = scratch->metadataBytes;
     uint32_t bytes = 0;
-    if (!fileSystem.read(fileSystem.userData, metadataPath, metadata, kMaxProjectFileBytes, &bytes) || bytes > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::FileReadFailed); return false; }
+    const bool metadataRead = fileSystem.read(fileSystem.userData, metadataPath, metadata, kMaxProjectFileBytes, &bytes);
+    result->manifestDiagnostic.projectMetadataExpectedSize = metadataInfo.size;
+    result->manifestDiagnostic.projectMetadataBytesRead = bytes;
+    if (bytes <= kMaxProjectFileBytes)
+        result->manifestDiagnostic.projectMetadataHashFnv1a64 = ComputeManifestContentHashFnv1a64(metadata, bytes);
+    if (!metadataRead || bytes > kMaxProjectFileBytes) {
+        result->manifestDiagnostic.available = true;
+        result->manifestDiagnostic.resultCode = ProjectErrorCode::FileReadFailed;
+        setResult(result, ProjectErrorCode::FileReadFailed);
+        return false;
+    }
+    if (bytes != metadataInfo.size) {
+        result->manifestDiagnostic.available = true;
+        result->manifestDiagnostic.resultCode = ProjectErrorCode::ProjectMetadataReadPartial;
+        setResult(result, ProjectErrorCode::ProjectMetadataReadPartial);
+        return false;
+    }
     Project& project = result->project;
     ProjectErrorCode parseError = ProjectErrorCode::None;
-    if (!ParseProjectMetadata(metadata, bytes, &project, &parseError)) { setResult(result, parseError); return false; }
+    if (!ParseProjectMetadata(metadata, bytes, &project, &parseError)) {
+        result->manifestDiagnostic.available = true;
+        result->manifestDiagnostic.resultCode = parseError;
+        setResult(result, parseError);
+        return false;
+    }
     copyText(project.rootPath, sizeof(project.rootPath), root);
     project.loaded = true;
     project.loadState = ProjectLoadState::Loaded;
-    static char manifestPath[kMaxPathBytes] = {};
-    if (!joinProjectPath(root, project.manifestPath, manifestPath, sizeof(manifestPath))) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
+    char* manifestPath = scratch->manifestPath;
+    if (!joinProjectPath(root, project.manifestPath, manifestPath, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
     if (!verifyRequiredFiles(fileSystem, project)) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
     FileInfo manifestFileInfo = {};
-    if (!fileSystem.stat(fileSystem.userData, manifestPath, &manifestFileInfo) || manifestFileInfo.size > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
-    static char manifestBytes[kMaxProjectFileBytes + 1] = {};
+    if (!fileSystem.stat(fileSystem.userData, manifestPath, &manifestFileInfo) || manifestFileInfo.kind != FileInfoKind::RegularFile) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
+    if (manifestFileInfo.size > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::ProjectFileTooLarge); return false; }
+    result->manifestDiagnostic.available = true;
+    copyText(result->manifestDiagnostic.manifestPath, sizeof(result->manifestDiagnostic.manifestPath), manifestPath);
+    result->manifestDiagnostic.manifestExpectedSize = manifestFileInfo.size;
+    result->manifestDiagnostic.projectMetadataExpectedSize = metadataInfo.size;
+    result->manifestDiagnostic.projectMetadataBytesRead = bytes;
+    result->manifestDiagnostic.projectMetadataHashFnv1a64 = ComputeManifestContentHashFnv1a64(metadata, bytes);
+    if (generation) result->manifestDiagnostic.generation = *generation;
+    char* manifestBytes = scratch->manifestBytes;
     uint32_t manifestSize = 0;
-    if (!fileSystem.read(fileSystem.userData, manifestPath, manifestBytes, kMaxProjectFileBytes, &manifestSize)) { setResult(result, ProjectErrorCode::FileReadFailed); return false; }
-    static ManifestInfo manifest = {};
-    if (!parseManifest(manifestBytes, manifestSize, &manifest)) { setResult(result, ProjectErrorCode::ManifestMalformed); return false; }
-    if (!validateManifestAgainstProject(manifest, project)) { setResult(result, ProjectErrorCode::ManifestIdentityMismatch); return false; }
+    const bool manifestRead = fileSystem.read(fileSystem.userData, manifestPath, manifestBytes, kMaxProjectFileBytes, &manifestSize);
+    result->manifestDiagnostic.manifestBytesRead = manifestSize;
+    if (manifestSize <= kMaxProjectFileBytes)
+        result->manifestDiagnostic.manifestContentHashFnv1a64 = ComputeManifestContentHashFnv1a64(manifestBytes, manifestSize);
+    if (!manifestRead || manifestSize > kMaxProjectFileBytes) {
+        result->manifestDiagnostic.resultCode = ProjectErrorCode::FileReadFailed;
+        setResult(result, ProjectErrorCode::FileReadFailed);
+        return false;
+    }
+    if (manifestSize != manifestFileInfo.size) {
+        result->manifestDiagnostic.resultCode = ProjectErrorCode::ManifestReadPartial;
+        setResult(result, ProjectErrorCode::ManifestReadPartial);
+        return false;
+    }
+    ApplicationManifest& manifest = scratch->manifest;
+    ProjectErrorCode manifestParseError = ProjectErrorCode::ManifestMalformed;
+    if (!parseManifest(manifestBytes, manifestSize, &manifest, &manifestParseError)) {
+        result->manifestDiagnostic.resultCode = manifestParseError == ProjectErrorCode::ManifestStringTruncated ?
+            manifestParseError : ProjectErrorCode::ManifestMalformed;
+        setResult(result, result->manifestDiagnostic.resultCode);
+        return false;
+    }
+    const bool identityMatches = ValidateApplicationManifestIdentity(manifest, project, generation, &result->manifestDiagnostic);
+    // The validator owns the field-by-field identity portion of the diagnostic
+    // and clears that portion on each call. Restore the loader-owned raw input
+    // evidence after it returns so a failure can be tied to the exact files and
+    // generation that were read for this request.
+    result->manifestDiagnostic.available = true;
+    copyText(result->manifestDiagnostic.manifestPath, sizeof(result->manifestDiagnostic.manifestPath), manifestPath);
+    result->manifestDiagnostic.manifestExpectedSize = manifestFileInfo.size;
+    result->manifestDiagnostic.manifestBytesRead = manifestSize;
+    result->manifestDiagnostic.manifestContentHashFnv1a64 = ComputeManifestContentHashFnv1a64(manifestBytes, manifestSize);
+    result->manifestDiagnostic.projectMetadataExpectedSize = metadataInfo.size;
+    result->manifestDiagnostic.projectMetadataBytesRead = bytes;
+    result->manifestDiagnostic.projectMetadataHashFnv1a64 = ComputeManifestContentHashFnv1a64(metadata, bytes);
+    if (generation) result->manifestDiagnostic.generation = *generation;
+    if (!identityMatches) {
+        setResult(result, result->manifestDiagnostic.resultCode == ProjectErrorCode::None ?
+            ProjectErrorCode::ManifestIdentityMismatch : result->manifestDiagnostic.resultCode);
+        return false;
+    }
+    result->manifestDiagnostic.resultCode = ProjectErrorCode::None;
     project.error = ProjectErrorCode::None;
     project.valid = true;
     project.validationState = ProjectValidationState::Valid;

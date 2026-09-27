@@ -2,6 +2,7 @@
 #include "developer_studio_workspace.h"
 
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +15,7 @@ namespace fs = std::filesystem;
 struct TestContext {
     bool failMainWrite = false;
     bool failList = false;
+    bool partialManifestRead = false;
     uint32_t observerCount = 0;
     WorkspaceProjectOpenState lastProjectState = WorkspaceProjectOpenState::Idle;
     uint64_t lastProjectRequestId = 0;
@@ -77,13 +79,15 @@ static void projectOpenObserver(void* userData, const WorkspaceProjectOpenEvent&
     }
 }
 
-static bool readFile(void*, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
+static bool readFile(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
+    TestContext* context = static_cast<TestContext*>(userData);
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     input.seekg(0, std::ios::end);
     std::streamoff size = input.tellg();
     if (size < 0 || static_cast<uint64_t>(size) > capacity) return false;
     input.seekg(0, std::ios::beg);
+    if (context && context->partialManifestRead && std::string(path).find("app/app.json") != std::string::npos && size > 0) --size;
     input.read(buffer, size);
     if (!input && size > 0) return false;
     *outBytes = static_cast<uint32_t>(size);
@@ -253,6 +257,130 @@ int main(int argc, char** argv) {
     assert(LoadProject(fileSystem, generatedRoot.string().c_str(), &loaded));
     assert(LoadProject(fileSystem, (generatedRoot / "guidexos.project").string().c_str(), &loaded));
     assert(std::strcmp(loaded.project.projectId, request.projectId) == 0);
+    const std::string validManifestBytes = readAll(generatedRoot / "app" / "app.json");
+    ApplicationManifest parsedManifestA = {};
+    assert(ParseApplicationManifest(validManifestBytes.data(), static_cast<uint32_t>(validManifestBytes.size()), &parsedManifestA, &error));
+    ManifestValidationDiagnostic manifestDiagnostic = {};
+    assert(ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, nullptr, &manifestDiagnostic));
+    assert(manifestDiagnostic.resultCode == ProjectErrorCode::None);
+    const uint64_t stableManifestHash = ComputeManifestContentHashFnv1a64(validManifestBytes.data(), static_cast<uint32_t>(validManifestBytes.size()));
+    assert(stableManifestHash == ComputeManifestContentHashFnv1a64(validManifestBytes.data(), static_cast<uint32_t>(validManifestBytes.size())));
+
+    // Production parser/validator repetition, including valid A -> different B -> valid A.
+    std::string differentManifestBytes = validManifestBytes;
+    const std::string validId = "com.example.hello";
+    size_t idAt = differentManifestBytes.find(validId);
+    assert(idAt != std::string::npos);
+    differentManifestBytes.replace(idAt, validId.size(), "com.example.other");
+    ApplicationManifest parsedManifestB = {};
+    assert(ParseApplicationManifest(differentManifestBytes.data(), static_cast<uint32_t>(differentManifestBytes.size()), &parsedManifestB, &error));
+    assert(!ValidateApplicationManifestIdentity(parsedManifestB, loaded.project, nullptr, &manifestDiagnostic));
+    assert(manifestDiagnostic.mismatchField == ManifestIdentityMismatchField::AppId);
+    assert(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestIdentityAppIdMismatch);
+    assert(std::strcmp(manifestDiagnostic.mismatchExpected, "com.example.hello") == 0);
+    assert(std::strcmp(manifestDiagnostic.mismatchActual, "com.example.other") == 0);
+
+    std::string descriptiveManifestBytes = validManifestBytes;
+    const std::string oldDescription = "Minimal guideXOS Native GUI application.";
+    size_t descriptionAt = descriptiveManifestBytes.find(oldDescription);
+    assert(descriptionAt != std::string::npos);
+    descriptiveManifestBytes.replace(descriptionAt, oldDescription.size(), "A different descriptive sentence.");
+    ApplicationManifest parsedDescriptiveManifest = {};
+    assert(ParseApplicationManifest(descriptiveManifestBytes.data(), static_cast<uint32_t>(descriptiveManifestBytes.size()), &parsedDescriptiveManifest, &error));
+    assert(ValidateApplicationManifestIdentity(parsedDescriptiveManifest, loaded.project, nullptr, &manifestDiagnostic));
+
+    std::string independentManifestBuffer = validManifestBytes;
+    ApplicationManifest parsedIndependentManifest = {};
+    assert(ParseApplicationManifest(independentManifestBuffer.data(), static_cast<uint32_t>(independentManifestBuffer.size()), &parsedIndependentManifest, &error));
+    assert(ValidateApplicationManifestIdentity(parsedIndependentManifest, loaded.project, nullptr, &manifestDiagnostic));
+    ApplicationManifest staleTailManifest = parsedManifestA;
+    staleTailManifest.id[std::strlen(staleTailManifest.id) + 1] = 'x';
+    staleTailManifest.entries[0].path[std::strlen(staleTailManifest.entries[0].path) + 1] = 'x';
+    assert(ValidateApplicationManifestIdentity(staleTailManifest, loaded.project, nullptr, &manifestDiagnostic));
+    ApplicationManifest paddingVariantManifest = parsedManifestA;
+    const size_t manifestLogicalEnd = offsetof(ApplicationManifest, hasEntry) + sizeof(paddingVariantManifest.hasEntry);
+    assert(sizeof(paddingVariantManifest) > manifestLogicalEnd);
+    std::memset(reinterpret_cast<unsigned char*>(&paddingVariantManifest) + manifestLogicalEnd,
+                0xA5, sizeof(paddingVariantManifest) - manifestLogicalEnd);
+    assert(ValidateApplicationManifestIdentity(paddingVariantManifest, loaded.project, nullptr, &manifestDiagnostic));
+
+    Project differentExpectedProject = loaded.project;
+    std::strcpy(differentExpectedProject.projectId, "com.example.other");
+    assert(!ValidateApplicationManifestIdentity(parsedManifestA, differentExpectedProject, nullptr, &manifestDiagnostic));
+    assert(manifestDiagnostic.mismatchField == ManifestIdentityMismatchField::AppId);
+    assert(std::strcmp(manifestDiagnostic.mismatchExpected, "com.example.other") == 0);
+    assert(std::strcmp(manifestDiagnostic.mismatchActual, "com.example.hello") == 0);
+
+    std::string differentTargetBytes = validManifestBytes;
+    const std::string validTargetPath = "bin/amd64/hello-guidexos.elf";
+    size_t targetPathAt = differentTargetBytes.find(validTargetPath);
+    assert(targetPathAt != std::string::npos);
+    differentTargetBytes.replace(targetPathAt, validTargetPath.size(), "bin/amd64/other.elf");
+    ApplicationManifest differentTargetManifest = {};
+    assert(ParseApplicationManifest(differentTargetBytes.data(), static_cast<uint32_t>(differentTargetBytes.size()), &differentTargetManifest, &error));
+    assert(!ValidateApplicationManifestIdentity(differentTargetManifest, loaded.project, nullptr, &manifestDiagnostic));
+    assert(manifestDiagnostic.mismatchField == ManifestIdentityMismatchField::Path);
+    assert(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestIdentityPathMismatch);
+
+    ManifestValidationGeneration validationGeneration = {};
+    validationGeneration.requestId = 7;
+    validationGeneration.requestGeneration = 7;
+    validationGeneration.candidateId = 11;
+    validationGeneration.candidateGeneration = 7;
+    validationGeneration.expectedIdentityGeneration = 6;
+    validationGeneration.parsedIdentityGeneration = 7;
+    assert(!ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, &validationGeneration, &manifestDiagnostic));
+    assert(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestExpectedGenerationStale);
+    validationGeneration.expectedIdentityGeneration = 7;
+    validationGeneration.candidateGeneration = 8;
+    assert(!ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, &validationGeneration, &manifestDiagnostic));
+    assert(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestCandidateGenerationStale);
+    validationGeneration.candidateGeneration = 7;
+    validationGeneration.parsedIdentityGeneration = 6;
+    assert(!ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, &validationGeneration, &manifestDiagnostic));
+    assert(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestParsedGenerationStale);
+
+    std::string truncatedIdentityManifest = validManifestBytes;
+    idAt = truncatedIdentityManifest.find(validId);
+    assert(idAt != std::string::npos);
+    truncatedIdentityManifest.replace(idAt, validId.size(), std::string(kMaxProjectIdBytes, 'a'));
+    ApplicationManifest truncatedIdentity = {};
+    assert(!ParseApplicationManifest(truncatedIdentityManifest.data(), static_cast<uint32_t>(truncatedIdentityManifest.size()), &truncatedIdentity, &error));
+    assert(error == ProjectErrorCode::ManifestStringTruncated);
+
+    for (uint32_t iteration = 0; iteration < 1000; ++iteration) {
+        ApplicationManifest repeatedManifest = {};
+        assert(ParseApplicationManifest(validManifestBytes.data(), static_cast<uint32_t>(validManifestBytes.size()), &repeatedManifest, &error));
+        assert(ValidateApplicationManifestIdentity(repeatedManifest, loaded.project, nullptr, &manifestDiagnostic));
+        assert(std::strcmp(repeatedManifest.id, parsedManifestA.id) == 0);
+        assert(std::strcmp(repeatedManifest.displayName, parsedManifestA.displayName) == 0);
+        assert(std::strcmp(repeatedManifest.entries[0].architecture, parsedManifestA.entries[0].architecture) == 0);
+        assert(std::strcmp(repeatedManifest.entries[0].path, parsedManifestA.entries[0].path) == 0);
+        if (iteration == 499) {
+            assert(ParseApplicationManifest(differentManifestBytes.data(), static_cast<uint32_t>(differentManifestBytes.size()), &parsedManifestB, &error));
+            assert(ParseApplicationManifest(validManifestBytes.data(), static_cast<uint32_t>(validManifestBytes.size()), &repeatedManifest, &error));
+            assert(ValidateApplicationManifestIdentity(repeatedManifest, loaded.project, nullptr, &manifestDiagnostic));
+        }
+    }
+    assert(stableManifestHash == ComputeManifestContentHashFnv1a64(validManifestBytes.data(), static_cast<uint32_t>(validManifestBytes.size())));
+
+    ProjectLoadScratch firstLoadScratch = {};
+    ProjectLoadScratch secondLoadScratch = {};
+    ProjectOperationResult firstScratchLoad;
+    ProjectOperationResult secondScratchLoad;
+    assert(LoadProject(fileSystem, generatedRoot.string().c_str(), &firstScratchLoad, &firstLoadScratch));
+    assert(LoadProject(fileSystem, generatedRoot.string().c_str(), &secondScratchLoad, &secondLoadScratch));
+    assert(firstLoadScratch.manifest.id[0] != '\0' && secondLoadScratch.manifest.id[0] != '\0');
+    assert(std::strcmp(firstLoadScratch.manifest.id, secondLoadScratch.manifest.id) == 0);
+    assert(std::strcmp(firstLoadScratch.manifestPath, secondLoadScratch.manifestPath) == 0);
+    context.partialManifestRead = true;
+    ProjectOperationResult partialManifestLoad;
+    assert(!LoadProject(fileSystem, generatedRoot.string().c_str(), &partialManifestLoad, &firstLoadScratch));
+    context.partialManifestRead = false;
+    assert(partialManifestLoad.error == ProjectErrorCode::ManifestReadPartial);
+    assert(partialManifestLoad.manifestDiagnostic.manifestExpectedSize == partialManifestLoad.manifestDiagnostic.manifestBytesRead + 1);
+    assert(partialManifestLoad.manifestDiagnostic.resultCode == ProjectErrorCode::ManifestReadPartial);
+
     ProjectOperationResult missingProject;
     assert(!LoadProject(fileSystem, (testRoot / "does-not-exist" / "guidexos.project").string().c_str(), &missingProject));
     assert(missingProject.error == ProjectErrorCode::ParentNotFound);
@@ -287,6 +415,26 @@ int main(int argc, char** argv) {
     assert(context.lastCandidateId != 0);
     assert(context.lastRefreshGeneration != 0);
     assert(!context.candidateVisibleBeforeCommit);
+
+    const uint64_t activeProjectGenerationBeforePartialOpen = controller.model.projectGeneration;
+    char activeProjectIdBeforePartialOpen[kMaxProjectIdBytes] = {};
+    std::strncpy(activeProjectIdBeforePartialOpen, controller.model.project.projectId,
+                 sizeof(activeProjectIdBeforePartialOpen) - 1);
+    context.partialManifestRead = true;
+    const bool partialOpenAccepted = WorkspaceControllerOpenProject(&controller, generatedRoot.string().c_str());
+    context.partialManifestRead = false;
+    assert(!partialOpenAccepted);
+    assert(controller.lastProjectError == ProjectErrorCode::ManifestReadPartial);
+    assert(context.lastProjectState == WorkspaceProjectOpenState::Failed);
+    assert(context.lastProjectRequestId == 2);
+    assert(controller.model.hasProject);
+    assert(controller.model.projectGeneration == activeProjectGenerationBeforePartialOpen);
+    assert(std::strcmp(controller.model.project.projectId, activeProjectIdBeforePartialOpen) == 0);
+    assert(controller.lastManifestDiagnostic.resultCode == ProjectErrorCode::ManifestReadPartial);
+    assert(WorkspaceControllerOpenProject(&controller, generatedRoot.string().c_str()));
+    assert(context.lastProjectRequestId == 3);
+    assert(controller.model.hasProject);
+    assert(std::strcmp(controller.model.project.projectId, request.projectId) == 0);
     assert(WorkspaceControllerOpenDocument(&controller, "src/main.cpp"));
     char oldRoot[kMaxPathBytes] = {};
     std::strcpy(oldRoot, controller.model.rootPath);
@@ -297,7 +445,7 @@ int main(int argc, char** argv) {
     context.failList = false;
     assert(controller.lastProjectError == ProjectErrorCode::RequiredFileMissing);
     assert(context.lastProjectState == WorkspaceProjectOpenState::Failed);
-    assert(context.lastProjectRequestId == 2);
+    assert(context.lastProjectRequestId == 4);
     assert(controller.model.hasProject && std::strcmp(controller.model.rootPath, oldRoot) == 0);
     assert(controller.model.projectGeneration == oldProjectGeneration);
     assert(WorkspaceControllerActiveDocument(&controller) != nullptr &&

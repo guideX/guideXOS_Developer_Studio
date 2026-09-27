@@ -34,12 +34,15 @@ enum class WorkspaceProjectOpenState {
 struct WorkspaceProjectOpenEvent {
     WorkspaceProjectOpenState state;
     uint64_t requestId;
+    uint64_t requestGeneration;
     uint64_t activeProjectGeneration;
     uint64_t candidateId;
+    uint64_t candidateGeneration;
     uint64_t candidateProjectGeneration;
     uint64_t refreshGeneration;
     ProjectErrorCode error;
     const char* path;
+    const ManifestValidationDiagnostic* manifestDiagnostic;
 };
 
 using WorkspaceProjectOpenObserver = void (*)(void* userData,
@@ -53,12 +56,16 @@ struct WorkspaceController {
     ProjectErrorCode lastProjectError;
     SymbolDatabase* symbolDatabase;
     uint64_t projectOpenRequestId;
+    uint64_t projectOpenRequestGeneration;
     uint64_t projectOpenGeneration;
     WorkspaceProjectOpenState projectOpenState;
     bool projectOpenInProgress;
     uint64_t projectOpenCandidateId;
+    uint64_t projectOpenCandidateGeneration;
     uint64_t projectOpenRefreshGeneration;
     ProjectErrorCode projectOpenFailure;
+    ProjectLoadScratch projectLoadScratch;
+    ManifestValidationDiagnostic lastManifestDiagnostic;
     WorkspaceProjectOpenObserver projectOpenObserver;
     void* projectOpenObserverUserData;
 };

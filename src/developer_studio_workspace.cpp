@@ -18,6 +18,7 @@ struct WorkspaceProjectLoadTransaction {
 
 static WorkspaceProjectLoadTransaction g_workspaceProjectLoad = {};
 static uint64_t g_nextWorkspaceProjectCandidateId = 1;
+static uint64_t g_nextWorkspaceProjectCandidateGeneration = 1;
 static uint64_t g_nextWorkspaceProjectRefreshGeneration = 1;
 
 static void setControllerError(WorkspaceController* controller, ModelErrorCode code);
@@ -60,13 +61,16 @@ static void notifyProjectOpen(WorkspaceController* controller, WorkspaceProjectO
         WorkspaceProjectOpenEvent event = {};
         event.state = state;
         event.requestId = controller->projectOpenRequestId;
+        event.requestGeneration = controller->projectOpenRequestGeneration;
         event.activeProjectGeneration = controller->model.projectGeneration;
         event.candidateId = controller->projectOpenCandidateId;
+        event.candidateGeneration = controller->projectOpenCandidateGeneration;
         event.candidateProjectGeneration = g_workspaceProjectLoad.active &&
             g_workspaceProjectLoad.owner == controller ? g_workspaceProjectLoad.candidate.projectGeneration : 0;
         event.refreshGeneration = controller->projectOpenRefreshGeneration;
         event.error = error;
         event.path = path;
+        event.manifestDiagnostic = &controller->lastManifestDiagnostic;
         controller->projectOpenObserver(controller->projectOpenObserverUserData, event);
     }
 }
@@ -233,12 +237,16 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
     controller->lastProjectError = ProjectErrorCode::None;
     controller->symbolDatabase = nullptr;
     controller->projectOpenRequestId = 0;
+    controller->projectOpenRequestGeneration = 0;
     controller->projectOpenGeneration = 0;
     controller->projectOpenState = WorkspaceProjectOpenState::Idle;
     controller->projectOpenInProgress = false;
     controller->projectOpenCandidateId = 0;
+    controller->projectOpenCandidateGeneration = 0;
     controller->projectOpenRefreshGeneration = 0;
     controller->projectOpenFailure = ProjectErrorCode::None;
+    __builtin_memset(&controller->projectLoadScratch, 0, sizeof(controller->projectLoadScratch));
+    __builtin_memset(&controller->lastManifestDiagnostic, 0, sizeof(controller->lastManifestDiagnostic));
     controller->projectOpenObserver = nullptr;
     controller->projectOpenObserverUserData = nullptr;
 }
@@ -322,11 +330,14 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
         return false;
     }
     ++controller->projectOpenRequestId;
+    controller->projectOpenRequestGeneration = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateGeneration);
     controller->projectOpenGeneration = 0;
     controller->projectOpenInProgress = true;
     controller->projectOpenCandidateId = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateId);
+    controller->projectOpenCandidateGeneration = controller->projectOpenRequestGeneration;
     controller->projectOpenRefreshGeneration = 0;
     controller->projectOpenFailure = ProjectErrorCode::None;
+    __builtin_memset(&controller->lastManifestDiagnostic, 0, sizeof(controller->lastManifestDiagnostic));
     g_workspaceProjectLoad.owner = controller;
     g_workspaceProjectLoad.requestId = controller->projectOpenRequestId;
     g_workspaceProjectLoad.candidateId = controller->projectOpenCandidateId;
@@ -334,6 +345,13 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
     g_workspaceProjectLoad.active = true;
     WorkspaceModelInit(&g_workspaceProjectLoad.candidate);
     const uint64_t requestId = controller->projectOpenRequestId;
+    ManifestValidationGeneration validationGeneration = {};
+    validationGeneration.requestId = requestId;
+    validationGeneration.requestGeneration = controller->projectOpenRequestGeneration;
+    validationGeneration.candidateId = controller->projectOpenCandidateId;
+    validationGeneration.candidateGeneration = controller->projectOpenCandidateGeneration;
+    validationGeneration.expectedIdentityGeneration = controller->projectOpenRequestGeneration;
+    validationGeneration.parsedIdentityGeneration = controller->projectOpenCandidateGeneration;
     const char* requestPath = path;
     notifyProjectOpen(controller, WorkspaceProjectOpenState::LoadStarted, requestPath, ProjectErrorCode::None);
     if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
@@ -346,7 +364,8 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
         return false;
     }
     ProjectOperationResult result;
-    if (!LoadProject(controller->fileSystem, path, &result)) {
+    if (!LoadProject(controller->fileSystem, path, &result, &controller->projectLoadScratch, &validationGeneration)) {
+        controller->lastManifestDiagnostic = result.manifestDiagnostic;
         setProjectError(controller, result.error);
         controller->projectOpenFailure = result.error;
         notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, requestPath, result.error);
@@ -354,6 +373,7 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
         releaseProjectLoadTransaction(controller);
         return false;
     }
+    controller->lastManifestDiagnostic = result.manifestDiagnostic;
     notifyProjectOpen(controller, WorkspaceProjectOpenState::Loaded, result.project.rootPath, ProjectErrorCode::None);
     if (!projectLoadIsCurrent(controller, requestId)) {
         setProjectError(controller, ProjectErrorCode::LoadInProgress);
@@ -447,7 +467,7 @@ bool WorkspaceControllerCreateProject(WorkspaceController* controller, const Pro
             return false;
         }
     }
-    if (!CreateNativeGuiProject(controller->fileSystem, request, result)) {
+    if (!CreateNativeGuiProject(controller->fileSystem, request, result, &controller->projectLoadScratch)) {
         setProjectError(controller, result->error);
         return false;
     }
@@ -462,7 +482,15 @@ bool WorkspaceControllerReloadProject(WorkspaceController* controller) {
         return false;
     }
     ProjectOperationResult result;
-    if (!LoadProject(controller->fileSystem, controller->model.rootPath, &result)) {
+    ManifestValidationGeneration validationGeneration = {};
+    validationGeneration.requestId = controller->projectOpenRequestId;
+    validationGeneration.requestGeneration = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateGeneration);
+    validationGeneration.candidateId = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateId);
+    validationGeneration.candidateGeneration = validationGeneration.requestGeneration;
+    validationGeneration.expectedIdentityGeneration = validationGeneration.requestGeneration;
+    validationGeneration.parsedIdentityGeneration = validationGeneration.candidateGeneration;
+    if (!LoadProject(controller->fileSystem, controller->model.rootPath, &result,
+                     &controller->projectLoadScratch, &validationGeneration)) {
         setProjectError(controller, result.error);
         return false;
     }
