@@ -224,6 +224,11 @@ int main() {
     assert(resetProbe.error == DebugDwarfError::None);
     assert(resetProbe.lineRowCount == 0 && resetProbe.rows[0].address == 0);
     assert(resetProbe.directories[0][0] == '\0' && resetProbe.currentFileCount == 0);
+    assert(!resetProbe.diagnosticSourceAssociationAttempted &&
+           !resetProbe.diagnosticSourceAssociationSucceeded);
+    assert(resetProbe.diagnosticSourceDirectory[0] == '\0' &&
+           resetProbe.diagnosticSourceCandidate[0] == '\0' &&
+           resetProbe.diagnosticSourceNormalized[0] == '\0');
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
     const bool loaded = DebugDwarfMapperLoad(&mapper, "D:/fixture", "fixture", "target", "amd64",
@@ -233,6 +238,11 @@ int main() {
     assert(loaded);
     assert(mapper.state == DebugDwarfMapperState::Ready);
     assert(mapper.dwarfVersion == 5 && mapper.sourceFileCount == 1 && mapper.lineRowCount >= 4);
+    assert(mapper.diagnosticSourceAssociationAttempted &&
+           mapper.diagnosticSourceAssociationSucceeded);
+    assert(std::strcmp(mapper.diagnosticSourceDirectory, "src") == 0);
+    assert(std::strcmp(mapper.diagnosticSourceCandidate, "src/main.cpp") == 0);
+    assert(std::strcmp(mapper.diagnosticSourceNormalized, "src/main.cpp") == 0);
     uint64_t addresses[kDebugMapperMaxAddressesPerLine] = {};
     uint32_t count = 0; uint64_t primary = 0;
     assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src\\main.cpp", 42, addresses, 8, &count, &primary, &error));

@@ -521,6 +521,13 @@ struct DebugDwarfMapper {
     // Bounded failure context for an artifact source path that cannot be
     // associated with the current project root. Empty on successful loads.
     char diagnosticSourcePath[kDebugMapperMaxPathBytes];
+    // Most recent source-root association candidate and its normalized
+    // project-relative result, retained for bounded lifecycle diagnostics.
+    char diagnosticSourceDirectory[kDebugMapperMaxPathBytes];
+    char diagnosticSourceCandidate[kDebugMapperMaxPathBytes];
+    char diagnosticSourceNormalized[kDebugMapperMaxPathBytes];
+    bool diagnosticSourceAssociationAttempted;
+    bool diagnosticSourceAssociationSucceeded;
     DebugBootstrapVariable bootstrapVariables[kDebugDwarfMaxVariables];
     DebugDwarfCompilationUnitInfo compilationUnits[kDebugDwarfMaxCompilationUnits];
     DebugDwarfDieInfo dies[kDebugDwarfMaxDies];

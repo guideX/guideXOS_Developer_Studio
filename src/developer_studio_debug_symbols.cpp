@@ -438,11 +438,29 @@ static bool addSourceFile(DebugDwarfMapper* mapper, const char* projectRoot,
     else if (!appendPath(combined, sizeof(combined), directory, fileName)) return false;
     char relative[kDebugMapperMaxPathBytes] = {};
     bool external = false;
+    if (!mapper->diagnosticSourceAssociationAttempted) {
+        copyText(mapper->diagnosticSourceDirectory,
+                 sizeof(mapper->diagnosticSourceDirectory), directory ? directory : "");
+        copyText(mapper->diagnosticSourceCandidate,
+                 sizeof(mapper->diagnosticSourceCandidate), combined);
+        mapper->diagnosticSourceAssociationAttempted = true;
+    }
     if (!normalizeForProject(projectRoot, combined, relative, sizeof(relative), &external)) {
+        copyText(mapper->diagnosticSourceDirectory,
+                 sizeof(mapper->diagnosticSourceDirectory), directory ? directory : "");
+        copyText(mapper->diagnosticSourceCandidate,
+                 sizeof(mapper->diagnosticSourceCandidate), combined);
+        mapper->diagnosticSourceNormalized[0] = '\0';
+        mapper->diagnosticSourceAssociationSucceeded = false;
         if (mapper->externalSourceCount == UINT32_MAX) return false;
         ++mapper->externalSourceCount;
         *outIndex = kNoSourceFile;
         return true;
+    }
+    if (!mapper->diagnosticSourceAssociationSucceeded) {
+        copyText(mapper->diagnosticSourceNormalized,
+                 sizeof(mapper->diagnosticSourceNormalized), relative);
+        mapper->diagnosticSourceAssociationSucceeded = true;
     }
     for (uint32_t i = 0; i < mapper->sourceFileCount; ++i) {
         if (equalText(mapper->sourceFiles[i].relativePath, relative, true)) {
