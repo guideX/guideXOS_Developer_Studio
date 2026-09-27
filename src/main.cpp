@@ -4,6 +4,7 @@
 #include "developer_studio_models.h"
 #include "developer_studio_build.h"
 #include "developer_studio_run.h"
+#include "developer_studio_diagnostic_sentinel.h"
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
@@ -200,6 +201,16 @@ using guidexos::developer_studio::DiagnosticStartupMarkRequestSubmitted;
 using guidexos::developer_studio::DiagnosticStartupObserveProjectAccepted;
 using guidexos::developer_studio::DiagnosticStartupRejectProjectRequest;
 using guidexos::developer_studio::DiagnosticStartupStateName;
+using guidexos::developer_studio::DiagnosticSentinelDetection;
+using guidexos::developer_studio::DiagnosticSentinelState;
+using guidexos::developer_studio::DiagnosticSentinelMountState;
+using guidexos::developer_studio::DiagnosticSentinelIo;
+using guidexos::developer_studio::DiagnosticSentinelIoResult;
+using guidexos::developer_studio::DiagnosticSentinelDetectionBegin;
+using guidexos::developer_studio::DiagnosticSentinelDetectionEvaluate;
+using guidexos::developer_studio::DiagnosticSentinelStateName;
+using guidexos::developer_studio::DiagnosticSentinelReasonName;
+using guidexos::developer_studio::DiagnosticSentinelIoResultName;
 using guidexos::developer_studio::DebuggerWorkspace;
 using guidexos::developer_studio::DebuggerWorkspaceBreakpoint;
 using guidexos::developer_studio::kDebugWatchMaxExpressionBytes;
@@ -739,6 +750,7 @@ enum class DebugShutdownStage {
 struct NativeFileSystemContext {
     gx_app_context* app;
     bool useBareMetalDebug;
+    gx_result lastFileSystemResult;
 };
 
 struct ProjectDialog {
@@ -953,6 +965,7 @@ static bool g_phase28oDiagnostic = false;
 static bool g_phase28pDiagnostic = false;
 static bool g_phase28qDiagnostic = false;
 static DiagnosticStartupOwner g_phase29dStartupOwner = {};
+static DiagnosticSentinelDetection g_phase29iSentinelDetection = {};
 static const uint32_t kPhase29dStartupOwnerCookie = 0x29D051u;
 static const uint32_t kPhase29dStartupOwnerUninitializedCookie = 0x29D050u;
 static uint32_t g_phase29dStartupOwnerCookie = kPhase29dStartupOwnerUninitializedCookie;
@@ -960,6 +973,8 @@ static uint64_t g_phase29dNextApplicationInstanceId = 1;
 static uint64_t g_phase29dNextStartupGeneration = 1;
 static uint64_t g_phase29dStartupFrameSequence = 0;
 static uint32_t g_phase29dStartupTraceSequence = 0;
+static uint32_t g_phase29iSentinelTraceCount = 0;
+static char g_phase29iSentinelTraceBuffer[320] = {};
 static char g_phase29dStartupTraceBuffer[384] = {};
 static uint32_t g_phase28vStartupTraceCount = 0;
 static uint32_t g_phase28vStartupLastStage = 0;
@@ -1296,7 +1311,6 @@ static void phase28v_startup_event(gx_app_context* ctx, const char* event, const
 static void phase28v_early_event(gx_app_context* ctx, const char* event);
 static void phase28y_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name);
 static void phase28y_startup_event(gx_app_context* ctx, const char* event, const char* reason = nullptr);
-static bool phase28qSentinelPresent();
 static void phase29fDebugStartTrace(gx_app_context* ctx, const char* event,
                                     const char* resultCode = "pending");
 static void phase29fDebugStartReject(gx_app_context* ctx, const char* resultCode);
@@ -3853,15 +3867,42 @@ static bool startProjectSearch(gx_app_context* ctx) {
     return true;
 }
 
+static void phase29iSentinelTrace(gx_app_context* ctx, const char* event, const char* detail = nullptr) {
+    if (!ctx || !event || g_phase29iSentinelTraceCount >= 12) return;
+    ++g_phase29iSentinelTraceCount;
+    copyText(g_phase29iSentinelTraceBuffer, sizeof(g_phase29iSentinelTraceBuffer), "DEVELOPER_STUDIO_PHASE29I_SENTINEL_");
+    appendText(g_phase29iSentinelTraceBuffer, sizeof(g_phase29iSentinelTraceBuffer), event);
+    if (detail && detail[0]) {
+        appendText(g_phase29iSentinelTraceBuffer, sizeof(g_phase29iSentinelTraceBuffer), " ");
+        appendText(g_phase29iSentinelTraceBuffer, sizeof(g_phase29iSentinelTraceBuffer), detail);
+    }
+    logMarker(ctx, g_phase29iSentinelTraceBuffer);
+}
+
+static bool phase29iHasBareFilesystem(gx_app_context* ctx) {
+    const gx_host_calls* host = ctx ? ctx->host : nullptr;
+    if (!host) return false;
+    const bool hasBareStat = host->size >= offsetof(gx_host_calls, bare_metal_file_stat) +
+        sizeof(host->bare_metal_file_stat) && host->bare_metal_file_stat;
+    const bool hasBareRead = host->size >= offsetof(gx_host_calls, bare_metal_file_read_workspace) +
+        sizeof(host->bare_metal_file_read_workspace) && host->bare_metal_file_read_workspace;
+    return hasBareStat && hasBareRead;
+}
+
 static bool fsStat(void* userData, const char* path, FileInfo* outInfo) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !outInfo) return false;
+    if (!context || !context->app || !context->app->host || !outInfo) {
+        if (context) context->lastFileSystemResult = GX_ERROR_INVALID_ARGUMENT;
+        return false;
+    }
     phase28z_fs_event(context->app, "STAT", path, true, false);
     gx_file_info info = {};
     const gx_host_calls* host = context->app->host;
     const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_stat) + sizeof(host->bare_metal_file_stat) && host->bare_metal_file_stat;
-    const bool ok = bare ? host->bare_metal_file_stat(context->app, path, &info) == GX_OK :
-        (host->file_stat && host->file_stat(context->app, path, &info) == GX_OK);
+    const gx_result result = bare ? host->bare_metal_file_stat(context->app, path, &info) :
+        (host->file_stat ? host->file_stat(context->app, path, &info) : GX_ERROR_UNSUPPORTED);
+    context->lastFileSystemResult = result;
+    const bool ok = result == GX_OK;
     phase28z_fs_event(context->app, "STAT", path, false, ok);
     if (!ok) return false;
     outInfo->kind = info.type == GX_FILE_TYPE_DIRECTORY ? FileInfoKind::Directory :
@@ -3900,14 +3941,75 @@ static bool fsList(void* userData, const char* path, FileListEntry* entries, uin
 
 static bool fsRead(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
-    if (!context || !context->app || !context->app->host || !buffer || !outBytes) return false;
+    if (!context || !context->app || !context->app->host || !buffer || !outBytes) {
+        if (context) context->lastFileSystemResult = GX_ERROR_INVALID_ARGUMENT;
+        return false;
+    }
     phase28z_fs_event(context->app, "READ", path, true, false);
     const gx_host_calls* host = context->app->host;
     const bool bare = host->size >= offsetof(gx_host_calls, bare_metal_file_read_workspace) + sizeof(host->bare_metal_file_read_workspace) && host->bare_metal_file_read_workspace;
-    const bool ok = (bare ? host->bare_metal_file_read_workspace(context->app, path, buffer, capacity, outBytes) :
-        (host->file_read_workspace ? host->file_read_workspace(context->app, path, buffer, capacity, outBytes) : GX_ERROR_UNSUPPORTED)) == GX_OK;
+    const gx_result result = bare ? host->bare_metal_file_read_workspace(context->app, path, buffer, capacity, outBytes) :
+        (host->file_read_workspace ? host->file_read_workspace(context->app, path, buffer, capacity, outBytes) : GX_ERROR_UNSUPPORTED);
+    context->lastFileSystemResult = result;
+    const bool ok = result == GX_OK;
     phase28z_fs_event(context->app, "READ", path, false, ok);
     return ok;
+}
+
+static DiagnosticSentinelIoResult phase29iMapIoResult(gx_result result) {
+    if (result == GX_OK) return DiagnosticSentinelIoResult::Found;
+    if (result == GX_ERROR_NOT_FOUND) return DiagnosticSentinelIoResult::NotFound;
+    if (result == GX_ERROR_NOT_MOUNTED) return DiagnosticSentinelIoResult::MountUnavailable;
+    if (result == GX_ERROR_INVALID_ARGUMENT) return DiagnosticSentinelIoResult::InvalidPath;
+    return DiagnosticSentinelIoResult::IoError;
+}
+
+static DiagnosticSentinelIoResult phase29iSentinelStat(void* userData, const char* path,
+                                                        bool* outRegularFile, uint64_t* outSize) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    FileInfo info = {};
+    const bool statOk = fsStat(context, path, &info);
+    const DiagnosticSentinelIoResult result = phase29iMapIoResult(
+        context ? context->lastFileSystemResult : GX_ERROR_FAILED);
+    copyText(g_textScratch, sizeof(g_textScratch), "result=");
+    appendText(g_textScratch, sizeof(g_textScratch), DiagnosticSentinelIoResultName(result));
+    appendText(g_textScratch, sizeof(g_textScratch), " gx_result=");
+    appendSigned(g_textScratch, sizeof(g_textScratch), context ? context->lastFileSystemResult : GX_ERROR_FAILED);
+    appendText(g_textScratch, sizeof(g_textScratch), " path=");
+    appendText(g_textScratch, sizeof(g_textScratch), path ? path : "");
+    if (statOk) {
+        appendText(g_textScratch, sizeof(g_textScratch), " size=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), info.size);
+        appendText(g_textScratch, sizeof(g_textScratch), " type=");
+        appendText(g_textScratch, sizeof(g_textScratch), info.kind == FileInfoKind::RegularFile ? "regular" : "other");
+    }
+    phase29iSentinelTrace(context ? context->app : nullptr, "STAT", g_textScratch);
+    if (result == DiagnosticSentinelIoResult::Found && statOk) {
+        if (outRegularFile) *outRegularFile = info.kind == FileInfoKind::RegularFile;
+        if (outSize) *outSize = info.size;
+    }
+    return statOk ? DiagnosticSentinelIoResult::Found : result;
+}
+
+static DiagnosticSentinelIoResult phase29iSentinelRead(void* userData, const char* path,
+                                                        char* buffer, uint32_t capacity,
+                                                        uint32_t* outBytes) {
+    NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
+    const bool readOk = fsRead(context, path, buffer, capacity, outBytes);
+    const DiagnosticSentinelIoResult result = phase29iMapIoResult(
+        context ? context->lastFileSystemResult : GX_ERROR_FAILED);
+    copyText(g_textScratch, sizeof(g_textScratch), "result=");
+    appendText(g_textScratch, sizeof(g_textScratch), DiagnosticSentinelIoResultName(result));
+    appendText(g_textScratch, sizeof(g_textScratch), " gx_result=");
+    appendSigned(g_textScratch, sizeof(g_textScratch), context ? context->lastFileSystemResult : GX_ERROR_FAILED);
+    appendText(g_textScratch, sizeof(g_textScratch), " path=");
+    appendText(g_textScratch, sizeof(g_textScratch), path ? path : "");
+    if (readOk && outBytes) {
+        appendText(g_textScratch, sizeof(g_textScratch), " bytes=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), *outBytes);
+    }
+    phase29iSentinelTrace(context ? context->app : nullptr, "READ", g_textScratch);
+    return readOk ? DiagnosticSentinelIoResult::Found : result;
 }
 
 static bool fsWrite(void* userData, const char* path, const char* buffer, uint32_t bytes, uint32_t* outBytes) {
@@ -13000,18 +13102,6 @@ static bool phase28pSentinelPresent() {
     return phase28mTextEquals(contents, "guideXOS-phase28p");
 }
 
-static bool phase28qSentinelPresent() {
-    FileInfo info = {};
-    if (!fsStat(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28q-diagnostic", &info) ||
-        info.kind != FileInfoKind::RegularFile || info.size == 0 || info.size >= 64) return false;
-    char contents[64] = {};
-    uint32_t bytes = 0;
-    if (!fsRead(&g_fileSystemContext, "/Apps/DeveloperStudio/.phase28q-diagnostic",
-                contents, sizeof(contents) - 1, &bytes) || bytes >= sizeof(contents)) return false;
-    contents[bytes] = '\0';
-    return phase28mTextEquals(contents, "guideXOS-phase28q");
-}
-
 static uint32_t debugBreakpointColor(DebugBreakpointState state) {
     switch (state) {
     case DebugBreakpointState::Mapped: return 0x78B7E8u;
@@ -16331,21 +16421,87 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     initializeDebugLaunchStorage(ctx);
 
     g_fileSystemContext.app = ctx;
+    g_fileSystemContext.lastFileSystemResult = GX_OK;
     g_phase28yStartupTraceCount = 0;
     g_phase28yStartupEventCount = 0;
     g_phase28yLoopTraceMask = 0;
     g_phase28yLastPhase28mStage = 0xFFFFFFFFu;
     g_phase28yLastPhase28qStage = 0xFFFFFFFFu;
+    g_phase29iSentinelTraceCount = 0;
     phase28y_startup_stage(ctx, 1, "gx_main_entered");
-    g_phase28qDiagnostic = phase28qSentinelPresent();
+
+    bool sentinelDecisionReady = false;
+    if (phase29iHasBareFilesystem(ctx)) {
+        // Native ELF entry is reached only after the loader opened the Studio
+        // image from the VFS. That image and the canonical sentinel share the
+        // same root mount, so this is the authoritative readiness boundary.
+        phase29iSentinelTrace(ctx, "FS_READY",
+            "readiness=ready boundary=loaded_application_image expected_mount=/");
+        phase29iSentinelTrace(ctx, "MOUNT_READY",
+            "mount=/ identity=containing_loaded_application_volume status=authoritative");
+        DiagnosticSentinelDetectionBegin(&g_phase29iSentinelDetection, startupGeneration);
+        DiagnosticSentinelIo sentinelIo = {
+            &g_fileSystemContext, phase29iSentinelStat, phase29iSentinelRead
+        };
+        const bool evaluated = DiagnosticSentinelDetectionEvaluate(
+            &g_phase29iSentinelDetection, startupGeneration, true,
+            DiagnosticSentinelMountState::Ready, &sentinelIo);
+        if (!evaluated) {
+            phase29iSentinelTrace(ctx, "LOOKUP_ERROR", "reason=SENTINEL_STALE_GENERATION");
+            return GX_ERROR_FAILED;
+        }
+        if (g_phase29iSentinelDetection.pathNormalized) {
+            copyText(g_textScratch, sizeof(g_textScratch), "result=valid path=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_phase29iSentinelDetection.normalizedPath);
+            phase29iSentinelTrace(ctx, "PATH_NORMALIZED", g_textScratch);
+        } else {
+            phase29iSentinelTrace(ctx, "PATH_NORMALIZATION_ERROR", "reason=SENTINEL_PATH_INVALID");
+        }
+        if (g_phase29iSentinelDetection.state == DiagnosticSentinelState::Present) {
+            phase29iSentinelTrace(ctx, "FILE_FOUND", "result=found type=regular content=exact");
+            phase29iSentinelTrace(ctx, "ACCEPTED", "reason=SENTINEL_PRESENT");
+            g_phase28qDiagnostic = true;
+            sentinelDecisionReady = true;
+        } else if (g_phase29iSentinelDetection.state == DiagnosticSentinelState::Absent) {
+            phase29iSentinelTrace(ctx, "FILE_NOT_FOUND", "result=not_found reason=SENTINEL_NOT_FOUND");
+            g_phase28qDiagnostic = false;
+            sentinelDecisionReady = true;
+        } else if (g_phase29iSentinelDetection.state == DiagnosticSentinelState::WaitingForFilesystem) {
+            phase29iSentinelTrace(ctx, "FS_NOT_READY",
+                DiagnosticSentinelReasonName(g_phase29iSentinelDetection.reason));
+            return GX_ERROR_BUSY;
+        } else {
+            copyText(g_textScratch, sizeof(g_textScratch), "reason=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                       DiagnosticSentinelReasonName(g_phase29iSentinelDetection.reason));
+            appendText(g_textScratch, sizeof(g_textScratch), " state=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                       DiagnosticSentinelStateName(g_phase29iSentinelDetection.state));
+            phase29iSentinelTrace(ctx, "LOOKUP_ERROR", g_textScratch);
+            return GX_ERROR_FAILED;
+        }
+    } else {
+        // Hosted activation has its own fixture mechanism and does not use the
+        // QEMU VFS sentinel.
+        phase29iSentinelTrace(ctx, "HOSTED_BYPASS",
+            "reason=separate_hosted_fixture_activation result=not_queried");
+        g_phase28qDiagnostic = false;
+        sentinelDecisionReady = true;
+    }
+
+    if (!sentinelDecisionReady) return GX_ERROR_FAILED;
     if (!DiagnosticStartupResolveFixture(&g_phase29dStartupOwner, startupGeneration,
                                          g_phase28qDiagnostic)) {
         phase29dStartupTrace(ctx, "SENTINEL_DECISION_REJECTED", "stale_generation_or_duplicate");
         return GX_ERROR_FAILED;
     }
-    phase29dStartupTrace(ctx, "SENTINEL_DECISION",
-                         g_phase28qDiagnostic ? "result=present path=/Apps/DeveloperStudio/.phase28q-diagnostic" :
-                                                "result=absent path=/Apps/DeveloperStudio/.phase28q-diagnostic");
+    copyText(g_textScratch, sizeof(g_textScratch), "result=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_phase28qDiagnostic ? "present" : "absent");
+    appendText(g_textScratch, sizeof(g_textScratch), " path=");
+    appendText(g_textScratch, sizeof(g_textScratch), GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH);
+    phase29dStartupTrace(ctx, "SENTINEL_DECISION", g_textScratch);
+    phase29iSentinelTrace(ctx, "DIAGNOSTIC_MODE", g_phase28qDiagnostic ?
+        "enabled=1 result=accepted" : "enabled=0 result=off");
     g_phase28zStartupTraceCount = 0;
     g_phase28zFsTraceCount = 0;
     g_phase28zProjectTraceCount = 0;

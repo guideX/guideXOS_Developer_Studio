@@ -66,6 +66,12 @@ add_executable(developer_studio_startup_test
 target_link_libraries(developer_studio_startup_test PRIVATE developer_studio_models)
 add_test(NAME developer_studio_startup_test COMMAND developer_studio_startup_test)
 
+add_executable(developer_studio_sentinel_test
+    tests/sentinel_test.cpp
+)
+target_link_libraries(developer_studio_sentinel_test PRIVATE developer_studio_models)
+add_test(NAME developer_studio_sentinel_test COMMAND developer_studio_sentinel_test)
+
 add_executable(developer_studio_build_test
     tests/build_test.cpp
 )

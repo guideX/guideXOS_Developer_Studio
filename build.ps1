@@ -24,6 +24,7 @@ $Manifest = Join-Path $RepoRoot "app\app.json"
 $ModelTest = Join-Path $ServerRoot "tmp\developer-studio-model-test.exe"
 $ProjectTest = Join-Path $ServerRoot "tmp\developer-studio-project-test.exe"
 $StartupTest = Join-Path $ServerRoot "tmp\developer-studio-startup-test.exe"
+$SentinelTest = Join-Path $ServerRoot "tmp\developer-studio-sentinel-test.exe"
 $RunTest = Join-Path $ServerRoot "tmp\developer-studio-run-test.exe"
 $FindTest = Join-Path $ServerRoot "tmp\developer-studio-find-test.exe"
 $SearchTest = Join-Path $ServerRoot "tmp\developer-studio-project-search-test.exe"
@@ -123,6 +124,13 @@ try {
     )
     & $StartupTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio startup lifecycle test failed with exit code $LASTEXITCODE" }
+    Invoke-Checked "g++" @(
+        "-std=c++11", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_startup.cpp", "tests\sentinel_test.cpp",
+        "-o", $SentinelTest
+    )
+    & $SentinelTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio diagnostic sentinel detection test failed with exit code $LASTEXITCODE" }
     Invoke-Checked "g++" @(
         "-std=c++11", "-Wall", "-Wextra", "-pedantic",
         "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_syntax.cpp", "tests\run_test.cpp",
@@ -403,6 +411,7 @@ $compileFlags = @(
     if (Test-Path -LiteralPath $ModelTest) { Remove-Item -LiteralPath $ModelTest -Force }
     if (Test-Path -LiteralPath $ProjectTest) { Remove-Item -LiteralPath $ProjectTest -Force }
     if (Test-Path -LiteralPath $StartupTest) { Remove-Item -LiteralPath $StartupTest -Force }
+    if (Test-Path -LiteralPath $SentinelTest) { Remove-Item -LiteralPath $SentinelTest -Force }
     if (Test-Path -LiteralPath $RunTest) { Remove-Item -LiteralPath $RunTest -Force }
     if (Test-Path -LiteralPath $FindTest) { Remove-Item -LiteralPath $FindTest -Force }
     if (Test-Path -LiteralPath $SearchTest) { Remove-Item -LiteralPath $SearchTest -Force }
