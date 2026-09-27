@@ -383,6 +383,24 @@ static bool pathContained(const char* root, const char* absolute, char* relative
     return copyText(relative, size, absolute + rootLength + 1);
 }
 
+static bool normalizeArtifactIdentityPath(const char* projectRoot, const char* executablePath,
+                                          char* output, uint32_t outputSize) {
+    if (!projectRoot || !executablePath || !output || outputSize == 0) return false;
+    char root[kDebugMapperMaxPathBytes] = {};
+    char path[kDebugMapperMaxPathBytes] = {};
+    bool rootAbsolute = false;
+    bool pathAbsolute = false;
+    if (!normalizeGeneric(projectRoot, root, sizeof(root), true, &rootAbsolute) ||
+        !rootAbsolute ||
+        !normalizeGeneric(executablePath, path, sizeof(path), true, &pathAbsolute)) return false;
+    if (pathAbsolute) {
+        char relative[kDebugMapperMaxPathBytes] = {};
+        if (!pathContained(root, path, relative, sizeof(relative))) return false;
+        copyText(path, sizeof(path), relative);
+    }
+    return path[0] != '\0' && copyText(output, outputSize, path);
+}
+
 static bool isAbsolutePath(const char* value) {
     return value && (isSlash(value[0]) || (value[0] != '\0' && value[1] == ':'));
 }
@@ -881,6 +899,109 @@ static const uint16_t kBootstrapVersion = 1u;
 static const uint16_t kBootstrapVersionWithVariables = 2u;
 static const uint32_t kDebugDwarfMapperResetCookie = 0x4758534Du;
 
+static void setMapperFailureDetails(DebugDwarfMapper* mapper, const char* stage,
+                                    uint64_t offset, const char* reason) {
+    if (!mapper) return;
+    mapper->parseFailureOffset = offset;
+    copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), stage ? stage : "unknown");
+    copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), reason ? reason : "unknown");
+}
+
+static bool validateDebugElf(DebugDwarfMapper* mapper, const char* architecture,
+                             const unsigned char* bytes, uint64_t size) {
+    if (!mapper || !architecture || !bytes || size < 64 || size > kDebugMapperMaxElfBytes) {
+        setMapperFailureDetails(mapper, "elf_header", size, "truncated_or_oversized_header");
+        if (mapper) mapper->error = DebugDwarfError::MalformedElf;
+        return false;
+    }
+    if (bytes[0] != 0x7f || bytes[1] != 'E' || bytes[2] != 'L' || bytes[3] != 'F' ||
+        bytes[4] != 2 || bytes[5] != 1 || bytes[6] != 1 || readU16(bytes, 52) != 64) {
+        setMapperFailureDetails(mapper, "elf_header", 0, "invalid_magic_class_data_version_or_header_size");
+        mapper->error = DebugDwarfError::MalformedElf;
+        return false;
+    }
+    mapper->elfClass = bytes[4];
+    mapper->elfType = readU16(bytes, 16);
+    mapper->elfMachine = readU16(bytes, 18);
+    mapper->elfProgramHeaderCount = readU16(bytes, 56);
+    mapper->elfSectionHeaderCount = readU16(bytes, 60);
+    if (!equalText(architecture, "amd64", true) || mapper->elfMachine != kElfMachineAmd64) {
+        setMapperFailureDetails(mapper, "elf_machine", 18, "architecture_mismatch");
+        mapper->error = DebugDwarfError::UnsupportedArchitecture;
+        return false;
+    }
+    if (mapper->elfType != kElfTypeExec) {
+        setMapperFailureDetails(mapper, "elf_type", 16, "not_et_exec");
+        mapper->error = DebugDwarfError::MalformedElf;
+        return false;
+    }
+    const uint64_t programOffset = readU64(bytes, 32);
+    const uint16_t programEntrySize = readU16(bytes, 54);
+    const uint16_t programCount = mapper->elfProgramHeaderCount;
+    if (programCount == 0 || programEntrySize < 56 ||
+        !checkedRange(programOffset, static_cast<uint64_t>(programEntrySize) * programCount, size)) {
+        setMapperFailureDetails(mapper, "elf_program_headers", 32, "program_table_out_of_bounds");
+        mapper->error = DebugDwarfError::MalformedElf;
+        return false;
+    }
+    bool loadSegment = false;
+    for (uint16_t i = 0; i < programCount; ++i) {
+        const uint64_t header = programOffset + static_cast<uint64_t>(i) * programEntrySize;
+        if (readU32(bytes, header) != 1u) continue;
+        const uint64_t fileOffset = readU64(bytes, header + 8);
+        const uint64_t virtualAddress = readU64(bytes, header + 16);
+        const uint64_t fileSize = readU64(bytes, header + 32);
+        const uint64_t memorySize = readU64(bytes, header + 40);
+        if (fileSize > memorySize || !checkedRange(fileOffset, fileSize, size) ||
+            virtualAddress > UINT64_MAX - memorySize) {
+            setMapperFailureDetails(mapper, "elf_load_segment", header, "segment_bounds_invalid");
+            mapper->error = DebugDwarfError::MalformedElf;
+            return false;
+        }
+        loadSegment = true;
+    }
+    if (!loadSegment) {
+        setMapperFailureDetails(mapper, "elf_program_headers", programOffset, "missing_load_segment");
+        mapper->error = DebugDwarfError::MalformedElf;
+        return false;
+    }
+    const uint64_t sectionOffset = readU64(bytes, 40);
+    const uint16_t sectionEntrySize = readU16(bytes, 58);
+    const uint16_t sectionCount = mapper->elfSectionHeaderCount;
+    const uint16_t stringIndex = readU16(bytes, 62);
+    if (sectionCount == 0) {
+        if (sectionOffset != 0 || stringIndex != 0) {
+            setMapperFailureDetails(mapper, "elf_section_headers", 40, "invalid_sectionless_header");
+            mapper->error = DebugDwarfError::MalformedElf;
+            return false;
+        }
+    } else {
+        if (sectionCount > kDebugMapperMaxSections || sectionEntrySize < 64 || stringIndex >= sectionCount ||
+            !checkedRange(sectionOffset, static_cast<uint64_t>(sectionEntrySize) * sectionCount, size)) {
+            setMapperFailureDetails(mapper, "elf_section_headers", 40, "section_table_out_of_bounds");
+            mapper->error = DebugDwarfError::MalformedElf;
+            return false;
+        }
+        for (uint16_t i = 0; i < sectionCount; ++i) {
+            const uint64_t header = sectionOffset + static_cast<uint64_t>(i) * sectionEntrySize;
+            const uint32_t type = readU32(bytes, header + 4);
+            const uint64_t offset = readU64(bytes, header + 24);
+            const uint64_t sectionSize = readU64(bytes, header + 32);
+            if (type != 8u && !checkedRange(offset, sectionSize, size)) {
+                setMapperFailureDetails(mapper, "elf_section", header, "section_bounds_invalid");
+                mapper->error = DebugDwarfError::MalformedElf;
+                return false;
+            }
+            const char* name = nullptr;
+            // Section names are read by parseElf after the full table has
+            // passed bounds validation; here retain only known debug regions.
+            (void)name;
+        }
+    }
+    mapper->elfHeaderValid = true;
+    return true;
+}
+
 static bool bootstrapFixedTextValid(const unsigned char* bytes, uint32_t capacity) {
     if (!bytes || capacity == 0) return false;
     for (uint32_t i = 0; i < capacity; ++i) if (bytes[i] == 0) return true;
@@ -907,9 +1028,11 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
     const uint64_t footerOffset = size - kBootstrapFooterBytes;
     if (readU32(bytes, footerOffset) != 0x454D5847u) return false;
     if (recognized) *recognized = true;
+    setMapperFailureDetails(mapper, "gxsm_footer", footerOffset, "footer_recognized");
     reportMapperProgress(7);
     const uint32_t payload = readU32(bytes, footerOffset + 4u);
     if (payload < 40u + kBootstrapFooterBytes || payload > size) {
+        setMapperFailureDetails(mapper, "gxsm_footer", footerOffset + 4u, "payload_length_out_of_bounds");
         mapper->error = DebugDwarfError::MalformedDwarf;
         return false;
     }
@@ -922,6 +1045,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         readU16(bytes, start + 6u) != headerBytes ||
         readU32(bytes, start + 24u) != payload ||
         readU64(bytes, start + 32u) != bootstrapSourceMapHash(bytes + start, payload)) {
+        setMapperFailureDetails(mapper, "gxsm_header", start, "magic_version_size_or_hash_mismatch");
         mapper->error = DebugDwarfError::MalformedDwarf;
         return false;
     }
@@ -947,12 +1071,14 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         variableBytes != variableCount * kBootstrapVariableBytes ||
         expected != payload || codeBytes == 0 || codeOffset > size ||
         codeBytes > size - codeOffset || codeOffset + codeBytes > start) {
+        setMapperFailureDetails(mapper, "gxsm_payload", start + 8u, "counts_or_code_bounds_invalid");
         mapper->error = DebugDwarfError::MalformedDwarf;
         return false;
     }
     if (size < 64u || bytes[0] != 0x7fu || bytes[1] != 'E' || bytes[2] != 'L' ||
         bytes[3] != 'F' || bytes[4] != 2u || bytes[5] != 1u ||
         readU16(bytes, 16u) != kElfTypeExec || readU16(bytes, 18u) != kElfMachineAmd64) {
+        setMapperFailureDetails(mapper, "gxsm_elf_header", 0, "invalid_elf_identity");
         mapper->error = DebugDwarfError::MalformedElf;
         return false;
     }
@@ -961,6 +1087,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
     const uint16_t programCount = readU16(bytes, 56u);
     if (programCount == 0 || programEntrySize < 56u ||
         !checkedRange(programOffset, static_cast<uint64_t>(programEntrySize) * programCount, size)) {
+        setMapperFailureDetails(mapper, "gxsm_elf_programs", programOffset, "program_table_out_of_bounds");
         mapper->error = DebugDwarfError::MalformedElf;
         return false;
     }
@@ -974,6 +1101,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         const uint64_t virtualAddress = readU64(bytes, header + 16u);
         const uint64_t fileBytes = readU64(bytes, header + 32u);
         if (fileOffset > virtualAddress || !checkedRange(fileOffset, fileBytes, size)) {
+            setMapperFailureDetails(mapper, "gxsm_elf_load_segment", header, "load_segment_bounds_invalid");
             mapper->error = DebugDwarfError::MalformedElf;
             return false;
         }
@@ -984,6 +1112,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
     }
     if (!haveImageBase || imageBase > UINT64_MAX - codeOffset ||
         imageBase + codeOffset > UINT64_MAX - codeBytes) {
+        setMapperFailureDetails(mapper, "gxsm_elf_load_segment", programOffset, "image_base_or_code_range_invalid");
         mapper->error = DebugDwarfError::MalformedElf;
         return false;
     }
@@ -1001,6 +1130,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         if (!checkedRange(offset, kBootstrapFileBytes, size) ||
             !bootstrapFixedTextValid(bytes + offset, kBootstrapSourcePathBytes) ||
             readU32(bytes, offset + kBootstrapSourcePathBytes) > UINT32_MAX) {
+            setMapperFailureDetails(mapper, "gxsm_source_files", offset, "source_file_record_invalid");
             mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
@@ -1009,6 +1139,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
             path[j] = static_cast<char>(bytes[offset + j]);
         if (!addSourceFile(mapper, projectRoot, "", path, &sourceIndices[i]) ||
             sourceIndices[i] == kNoSourceFile) {
+            setMapperFailureDetails(mapper, "source_association", offset, "source_not_under_project_root");
             copyText(mapper->diagnosticSourcePath, sizeof(mapper->diagnosticSourcePath), path);
             mapper->error = DebugDwarfError::SourceNotFound;
             return false;
@@ -1022,6 +1153,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         const uint64_t offset = functionStart + static_cast<uint64_t>(i) * kBootstrapFunctionBytes;
         if (!checkedRange(offset, kBootstrapFunctionBytes, size) ||
             !bootstrapFixedTextValid(bytes + offset, kBootstrapFunctionBytes)) {
+            setMapperFailureDetails(mapper, "gxsm_functions", offset, "function_record_invalid");
             mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
@@ -1043,6 +1175,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
     for (uint32_t i = 0; i < mappingCount; ++i) {
         const uint64_t offset = mappingStart + static_cast<uint64_t>(i) * kBootstrapMappingBytes;
         if (!checkedRange(offset, kBootstrapMappingBytes, size)) {
+            setMapperFailureDetails(mapper, "gxsm_line_mappings", offset, "line_mapping_record_truncated");
             mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
@@ -1054,11 +1187,13 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         const uint32_t instructionBytes = readU32(bytes, offset + 16u);
         if (fileIndex >= fileCount || functionIndex >= functionCount || line == 0 ||
             instructionBytes == 0 || !checkedRange(finalOffset, instructionBytes, codeBytes)) {
+            setMapperFailureDetails(mapper, "gxsm_line_mappings", offset, "line_mapping_indices_or_range_invalid");
             mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
         const uint64_t address = codeAddress + finalOffset;
         if (address > UINT64_MAX - instructionBytes) {
+            setMapperFailureDetails(mapper, "gxsm_line_mappings", offset + 12u, "line_mapping_address_overflow");
             mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
@@ -1072,12 +1207,17 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         if (address + instructionBytes > symbol.startAddress + symbol.size)
             symbol.size = address + instructionBytes - symbol.startAddress;
         const uint32_t before = mapper->lineRowCount;
-        if (!addLineRow(mapper, sourceIndices[fileIndex], line, column, 0, address, true)) return false;
+        if (!addLineRow(mapper, sourceIndices[fileIndex], line, column, 0, address, true)) {
+            setMapperFailureDetails(mapper, "gxsm_line_mappings", offset, "line_row_capacity_exceeded");
+            return false;
+        }
         if (mapper->lineRowCount > before) mapper->rows[mapper->lineRowCount - 1].endAddress = address + instructionBytes;
     }
     reportMapperProgress(14);
     for (uint32_t i = 0; i < functionCount; ++i) {
         if (!mapper->debugFunctions[i].hasRange || mapper->debugFunctions[i].highPc <= mapper->debugFunctions[i].lowPc) {
+            setMapperFailureDetails(mapper, "gxsm_functions", functionStart +
+                static_cast<uint64_t>(i) * kBootstrapFunctionBytes, "function_has_no_valid_code_range");
             mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
@@ -1095,6 +1235,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         for (uint32_t i = 0; i < variableCount; ++i) {
             const uint64_t offset = variableStart + static_cast<uint64_t>(i) * kBootstrapVariableBytes;
             if (!checkedRange(offset, kBootstrapVariableBytes, size)) {
+                setMapperFailureDetails(mapper, "gxsm_variables", offset, "variable_record_truncated");
                 mapper->error = DebugDwarfError::MalformedDwarf;
                 return false;
             }
@@ -1120,6 +1261,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
                 variable.liveStart >= variable.liveEnd || variable.liveEnd > codeBytes ||
                 (variable.flags & 3u) != 3u ||
                 !bootstrapFixedTextValid(bytes + offset + 36u, 64u)) {
+                setMapperFailureDetails(mapper, "gxsm_variables", offset, "variable_record_invalid");
                 mapper->error = DebugDwarfError::MalformedDwarf;
                 return false;
             }
@@ -1140,6 +1282,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
 
 static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
                      const unsigned char* bytes, uint64_t size) {
+    setMapperFailureDetails(mapper, "elf_sections", 0, "validation_passed_section_scan_started");
     if (!bytes || size < 64 || size > kDebugMapperMaxElfBytes ||
         bytes[0] != 0x7f || bytes[1] != 'E' || bytes[2] != 'L' || bytes[3] != 'F' ||
         bytes[4] != 2 || bytes[5] != 1) { mapper->error = DebugDwarfError::MalformedElf; return false; }
@@ -1207,7 +1350,10 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
             return false;
         }
         SectionView view = { type == kSectionTypeNoBits ? nullptr : bytes + offset, sectionSize };
-        if (equalText(name, ".debug_line", false)) line = view;
+        if (equalText(name, ".debug_line", false)) {
+            line = view;
+            mapper->debugLineSectionOffset = offset;
+        }
         else if (equalText(name, ".debug_line_str", false)) lineStrings = view;
         else if (equalText(name, ".debug_str", false)) debugStrings = view;
         else if (equalText(name, ".eh_frame", false)) mapper->ehFrameSectionBytes = sectionSize;
@@ -1288,20 +1434,41 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
             mapper->functionSymbols[j] = value;
         }
     }
-    if (!line.data || line.size == 0) { mapper->error = DebugDwarfError::MissingLineSection; return false; }
+    if (!line.data || line.size == 0) {
+        setMapperFailureDetails(mapper, "elf_debug_line", 0, "missing_debug_line_section");
+        mapper->error = DebugDwarfError::MissingLineSection;
+        return false;
+    }
     mapper->lineSectionBytes = line.size > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(line.size);
     Cursor units = { line.data, 0, line.size };
     while (units.position < units.end) {
         const uint64_t unitStart = units.position;
+        setMapperFailureDetails(mapper, "dwarf_line_unit", mapper->debugLineSectionOffset + unitStart,
+                                "line_unit_header");
         uint32_t initialLength = 0;
-        if (!readU32Cursor(units, &initialLength)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
+        if (!readU32Cursor(units, &initialLength)) {
+            setMapperFailureDetails(mapper, "dwarf_line_unit", mapper->debugLineSectionOffset + unitStart, "truncated_initial_length");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
         uint64_t unitLength = initialLength;
-        if (initialLength == 0xffffffffu) { mapper->error = DebugDwarfError::UnsupportedDwarfVersion; return false; }
-        if (unitLength < 2 || !checkedRange(units.position, unitLength, units.end)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
+        if (initialLength == 0xffffffffu) {
+            setMapperFailureDetails(mapper, "dwarf_line_unit", mapper->debugLineSectionOffset + unitStart, "dwarf64_line_unit_unsupported");
+            mapper->error = DebugDwarfError::UnsupportedDwarfVersion; return false;
+        }
+        if (unitLength < 2 || !checkedRange(units.position, unitLength, units.end)) {
+            setMapperFailureDetails(mapper, "dwarf_line_unit", mapper->debugLineSectionOffset + unitStart, "line_unit_bounds_invalid");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
         const uint64_t unitEnd = units.position + unitLength;
         uint16_t version = 0;
-        if (!readU16Cursor(units, &version)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
-        if (version != kDwarfVersion4 && version != kDwarfVersion5) { mapper->error = DebugDwarfError::UnsupportedDwarfVersion; return false; }
+        if (!readU16Cursor(units, &version)) {
+            setMapperFailureDetails(mapper, "dwarf_line_unit", mapper->debugLineSectionOffset + units.position, "truncated_version");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
+        if (version != kDwarfVersion4 && version != kDwarfVersion5) {
+            setMapperFailureDetails(mapper, "dwarf_line_unit", mapper->debugLineSectionOffset + units.position - 2u, "unsupported_version");
+            mapper->error = DebugDwarfError::UnsupportedDwarfVersion; return false;
+        }
         if (mapper->dwarfVersion == 0) mapper->dwarfVersion = version;
         else if (mapper->dwarfVersion != version) { mapper->error = DebugDwarfError::UnsupportedDwarfVersion; return false; }
         uint8_t addressSize = 8;
@@ -1309,35 +1476,59 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
         uint32_t headerLength = 0;
         if (version >= kDwarfVersion5) {
             if (!readByte(units, &addressSize) || !readByte(units, &segmentSelectorSize) || !readU32Cursor(units, &headerLength)) {
+                setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + units.position, "truncated_v5_header_prefix");
                 mapper->error = DebugDwarfError::MalformedDwarf; return false;
             }
-            if (addressSize != 8 || segmentSelectorSize != 0) { mapper->error = DebugDwarfError::UnsupportedArchitecture; return false; }
-        } else if (!readU32Cursor(units, &headerLength)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
+            if (addressSize != 8 || segmentSelectorSize != 0) {
+                setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + units.position - 6u, "address_or_segment_size_unsupported");
+                mapper->error = DebugDwarfError::UnsupportedArchitecture; return false;
+            }
+        } else if (!readU32Cursor(units, &headerLength)) {
+            setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + units.position, "truncated_header_length");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
         const uint64_t headerStart = units.position;
-        if (!checkedRange(headerStart, headerLength, unitEnd)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
+        if (!checkedRange(headerStart, headerLength, unitEnd)) {
+            setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + headerStart, "header_bounds_invalid");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
         Cursor headerCursor = { line.data, headerStart, headerStart + headerLength };
         uint8_t minimumInstructionLength = 0, maximumOperationsPerInstruction = 1, defaultIsStmt = 0, lineRange = 0, opcodeBase = 0;
         int8_t lineBase = 0;
-        if (!readByte(headerCursor, &minimumInstructionLength)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
-        if (version >= kDwarfVersion4 && !readByte(headerCursor, &maximumOperationsPerInstruction)) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
+        if (!readByte(headerCursor, &minimumInstructionLength)) {
+            setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + headerCursor.position, "truncated_minimum_instruction_length");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
+        if (version >= kDwarfVersion4 && !readByte(headerCursor, &maximumOperationsPerInstruction)) {
+            setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + headerCursor.position, "truncated_maximum_operations");
+            mapper->error = DebugDwarfError::MalformedDwarf; return false;
+        }
         if (!readByte(headerCursor, &defaultIsStmt) || !readByte(headerCursor, reinterpret_cast<uint8_t*>(&lineBase)) ||
             !readByte(headerCursor, &lineRange) || !readByte(headerCursor, &opcodeBase) || opcodeBase == 0) {
+            setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + headerCursor.position, "truncated_or_invalid_opcode_header");
             mapper->error = DebugDwarfError::MalformedDwarf; return false;
         }
         unsigned char standardOpcodeLengths[256] = {};
         for (uint32_t i = 1; i < opcodeBase; ++i)
-            if (!readByte(headerCursor, &standardOpcodeLengths[i - 1])) { mapper->error = DebugDwarfError::MalformedDwarf; return false; }
+            if (!readByte(headerCursor, &standardOpcodeLengths[i - 1])) {
+                setMapperFailureDetails(mapper, "dwarf_line_header", mapper->debugLineSectionOffset + headerCursor.position, "truncated_standard_opcode_lengths");
+                mapper->error = DebugDwarfError::MalformedDwarf; return false;
+            }
         const uint64_t tableStart = headerCursor.position;
         bool tablesOk = version >= kDwarfVersion5 ?
             parseDwarf5Tables(mapper, headerCursor, headerStart + headerLength, projectRoot, lineStrings, debugStrings) :
             parseDwarf4Tables(mapper, headerCursor, projectRoot);
-        if (!tablesOk || headerCursor.position > headerStart + headerLength) { mapper->error = DebugDwarfError::UnsupportedForm; return false; }
+        if (!tablesOk || headerCursor.position > headerStart + headerLength) {
+            setMapperFailureDetails(mapper, "dwarf_line_tables", mapper->debugLineSectionOffset + headerCursor.position, "directory_or_file_table_invalid");
+            mapper->error = DebugDwarfError::UnsupportedForm; return false;
+        }
         (void)tableStart;
         units.position = headerStart + headerLength;
         Cursor program = { line.data, units.position, unitEnd };
         if (!parseLineProgram(mapper, program, version, addressSize, minimumInstructionLength,
                               maximumOperationsPerInstruction, defaultIsStmt != 0, lineBase,
                               lineRange, opcodeBase, standardOpcodeLengths, projectRoot)) {
+            setMapperFailureDetails(mapper, "dwarf_line_program", mapper->debugLineSectionOffset + program.position, "line_program_parse_failed");
             if (mapper->error == DebugDwarfError::None) mapper->error = DebugDwarfError::MalformedDwarf;
             return false;
         }
@@ -1482,7 +1673,7 @@ bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
                           uint64_t executableSize, const char* artifactSha256,
                           uint64_t projectGeneration, const unsigned char* elfBytes,
                           uint64_t elfSize, uint32_t mapperGeneration,
-                          DebugDwarfError* error) {
+                          DebugDwarfError* error, uint64_t buildOperationId) {
     if (error) *error = DebugDwarfError::None;
     if (!mapper || !projectRoot || !projectId || !targetProfile || !architecture ||
         !executablePath || !artifactSha256 || !elfBytes || elfSize == 0 || elfSize > kDebugMapperMaxElfBytes) {
@@ -1492,25 +1683,53 @@ bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
     reportMapperProgress(0);
     DebugDwarfMapperReset(mapper);
     reportMapperProgress(1);
-    copyText(mapper->identity.executablePath, sizeof(mapper->identity.executablePath), executablePath);
+    if (!normalizeArtifactIdentityPath(projectRoot, executablePath,
+                                       mapper->identity.executablePath,
+                                       sizeof(mapper->identity.executablePath))) {
+        mapper->error = DebugDwarfError::ArtifactChanged;
+        mapper->state = DebugDwarfMapperState::Failed;
+        if (error) *error = mapper->error;
+        return false;
+    }
     copyText(mapper->identity.sha256, sizeof(mapper->identity.sha256), artifactSha256);
     copyText(mapper->identity.projectId, sizeof(mapper->identity.projectId), projectId);
     copyText(mapper->identity.targetProfile, sizeof(mapper->identity.targetProfile), targetProfile);
     copyText(mapper->identity.architecture, sizeof(mapper->identity.architecture), architecture);
     mapper->identity.executableSize = executableSize;
     mapper->identity.projectGeneration = projectGeneration;
+    mapper->identity.buildOperationId = buildOperationId;
     mapper->identity.mapperGeneration = mapperGeneration;
     bool bootstrapRecognized = false;
     reportMapperProgress(2);
-    if (executableSize != 0 && executableSize != elfSize) mapper->error = DebugDwarfError::ArtifactChanged;
-    else if (parseBootstrapSourceMap(mapper, projectRoot, elfBytes, elfSize, &bootstrapRecognized)) {
-        // The freestanding compiler's GXSM trailer is the complete bounded
-        // debug artifact; do not send a sectionless image through the DWARF
-        // parser after this path has succeeded.
-    } else if (!bootstrapRecognized && !parseElf(mapper, projectRoot, elfBytes, elfSize)) {
-        // parseElf records the precise mapper error.
-    } else if (!bootstrapRecognized && !DebugDwarfParseVariables(mapper, elfBytes, elfSize)) {
-        if (mapper->error == DebugDwarfError::None) mapper->error = DebugDwarfError::MalformedDwarf;
+    if (executableSize != 0 && executableSize != elfSize) {
+        mapper->error = DebugDwarfError::ArtifactChanged;
+        setMapperFailureDetails(mapper, "artifact_size", elfSize, "exact_read_size_mismatch");
+    } else if (!validateDebugElf(mapper, architecture, elfBytes, elfSize)) {
+        // The validator records the bounded ELF field and failure offset.
+    } else {
+        mapper->parseFailureStage[0] = '\0';
+        mapper->parseFailureReason[0] = '\0';
+        if (parseBootstrapSourceMap(mapper, projectRoot, elfBytes, elfSize, &bootstrapRecognized)) {
+            // The freestanding compiler's GXSM trailer is the complete
+            // bounded debug artifact; do not send a sectionless image
+            // through the DWARF parser after this path has succeeded.
+            setMapperFailureDetails(mapper, "gxsm_complete", elfSize, "none");
+        } else if (bootstrapRecognized) {
+            if (mapper->parseFailureStage[0] == '\0')
+                setMapperFailureDetails(mapper, "gxsm_payload", 0, "malformed_gxsm_source_map");
+        } else if (!parseElf(mapper, projectRoot, elfBytes, elfSize)) {
+            // parseElf records the precise mapper error.
+        } else if (!DebugDwarfParseVariables(mapper, elfBytes, elfSize)) {
+            if (mapper->error == DebugDwarfError::None) mapper->error = DebugDwarfError::MalformedDwarf;
+            if (mapper->parseFailureStage[0] == '\0')
+                setMapperFailureDetails(mapper, "dwarf_info", mapper->debugInfoDieCount,
+                                        "dwarf_info_parse_failed");
+        } else {
+            setMapperFailureDetails(mapper, "dwarf_parse_complete", elfSize, "none");
+        }
+    }
+    if (mapper->error != DebugDwarfError::None && mapper->parseFailureStage[0] == '\0') {
+        setMapperFailureDetails(mapper, "debug_parse", 0, DebugDwarfErrorName(mapper->error));
     }
     mapper->state = mapper->error == DebugDwarfError::None && mapper->lineRowCount > 0 ?
         DebugDwarfMapperState::Ready : DebugDwarfMapperState::Failed;
@@ -1523,31 +1742,64 @@ bool DebugDwarfMapperIsReady(const DebugDwarfMapper* mapper) {
     return mapper && mapper->state == DebugDwarfMapperState::Ready;
 }
 
+const char* DebugDwarfArtifactMismatchName(DebugDwarfArtifactMismatch mismatch) {
+    switch (mismatch) {
+    case DebugDwarfArtifactMismatch::None: return "none";
+    case DebugDwarfArtifactMismatch::MapperUnavailable: return "mapper_unavailable";
+    case DebugDwarfArtifactMismatch::InvalidContext: return "invalid_context";
+    case DebugDwarfArtifactMismatch::ProjectId: return "project_id";
+    case DebugDwarfArtifactMismatch::TargetProfile: return "target_profile";
+    case DebugDwarfArtifactMismatch::Architecture: return "architecture";
+    case DebugDwarfArtifactMismatch::Path: return "path";
+    case DebugDwarfArtifactMismatch::Size: return "size";
+    case DebugDwarfArtifactMismatch::Sha256: return "sha256";
+    case DebugDwarfArtifactMismatch::ProjectGeneration: return "project_generation";
+    case DebugDwarfArtifactMismatch::BuildOperation: return "build_operation";
+    }
+    return "unknown";
+}
+
+DebugDwarfArtifactMismatch DebugDwarfMapperArtifactMismatch(
+    const DebugDwarfMapper* mapper, const char* projectRoot, const char* projectId,
+    const char* targetProfile, const char* architecture, const char* executablePath,
+    uint64_t executableSize, const char* artifactSha256, uint64_t projectGeneration,
+    uint64_t buildOperationId) {
+    if (!mapper || mapper->state != DebugDwarfMapperState::Ready)
+        return DebugDwarfArtifactMismatch::MapperUnavailable;
+    if (!projectRoot || !projectId || !targetProfile || !architecture || !executablePath || !artifactSha256)
+        return DebugDwarfArtifactMismatch::InvalidContext;
+    char path[kDebugMapperMaxPathBytes] = {};
+    if (!normalizeArtifactIdentityPath(projectRoot, executablePath, path, sizeof(path)))
+        return DebugDwarfArtifactMismatch::Path;
+    if (!equalText(mapper->identity.projectId, projectId, true))
+        return DebugDwarfArtifactMismatch::ProjectId;
+    if (!equalText(mapper->identity.targetProfile, targetProfile, true))
+        return DebugDwarfArtifactMismatch::TargetProfile;
+    if (!equalText(mapper->identity.architecture, architecture, true))
+        return DebugDwarfArtifactMismatch::Architecture;
+    if (!equalText(mapper->identity.executablePath, path, true))
+        return DebugDwarfArtifactMismatch::Path;
+    if (mapper->identity.executableSize != executableSize)
+        return DebugDwarfArtifactMismatch::Size;
+    if (!equalText(mapper->identity.sha256, artifactSha256, true))
+        return DebugDwarfArtifactMismatch::Sha256;
+    if (mapper->identity.projectGeneration != projectGeneration)
+        return DebugDwarfArtifactMismatch::ProjectGeneration;
+    if (mapper->identity.buildOperationId != buildOperationId)
+        return DebugDwarfArtifactMismatch::BuildOperation;
+    return DebugDwarfArtifactMismatch::None;
+}
+
 bool DebugDwarfMapperMatchesArtifact(const DebugDwarfMapper* mapper,
                                      const char* projectRoot, const char* projectId,
                                      const char* targetProfile, const char* architecture,
                                      const char* executablePath, uint64_t executableSize,
                                      const char* artifactSha256,
-                                     uint64_t projectGeneration) {
-    if (!mapper || mapper->state != DebugDwarfMapperState::Ready || !projectRoot || !projectId ||
-        !targetProfile || !architecture || !executablePath || !artifactSha256) return false;
-    char root[kDebugMapperMaxPathBytes] = {};
-    char path[kDebugMapperMaxPathBytes] = {};
-    bool rootAbsolute = false, pathAbsolute = false;
-    if (!normalizeGeneric(projectRoot, root, sizeof(root), true, &rootAbsolute) ||
-        !normalizeGeneric(executablePath, path, sizeof(path), false, &pathAbsolute)) return false;
-    if (pathAbsolute) {
-        char relative[kDebugMapperMaxPathBytes] = {};
-        if (!pathContained(root, path, relative, sizeof(relative))) return false;
-        copyText(path, sizeof(path), relative);
-    }
-    return equalText(mapper->identity.projectId, projectId, true) &&
-        equalText(mapper->identity.targetProfile, targetProfile, false) &&
-        equalText(mapper->identity.architecture, architecture, true) &&
-        equalText(mapper->identity.executablePath, path, true) &&
-        equalText(mapper->identity.sha256, artifactSha256, false) &&
-        mapper->identity.executableSize == executableSize &&
-        mapper->identity.projectGeneration == projectGeneration;
+                                     uint64_t projectGeneration,
+                                     uint64_t buildOperationId) {
+    return DebugDwarfMapperArtifactMismatch(mapper, projectRoot, projectId, targetProfile,
+        architecture, executablePath, executableSize, artifactSha256,
+        projectGeneration, buildOperationId) == DebugDwarfArtifactMismatch::None;
 }
 
 bool DebugDwarfMapperMapSourceToAddresses(const DebugDwarfMapper* mapper,

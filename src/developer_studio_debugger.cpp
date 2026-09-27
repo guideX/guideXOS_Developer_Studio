@@ -1491,7 +1491,8 @@ bool DebugRegisterContextIsValid(const DebugRegisterContext& context) {
 }
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
-                          uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error) {
+                          uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error,
+                          uint64_t buildOperationId) {
     if (error) *error = DebugErrorCode::None;
     if (!target) { if (error) *error = DebugErrorCode::InvalidRequest; return false; }
     __builtin_memset(target, 0, sizeof(*target));
@@ -1517,6 +1518,7 @@ bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
     }
     target->artifactSize = build.artifactSize;
     target->projectGeneration = projectGeneration;
+    target->buildOperationId = buildOperationId;
     return true;
 }
 
@@ -2880,7 +2882,8 @@ bool DebugControllerMapBreakpoints(DebugController* controller, const DebugDwarf
                                          controller->target.projectId, controller->target.targetProfile,
                                          controller->target.architecture, controller->target.executablePath,
                                          controller->target.artifactSize, controller->target.artifactSha256,
-                                         controller->target.projectGeneration)) {
+                                         controller->target.projectGeneration,
+                                         controller->target.buildOperationId)) {
         DebugControllerMarkArtifactStale(controller, "Stale: executable changed");
         controller->error = DebugErrorCode::ArtifactChanged;
         if (error) *error = controller->error;
@@ -2981,7 +2984,8 @@ bool DebugControllerResolveCurrentStop(DebugController* controller, const DebugD
                                          controller->target.projectId, controller->target.targetProfile,
                                          controller->target.architecture, controller->target.executablePath,
                                          controller->target.artifactSize, controller->target.artifactSha256,
-                                         controller->target.projectGeneration)) {
+                                         controller->target.projectGeneration,
+                                         controller->target.buildOperationId)) {
         if (error) *error = DebugErrorCode::ModuleGenerationMismatch;
         return false;
     }

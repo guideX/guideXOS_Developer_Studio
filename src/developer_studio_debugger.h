@@ -376,6 +376,7 @@ struct DebugTarget {
     char projectId[kMaxProjectIdBytes];
     char projectRoot[kMaxPathBytes];
     uint64_t projectGeneration;
+    uint64_t buildOperationId;
     char targetProfile[kMaxNameBytes];
     char architecture[kDebugMaxArchitectureBytes];
     char abi[kDebugMaxAbiBytes];
@@ -752,7 +753,8 @@ void DebugControllerSetTraceHook(DebugControllerTraceHook hook);
 void DebugControllerTrace(const char* event);
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
-                          uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error);
+                          uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error,
+                          uint64_t buildOperationId = 0);
 bool DebugRelativeSourcePath(const char* projectRoot, const char* absolutePath,
                              char* relativePath, uint32_t relativePathSize);
 

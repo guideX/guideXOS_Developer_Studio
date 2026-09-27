@@ -104,11 +104,28 @@ struct DebugDwarfArtifactIdentity {
     uint64_t executableSize;
     char sha256[kDebugMapperMaxSha256Bytes];
     uint64_t projectGeneration;
+    // OutputService operation identity for the completed build which
+    // published these bytes. This is independent of mapperGeneration.
+    uint64_t buildOperationId;
     char projectId[kMaxProjectIdBytes];
     char targetProfile[kMaxNameBytes];
     char architecture[kDebugMapperMaxArchitectureBytes];
     uint64_t loadBias;
     uint32_t mapperGeneration;
+};
+
+enum class DebugDwarfArtifactMismatch {
+    None = 0,
+    MapperUnavailable,
+    InvalidContext,
+    ProjectId,
+    TargetProfile,
+    Architecture,
+    Path,
+    Size,
+    Sha256,
+    ProjectGeneration,
+    BuildOperation
 };
 
 struct DebugDwarfSourceFile {
@@ -489,6 +506,18 @@ struct DebugDwarfMapper {
     DebugDwarfMapperState state;
     DebugDwarfError error;
     DebugDwarfArtifactIdentity identity;
+    uint16_t elfClass;
+    uint16_t elfType;
+    uint16_t elfMachine;
+    uint16_t elfProgramHeaderCount;
+    uint16_t elfSectionHeaderCount;
+    bool elfHeaderValid;
+    uint64_t debugLineSectionOffset;
+    uint64_t debugInfoSectionOffset;
+    uint64_t debugAbbrevSectionOffset;
+    uint64_t parseFailureOffset;
+    char parseFailureStage[40];
+    char parseFailureReason[64];
     uint16_t dwarfVersion;
     uint8_t addressSize;
     uint32_t lineSectionBytes;
@@ -573,14 +602,21 @@ bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
                           uint64_t executableSize, const char* artifactSha256,
                           uint64_t projectGeneration, const unsigned char* elfBytes,
                           uint64_t elfSize, uint32_t mapperGeneration,
-                          DebugDwarfError* error);
+                          DebugDwarfError* error, uint64_t buildOperationId = 0);
 bool DebugDwarfMapperIsReady(const DebugDwarfMapper* mapper);
+const char* DebugDwarfArtifactMismatchName(DebugDwarfArtifactMismatch mismatch);
+DebugDwarfArtifactMismatch DebugDwarfMapperArtifactMismatch(
+    const DebugDwarfMapper* mapper, const char* projectRoot, const char* projectId,
+    const char* targetProfile, const char* architecture, const char* executablePath,
+    uint64_t executableSize, const char* artifactSha256, uint64_t projectGeneration,
+    uint64_t buildOperationId = 0);
 bool DebugDwarfMapperMatchesArtifact(const DebugDwarfMapper* mapper,
                                      const char* projectRoot, const char* projectId,
                                      const char* targetProfile, const char* architecture,
                                      const char* executablePath, uint64_t executableSize,
                                      const char* artifactSha256,
-                                     uint64_t projectGeneration);
+                                     uint64_t projectGeneration,
+                                     uint64_t buildOperationId = 0);
 bool DebugDwarfMapperMapSourceToAddresses(const DebugDwarfMapper* mapper,
                                           const char* relativePath, uint32_t line,
                                           uint64_t* addresses, uint32_t capacity,

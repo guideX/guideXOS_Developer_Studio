@@ -782,7 +782,12 @@ static bool parseCompilationUnit(DebugDwarfMapper* mapper, const SectionView& in
     // of consuming another large temporary stack frame during startup.
     static AbbrevDeclaration declarations[kDebugDwarfMaxAbbreviations] = {};
     uint32_t declarationCount = 0;
-    if (!parseAbbreviations(abbrev, abbrevOffset, declarations, &declarationCount)) return false;
+    if (!parseAbbreviations(abbrev, abbrevOffset, declarations, &declarationCount)) {
+        mapper->parseFailureOffset = mapper->debugAbbrevSectionOffset + abbrevOffset;
+        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_abbrev");
+        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "abbreviation_declaration_invalid");
+        return false;
+    }
     if (mapper->debugInfoCompilationUnitCount >= kDebugDwarfMaxCompilationUnits) return false;
     const uint32_t rootIndex = mapper->debugInfoDieCount;
     Cursor cursor = { info.data, dieStart, unitEnd };
@@ -862,25 +867,68 @@ static bool parseDebugInfo(DebugDwarfMapper* mapper, const SectionView& info,
         const uint64_t unitStart = cursor.position;
         uint32_t initialLength = 0;
         if (!readU32Cursor(cursor, &initialLength) || initialLength == 0xffffffffu || initialLength < 8 ||
-            !checkedRange(cursor.position, initialLength, cursor.end)) return false;
+            !checkedRange(cursor.position, initialLength, cursor.end)) {
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + unitStart;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_unit_header");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "unit_length_invalid_or_truncated");
+            return false;
+        }
         const uint64_t unitEnd = cursor.position + initialLength;
         uint16_t version = 0;
-        if (!readU16Cursor(cursor, &version) || (version != kDwarfVersion4 && version != kDwarfVersion5)) return false;
+        if (!readU16Cursor(cursor, &version) || (version != kDwarfVersion4 && version != kDwarfVersion5)) {
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + unitStart + 4;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_unit_header");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "unsupported_or_truncated_unit_version");
+            return false;
+        }
         uint32_t abbrevOffset = 0;
         uint8_t unitType = 1;
         uint8_t addressSize = 0;
         if (version >= kDwarfVersion5) {
-            if (!readByte(cursor, &unitType) || !readByte(cursor, &addressSize) || !readU32Cursor(cursor, &abbrevOffset)) return false;
+            if (!readByte(cursor, &unitType) || !readByte(cursor, &addressSize) || !readU32Cursor(cursor, &abbrevOffset)) {
+                mapper->parseFailureOffset = mapper->debugInfoSectionOffset + unitStart + 6;
+                copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_unit_header");
+                copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "v5_unit_header_truncated");
+                return false;
+            }
         } else {
-            if (!readU32Cursor(cursor, &abbrevOffset) || !readByte(cursor, &addressSize)) return false;
+            if (!readU32Cursor(cursor, &abbrevOffset) || !readByte(cursor, &addressSize)) {
+                mapper->parseFailureOffset = mapper->debugInfoSectionOffset + unitStart + 6;
+                copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_unit_header");
+                copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "v4_unit_header_truncated");
+                return false;
+            }
         }
-        if (unitType != 1 || addressSize != 8 || cursor.position > unitEnd) return false;
+        if (unitType != 1 || addressSize != 8 || cursor.position > unitEnd) {
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + unitStart;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_unit_header");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "unsupported_unit_type_or_address_size");
+            return false;
+        }
         if (!parseCompilationUnit(mapper, info, abbrev, unitStart, cursor.position, unitEnd, version, unitType,
-                                  addressSize, abbrevOffset, mapper->debugInfoCompilationUnitCount)) return false;
+                                  addressSize, abbrevOffset, mapper->debugInfoCompilationUnitCount)) {
+            if (mapper->parseFailureStage[0] == '\0') {
+                mapper->parseFailureOffset = mapper->debugInfoSectionOffset + unitStart;
+                copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_die_parse");
+                copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "die_abbreviation_form_or_tree_invalid");
+            }
+            return false;
+        }
         cursor.position = unitEnd;
     }
-    if (!resolveDieReferences(mapper, stringOffsets, strings, addresses)) return false;
-    if (!buildIndexes(mapper)) { copyText(mapper->statusText, sizeof(mapper->statusText), "debug variable index limit or parent failed"); return false; }
+    if (!resolveDieReferences(mapper, stringOffsets, strings, addresses)) {
+        mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
+        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_reference_resolution");
+        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "die_reference_or_string_invalid");
+        return false;
+    }
+    if (!buildIndexes(mapper)) {
+        copyText(mapper->statusText, sizeof(mapper->statusText), "debug variable index limit or parent failed");
+        mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
+        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_indexes");
+        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "index_limit_or_parent_reference_invalid");
+        return false;
+    }
     mapper->debugInfoReady = mapper->debugInfoFunctionCount != 0;
     return true;
 }
@@ -2128,10 +2176,15 @@ bool DebugDwarfParseVariables(DebugDwarfMapper* mapper, const unsigned char* elf
     SectionView info = {}, abbrev = {}, strings = {}, stringOffsets = {}, lineStrings = {}, addresses = {}, loclists = {};
     if (!collectSections(elfBytes, elfSize, &info, &abbrev, &strings, &stringOffsets, &lineStrings, &addresses, &loclists)) {
         mapper->error = DebugDwarfError::MalformedDwarf;
+        mapper->parseFailureOffset = 0;
+        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_sections");
+        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "section_table_invalid_or_required_section_missing");
         return false;
     }
     mapper->debugInfoSectionBytes = info.size;
     mapper->debugAbbrevSectionBytes = abbrev.size;
+    mapper->debugInfoSectionOffset = info.data ? static_cast<uint64_t>(info.data - elfBytes) : 0;
+    mapper->debugAbbrevSectionOffset = abbrev.data ? static_cast<uint64_t>(abbrev.data - elfBytes) : 0;
     mapper->debugStringSectionBytes = strings.size;
     mapper->debugStringOffsetsSectionBytes = stringOffsets.size;
     mapper->debugLineStringSectionBytes = lineStrings.size;
@@ -2140,10 +2193,18 @@ bool DebugDwarfParseVariables(DebugDwarfMapper* mapper, const unsigned char* elf
     if (!info.data || info.size == 0) return true;
     if (!abbrev.data || !strings.data || !stringOffsets.data || !addresses.data) {
         mapper->error = DebugDwarfError::UnsupportedForm;
+        mapper->parseFailureOffset = mapper->debugAbbrevSectionOffset;
+        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_required_sections");
+        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "required_form_section_missing");
         return false;
     }
     if (!parseDebugInfo(mapper, info, abbrev, stringOffsets, strings, addresses)) {
         mapper->error = DebugDwarfError::MalformedDwarf;
+        if (mapper->parseFailureStage[0] == '\0') {
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_info");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "info_parse_failed");
+        }
         return false;
     }
     return true;

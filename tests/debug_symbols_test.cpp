@@ -104,10 +104,13 @@ static std::vector<unsigned char> fixtureElf() {
     line.push_back(0); line.push_back(1); line.push_back(1);
     patchU32(line, unitLengthOffset, static_cast<uint32_t>(line.size() - 4));
 
-    std::vector<unsigned char> bytes(64, 0);
+    // A minimal ET_EXEC needs an in-bounds program-header table. Keep one
+    // executable PT_LOAD over the synthetic address range used by this test.
+    std::vector<unsigned char> bytes(64 + 56, 0);
     bytes[0] = 0x7f; bytes[1] = 'E'; bytes[2] = 'L'; bytes[3] = 'F'; bytes[4] = 2; bytes[5] = 1;
     bytes[6] = 1;
     bytes[16] = 2; bytes[18] = 62;
+    bytes[52] = 64; // e_ehsize
     const uint32_t lineOffset = static_cast<uint32_t>(bytes.size());
     bytes.insert(bytes.end(), line.begin(), line.end());
     const uint32_t lineStringOffset = static_cast<uint32_t>(bytes.size());
@@ -129,15 +132,24 @@ static std::vector<unsigned char> fixtureElf() {
     putSection(2, lineStringName, 3, lineStringOffset, sizeof(lineStrings));
     putSection(3, shStringName, 3, shStringOffset, sizeof(sectionStrings));
     for (uint32_t i = 0; i < 8; ++i) bytes[40 + i] = static_cast<unsigned char>(static_cast<uint64_t>(sectionOffset) >> (i * 8));
+    bytes[32] = 64; // e_phoff
+    bytes[54] = 56; // e_phentsize
+    bytes[56] = 1;  // e_phnum
     bytes[58] = 64; bytes[60] = 4; bytes[62] = 3;
+    patchU32(bytes, 64, 1); // PT_LOAD
+    patchU32(bytes, 68, 5); // PF_R | PF_X
+    patchU64(bytes, 72, 0);
+    patchU64(bytes, 80, 0x401000);
+    patchU64(bytes, 88, 0x401000);
+    patchU64(bytes, 96, bytes.size());
+    patchU64(bytes, 104, 0x3000);
+    patchU64(bytes, 112, 0x1000);
     return bytes;
 }
 
 static std::vector<unsigned char> symbolFixtureElf() {
     std::vector<unsigned char> bytes = fixtureElf();
     const uint64_t oldSectionOffset = readU64At(bytes, 40);
-    bytes.insert(bytes.begin() + 64, 56, 0);
-    patchU64(bytes, 40, oldSectionOffset + 56);
 
     // One executable PT_LOAD covers the synthetic line and symbol addresses.
     const uint32_t program = 64;
@@ -146,18 +158,14 @@ static std::vector<unsigned char> symbolFixtureElf() {
     patchU64(bytes, program + 8, 0);
     patchU64(bytes, program + 16, 0x401000);
     patchU64(bytes, program + 24, 0x401000);
-    patchU64(bytes, program + 32, 0x3000);
+    patchU64(bytes, program + 32, bytes.size());
     patchU64(bytes, program + 40, 0x3000);
     patchU64(bytes, program + 48, 0x1000);
     patchU16(bytes, 54, 56);
     patchU16(bytes, 56, 1);
     patchU64(bytes, 32, 64);
 
-    const uint32_t sectionOffset = static_cast<uint32_t>(oldSectionOffset + 56);
-    for (uint32_t index = 1; index < 4; ++index) {
-        const uint32_t header = sectionOffset + index * 64;
-        patchU64(bytes, header + 24, readU64At(bytes, header + 24) + 56);
-    }
+    const uint32_t sectionOffset = static_cast<uint32_t>(oldSectionOffset);
 
     const char shStrings[] = "\0.debug_line\0.debug_line_str\0.shstrtab\0.symtab\0.strtab\0";
     const char symStrings[] = "\0main\0helper\0";
@@ -219,6 +227,10 @@ int main() {
     resetProbe.rows[0].address = 0x401000;
     resetProbe.directories[0][0] = 'x';
     resetProbe.currentFileCount = 3;
+    resetProbe.elfHeaderValid = true;
+    resetProbe.parseFailureOffset = 12;
+    std::strcpy(resetProbe.parseFailureStage, "stale_stage");
+    std::strcpy(resetProbe.parseFailureReason, "stale_reason");
     DebugDwarfMapperReset(&resetProbe);
     assert(resetProbe.state == DebugDwarfMapperState::Empty);
     assert(resetProbe.error == DebugDwarfError::None);
@@ -229,6 +241,8 @@ int main() {
     assert(resetProbe.diagnosticSourceDirectory[0] == '\0' &&
            resetProbe.diagnosticSourceCandidate[0] == '\0' &&
            resetProbe.diagnosticSourceNormalized[0] == '\0');
+    assert(!resetProbe.elfHeaderValid && resetProbe.parseFailureOffset == 0 &&
+           resetProbe.parseFailureStage[0] == '\0' && resetProbe.parseFailureReason[0] == '\0');
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
     const bool loaded = DebugDwarfMapperLoad(&mapper, "D:/fixture", "fixture", "target", "amd64",
@@ -248,6 +262,37 @@ int main() {
     assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src\\main.cpp", 42, addresses, 8, &count, &primary, &error));
     assert(count == 3 && primary == 0x401000 && addresses[1] == 0x401004 && addresses[2] == 0x402000);
     assert(mapper.sequenceCount == 2);
+    assert(std::strcmp(mapper.identity.executablePath, "build/bin/fixture.elf") == 0);
+    assert(mapper.elfHeaderValid && mapper.elfType == 2 && mapper.elfMachine == 62 &&
+           mapper.elfProgramHeaderCount == 1 && mapper.debugLineSectionOffset != 0);
+
+    static DebugDwarfMapper identityMapper = {};
+    const char* identitySha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert(DebugDwarfMapperLoad(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build\\bin\\.\\fixture.elf", fixture.size(), identitySha, 7,
+        &fixture[0], fixture.size(), 91, &error, 41));
+    assert(identityMapper.identity.buildOperationId == 41);
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 7, 41) == DebugDwarfArtifactMismatch::None);
+    assert(DebugDwarfMapperMatchesArtifact(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 7, 41));
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(),
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 7, 41) ==
+        DebugDwarfArtifactMismatch::Sha256);
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size() + 1, identitySha, 7, 41) == DebugDwarfArtifactMismatch::Size);
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 8, 41) ==
+        DebugDwarfArtifactMismatch::ProjectGeneration);
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 7, 42) ==
+        DebugDwarfArtifactMismatch::BuildOperation);
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "arm64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 7, 41) ==
+        DebugDwarfArtifactMismatch::Architecture);
+    assert(DebugDwarfMapperArtifactMismatch(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/another.elf", fixture.size(), identitySha, 7, 41) == DebugDwarfArtifactMismatch::Path);
 
     static DebugDwarfMapper pristineMapper;
     std::memset(&pristineMapper, 0xA5, sizeof(pristineMapper));
@@ -264,6 +309,36 @@ int main() {
                                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                                 7, &symbolFixture[0], symbolFixture.size(), 2, &error));
     assert(symbolMapper.functionSymbolCount == 2 && symbolMapper.executableSegmentCount == 1);
+    const uint32_t firstARowCount = identityMapper.lineRowCount;
+    const uint32_t firstAFileCount = identityMapper.sourceFileCount;
+    const uint32_t firstADieCount = identityMapper.debugInfoDieCount;
+    uint64_t firstAAddresses[kDebugMapperMaxAddressesPerLine] = {};
+    uint32_t firstAAddressCount = 0;
+    uint64_t firstAPrimary = 0;
+    assert(DebugDwarfMapperMapSourceToAddresses(&identityMapper, "src/main.cpp", 42,
+        firstAAddresses, kDebugMapperMaxAddressesPerLine, &firstAAddressCount, &firstAPrimary, &error));
+    static DebugDwarfMapper alternatingMapper = {};
+    assert(DebugDwarfMapperLoad(&alternatingMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", symbolFixture.size(),
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 7,
+        &symbolFixture[0], symbolFixture.size(), 92, &error, 42));
+    assert(alternatingMapper.functionSymbolCount == 2);
+    assert(DebugDwarfMapperLoad(&alternatingMapper, "D:/fixture", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 7,
+        &fixture[0], fixture.size(), 93, &error, 41));
+    assert(alternatingMapper.identity.buildOperationId == identityMapper.identity.buildOperationId);
+    assert(std::strcmp(alternatingMapper.identity.executablePath, identityMapper.identity.executablePath) == 0);
+    assert(alternatingMapper.lineRowCount == firstARowCount &&
+           alternatingMapper.sourceFileCount == firstAFileCount &&
+           alternatingMapper.debugInfoDieCount == firstADieCount &&
+           alternatingMapper.sequenceCount == identityMapper.sequenceCount);
+    assert(alternatingMapper.diagnosticSourceAssociationAttempted &&
+           alternatingMapper.diagnosticSourceAssociationSucceeded &&
+           std::strcmp(alternatingMapper.diagnosticSourceNormalized, "src/main.cpp") == 0);
+    assert(DebugDwarfMapperMapSourceToAddresses(&alternatingMapper, "src/main.cpp", 42,
+        addresses, kDebugMapperMaxAddressesPerLine, &count, &primary, &error));
+    assert(count == firstAAddressCount && primary == firstAPrimary);
+    for (uint32_t i = 0; i < count; ++i) assert(addresses[i] == firstAAddresses[i]);
     char functionName[kDebugMapperMaxFunctionNameBytes] = {};
     uint64_t functionStart = 0;
     uint64_t functionSize = 0;
@@ -310,6 +385,15 @@ int main() {
     assert(mapped && mapped->state == DebugBreakpointState::Mapped);
     assert(mapped->location.mapping == DebugMappingState::Mapped && mapped->mappedAddressCount == 3);
     assert(mapped->location.instructionAddress.valid && mapped->location.instructionAddress.value == 0x401000);
+    static DebugDwarfMapper staleForMapping;
+    staleForMapping = mapper;
+    staleForMapping.identity.sha256[0] = 'b';
+    assert(!DebugControllerMapBreakpoints(&controller, &staleForMapping, &controllerError));
+    assert(controllerError == DebugErrorCode::ArtifactChanged);
+    mapped = DebugControllerBreakpointAt(&controller, 0);
+    assert(mapped && mapped->state == DebugBreakpointState::Stale &&
+           mapped->mappingError == DebugErrorCode::ArtifactChanged && mapped->mappedAddressCount == 0);
+    assert(DebugControllerMapBreakpoints(&controller, &mapper, &controllerError));
     controller.state = DebugSessionState::Paused;
     controller.active = true;
     controller.sessionGeneration = 1;
@@ -366,12 +450,34 @@ int main() {
     assert(mapped && mapped->state == DebugBreakpointState::Mapped && mapped->mappedAddressCount == 3);
 
     std::vector<unsigned char> unsupportedVersion = fixture;
-    patchU16(unsupportedVersion, 64 + 4, 3);
+    const uint32_t fixtureDebugLineOffset = static_cast<uint32_t>(readU64At(fixture,
+        static_cast<uint32_t>(readU64At(fixture, 40)) + 64 + 24));
+    patchU16(unsupportedVersion, fixtureDebugLineOffset + 4, 3);
     static DebugDwarfMapper unsupported = {};
     assert(!DebugDwarfMapperLoad(&unsupported, "D:/fixture", "fixture", "target", "amd64",
                                  "fixture.elf", unsupportedVersion.size(), "a", 7,
                                  &unsupportedVersion[0], unsupportedVersion.size(), 1, &error));
     assert(error == DebugDwarfError::UnsupportedDwarfVersion);
+
+    static DebugDwarfMapper partialRead = {};
+    assert(!DebugDwarfMapperLoad(&partialRead, "D:/fixture", "fixture", "target", "amd64",
+        "fixture.elf", fixture.size(), identitySha, 7, &fixture[0], fixture.size() - 1,
+        1, &error, 41));
+    assert(error == DebugDwarfError::ArtifactChanged &&
+           std::strcmp(partialRead.parseFailureStage, "artifact_size") == 0);
+    static DebugDwarfMapper truncatedElf = {};
+    assert(!DebugDwarfMapperLoad(&truncatedElf, "D:/fixture", "fixture", "target", "amd64",
+        "fixture.elf", 40, identitySha, 7, &fixture[0], 40, 1, &error, 41));
+    assert(error == DebugDwarfError::MalformedElf &&
+           std::strcmp(truncatedElf.parseFailureStage, "elf_header") == 0);
+    std::vector<unsigned char> wrongMachine = fixture;
+    patchU16(wrongMachine, 18, 183);
+    static DebugDwarfMapper wrongArchitecture = {};
+    assert(!DebugDwarfMapperLoad(&wrongArchitecture, "D:/fixture", "fixture", "target", "amd64",
+        "fixture.elf", wrongMachine.size(), identitySha, 7, &wrongMachine[0], wrongMachine.size(),
+        1, &error, 41));
+    assert(error == DebugDwarfError::UnsupportedArchitecture &&
+           std::strcmp(wrongArchitecture.parseFailureStage, "elf_machine") == 0);
 
     const uint32_t sectionOffset = static_cast<uint32_t>(readU64At(fixture, 40));
     std::vector<unsigned char> truncatedLine = fixture;
@@ -390,18 +496,20 @@ int main() {
                                  &missingLine[0], missingLine.size(), 1, &error));
     assert(error == DebugDwarfError::MissingLineSection);
 
-    uint32_t programOffset = 64;
+    uint32_t programOffset = fixtureDebugLineOffset;
     while (programOffset + 2 < fixture.size() &&
            !(fixture[programOffset] == 0 && fixture[programOffset + 1] == 9 && fixture[programOffset + 2] == 2)) ++programOffset;
     assert(programOffset + 2 < fixture.size());
     const uint32_t lineSize = static_cast<uint32_t>(readU64At(fixture, sectionOffset + 64 + 32));
     std::vector<unsigned char> malformedLeb = fixture;
-    for (uint32_t i = programOffset + 12; i < 64 + lineSize; ++i) malformedLeb[i] = 0x80;
+    for (uint32_t i = programOffset + 12; i < fixtureDebugLineOffset + lineSize; ++i) malformedLeb[i] = 0x80;
     static DebugDwarfMapper lebFailure = {};
     assert(!DebugDwarfMapperLoad(&lebFailure, "D:/fixture", "fixture", "target", "amd64",
                                  "fixture.elf", malformedLeb.size(), "a", 7,
                                  &malformedLeb[0], malformedLeb.size(), 1, &error));
-    assert(error == DebugDwarfError::MalformedDwarf);
+    assert(error == DebugDwarfError::MalformedDwarf &&
+           std::strcmp(lebFailure.parseFailureStage, "dwarf_line_program") == 0 &&
+           lebFailure.parseFailureOffset >= fixtureDebugLineOffset);
 
     std::vector<unsigned char> unsupportedOpcode = fixture;
     unsupportedOpcode[programOffset + 2] = 0x7f;
