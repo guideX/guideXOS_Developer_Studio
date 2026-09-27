@@ -518,6 +518,9 @@ struct DebugDwarfMapper {
     bool debugInfoReady;
     bool bootstrapSourceMap;
     uint32_t bootstrapVariableCount;
+    // Bounded failure context for an artifact source path that cannot be
+    // associated with the current project root. Empty on successful loads.
+    char diagnosticSourcePath[kDebugMapperMaxPathBytes];
     DebugBootstrapVariable bootstrapVariables[kDebugDwarfMaxVariables];
     DebugDwarfCompilationUnitInfo compilationUnits[kDebugDwarfMaxCompilationUnits];
     DebugDwarfDieInfo dies[kDebugDwarfMaxDies];

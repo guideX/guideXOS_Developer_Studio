@@ -1271,6 +1271,33 @@ const char* DebugSessionStateName(DebugSessionState state) {
     return "Unknown";
 }
 
+const char* DebugControllerStartFailureCode(DebugSessionState state,
+                                            bool clientRunningObserved,
+                                            bool phase28qRunningObserved,
+                                            const char* preciseFailureCode) {
+    if (preciseFailureCode && preciseFailureCode[0] != '\0') return preciseFailureCode;
+    if (phase28qRunningObserved) return "DEBUG_START_PHASE28Q_RUNNING_ALREADY_OBSERVED";
+    switch (state) {
+    case DebugSessionState::Failed:
+        return "DEBUG_START_CONTROLLER_FAILED";
+    case DebugSessionState::Exited:
+        return clientRunningObserved ?
+            "DEBUG_START_CLIENT_RUNNING_OBSERVED_BUT_PHASE28Q_MARKER_MISSING" :
+            "DEBUG_START_TARGET_EXITED_BEFORE_CLIENT_RUNNING_OBSERVED";
+    case DebugSessionState::Stopping:
+        return "DEBUG_START_STOPPING_BEFORE_PHASE28Q_RUNNING";
+    case DebugSessionState::Idle:
+        return "DEBUG_START_BUILD_OR_SESSION_NOT_ACTIVE";
+    case DebugSessionState::Running:
+        return "DEBUG_START_RUNNING_WITHOUT_PHASE28Q_OBSERVATION";
+    case DebugSessionState::Launching:
+    case DebugSessionState::Paused:
+    case DebugSessionState::Stepping:
+        return "DEBUG_START_CONTROLLER_STATE_NOT_RUNNING";
+    }
+    return "DEBUG_START_CONTROLLER_STATE_UNKNOWN";
+}
+
 const char* DebugErrorName(DebugErrorCode error) {
     switch (error) {
     case DebugErrorCode::None: return "none";

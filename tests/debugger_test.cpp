@@ -268,6 +268,24 @@ static void prepareMappedBreakpoint(DebugController* controller, uint64_t breakp
 }
 
 int main() {
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Failed, false, false),
+                       "DEBUG_START_CONTROLLER_FAILED") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Exited, false, false),
+                       "DEBUG_START_TARGET_EXITED_BEFORE_CLIENT_RUNNING_OBSERVED") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Exited, true, false),
+                       "DEBUG_START_CLIENT_RUNNING_OBSERVED_BUT_PHASE28Q_MARKER_MISSING") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Exited, true, true),
+                       "DEBUG_START_PHASE28Q_RUNNING_ALREADY_OBSERVED") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Stopping, false, false),
+                       "DEBUG_START_STOPPING_BEFORE_PHASE28Q_RUNNING") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Idle, false, false),
+                       "DEBUG_START_BUILD_OR_SESSION_NOT_ACTIVE") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Launching, false, false),
+                       "DEBUG_START_CONTROLLER_STATE_NOT_RUNNING") == 0);
+    assert(std::strcmp(DebugControllerStartFailureCode(DebugSessionState::Idle, false, false,
+                       "DEBUG_START_SYMBOL_SOURCE_NOT_FOUND"),
+                       "DEBUG_START_SYMBOL_SOURCE_NOT_FOUND") == 0);
+
     Project project = validProject();
     BuildResult build = validBuild();
     DebugTarget target = {};

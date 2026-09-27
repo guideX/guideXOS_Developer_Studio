@@ -991,6 +991,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
             path[j] = static_cast<char>(bytes[offset + j]);
         if (!addSourceFile(mapper, projectRoot, "", path, &sourceIndices[i]) ||
             sourceIndices[i] == kNoSourceFile) {
+            copyText(mapper->diagnosticSourcePath, sizeof(mapper->diagnosticSourcePath), path);
             mapper->error = DebugDwarfError::SourceNotFound;
             return false;
         }

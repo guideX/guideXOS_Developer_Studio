@@ -727,6 +727,10 @@ struct DebugController {
 };
 
 const char* DebugSessionStateName(DebugSessionState state);
+const char* DebugControllerStartFailureCode(DebugSessionState state,
+                                            bool clientRunningObserved,
+                                            bool phase28qRunningObserved,
+                                            const char* preciseFailureCode = nullptr);
 const char* DebugErrorName(DebugErrorCode error);
 const char* DebugBreakpointStateName(DebugBreakpointState state);
 const char* DebugBreakpointConditionEvaluationName(DebugBreakpointConditionEvaluation evaluation);

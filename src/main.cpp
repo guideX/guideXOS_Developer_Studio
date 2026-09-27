@@ -907,6 +907,21 @@ static uint64_t g_debugUiBreakpointThresholds[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BR
 static bool g_debugWaitingForBuild = false;
 static bool g_debugTerminalReported = false;
 static bool g_debugReadyReported = false;
+static bool g_phase29fClientRunningObserved = false;
+static bool g_phase29fPhase28qRunningObserved = false;
+static bool g_phase29fBeginDebugSessionReturned = false;
+static bool g_phase29fBuildPollSessionReturned = false;
+static bool g_phase29fMainLoopAfterBuildPoll = false;
+static bool g_phase29fDebugPollEntryObserved = false;
+static bool g_phase29fDebugPollReturnObserved = false;
+static bool g_phase29fPhase28qWaitEntryObserved = false;
+static uint64_t g_phase29fDebugRequestSequence = 0;
+static char g_phase29fDebugStartFailureCode[96] = {};
+static uint64_t g_phase29fDebugProjectGeneration = 0;
+static uint64_t g_phase29fDebugAppGeneration = 0;
+static uint64_t g_phase29fDebugProjectRequestId = 0;
+static uint64_t g_phase29fDebugLifecycleGeneration = 0;
+static char g_phase29fDebugProjectId[kMaxProjectIdBytes] = {};
 static uint64_t g_debugReportedEventSequence = 0;
 static bool g_debugShutdownPending = false;
 static DebugShutdownStage g_debugShutdownStage = DebugShutdownStage::None;
@@ -1223,12 +1238,12 @@ static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecisio
 static bool beginDebugSession(gx_app_context* ctx);
 static void pollDebug(gx_app_context* ctx);
 static void drawShell(gx_app_context* ctx);
-static void requestDebug(gx_app_context* ctx);
+static bool requestDebug(gx_app_context* ctx);
 static bool requestDebugPause(gx_app_context* ctx);
 static void requestDebugStepInto(gx_app_context* ctx);
 static void requestDebugStepOver(gx_app_context* ctx);
 static void requestDebugStepOut(gx_app_context* ctx);
-static bool requestDebugStop(gx_app_context* ctx);
+static bool requestDebugStop(gx_app_context* ctx, const char* phase29fSource = "unspecified");
 static bool beginDebugShutdown(gx_app_context* ctx, gx_handle requestedWindow);
 static void completeDebugShutdownIfReady(gx_app_context* ctx);
 static bool toggleBreakpointAtCaret(gx_app_context* ctx);
@@ -1278,6 +1293,12 @@ static void phase28v_early_event(gx_app_context* ctx, const char* event);
 static void phase28y_startup_stage(gx_app_context* ctx, uint32_t stage, const char* name);
 static void phase28y_startup_event(gx_app_context* ctx, const char* event, const char* reason = nullptr);
 static bool phase28qSentinelPresent();
+static void phase29fDebugStartTrace(gx_app_context* ctx, const char* event,
+                                    const char* resultCode = "pending");
+static void phase29fDebugStartReject(gx_app_context* ctx, const char* resultCode);
+static void phase29fDebugStartBoundary(gx_app_context* ctx, const char* boundary,
+                                       const char* resultCode = "pending");
+static void phase29fDebugStartSnapshot(gx_app_context* ctx);
 static void reportDebugMessage(gx_app_context* ctx, const char* message);
 static void drawText(gx_app_context* ctx, int x, int y, const char* text);
 static void drawPanel(gx_app_context* ctx, gx_rect rect, uint32_t color);
@@ -1297,6 +1318,21 @@ static void initializeDebugLaunchStorage(gx_app_context* ctx) {
     // on the guest's emulated memory bandwidth. The artifact buffer is gated
     // by the bytesRead count at every consumer, so it needs no bulk clear.
     logMarker(ctx, "P28Z APP 00a debug_mapper_reset_begin");
+    g_phase29fClientRunningObserved = false;
+    g_phase29fPhase28qRunningObserved = false;
+    g_phase29fBeginDebugSessionReturned = false;
+    g_phase29fBuildPollSessionReturned = false;
+    g_phase29fMainLoopAfterBuildPoll = false;
+    g_phase29fDebugPollEntryObserved = false;
+    g_phase29fDebugPollReturnObserved = false;
+    g_phase29fPhase28qWaitEntryObserved = false;
+    g_phase29fDebugRequestSequence = 0;
+    g_phase29fDebugStartFailureCode[0] = '\0';
+    g_phase29fDebugProjectGeneration = 0;
+    g_phase29fDebugAppGeneration = 0;
+    g_phase29fDebugProjectRequestId = 0;
+    g_phase29fDebugLifecycleGeneration = 0;
+    g_phase29fDebugProjectId[0] = '\0';
     DebugDwarfMapperReset(&g_debugMapper);
     logMarker(ctx, "P28Z APP 00b debug_mapper_reset");
     logMarker(ctx, "P28Z APP 00c debug_artifact_ready");
@@ -4769,8 +4805,11 @@ static void reportBuildResult(gx_app_context* ctx) {
 }
 
 static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision, bool debugInfo = false) {
+    phase29fDebugStartBoundary(ctx, "build_ui_cleanup_entry");
     dismissCompletion(ctx, "build", false);
+    phase29fDebugStartBoundary(ctx, "completion_dismissed");
     dismissSignatureHelp(ctx, "build", false);
+    phase29fDebugStartBoundary(ctx, "signature_help_dismissed");
     if (BuildControllerIsActive(&g_buildController)) {
         writeOutput("Build already running");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(BuildErrorCode::AlreadyRunning));
@@ -4779,8 +4818,11 @@ static bool beginBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision, bo
     BuildErrorCode error = BuildErrorCode::None;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_request=PASS");
     phase28v_startup_event(ctx, "BUILD_CONTROLLER_START_ENTRY");
+    phase29fDebugStartBoundary(ctx, "build_controller_start_entry");
     g_buildTerminalReported = false;
     const bool started = BuildControllerStart(&g_buildController, &g_controller, buildService(), dirtyDecision, &error, &g_outputService, debugInfo);
+    phase29fDebugStartBoundary(ctx, started ? "build_controller_start_return" : "build_controller_start_rejected",
+                               started ? "DEBUG_START_BUILD_CONTROLLER_ACCEPTED" : "DEBUG_START_BUILD_CONTROLLER_REJECTED");
     phase28v_startup_event(ctx, "BUILD_CONTROLLER_START_RETURN");
     if (!started) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER build_precondition=FAIL", BuildErrorName(error));
@@ -4901,8 +4943,18 @@ static void pollBuild(gx_app_context* ctx) {
                 logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_PREPARE");
                 writeStudioOutput("Debug: build completed");
                 logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_BEGIN_AFTER_OUTPUT");
-                if (!beginDebugSession(ctx)) writeStudioOutput("Debug: deployment skipped");
+                const bool debugSessionStarted = beginDebugSession(ctx);
+                g_phase29fBuildPollSessionReturned = true;
+                const char* buildPollResult = !debugSessionStarted ?
+                    "DEBUG_START_BUILD_POLL_SESSION_REJECTED" :
+                    (g_phase29fBeginDebugSessionReturned ?
+                        "DEBUG_START_BUILD_POLL_SESSION_RETURNED" :
+                        "DEBUG_START_BUILD_POLL_SESSION_RETURN_MARKER_MISSING");
+                phase29fDebugStartTrace(ctx, "build_poll_return", buildPollResult);
+                if (!debugSessionStarted) writeStudioOutput("Debug: deployment skipped");
             } else {
+                phase29fDebugStartReject(ctx, g_buildController.result.state == BuildState::Cancelled ?
+                    "DEBUG_START_BUILD_CANCELLED" : "DEBUG_START_BUILD_FAILED");
                 copyText(g_textScratch, sizeof(g_textScratch), "Debug: build failed | ");
                 appendText(g_textScratch, sizeof(g_textScratch), BuildErrorName(g_buildController.result.error));
                 reportDebugMessage(ctx, g_textScratch);
@@ -5349,6 +5401,25 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
     guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(nullptr, nullptr);
     phase28v_startup_event(ctx, "SYMBOL_MAPPER_RETURN", nullptr);
     if (!loaded) {
+        if (g_phase28qDiagnostic) {
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_SYMBOL_FAILURE error=");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfErrorName(error));
+            appendText(g_textScratch, sizeof(g_textScratch), " project_root=");
+            appendText(g_textScratch, sizeof(g_textScratch), target->projectRoot[0] ? target->projectRoot : "-");
+            appendText(g_textScratch, sizeof(g_textScratch), " project_generation=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " artifact=");
+            appendText(g_textScratch, sizeof(g_textScratch), target->executablePath[0] ? target->executablePath : "-");
+            appendText(g_textScratch, sizeof(g_textScratch), " files=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.sourceFileCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " external_files=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.externalSourceCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " source_path=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                       g_debugMapper.diagnosticSourcePath[0] ? g_debugMapper.diagnosticSourcePath : "-");
+            logMarker(ctx, g_textScratch);
+        }
         phase28v_startup_event(ctx, "SYMBOL_MAPPER_ERROR", DebugDwarfErrorName(error));
         copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28V_STARTUP_FAILURE symbol_mapper=");
         appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfErrorName(error));
@@ -5391,13 +5462,185 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
     return true;
 }
 
+static void phase29fDebugStartTrace(gx_app_context* ctx, const char* event,
+                                    const char* resultCode) {
+    if (!ctx || !g_phase28qDiagnostic) return;
+
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29F_DEBUG_START event=");
+    appendText(g_textScratch, sizeof(g_textScratch), event ? event : "unknown");
+    appendText(g_textScratch, sizeof(g_textScratch), " result=");
+    appendText(g_textScratch, sizeof(g_textScratch), resultCode ? resultCode : "unknown");
+    appendText(g_textScratch, sizeof(g_textScratch), " app_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29dStartupOwner.startupGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " project_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29dStartupOwner.request.requestId);
+    appendText(g_textScratch, sizeof(g_textScratch), " request_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugRequestSequence);
+    appendText(g_textScratch, sizeof(g_textScratch), " startup_request_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29dStartupOwner.request.startupGeneration);
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29fDebugStartReject(gx_app_context* ctx, const char* resultCode) {
+    if (!resultCode || resultCode[0] == '\0') return;
+    if (g_phase29fDebugStartFailureCode[0] == '\0')
+        copyText(g_phase29fDebugStartFailureCode, sizeof(g_phase29fDebugStartFailureCode), resultCode);
+    phase29fDebugStartTrace(ctx, "first_failure", g_phase29fDebugStartFailureCode);
+}
+
+static void phase29fDebugStartSnapshot(gx_app_context* ctx) {
+    if (!ctx || !g_phase28qDiagnostic) return;
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_PROJECT app_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29dStartupOwner.startupGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " debug_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugRequestSequence);
+    appendText(g_textScratch, sizeof(g_textScratch), " intent_project_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugProjectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " intent_project_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugProjectRequestId);
+    appendText(g_textScratch, sizeof(g_textScratch), " lifecycle_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugLifecycleGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " project_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29dStartupOwner.request.projectLifecycleRequestId);
+    appendText(g_textScratch, sizeof(g_textScratch), " project_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " project_state=");
+    appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(g_controller.projectOpenState));
+    appendText(g_textScratch, sizeof(g_textScratch), " project_id=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.project.projectId[0] ?
+                g_controller.model.project.projectId : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " project_root=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.project.rootPath[0] ?
+                g_controller.model.project.rootPath : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " build_project_id=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.request.projectId[0] ?
+                g_buildController.request.projectId : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " build_root=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.request.projectRoot[0] ?
+                g_buildController.request.projectRoot : "-");
+    logMarker(ctx, g_textScratch);
+
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_ARTIFACT build_handle=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.handle);
+    appendText(g_textScratch, sizeof(g_textScratch), " build_operation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.operationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " build_state=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(g_buildController.result.state));
+    appendText(g_textScratch, sizeof(g_textScratch), " valid=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactValid ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " artifact_size=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactSize);
+    appendText(g_textScratch, sizeof(g_textScratch), " artifact_project_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugProjectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " artifact_arch=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactArchitecture[0] ?
+               g_buildController.result.artifactArchitecture : "-");
+    logMarker(ctx, g_textScratch);
+
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_ARTIFACT_PATH actual=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactPath[0] ?
+               g_buildController.result.artifactPath : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " expected=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.request.expectedArtifact[0] ?
+               g_buildController.request.expectedArtifact : "-");
+    logMarker(ctx, g_textScratch);
+
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_ARTIFACT_HASH debug_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugRequestSequence);
+    appendText(g_textScratch, sizeof(g_textScratch), " sha256=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactSha256[0] ?
+               g_buildController.result.artifactSha256 : "-");
+    logMarker(ctx, g_textScratch);
+
+    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_CONTROLLER state=");
+    appendText(g_textScratch, sizeof(g_textScratch), DebugSessionStateName(g_debugController.state));
+    appendText(g_textScratch, sizeof(g_textScratch), " active=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerIsActive(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " waiting_build=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugWaitingForBuild ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " session_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " service_handle=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.debugHandle);
+    appendText(g_textScratch, sizeof(g_textScratch), " target_project_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.target.projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " service_ready=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugBackend.launch ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " released=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.targetExecutionReleased ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " ready_reported=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugReadyReported ? 1u : 0u);
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29fDebugStartBoundary(gx_app_context* ctx, const char* boundary,
+                                       const char* resultCode) {
+    if (!ctx || !g_phase28qDiagnostic) return;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_BOUNDARY stage=");
+    appendText(g_textScratch, sizeof(g_textScratch), boundary ? boundary : "unknown");
+    appendText(g_textScratch, sizeof(g_textScratch), " result=");
+    appendText(g_textScratch, sizeof(g_textScratch), resultCode ? resultCode : "unknown");
+    appendText(g_textScratch, sizeof(g_textScratch), " app_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29dStartupOwner.startupGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " debug_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fDebugRequestSequence);
+    appendText(g_textScratch, sizeof(g_textScratch), " project_request=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.projectOpenRequestId);
+    appendText(g_textScratch, sizeof(g_textScratch), " build_operation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.operationId);
+    logMarker(ctx, g_textScratch);
+}
+
 static bool beginDebugSession(gx_app_context* ctx) {
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_ENTRY");
+    phase29fDebugStartTrace(ctx, "target_selection_entry");
+    phase29fDebugStartSnapshot(ctx);
+    if (g_controller.projectOpenState != WorkspaceProjectOpenState::Ready) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_NOT_READY");
+        return false;
+    }
+    if (g_phase29fDebugProjectGeneration != g_controller.model.projectGeneration ||
+        g_phase29fDebugAppGeneration != g_phase29dStartupOwner.startupGeneration ||
+        g_phase29fDebugProjectRequestId == 0 ||
+        g_phase29fDebugProjectRequestId != g_controller.projectOpenRequestId ||
+        g_phase29fDebugLifecycleGeneration == 0 ||
+        g_phase29fDebugLifecycleGeneration != g_controller.projectOpenCandidateGeneration ||
+        (g_phase28qDiagnostic && g_phase29dStartupOwner.request.projectLifecycleRequestId !=
+                                 g_phase29fDebugProjectRequestId) ||
+        !phase29dTextEquals(g_phase29fDebugProjectId, g_controller.model.project.projectId) ||
+        !phase29dTextEquals(g_buildController.request.projectId, g_controller.model.project.projectId) ||
+        !PathsEqual(g_buildController.request.projectRoot, g_controller.model.project.rootPath)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_OR_BUILD_GENERATION_MISMATCH");
+        return false;
+    }
+    phase29fDebugStartTrace(ctx, "request_ownership", "DEBUG_START_PROJECT_AND_BUILD_CURRENT");
+    if (g_buildController.result.state != BuildState::Succeeded ||
+        !g_buildController.result.artifactValid || !g_buildController.result.artifactEntryPoint ||
+        !g_buildController.result.artifactPath[0] || !g_buildController.result.artifactSha256[0]) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_ARTIFACT_MISSING_OR_INVALID");
+        return false;
+    }
+    if (!g_buildController.request.expectedArtifact[0] ||
+        !PathsEqual(g_buildController.result.artifactPath,
+                    g_buildController.request.expectedArtifact)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_ARTIFACT_IDENTITY_MISMATCH");
+        return false;
+    }
+    const char* expectedArchitecture = g_controller.model.project.architecture[0]
+        ? g_controller.model.project.architecture : "amd64";
+    if (!g_buildController.result.artifactArchitecture[0] ||
+        !PathsEqual(g_buildController.result.artifactArchitecture, expectedArchitecture)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_ARTIFACT_ARCHITECTURE_MISMATCH");
+        return false;
+    }
+    phase29fDebugStartTrace(ctx, "artifact_validation", "DEBUG_START_ARTIFACT_VALID");
     phase28v_startup_stage(ctx, 3, "BUILD_ARTIFACT_LOCATED");
     phase28v_startup_stage(ctx, 4, "LAUNCH_REQUEST_ISSUED");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_SESSION_BEGIN");
     phase28v_startup_event(ctx, "DEBUG_BEGIN_MODEL_CHECK");
     if (!g_controller.model.open || !g_controller.model.hasProject) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_NOT_CURRENT");
         phase28v_startup_event(ctx, "DEBUG_BEGIN_MODEL_NOT_READY");
         copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28V_STARTUP_FAILURE model_open=");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.open ? 1u : 0u);
@@ -5414,6 +5657,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
     phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_ENTRY");
     if (!DebugTargetFromBuild(g_controller.model.project, g_buildController.result,
                               g_controller.model.projectGeneration, &target, &error)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_TARGET_INVALID");
         phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_FAILED");
         copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE28V_STARTUP_FAILURE target_construct error=");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
@@ -5430,6 +5674,10 @@ static bool beginDebugSession(gx_app_context* ctx) {
         appendText(g_textScratch, sizeof(g_textScratch), " artifact_hash=");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), g_buildController.result.artifactSha256[0] != '\0' ? 1u : 0u);
         logMarker(ctx, g_textScratch);
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_TARGET_INVALID error=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        logMarker(ctx, g_textScratch);
         copyText(g_textScratch, sizeof(g_textScratch), "Debug target unavailable: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
@@ -5441,6 +5689,10 @@ static bool beginDebugSession(gx_app_context* ctx) {
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_BEGIN");
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_ENTRY");
     if (!loadDebugSymbolsForTarget(ctx, &target)) {
+        const char* symbolFailure = g_debugMapper.error == DebugDwarfError::SourceNotFound ?
+            "DEBUG_START_SYMBOL_SOURCE_NOT_FOUND" : "DEBUG_START_SYMBOL_ARTIFACT_LOAD_FAILED";
+        phase29fDebugStartReject(ctx, symbolFailure);
+        phase29fDebugStartTrace(ctx, "artifact_handoff", symbolFailure);
         phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_SYMBOLS_FAILED");
         reportDebugMessage(ctx, "Debug launch skipped: debug artifact is unavailable or changed");
         return false;
@@ -5450,6 +5702,8 @@ static bool beginDebugSession(gx_app_context* ctx) {
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_LOAD_RETURNED");
     const bool currentDebugAbi = debugUiCurrentAbiAvailable();
     const bool useManagerWorkspace = currentDebugAbi && g_fileSystemContext.useBareMetalDebug;
+    g_phase29fClientRunningObserved = false;
+    g_phase29fPhase28qRunningObserved = false;
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_ENTRY");
     // Discard the prior generation before the controller can rebind its old
     // transient table. Rebuild legacy controller rows from persisted intent;
@@ -5459,10 +5713,18 @@ static bool beginDebugSession(gx_app_context* ctx) {
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_RETURN");
     DebugControllerSetProjectContext(&g_debugController, target.projectId, target.projectRoot, target.projectGeneration);
     g_debugController.target = target;
-    if (!useManagerWorkspace && !debuggerWorkspaceMaterializeLegacy(ctx)) return false;
+    if (!useManagerWorkspace && !debuggerWorkspaceMaterializeLegacy(ctx)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_DEBUGGER_WORKSPACE_MATERIALIZATION_FAILED");
+        return false;
+    }
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BREAKPOINT_MAP_ENTRY");
     DebugErrorCode mappingError = DebugErrorCode::None;
     if (!DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &mappingError)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_BREAKPOINT_MAPPING_FAILED");
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_BREAKPOINT_MAPPING_FAILED error=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(mappingError));
+        logMarker(ctx, g_textScratch);
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch skipped: source breakpoint mapping failed | ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(mappingError));
         reportDebugMessage(ctx, g_textScratch);
@@ -5471,6 +5733,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
     for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
         const DebugBreakpoint& breakpoint = g_debugController.breakpoints[i];
         if (breakpoint.enabled && breakpoint.state != DebugBreakpointState::Mapped) {
+            phase29fDebugStartReject(ctx, "DEBUG_START_BREAKPOINT_UNMAPPED");
             reportDebugMessage(ctx, "Debug launch skipped: one or more source breakpoints are not mapped");
             return false;
         }
@@ -5486,7 +5749,17 @@ static bool beginDebugSession(gx_app_context* ctx) {
     // controller remains the deferred-release owner.
     DebugControllerSetExecutionReleaseDeferred(&g_debugController, !useManagerWorkspace);
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_CONTROLLER_START_ENTRY");
+    phase29fDebugStartTrace(ctx, "service_lookup", g_debugBackend.launch ?
+                            "DEBUG_START_SERVICE_CALLBACK_REGISTERED" :
+                            "DEBUG_START_SERVICE_CALLBACK_MISSING");
     if (!DebugControllerStart(&g_debugController, g_debugBackend, target, &error)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_CONTROLLER_START_REJECTED");
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_CONTROLLER_START_REJECTED error=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+        appendText(g_textScratch, sizeof(g_textScratch), " state=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugSessionStateName(g_debugController.state));
+        logMarker(ctx, g_textScratch);
         phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_FAILED");
         copyText(g_textScratch, sizeof(g_textScratch), "Debug launch failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
@@ -5497,6 +5770,8 @@ static bool beginDebugSession(gx_app_context* ctx) {
         reportDebugMessage(ctx, g_textScratch);
         return false;
     }
+    phase29fDebugStartTrace(ctx, "service_handoff", "DEBUG_START_CONTROLLER_START_ACCEPTED");
+    phase29fDebugStartSnapshot(ctx);
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_CONTROLLER_START_RETURN");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_CONTROLLER_START_PASS");
     phase28u_host_trace(ctx, "DEBUG_CONTROLLER_START_RETURN");
@@ -5514,8 +5789,10 @@ static bool beginDebugSession(gx_app_context* ctx) {
         // the poll observe the bootstrap trap would incorrectly require a
         // user breakpoint owner and leave the launch parked forever.
         if (!debuggerWorkspaceMaterialize(ctx) || !debugUiReleaseExecution(ctx)) {
+            phase29fDebugStartReject(ctx, "DEBUG_START_NATIVEELF_HANDSHAKE_FAILED");
             reportDebugMessage(ctx, "Debug launch failed: NativeElf startup handshake could not complete");
             DebugErrorCode stopError = DebugErrorCode::None;
+            phase29fDebugStartTrace(ctx, "stop_request", "DEBUG_START_HANDSHAKE_FAILURE_CLEANUP");
             (void)DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
             return false;
         }
@@ -5525,11 +5802,14 @@ static bool beginDebugSession(gx_app_context* ctx) {
         if (!DebugControllerAcceptExternalExecutionRelease(&g_debugController,
                                                             g_debugController.sessionGeneration,
                                                             &handshakeError)) {
+            phase29fDebugStartReject(ctx, "DEBUG_START_EXTERNAL_RELEASE_REJECTED");
             reportDebugMessage(ctx, "Debug launch failed: NativeElf controller handshake could not complete");
             DebugErrorCode stopError = DebugErrorCode::None;
+            phase29fDebugStartTrace(ctx, "stop_request", "DEBUG_START_EXTERNAL_RELEASE_FAILURE_CLEANUP");
             (void)DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
             return false;
         }
+        phase29fDebugStartTrace(ctx, "startup_handshake", "DEBUG_START_EXTERNAL_RELEASE_ACCEPTED");
         phase28v_startup_stage(ctx, 13, "INITIAL_TARGET_STATE_PUBLISHED");
         phase28v_startup_stage(ctx, 14, "DEBUGGER_START_REQUEST_ISSUED");
         phase28v_startup_stage(ctx, 15, "DEBUG_START_COMPLETION_PUBLISHED");
@@ -5576,63 +5856,121 @@ static bool beginDebugSession(gx_app_context* ctx) {
     appendText(g_textScratch, sizeof(g_textScratch), target.projectId);
     reportDebugMessage(ctx, g_textScratch);
     phase28u_host_trace(ctx, "BEGIN_DEBUG_SESSION_RETURN");
+    g_phase29fBeginDebugSessionReturned = true;
+    phase29fDebugStartTrace(ctx, "begin_session_return", "DEBUG_START_BEGIN_SESSION_RETURNED");
     return true;
 }
 
 static bool beginDebugBuild(gx_app_context* ctx, BuildDirtyDecision dirtyDecision) {
+    phase29fDebugStartBoundary(ctx, "build_admission_entry");
     if (!g_controller.model.open || !g_controller.model.hasProject) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_NOT_CURRENT");
         writeStudioOutput("Debug requires an open project");
+        return false;
+    }
+    if (g_controller.projectOpenState != WorkspaceProjectOpenState::Ready) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_NOT_READY");
+        return false;
+    }
+    if (g_phase29fDebugProjectGeneration != g_controller.model.projectGeneration ||
+        g_phase29fDebugProjectRequestId == 0 ||
+        g_phase29fDebugProjectRequestId != g_controller.projectOpenRequestId ||
+        g_phase29fDebugLifecycleGeneration == 0 ||
+        g_phase29fDebugLifecycleGeneration != g_controller.projectOpenCandidateGeneration ||
+        !phase29dTextEquals(g_phase29fDebugProjectId, g_controller.model.project.projectId)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_GENERATION_MISMATCH");
         return false;
     }
     if (BuildControllerIsActive(&g_buildController) || RunControllerIsActive(&g_runController) ||
         DebugControllerIsActive(&g_debugController)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_OPERATION_BUSY");
         writeStudioOutput("Debug start blocked by an active operation");
         return false;
     }
+    phase29fDebugStartBoundary(ctx, "build_admission_accepted", "DEBUG_START_BUILD_ADMISSION_ACCEPTED");
     g_debugWaitingForBuild = true;
     phase28v_startup_event(ctx, "BUILD_DEBUG_WAITING_PUBLISHED", "true");
+    phase29fDebugStartBoundary(ctx, "debug_build_waiting_published", "DEBUG_START_BUILD_PENDING");
     g_debugTerminalReported = false;
+    phase29fDebugStartBoundary(ctx, "begin_build_call_entry");
     if (!beginBuild(ctx, dirtyDecision, true)) {
         g_debugWaitingForBuild = false;
+        phase29fDebugStartReject(ctx, "DEBUG_START_BUILD_REQUEST_REJECTED");
         writeStudioOutput("Debug build could not start");
         return false;
     }
+    phase29fDebugStartBoundary(ctx, "begin_build_call_return", "DEBUG_START_BUILD_REQUEST_ACCEPTED");
+    phase29fDebugStartTrace(ctx, "build_submission", "DEBUG_START_BUILD_REQUEST_ACCEPTED");
     writeStudioOutput("Debug: build started");
     return true;
 }
 
-static void requestDebug(gx_app_context* ctx) {
+static bool requestDebug(gx_app_context* ctx) {
+    g_phase29fDebugStartFailureCode[0] = '\0';
     dismissCompletion(ctx, "debug", false);
     dismissSignatureHelp(ctx, "debug", false);
+    if (g_phase29fDebugRequestSequence != ~static_cast<uint64_t>(0))
+        ++g_phase29fDebugRequestSequence;
+    else {
+        phase29fDebugStartReject(ctx, "DEBUG_START_REQUEST_SEQUENCE_EXHAUSTED");
+        return false;
+    }
+    phase29fDebugStartTrace(ctx, "intent", "DEBUG_START_INTENT_RECEIVED");
     if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_ALREADY_ACTIVE");
         writeStudioOutput("Debug session already active");
-        return;
+        return false;
     }
     if (RunControllerIsActive(&g_runController)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_RUN_OPERATION_ACTIVE");
         writeStudioOutput("Run in progress; debug start blocked");
-        return;
+        return false;
     }
     if (BuildControllerIsActive(&g_buildController)) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_BUILD_OPERATION_ACTIVE");
         writeStudioOutput("Build in progress; debug start blocked");
-        return;
+        return false;
     }
     if (!g_controller.model.open || !g_controller.model.hasProject) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_NOT_CURRENT");
         writeStudioOutput("Debug requires an open project");
-        return;
+        return false;
+    }
+    if (g_controller.projectOpenState != WorkspaceProjectOpenState::Ready) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_PROJECT_NOT_READY");
+        return false;
     }
     if (g_controller.model.project.kind != ProjectKind::NativeGuiApplication) {
+        phase29fDebugStartReject(ctx, "DEBUG_START_TARGET_KIND_UNSUPPORTED");
         writeStudioOutput("Hosted Native ELF debugging supports Native GUI Application projects only");
-        return;
+        return false;
     }
-    if (guidexos::developer_studio::WorkspaceControllerHasDirtyProjectDocuments(&g_controller)) {
+    g_phase29fDebugProjectGeneration = g_controller.model.projectGeneration;
+    g_phase29fDebugAppGeneration = g_phase29dStartupOwner.startupGeneration;
+    g_phase29fDebugProjectRequestId = g_controller.projectOpenRequestId;
+    g_phase29fDebugLifecycleGeneration = g_controller.projectOpenCandidateGeneration;
+    copyText(g_phase29fDebugProjectId, sizeof(g_phase29fDebugProjectId),
+             g_controller.model.project.projectId);
+    g_phase29fClientRunningObserved = false;
+    g_phase29fPhase28qRunningObserved = false;
+    phase29fDebugStartTrace(ctx, "request_validation", "DEBUG_START_REQUEST_OWNERSHIP_CAPTURED");
+    phase29fDebugStartSnapshot(ctx);
+    phase29fDebugStartBoundary(ctx, "dirty_document_check_entry");
+    const bool hasDirtyProjectDocuments =
+        guidexos::developer_studio::WorkspaceControllerHasDirtyProjectDocuments(&g_controller);
+    phase29fDebugStartBoundary(ctx, "dirty_document_check_return",
+                               hasDirtyProjectDocuments ? "DEBUG_START_SAVE_CONFIRMATION_REQUIRED" :
+                                                          "DEBUG_START_PROJECT_DOCUMENTS_CLEAN");
+    if (hasDirtyProjectDocuments) {
         g_inputMode = InputMode::ConfirmDebug;
         g_fileMenuOpen = false;
         g_buildMenuOpen = false;
         g_debugMenuOpen = false;
+        phase29fDebugStartReject(ctx, "DEBUG_START_SAVE_CONFIRMATION_REQUIRED");
         writeStudioOutput("Save All or Cancel debug start");
-        return;
+        return false;
     }
-    beginDebugBuild(ctx, BuildDirtyDecision::SaveAll);
+    return beginDebugBuild(ctx, BuildDirtyDecision::SaveAll);
 }
 
 static void requestDebugStepInto(gx_app_context* ctx) {
@@ -5711,7 +6049,21 @@ static bool requestDebugPause(gx_app_context* ctx) {
     return true;
 }
 
-static bool requestDebugStop(gx_app_context* ctx) {
+static bool requestDebugStop(gx_app_context* ctx, const char* phase29fSource) {
+    if (g_phase28qDiagnostic) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29F_DEBUG_START event=stop_request source=");
+        appendText(g_textScratch, sizeof(g_textScratch), phase29fSource ? phase29fSource : "unknown");
+        appendText(g_textScratch, sizeof(g_textScratch), " state=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugSessionStateName(g_debugController.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " active=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerIsActive(&g_debugController) ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " session=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " handle=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.debugHandle);
+        logMarker(ctx, g_textScratch);
+    }
     if (!DebugControllerIsActive(&g_debugController)) {
         if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_REJECTED_INACTIVE");
         writeStudioOutput("No active debug session");
@@ -5791,7 +6143,7 @@ static bool beginDebugShutdown(gx_app_context* ctx, gx_handle requestedWindow) {
         return true;
     }
 
-    if (!requestDebugStop(ctx)) {
+    if (!requestDebugStop(ctx, "targeted_shutdown")) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_shutdown_request=FAIL",
                       DebugErrorName(g_debugController.error));
         g_debugShutdownPending = false;
@@ -5982,6 +6334,10 @@ static bool navigateDebugStackFrame(gx_app_context* ctx, uint32_t frameIndex) {
 }
 
 static void pollDebug(gx_app_context* ctx) {
+    if (g_phase28qDiagnostic && g_phase28qStage == 3 && !g_phase29fDebugPollEntryObserved) {
+        g_phase29fDebugPollEntryObserved = true;
+        phase29fDebugStartTrace(ctx, "client_poll_entry", "DEBUG_START_CLIENT_DEBUG_POLL_ENTERED");
+    }
     if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 1u)) {
         phase28v_startup_event(ctx, "DEBUG_POLL_AFTER_CONTINUE_ENTRY");
         g_phase28vAfterContinueTraceMask |= 1u;
@@ -6001,7 +6357,8 @@ static void pollDebug(gx_app_context* ctx) {
         return;
     }
     if (!g_controller.model.hasProject || !PathsEqual(g_controller.model.project.projectId, g_debugController.projectId)) {
-        if (g_debugController.state != DebugSessionState::Stopping) requestDebugStop(ctx);
+        if (g_debugController.state != DebugSessionState::Stopping)
+            requestDebugStop(ctx, "project_identity_mismatch");
         return;
     }
     DebugControllerMarkProjectGeneration(&g_debugController, g_controller.model.projectGeneration);
@@ -6022,11 +6379,23 @@ static void pollDebug(gx_app_context* ctx) {
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_ENTRY");
     phase28u_host_trace(ctx, "DEBUG_CONTROLLER_POLL_ENTRY");
     const bool controllerPollReady = DebugControllerPoll(&g_debugController, g_debugBackend, &g_debugMapper);
+    if (g_phase28qDiagnostic && g_phase28qStage == 3 && !g_phase29fDebugPollReturnObserved) {
+        g_phase29fDebugPollReturnObserved = true;
+        phase29fDebugStartTrace(ctx, "client_poll_return", controllerPollReady ?
+            "DEBUG_START_CLIENT_DEBUG_POLL_RETURNED" : "DEBUG_START_CLIENT_DEBUG_POLL_FAILED");
+    }
     if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 2u)) {
         phase28v_startup_event(ctx, "DEBUG_POLL_AFTER_CONTINUE_CONTROLLER_RETURN");
         g_phase28vAfterContinueTraceMask |= 2u;
     }
     phase28u_host_trace(ctx, controllerPollReady ? "DEBUG_CONTROLLER_POLL_RETURN" : "DEBUG_CONTROLLER_POLL_FAILED");
+    if (g_phase28qDiagnostic && controllerPollReady &&
+        g_debugController.state == DebugSessionState::Running &&
+        g_debugController.targetExecutionReleased && !g_phase29fClientRunningObserved) {
+        g_phase29fClientRunningObserved = true;
+        phase29fDebugStartTrace(ctx, "client_running_observed",
+                                "DEBUG_START_CLIENT_RUNNING_OBSERVED");
+    }
     const bool tracePhase28qStopProcessing = g_phase28qDiagnostic &&
         g_phase28qStage >= 6 && g_debugController.state != previous;
     if (!controllerPollReady) {
@@ -6100,6 +6469,7 @@ static void pollDebug(gx_app_context* ctx) {
             g_debugTerminalReported = true;
         }
         DebugErrorCode stopError = DebugErrorCode::None;
+        phase29fDebugStartTrace(ctx, "stop_request", "DEBUG_START_STARTUP_MATERIALIZATION_CLEANUP");
         DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
     }
     // Hosted launches publish the process/runtime identity from the run
@@ -6126,6 +6496,7 @@ static void pollDebug(gx_app_context* ctx) {
             }
             reportDebugMessage(ctx, g_textScratch);
             DebugErrorCode stopError = DebugErrorCode::None;
+            phase29fDebugStartTrace(ctx, "stop_request", "DEBUG_START_DEFERRED_RELEASE_CLEANUP");
             DebugControllerRequestStop(&g_debugController, g_debugBackend, &stopError);
         } else {
             phase28v_startup_stage(ctx, 15, "DEBUG_START_COMPLETION_PUBLISHED");
@@ -6137,8 +6508,11 @@ static void pollDebug(gx_app_context* ctx) {
         g_debugController.targetExecutionReleased &&
         (!debugUiCurrentAbiAvailable() || debugUiReady)) {
         g_debugReadyReported = true;
+        if (g_phase28qDiagnostic) g_phase29fClientRunningObserved = true;
         phase28v_startup_stage(ctx, 16, "TARGET_READY_FOR_DEBUG_COMMANDS");
         phase28u_host_trace(ctx, "DEBUG_START_HANDSHAKE_READY");
+        phase29fDebugStartTrace(ctx, "running_publication",
+                                "DEBUG_START_AUTHORITATIVE_RUNNING_READY");
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28U_DEBUG_START_READY_PASS");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS");
         reportDebugMessage(ctx, "Debug: startup handshake complete");
@@ -11268,7 +11642,7 @@ static void phase28qFail(gx_app_context* ctx, const char* reason) {
     g_phase28qStage = 99;
     if (DebugControllerIsActive(&g_debugController) &&
         g_debugController.state != DebugSessionState::Stopping) {
-        (void)requestDebugStop(ctx);
+        (void)requestDebugStop(ctx, reason ? reason : "phase28q_failure");
     }
 }
 
@@ -11356,7 +11730,12 @@ static void phase28qPump(gx_app_context* ctx) {
         phase28z_startup_stage(ctx, 7);
         phase28v_startup_event(ctx, "DEBUG_START_REQUEST_ISSUED");
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_ENTRY");
-        requestDebug(ctx);
+        if (!requestDebug(ctx)) {
+            phase29fDebugStartTrace(ctx, "request_handoff", "DEBUG_START_CLIENT_REQUEST_REJECTED");
+            phase28qFail(ctx, "DEBUG_START_CLIENT_REQUEST_REJECTED");
+            return;
+        }
+        phase29fDebugStartTrace(ctx, "request_handoff", "DEBUG_START_CLIENT_REQUEST_ACCEPTED");
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_REQUEST_RETURN");
         phase28z_startup_stage(ctx, 8);
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_DEBUG_START_PASS");
@@ -11364,10 +11743,43 @@ static void phase28qPump(gx_app_context* ctx) {
         g_phase28qStage = 3;
         break;
     case 3:
+        if (!g_phase29fPhase28qWaitEntryObserved) {
+            g_phase29fPhase28qWaitEntryObserved = true;
+            phase29fDebugStartTrace(ctx, "phase28q_wait_entry", "DEBUG_START_PHASE28Q_WAIT_ENTERED");
+        }
         phase28u_host_trace(ctx, "PHASE28Q_DEBUG_WAIT_POLL");
         if (g_debugController.state == DebugSessionState::Failed ||
             (!g_debugWaitingForBuild && !DebugControllerIsActive(&g_debugController))) {
-            phase28qFail(ctx, "debug_start");
+            const char* failureCode = guidexos::developer_studio::DebugControllerStartFailureCode(
+                g_debugController.state, g_phase29fClientRunningObserved,
+                g_phase29fPhase28qRunningObserved,
+                g_phase29fDebugStartFailureCode);
+            phase29fDebugStartTrace(ctx, "phase28q_result", failureCode);
+            phase29fDebugStartSnapshot(ctx);
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=");
+            appendText(g_textScratch, sizeof(g_textScratch), failureCode);
+            appendText(g_textScratch, sizeof(g_textScratch), " controller_state=");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugSessionStateName(g_debugController.state));
+            appendText(g_textScratch, sizeof(g_textScratch), " active=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerIsActive(&g_debugController) ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " waiting_build=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugWaitingForBuild ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " client_running_observed=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fClientRunningObserved ? 1u : 0u);
+            appendText(g_textScratch, sizeof(g_textScratch), " q_running_marker=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_phase29fPhase28qRunningObserved ? 1u : 0u);
+            logMarker(ctx, g_textScratch);
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT_DETAIL error=");
+            appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(g_debugController.error));
+            appendText(g_textScratch, sizeof(g_textScratch), " session=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " message=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage[0]
+                       ? g_debugController.lastMessage : "-");
+            logMarker(ctx, g_textScratch);
+            phase28qFail(ctx, failureCode);
             return;
         }
         if (g_debugController.state == DebugSessionState::Running &&
@@ -11375,6 +11787,9 @@ static void phase28qPump(gx_app_context* ctx) {
             phase28v_startup_stage(ctx, 17, "FIRST_SCHEDULER_DISPATCH_PERMITTED");
             phase28v_startup_stage(ctx, 18, "TARGET_ENTRY_REACHED");
             phase28v_startup_stage(ctx, 19, "PHASE28Q_FIXTURE_EXECUTION_BEGINS");
+            g_phase29fPhase28qRunningObserved = true;
+            phase29fDebugStartTrace(ctx, "phase28q_running_observed",
+                                    "DEBUG_START_PHASE28Q_RUNNING_PASS");
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_RUNNING_PASS");
             if (!requestDebugPause(ctx)) {
                 phase28qFail(ctx, "pause_ui_request");
@@ -12438,7 +12853,7 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
     // the real debugger operation.
     if (keyCode == 116 && (modifiers & GX_KEY_MOD_SHIFT)) {
         if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_STOP_HANDLER_ENTRY");
-        const bool stopped = requestDebugStop(ctx);
+        const bool stopped = requestDebugStop(ctx, "debug_panel_stop_command");
         if (g_phase28mDiagnostic) logMarker(ctx, stopped ?
             "DEVELOPER_STUDIO_PHASE28M_STOP_HANDLER_ACCEPTED" :
             "DEVELOPER_STUDIO_PHASE28M_STOP_HANDLER_REJECTED");
@@ -13872,7 +14287,7 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
     if (g_inputMode == InputMode::ConfirmDebugClose) {
         if (keyCode == 83 || keyCode == 115) {
             g_inputMode = InputMode::Normal;
-            if (!beginDebugShutdown(ctx, g_window)) requestDebugStop(ctx);
+            if (!beginDebugShutdown(ctx, g_window)) requestDebugStop(ctx, "window_shutdown_fallback");
         } else if (keyCode == 75 || keyCode == 107 || keyCode == 27) {
             g_inputMode = InputMode::Normal;
             writeStudioOutput("Studio remains open");
@@ -15254,7 +15669,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         else if (row == 3) requestDebugStepOver(ctx);
         else if (row == 4) requestDebugStepOut(ctx);
         else if (row == 5) requestDebugPause(ctx);
-        else if (row == 6) requestDebugStop(ctx);
+        else if (row == 6) requestDebugStop(ctx, "debug_menu_stop");
         else if (row == 7) toggleBreakpointAtCaret(ctx);
         else if (row == 8) { g_debugPanelTab = 0; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 9) { g_debugPanelTab = 1; g_debugPanelOpen = true; g_editorFocused = false; }
@@ -15928,6 +16343,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             pollProjectSearch(ctx);
             pollReferences(ctx);
             pollBuild(ctx);
+            if (g_phase29fBuildPollSessionReturned && !g_phase29fMainLoopAfterBuildPoll) {
+                g_phase29fMainLoopAfterBuildPoll = true;
+                phase29fDebugStartTrace(ctx, "main_loop_after_build_poll",
+                                        "DEBUG_START_MAIN_LOOP_AFTER_BUILD_POLL");
+            }
             pollRun(ctx);
             pollDebug(ctx);
             if (g_phase28qDiagnostic && g_phase28qStage >= 5 && !(g_phase28vAfterContinueTraceMask & 16u)) {
