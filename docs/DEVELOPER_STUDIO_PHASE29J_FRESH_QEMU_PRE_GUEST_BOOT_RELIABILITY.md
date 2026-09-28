@@ -78,7 +78,7 @@ The UEFI loader configures COM1 at `0x3F8`, divisor 1 (115200 baud), 8N1. The ke
 
 ## New fresh boot and sentinel evidence
 
-One diagnostic boot after rebuilding the app with detailed sentinel normalization telemetry passed: the sentinel path normalized, stat found a regular 17-byte file, read all 17 bytes, accepted exact content, enabled diagnostic mode, and the project reached Phase 29C `ready`. It was diagnostic evidence and is not counted toward the formal gate.
+One diagnostic boot after rebuilding the app with detailed sentinel normalization telemetry passed: stage ID `1a68217c08ad4060bc3e8c89624dbccd`, ESP `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-064153ea1d0e41bfa68211f66cd7eea4\esp-boot1-1a68217c08ad4060bc3e8c89624dbccd`, ESP identity `86E73E789890BBB491AA1DCDAFBB81D855015B0FDFF4B94E27D09BE2A53EC12F`, and tree SHA-256 `5AAE2C6D122B8F8D98D07D90C6C991FABC756CC1F46653968F867662D60D1AD2`. The sentinel path normalized, stat found a regular 17-byte file, read all 17 bytes, accepted exact content, enabled diagnostic mode, and the project reached Phase 29C `ready`. It was diagnostic evidence and is not counted toward the formal gate.
 
 The formal command was:
 
@@ -90,10 +90,10 @@ The first four unique stages had the same content tree and different ESP identit
 
 | Boot | Stage ID | Exact ESP path suffix | Full tree SHA-256 | Boot/guest result |
 |---|---|---|---|---|
-| 1 | `575570344f204fabae8e7b7c7ffb22af` | `esp-boot1-575570344f204fabae8e7b7c7ffb22af` | `281A73BD8DB9629B6FA3DF2EF7018F0B0EDFB37BE4594D02788FFD1CE5FD58F0` | Passed boot, sentinel, one-shot startup request; Phase 29C reached `ready` |
-| 2 | `1f71a9f850f34552adce52189808a4d2` | `esp-boot2-1f71a9f850f34552adce52189808a4d2` | same | Passed boot, sentinel, one-shot startup request; Phase 29C reached `ready` |
-| 3 | `6f4a61ff775e4fb7b88eb29d3b1d0bb3` | `esp-boot3-6f4a61ff775e4fb7b88eb29d3b1d0bb3` | same | Passed boot, sentinel, one-shot startup request; Phase 29C reached `ready` |
-| 4 | `93bc5af1ee1f4e20b64393be97f85909` | `esp-boot4-93bc5af1ee1f4e20b64393be97f85909` | same | Boot and sentinel passed; one `/P28Q` request reached `load_started`; later duplicate manifest validation was followed by Phase 29C `load_in_progress`; wider gate stopped |
+| 1 | `575570344f204fabae8e7b7c7ffb22af` | `esp-boot1-575570344f204fabae8e7b7c7ffb22af` | `281A73BD8DB9629B6FA3DF2EF7018F0B0EDFB37BE4594D02788FFD1CE5FD58F0` | Identity `17295A19023A6F8783E3FFBA8CD49C09ACDFB224C5AA314E60D16634EA6D0E30`; passed boot, sentinel, one-shot startup request; Phase 29C reached `ready` |
+| 2 | `1f71a9f850f34552adce52189808a4d2` | `esp-boot2-1f71a9f850f34552adce52189808a4d2` | same | Identity `7278ADE349D741BF874321C821695795B4B0CD55FEC4440A39BB3F1206595F84`; passed boot, sentinel, one-shot startup request; Phase 29C reached `ready` |
+| 3 | `6f4a61ff775e4fb7b88eb29d3b1d0bb3` | `esp-boot3-6f4a61ff775e4fb7b88eb29d3b1d0bb3` | same | Identity `81D6FBF667F66F651AEE1B83192C9F3731914D293EF7E54BD2887EEB3BB1806F`; passed boot, sentinel, one-shot startup request; Phase 29C reached `ready` |
+| 4 | `93bc5af1ee1f4e20b64393be97f85909` | `esp-boot4-93bc5af1ee1f4e20b64393be97f85909` | same | Identity `357ED369801AF813DB0561145E38586A5B926F425345CD6D746CD029A7F0E8D3`; boot and sentinel passed; one `/P28Q` request reached `load_started`; later duplicate manifest validation was followed by Phase 29C `load_in_progress`; wider gate stopped |
 | 5 | — | — | — | Not run after boot 4 failed the wider proof |
 
 The exact boot-4 ESP path was:
