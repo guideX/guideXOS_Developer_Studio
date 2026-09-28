@@ -31,8 +31,56 @@ enum class WorkspaceProjectOpenState {
     Failed
 };
 
+enum class WorkspaceProjectLoadOwnershipResult {
+    Current = 0,
+    NoController,
+    TransactionNotActive,
+    ControllerNotInProgress,
+    TransactionOwnerMismatch,
+    RequestIdMismatch,
+    RequestGenerationMismatch,
+    TransactionIdMismatch,
+    TransactionGenerationMismatch,
+    CandidateIdMismatch,
+    CandidateGenerationMismatch,
+    CandidateProjectGenerationMismatch,
+    CandidateProjectIdMismatch,
+    RefreshGenerationMismatch,
+    ActiveProjectIdMismatch,
+    ActiveProjectGenerationMismatch
+};
+
+enum class WorkspaceProjectLoadCheckpoint {
+    RequestAccepted = 0,
+    TransactionCreated,
+    CandidateCreated,
+    LoadStarted,
+    ProjectMetadataValidated,
+    ApplicationManifestValidated,
+    Loaded,
+    RefreshStarted,
+    BeforeRefresh,
+    AfterRefresh,
+    CommitStarting,
+    BeforeCommit,
+    AfterCommit,
+    ActivePublished,
+    ObserverCallback,
+    ObserverReturn,
+    Ready,
+    FailureRollback,
+    TransactionRelease,
+    TransactionReleased
+};
+
+const char* WorkspaceProjectLoadOwnershipResultName(WorkspaceProjectLoadOwnershipResult result);
+const char* WorkspaceProjectLoadCheckpointName(WorkspaceProjectLoadCheckpoint checkpoint);
+
 struct WorkspaceProjectOpenEvent {
     WorkspaceProjectOpenState state;
+    WorkspaceProjectLoadCheckpoint checkpoint;
+    WorkspaceProjectLoadOwnershipResult ownershipResult;
+    uint64_t checkedRequestId;
     uint64_t transactionId;
     uint64_t transactionGeneration;
     uint64_t requestId;
@@ -42,6 +90,16 @@ struct WorkspaceProjectOpenEvent {
     uint64_t candidateGeneration;
     uint64_t candidateProjectGeneration;
     uint64_t refreshGeneration;
+    uint64_t expectedTransactionId;
+    uint64_t expectedTransactionGeneration;
+    uint64_t expectedRequestId;
+    uint64_t expectedRequestGeneration;
+    uint64_t expectedCandidateId;
+    uint64_t expectedCandidateGeneration;
+    uint64_t expectedCandidateProjectGeneration;
+    uint64_t expectedRefreshGeneration;
+    uint64_t expectedActiveProjectGeneration;
+    uint64_t actualActiveProjectGeneration;
     uint32_t entryDepth;
     uint32_t maximumEntryDepth;
     uint32_t reentryCount;
@@ -49,6 +107,7 @@ struct WorkspaceProjectOpenEvent {
     uint32_t loadStageCount;
     uint32_t refreshCount;
     uint32_t commitCount;
+    uint32_t releaseCount;
     bool transactionActive;
     bool controllerLoadInProgress;
     bool transactionOwnerPointerMatches;
@@ -58,7 +117,17 @@ struct WorkspaceProjectOpenEvent {
     bool requestGenerationMatches;
     bool candidateIdMatches;
     bool candidateGenerationMatches;
+    bool candidateProjectGenerationMatches;
+    bool candidateProjectIdMatches;
+    bool refreshGenerationMatches;
+    bool activeProjectIdMatches;
+    bool activeProjectGenerationMatches;
+    bool transactionCommitted;
     bool transactionOwnerMatches;
+    const char* expectedActiveProjectId;
+    const char* actualActiveProjectId;
+    const char* expectedCandidateProjectId;
+    const char* actualCandidateProjectId;
     const char* caller;
     const char* lastReentryCaller;
     const char* manifestRole;
@@ -70,6 +139,8 @@ struct WorkspaceProjectOpenEvent {
 
 using WorkspaceProjectOpenObserver = void (*)(void* userData,
                                                const WorkspaceProjectOpenEvent& event);
+using WorkspaceProjectLoadTrace = void (*)(void* userData,
+                                           const WorkspaceProjectOpenEvent& event);
 
 struct WorkspaceController {
     WorkspaceModel model;
@@ -87,6 +158,7 @@ struct WorkspaceController {
     bool projectOpenInProgress;
     uint64_t projectOpenCandidateId;
     uint64_t projectOpenCandidateGeneration;
+    uint64_t projectOpenCandidateProjectGeneration;
     uint64_t projectOpenRefreshGeneration;
     uint32_t projectOpenEntryDepth;
     uint32_t projectOpenMaximumEntryDepth;
@@ -95,6 +167,8 @@ struct WorkspaceController {
     uint32_t projectOpenLoadStageCount;
     uint32_t projectOpenRefreshCount;
     uint32_t projectOpenCommitCount;
+    uint32_t projectOpenReleaseCount;
+    WorkspaceProjectLoadOwnershipResult lastProjectLoadOwnershipResult;
     char projectOpenCaller[48];
     char projectOpenLastReentryCaller[48];
     ProjectErrorCode projectOpenFailure;
@@ -102,6 +176,8 @@ struct WorkspaceController {
     ManifestValidationDiagnostic lastManifestDiagnostic;
     WorkspaceProjectOpenObserver projectOpenObserver;
     void* projectOpenObserverUserData;
+    WorkspaceProjectLoadTrace projectLoadTrace;
+    void* projectLoadTraceUserData;
 };
 
 void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFileSystem& fileSystem);
@@ -109,6 +185,11 @@ void WorkspaceControllerAttachSymbolDatabase(WorkspaceController* controller, Sy
 void WorkspaceControllerSetProjectOpenObserver(WorkspaceController* controller,
                                                WorkspaceProjectOpenObserver observer,
                                                void* userData);
+void WorkspaceControllerSetProjectLoadTrace(WorkspaceController* controller,
+                                            WorkspaceProjectLoadTrace trace,
+                                            void* userData);
+WorkspaceProjectLoadOwnershipResult WorkspaceControllerCheckProjectLoadOwnership(
+    const WorkspaceController* controller, uint64_t requestId);
 WorkspaceProjectOpenState WorkspaceControllerProjectOpenState(const WorkspaceController* controller);
 const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state);
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path);

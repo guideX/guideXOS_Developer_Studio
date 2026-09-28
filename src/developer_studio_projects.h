@@ -85,6 +85,16 @@ struct ManifestValidationGeneration {
     uint64_t parsedIdentityGeneration;
 };
 
+enum class ProjectLoadCheckpoint {
+    ProjectMetadataValidated = 0,
+    ApplicationManifestValidated
+};
+
+struct ManifestValidationDiagnostic;
+using ProjectLoadCheckpointObserver = void (*)(void* userData,
+                                                ProjectLoadCheckpoint checkpoint,
+                                                const ManifestValidationDiagnostic* diagnostic);
+
 enum class ManifestIdentityMismatchField {
     None = 0,
     SchemaVersion,
@@ -183,7 +193,9 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
                             ProjectOperationResult* result, ProjectLoadScratch* scratch = nullptr);
 bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath,
                  ProjectOperationResult* result, ProjectLoadScratch* scratch = nullptr,
-                 const ManifestValidationGeneration* generation = nullptr);
+                 const ManifestValidationGeneration* generation = nullptr,
+                 ProjectLoadCheckpointObserver checkpointObserver = nullptr,
+                 void* checkpointUserData = nullptr);
 
 } // namespace developer_studio
 } // namespace guidexos

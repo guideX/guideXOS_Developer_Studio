@@ -38,7 +38,28 @@ struct TestContext {
     bool staleFailureRequestGenerationMatched = true;
     bool staleFailureCandidateGenerationMatched = true;
     bool staleFailureOwnerMatches = true;
+    WorkspaceProjectLoadOwnershipResult failedOwnershipResult = WorkspaceProjectLoadOwnershipResult::Current;
+    WorkspaceProjectLoadOwnershipResult mismatchedCheckedRequestResult = WorkspaceProjectLoadOwnershipResult::Current;
+    enum class OwnerMutation {
+        None, RequestId, RequestGeneration, TransactionId, TransactionGeneration,
+        CandidateId, CandidateGeneration, CandidateProjectGeneration, RefreshGeneration,
+        ActiveProjectId, ActiveProjectGeneration, ControllerProgress
+    };
+    OwnerMutation ownerMutation = OwnerMutation::None;
+    bool ownerMutationArmed = false;
+    bool ownerMutationApplied = false;
+    WorkspaceProjectLoadCheckpoint checkpoints[64] = {};
+    WorkspaceProjectLoadOwnershipResult checkpointResults[64] = {};
+    uint32_t checkpointCount = 0;
 };
+
+static void projectLoadTrace(void* userData, const WorkspaceProjectOpenEvent& event) {
+    TestContext* context = static_cast<TestContext*>(userData);
+    if (!context || context->checkpointCount >= 64) return;
+    context->checkpoints[context->checkpointCount] = event.checkpoint;
+    context->checkpointResults[context->checkpointCount] = event.ownershipResult;
+    ++context->checkpointCount;
+}
 
 static void attemptNestedProjectOpen(TestContext* context, const char* caller) {
     if (!context || !context->controller || context->reentryAttempted) return;
@@ -106,6 +127,38 @@ static void projectOpenObserver(void* userData, const WorkspaceProjectOpenEvent&
         context->staleFailureCandidateGenerationMatched = event.candidateGenerationMatches;
         context->staleFailureOwnerMatches = event.transactionOwnerMatches;
     }
+    if (event.state == WorkspaceProjectOpenState::Failed)
+        context->failedOwnershipResult = event.ownershipResult;
+    if (event.state == WorkspaceProjectOpenState::Loaded && context->controller) {
+        if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::RequestId)
+            ++context->controller->projectOpenRequestId;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::RequestGeneration)
+            ++context->controller->projectOpenRequestGeneration;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::TransactionId)
+            ++context->controller->projectOpenTransactionId;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::TransactionGeneration)
+            ++context->controller->projectOpenTransactionGeneration;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::CandidateId)
+            ++context->controller->projectOpenCandidateId;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::CandidateGeneration)
+            ++context->controller->projectOpenCandidateGeneration;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::CandidateProjectGeneration)
+            ++context->controller->projectOpenCandidateProjectGeneration;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::RefreshGeneration)
+            ++context->controller->projectOpenRefreshGeneration;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::ActiveProjectId &&
+                 context->controller->model.hasProject)
+            std::strcpy(context->controller->model.project.projectId, "com.example.changed");
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::ActiveProjectGeneration)
+            ++context->controller->model.projectGeneration;
+        else if (context->ownerMutationArmed && context->ownerMutation == TestContext::OwnerMutation::ControllerProgress)
+            context->controller->projectOpenInProgress = false;
+        if (context->ownerMutationArmed && context->ownerMutation != TestContext::OwnerMutation::None)
+            context->ownerMutationApplied = true;
+        if (context->ownerMutation == TestContext::OwnerMutation::None)
+            context->mismatchedCheckedRequestResult = WorkspaceControllerCheckProjectLoadOwnership(
+                context->controller, event.checkedRequestId + 1);
+    }
 }
 
 static bool readFile(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
@@ -157,6 +210,15 @@ static std::string readAll(const fs::path& path) {
     return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 }
 
+static bool traceHasCheckpoint(const TestContext& context, WorkspaceProjectLoadCheckpoint checkpoint,
+                               WorkspaceProjectLoadOwnershipResult result) {
+    for (uint32_t i = 0; i < context.checkpointCount; ++i) {
+        if (context.checkpoints[i] != checkpoint) continue;
+        if (context.checkpointResults[i] == result) return true;
+    }
+    return false;
+}
+
 static Project makeProject() {
     Project project = {};
     project.formatVersion = 1;
@@ -187,6 +249,7 @@ static void runProjectReentryCase(const fs::path& projectRoot,
     WorkspaceControllerInit(&controller, fileSystem);
     context.controller = &controller;
     WorkspaceControllerSetProjectOpenObserver(&controller, projectOpenObserver, &context);
+    WorkspaceControllerSetProjectLoadTrace(&controller, projectLoadTrace, &context);
 
     TEST_CHECK(WorkspaceControllerOpenProjectFrom(&controller, projectRoot.string().c_str(),
                                                   "test_outer_transaction"));
@@ -201,10 +264,39 @@ static void runProjectReentryCase(const fs::path& projectRoot,
     TEST_CHECK(controller.projectOpenManifestValidationCount == 1);
     TEST_CHECK(controller.projectOpenRefreshCount == 1);
     TEST_CHECK(controller.projectOpenCommitCount == 1);
+    TEST_CHECK(controller.projectOpenReleaseCount == 1);
     TEST_CHECK(!controller.projectOpenInProgress);
     TEST_CHECK(controller.lastProjectError == ProjectErrorCode::None);
     TEST_CHECK(context.readyCount == 1 && context.failedCount == 0);
+    TEST_CHECK(context.mismatchedCheckedRequestResult == WorkspaceProjectLoadOwnershipResult::RequestIdMismatch);
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::RequestAccepted,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::TransactionCreated,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::ProjectMetadataValidated,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::ApplicationManifestValidated,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::Loaded,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::BeforeRefresh,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::AfterRefresh,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::BeforeCommit,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::AfterCommit,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::Ready,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::ObserverReturn,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::TransactionRelease,
+                                  WorkspaceProjectLoadOwnershipResult::Current));
+    TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::TransactionReleased,
+                                  WorkspaceProjectLoadOwnershipResult::TransactionNotActive));
     TEST_CHECK(controller.model.hasProject);
+    TEST_CHECK(controller.model.projectGeneration == controller.projectOpenCandidateProjectGeneration);
     TEST_CHECK(controller.projectOpenTransactionId != 0);
     const uint64_t firstTransactionId = controller.projectOpenTransactionId;
     const uint64_t firstTransactionGeneration = controller.projectOpenTransactionGeneration;
@@ -216,11 +308,13 @@ static void runProjectReentryCase(const fs::path& projectRoot,
     TEST_CHECK(controller.projectOpenTransactionGeneration > firstTransactionGeneration);
     TEST_CHECK(controller.projectOpenState == WorkspaceProjectOpenState::Ready);
     TEST_CHECK(!controller.projectOpenInProgress);
+    TEST_CHECK(controller.model.projectGeneration == controller.projectOpenCandidateProjectGeneration);
     TEST_CHECK(context.readyCount == 2 && context.failedCount == 0);
 
     WorkspaceControllerInit(&relaunchedController, fileSystem);
     context.controller = &relaunchedController;
     WorkspaceControllerSetProjectOpenObserver(&relaunchedController, projectOpenObserver, &context);
+    WorkspaceControllerSetProjectLoadTrace(&relaunchedController, projectLoadTrace, &context);
     TEST_CHECK(WorkspaceControllerOpenProjectFrom(&relaunchedController,
                                                   projectRoot.string().c_str(), "test_app_relaunch"));
     TEST_CHECK(relaunchedController.projectOpenRequestId == 1);
@@ -229,6 +323,9 @@ static void runProjectReentryCase(const fs::path& projectRoot,
                controller.projectOpenTransactionGeneration);
     TEST_CHECK(relaunchedController.projectOpenState == WorkspaceProjectOpenState::Ready);
     TEST_CHECK(!relaunchedController.projectOpenInProgress);
+    TEST_CHECK(relaunchedController.model.projectGeneration ==
+               relaunchedController.projectOpenCandidateProjectGeneration);
+    TEST_CHECK(relaunchedController.projectOpenReleaseCount == 1);
     TEST_CHECK(context.readyCount == 3 && context.failedCount == 0);
 }
 
@@ -241,6 +338,7 @@ static void runProjectStaleGenerationCase(const fs::path& projectRoot) {
     WorkspaceControllerInit(&controller, fileSystem);
     context.controller = &controller;
     WorkspaceControllerSetProjectOpenObserver(&controller, projectOpenObserver, &context);
+    WorkspaceControllerSetProjectLoadTrace(&controller, projectLoadTrace, &context);
 
     TEST_CHECK(WorkspaceControllerOpenProjectFrom(&controller, projectRoot.string().c_str(),
                                                   "test_stale_generation_baseline"));
@@ -259,9 +357,11 @@ static void runProjectStaleGenerationCase(const fs::path& projectRoot) {
     TEST_CHECK(context.staleFailureRequestGenerationMatched == false);
     TEST_CHECK(context.staleFailureCandidateGenerationMatched);
     TEST_CHECK(!context.staleFailureOwnerMatches);
+    TEST_CHECK(context.failedOwnershipResult == WorkspaceProjectLoadOwnershipResult::RequestGenerationMismatch);
     TEST_CHECK(controller.projectOpenManifestValidationCount == 1);
     TEST_CHECK(controller.projectOpenRefreshCount == 0);
     TEST_CHECK(controller.projectOpenCommitCount == 0);
+    TEST_CHECK(controller.projectOpenReleaseCount == 1);
     TEST_CHECK(!controller.projectOpenInProgress);
     TEST_CHECK(controller.model.hasProject);
     TEST_CHECK(controller.model.projectGeneration == previousProjectGeneration);
@@ -274,6 +374,43 @@ static void runProjectStaleGenerationCase(const fs::path& projectRoot) {
     TEST_CHECK(controller.projectOpenState == WorkspaceProjectOpenState::Ready);
     TEST_CHECK(!controller.projectOpenInProgress);
     TEST_CHECK(context.readyCount == 2 && context.failedCount == 1);
+}
+
+static void runProjectOwnerReasonCase(const fs::path& projectRoot,
+                                      TestContext::OwnerMutation mutation,
+                                      WorkspaceProjectLoadOwnershipResult expectedReason,
+                                      bool establishActiveProject) {
+    static WorkspaceController controller;
+    TestContext context;
+    context.ownerMutation = mutation;
+    ProjectFileSystem fileSystem = {
+        &context, statFile, listFiles, readFile, writeFile, createDirectory, removePath
+    };
+    WorkspaceControllerInit(&controller, fileSystem);
+    context.controller = &controller;
+    WorkspaceControllerSetProjectOpenObserver(&controller, projectOpenObserver, &context);
+    WorkspaceControllerSetProjectLoadTrace(&controller, projectLoadTrace, &context);
+    if (establishActiveProject)
+        TEST_CHECK(WorkspaceControllerOpenProjectFrom(&controller, projectRoot.string().c_str(),
+                                                      "test_owner_reason_baseline"));
+    context.ownerMutationArmed = true;
+    const uint64_t activeGeneration = controller.model.projectGeneration;
+    char activeProjectId[kMaxProjectIdBytes] = {};
+    if (controller.model.hasProject)
+        std::strcpy(activeProjectId, controller.model.project.projectId);
+    TEST_CHECK(!WorkspaceControllerOpenProjectFrom(&controller, projectRoot.string().c_str(),
+                                                   "test_owner_reason_mismatch"));
+    TEST_CHECK(context.ownerMutationApplied);
+    TEST_CHECK(context.failedOwnershipResult == expectedReason);
+    TEST_CHECK(controller.projectOpenReleaseCount == 1);
+    TEST_CHECK(controller.projectOpenCommitCount == 0);
+    TEST_CHECK(!controller.projectOpenInProgress);
+    if (mutation == TestContext::OwnerMutation::ActiveProjectId)
+        std::strcpy(controller.model.project.projectId, activeProjectId);
+    if (mutation == TestContext::OwnerMutation::ActiveProjectGeneration)
+        controller.model.projectGeneration = activeGeneration;
+    TEST_CHECK(WorkspaceControllerCheckProjectLoadOwnership(&controller,
+        controller.projectOpenRequestId) == WorkspaceProjectLoadOwnershipResult::TransactionNotActive);
 }
 
 int main(int argc, char** argv) {
@@ -476,13 +613,19 @@ int main(int argc, char** argv) {
     TEST_CHECK(!ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, &validationGeneration, &manifestDiagnostic));
     TEST_CHECK(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestExpectedGenerationStale);
     validationGeneration.expectedIdentityGeneration = 7;
-    validationGeneration.candidateGeneration = 8;
+    validationGeneration.candidateGeneration = 0;
     TEST_CHECK(!ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, &validationGeneration, &manifestDiagnostic));
     TEST_CHECK(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestCandidateGenerationStale);
     validationGeneration.candidateGeneration = 7;
     validationGeneration.parsedIdentityGeneration = 6;
     TEST_CHECK(!ValidateApplicationManifestIdentity(parsedManifestA, loaded.project, &validationGeneration, &manifestDiagnostic));
     TEST_CHECK(manifestDiagnostic.resultCode == ProjectErrorCode::ManifestParsedGenerationStale);
+    validationGeneration.requestGeneration = 19;
+    validationGeneration.candidateGeneration = 8;
+    validationGeneration.expectedIdentityGeneration = 8;
+    validationGeneration.parsedIdentityGeneration = 8;
+    TEST_CHECK(ValidateApplicationManifestIdentity(parsedManifestA, loaded.project,
+                                                    &validationGeneration, &manifestDiagnostic));
 
     std::string truncatedIdentityManifest = validManifestBytes;
     idAt = truncatedIdentityManifest.find(validId);
@@ -680,6 +823,28 @@ int main(int argc, char** argv) {
     runProjectReentryCase(generatedRoot, TestContext::ReentryPoint::LoadStarted,
                           "test_load_started_observer");
     runProjectStaleGenerationCase(generatedRoot);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::RequestId,
+        WorkspaceProjectLoadOwnershipResult::RequestIdMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::RequestGeneration,
+        WorkspaceProjectLoadOwnershipResult::RequestGenerationMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::TransactionId,
+        WorkspaceProjectLoadOwnershipResult::TransactionIdMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::TransactionGeneration,
+        WorkspaceProjectLoadOwnershipResult::TransactionGenerationMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::CandidateId,
+        WorkspaceProjectLoadOwnershipResult::CandidateIdMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::CandidateGeneration,
+        WorkspaceProjectLoadOwnershipResult::CandidateGenerationMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::CandidateProjectGeneration,
+        WorkspaceProjectLoadOwnershipResult::CandidateProjectGenerationMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::RefreshGeneration,
+        WorkspaceProjectLoadOwnershipResult::RefreshGenerationMismatch, false);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::ActiveProjectId,
+        WorkspaceProjectLoadOwnershipResult::ActiveProjectIdMismatch, true);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::ActiveProjectGeneration,
+        WorkspaceProjectLoadOwnershipResult::ActiveProjectGenerationMismatch, true);
+    runProjectOwnerReasonCase(generatedRoot, TestContext::OwnerMutation::ControllerProgress,
+        WorkspaceProjectLoadOwnershipResult::ControllerNotInProgress, false);
 
     if (!preserve) fs::remove_all(testRoot, ec);
     std::cout << "Developer Studio project parser/generator PASS\n";

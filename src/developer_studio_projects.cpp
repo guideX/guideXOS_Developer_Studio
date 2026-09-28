@@ -936,7 +936,7 @@ bool ValidateApplicationManifestIdentity(const ApplicationManifest& manifest, co
         const bool generationContextPresent = generation->requestId || generation->requestGeneration || generation->candidateId ||
             generation->candidateGeneration || generation->expectedIdentityGeneration || generation->parsedIdentityGeneration;
         if (generationContextPresent) {
-            if (!generation->candidateGeneration || generation->requestGeneration != generation->candidateGeneration) {
+            if (!generation->candidateGeneration) {
                 if (diagnostic) {
                     diagnostic->mismatchField = ManifestIdentityMismatchField::CandidateGeneration;
                     diagnostic->resultCode = ProjectErrorCode::ManifestCandidateGenerationStale;
@@ -1302,7 +1302,9 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
 
 bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadataPath,
                  ProjectOperationResult* result, ProjectLoadScratch* scratch,
-                 const ManifestValidationGeneration* generation) {
+                 const ManifestValidationGeneration* generation,
+                 ProjectLoadCheckpointObserver checkpointObserver,
+                 void* checkpointUserData) {
     if (!result) return false;
     // ProjectOperationResult owns the bounded project metadata buffers. Do
     // not materialize a second full result temporary on the NativeElf stack.
@@ -1363,6 +1365,16 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     copyText(project.rootPath, sizeof(project.rootPath), root);
     project.loaded = true;
     project.loadState = ProjectLoadState::Loaded;
+    result->manifestDiagnostic.available = true;
+    copyText(result->manifestDiagnostic.projectMetadataPath,
+             sizeof(result->manifestDiagnostic.projectMetadataPath), metadataPath);
+    result->manifestDiagnostic.projectMetadataExpectedSize = metadataInfo.size;
+    result->manifestDiagnostic.projectMetadataBytesRead = bytes;
+    result->manifestDiagnostic.projectMetadataHashFnv1a64 = ComputeManifestContentHashFnv1a64(metadata, bytes);
+    if (generation) result->manifestDiagnostic.generation = *generation;
+    if (checkpointObserver)
+        checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::ProjectMetadataValidated,
+                           &result->manifestDiagnostic);
     char* manifestPath = scratch->manifestPath;
     if (!joinProjectPath(root, project.manifestPath, manifestPath, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
     if (!verifyRequiredFiles(fileSystem, project)) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
@@ -1432,6 +1444,9 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     project.validationState = ProjectValidationState::Valid;
     result->success = true;
     result->error = ProjectErrorCode::None;
+    if (checkpointObserver)
+        checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::ApplicationManifestValidated,
+                           &result->manifestDiagnostic);
     return true;
 }
 
