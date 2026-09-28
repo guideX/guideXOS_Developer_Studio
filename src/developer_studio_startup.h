@@ -55,6 +55,15 @@ enum class DiagnosticSentinelIoResult : uint8_t {
     IoError
 };
 
+enum class DiagnosticSentinelPathFailure : uint8_t {
+    None,
+    InvalidArgument,
+    NotAbsolute,
+    OutputTooSmall,
+    EmptyPath,
+    TraversalComponent
+};
+
 struct DiagnosticSentinelIo {
     void* userData;
     DiagnosticSentinelIoResult (*stat)(void* userData, const char* path,
@@ -69,6 +78,10 @@ struct DiagnosticSentinelDetection {
     DiagnosticSentinelReason reason;
     char normalizedPath[96];
     bool pathNormalized;
+    uint32_t pathInputLength;
+    uint32_t pathFailureOffset;
+    uint8_t pathFirstByte;
+    DiagnosticSentinelPathFailure pathFailure;
 };
 
 static const uint32_t kDiagnosticStartupProjectPathCapacity = 96;
@@ -114,6 +127,10 @@ const char* DiagnosticStartupStateName(DiagnosticStartupState state);
 void DiagnosticSentinelDetectionBegin(DiagnosticSentinelDetection* detection,
                                       uint64_t startupGeneration);
 bool DiagnosticSentinelNormalizePath(const char* path, char* output, uint32_t capacity);
+bool DiagnosticSentinelNormalizePathDetailed(const char* path, char* output, uint32_t capacity,
+                                             DiagnosticSentinelPathFailure* failure,
+                                             uint32_t* failureOffset);
+const char* DiagnosticSentinelPathFailureName(DiagnosticSentinelPathFailure failure);
 bool DiagnosticSentinelDetectionEvaluate(DiagnosticSentinelDetection* detection,
                                          uint64_t startupGeneration,
                                          bool filesystemReady,

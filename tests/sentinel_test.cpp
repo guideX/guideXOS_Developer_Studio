@@ -118,13 +118,21 @@ static void testWrongMountCannotProducePositive() {
 
 static void testCanonicalPathNormalizationAndValidation() {
     char normalized[96] = {};
+    DiagnosticSentinelPathFailure pathFailure = DiagnosticSentinelPathFailure::None;
+    uint32_t failureOffset = 99;
     assert(DiagnosticSentinelNormalizePath("//Apps\\DeveloperStudio//.phase28q-diagnostic/",
         normalized, sizeof(normalized)));
     assert(std::strcmp(normalized, GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH) == 0);
-    assert(!DiagnosticSentinelNormalizePath("Apps/DeveloperStudio/.phase28q-diagnostic",
-        normalized, sizeof(normalized)));
-    assert(!DiagnosticSentinelNormalizePath("/Apps/../.phase28q-diagnostic",
-        normalized, sizeof(normalized)));
+    assert(!DiagnosticSentinelNormalizePathDetailed(
+        "Apps/DeveloperStudio/.phase28q-diagnostic", normalized, sizeof(normalized),
+        &pathFailure, &failureOffset));
+    assert(pathFailure == DiagnosticSentinelPathFailure::NotAbsolute && failureOffset == 0);
+    assert(!DiagnosticSentinelNormalizePathDetailed("/Apps/../.phase28q-diagnostic",
+        normalized, sizeof(normalized), &pathFailure, &failureOffset));
+    assert(pathFailure == DiagnosticSentinelPathFailure::TraversalComponent && failureOffset == 6);
+    assert(!DiagnosticSentinelNormalizePathDetailed("/Apps", normalized, 4,
+        &pathFailure, &failureOffset));
+    assert(pathFailure == DiagnosticSentinelPathFailure::OutputTooSmall && failureOffset == 3);
 
     DiagnosticSentinelDetection detection = {};
     DiagnosticSentinelDetectionBegin(&detection, 105);
@@ -133,6 +141,9 @@ static void testCanonicalPathNormalizationAndValidation() {
     assert(DiagnosticSentinelDetectionEvaluate(&detection, 105, true,
         DiagnosticSentinelMountState::Ready, &io));
     assert(detection.pathNormalized);
+    assert(detection.pathFailure == DiagnosticSentinelPathFailure::None);
+    assert(detection.pathInputLength == sizeof(GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH) - 1);
+    assert(detection.pathFirstByte == static_cast<uint8_t>('/'));
     assert(std::strcmp(detection.normalizedPath, GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH) == 0);
 }
 

@@ -184,8 +184,19 @@ void DiagnosticSentinelDetectionBegin(DiagnosticSentinelDetection* detection,
         DiagnosticSentinelReason::None;
 }
 
-bool DiagnosticSentinelNormalizePath(const char* path, char* output, uint32_t capacity) {
-    if (!path || !output || capacity < 2 || path[0] != '/') return false;
+bool DiagnosticSentinelNormalizePathDetailed(const char* path, char* output, uint32_t capacity,
+                                             DiagnosticSentinelPathFailure* failure,
+                                             uint32_t* failureOffset) {
+    if (failure) *failure = DiagnosticSentinelPathFailure::None;
+    if (failureOffset) *failureOffset = 0;
+    if (!path || !output || capacity < 2) {
+        if (failure) *failure = DiagnosticSentinelPathFailure::InvalidArgument;
+        return false;
+    }
+    if (path[0] != '/') {
+        if (failure) *failure = DiagnosticSentinelPathFailure::NotAbsolute;
+        return false;
+    }
     uint32_t input = 0;
     uint32_t out = 0;
     bool previousSeparator = false;
@@ -196,17 +207,29 @@ bool DiagnosticSentinelNormalizePath(const char* path, char* output, uint32_t ca
         if (ch == '/') {
             if (previousSeparator) continue;
             previousSeparator = true;
-            if (out + 1 >= capacity) return false;
+            if (out + 1 >= capacity) {
+                if (failure) *failure = DiagnosticSentinelPathFailure::OutputTooSmall;
+                if (failureOffset) *failureOffset = input - 1;
+                return false;
+            }
             output[out++] = '/';
             continue;
         }
         previousSeparator = false;
-        if (out + 1 >= capacity) return false;
+        if (out + 1 >= capacity) {
+            if (failure) *failure = DiagnosticSentinelPathFailure::OutputTooSmall;
+            if (failureOffset) *failureOffset = input - 1;
+            return false;
+        }
         output[out++] = ch;
     }
     while (out > 1 && output[out - 1] == '/') --out;
     output[out] = '\0';
-    if (out < 2) return false;
+    if (out < 2) {
+        if (failure) *failure = DiagnosticSentinelPathFailure::EmptyPath;
+        if (failureOffset) *failureOffset = input;
+        return false;
+    }
 
     uint32_t componentStart = 1;
     for (uint32_t i = 1; i <= out; ++i) {
@@ -214,12 +237,30 @@ bool DiagnosticSentinelNormalizePath(const char* path, char* output, uint32_t ca
         const uint32_t componentLength = i - componentStart;
         if ((componentLength == 1 && output[componentStart] == '.') ||
             (componentLength == 2 && output[componentStart] == '.' && output[componentStart + 1] == '.')) {
+            if (failure) *failure = DiagnosticSentinelPathFailure::TraversalComponent;
+            if (failureOffset) *failureOffset = componentStart;
             output[0] = '\0';
             return false;
         }
         componentStart = i + 1;
     }
     return true;
+}
+
+bool DiagnosticSentinelNormalizePath(const char* path, char* output, uint32_t capacity) {
+    return DiagnosticSentinelNormalizePathDetailed(path, output, capacity, nullptr, nullptr);
+}
+
+const char* DiagnosticSentinelPathFailureName(DiagnosticSentinelPathFailure failure) {
+    switch (failure) {
+    case DiagnosticSentinelPathFailure::None: return "none";
+    case DiagnosticSentinelPathFailure::InvalidArgument: return "invalid_argument";
+    case DiagnosticSentinelPathFailure::NotAbsolute: return "not_absolute";
+    case DiagnosticSentinelPathFailure::OutputTooSmall: return "output_too_small";
+    case DiagnosticSentinelPathFailure::EmptyPath: return "empty_path";
+    case DiagnosticSentinelPathFailure::TraversalComponent: return "traversal_component";
+    }
+    return "unknown";
 }
 
 bool DiagnosticSentinelDetectionEvaluate(DiagnosticSentinelDetection* detection,
@@ -246,9 +287,12 @@ bool DiagnosticSentinelDetectionEvaluate(DiagnosticSentinelDetection* detection,
                           DiagnosticSentinelReason::WrongMount);
         return true;
     }
-    if (!DiagnosticSentinelNormalizePath(GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH,
-                                         detection->normalizedPath,
-                                         sizeof(detection->normalizedPath))) {
+    const char* const sentinelPath = GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH;
+    detection->pathInputLength = textLength(sentinelPath);
+    detection->pathFirstByte = static_cast<uint8_t>(sentinelPath[0]);
+    if (!DiagnosticSentinelNormalizePathDetailed(sentinelPath,
+            detection->normalizedPath, sizeof(detection->normalizedPath),
+            &detection->pathFailure, &detection->pathFailureOffset)) {
         setSentinelResult(detection, DiagnosticSentinelState::Error,
                           DiagnosticSentinelReason::PathInvalid);
         return true;

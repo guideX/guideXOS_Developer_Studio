@@ -16455,7 +16455,23 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             appendText(g_textScratch, sizeof(g_textScratch), g_phase29iSentinelDetection.normalizedPath);
             phase29iSentinelTrace(ctx, "PATH_NORMALIZED", g_textScratch);
         } else {
-            phase29iSentinelTrace(ctx, "PATH_NORMALIZATION_ERROR", "reason=SENTINEL_PATH_INVALID");
+            copyText(g_textScratch, sizeof(g_textScratch), "reason=SENTINEL_PATH_INVALID failure=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                       DiagnosticSentinelPathFailureName(g_phase29iSentinelDetection.pathFailure));
+            appendText(g_textScratch, sizeof(g_textScratch), " offset=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                           g_phase29iSentinelDetection.pathFailureOffset);
+            appendText(g_textScratch, sizeof(g_textScratch), " input_length=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                           g_phase29iSentinelDetection.pathInputLength);
+            appendText(g_textScratch, sizeof(g_textScratch), " first_byte=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                           g_phase29iSentinelDetection.pathFirstByte);
+            appendText(g_textScratch, sizeof(g_textScratch), " input=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                       GUIDEXOS_PHASE28Q_DIAGNOSTIC_SENTINEL_PATH);
+            appendText(g_textScratch, sizeof(g_textScratch), " capacity=96");
+            phase29iSentinelTrace(ctx, "PATH_NORMALIZATION_ERROR", g_textScratch);
         }
         if (g_phase29iSentinelDetection.state == DiagnosticSentinelState::Present) {
             phase29iSentinelTrace(ctx, "FILE_FOUND", "result=found type=regular content=exact");
