@@ -1,6 +1,6 @@
 #include "developer_studio_symbols.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -63,7 +63,7 @@ static bool testRead(void*, const char* path, char* buffer, uint32_t capacity, u
 
 static void writeText(const fs::path& path, const std::string& text) {
     std::ofstream output(path, std::ios::binary);
-    assert(output);
+    TEST_CHECK(output);
     output << text;
 }
 
@@ -103,9 +103,9 @@ static void testScanner() {
         "class Forward; template <typename T> class Box { T value; };\n";
     DocumentSymbol symbols[128] = {};
     SymbolScanResult result = {};
-    assert(ScanDocumentSymbols(source, static_cast<uint32_t>(std::string(source).size()), 41, 7,
+    TEST_CHECK(ScanDocumentSymbols(source, static_cast<uint32_t>(std::string(source).size()), 41, 7,
                                symbols, 128, &result));
-    assert(result.success);
+    TEST_CHECK(result.success);
     bool anonymous = false, widget = false, nested = false, point = false, color = false, run = false;
     bool ctor = false, dtor = false, count = false, alias = false, global = false, stat = false;
     bool freeFunction = false, box = false, forward = false;
@@ -126,27 +126,27 @@ static void testScanner() {
         if (symbol.kind == SymbolKind::Function && std::string(symbol.name) == "freeFunction") freeFunction = true;
         if (symbol.kind == SymbolKind::Class && std::string(symbol.name) == "Box") box = true;
         if (symbol.kind == SymbolKind::Class && std::string(symbol.name) == "Forward") forward = true;
-        assert(std::string(symbol.name) != "Disabled");
-        assert(std::string(symbol.name) != "Fake");
+        TEST_CHECK(std::string(symbol.name) != "Disabled");
+        TEST_CHECK(std::string(symbol.name) != "Fake");
     }
-    assert(anonymous && widget && nested && point && color && run && ctor && dtor && count && alias &&
+    TEST_CHECK(anonymous && widget && nested && point && color && run && ctor && dtor && count && alias &&
            global && stat && freeFunction && box && forward);
-    assert(countKindName(symbols, result.symbolCount, SymbolKind::Function, "helper") == 1);
-    assert(countKindName(symbols, result.symbolCount, SymbolKind::Function, "caller") == 1);
-    assert(countKindName(symbols, result.symbolCount, SymbolKind::Function, "Duplicate") == 2);
+    TEST_CHECK(countKindName(symbols, result.symbolCount, SymbolKind::Function, "helper") == 1);
+    TEST_CHECK(countKindName(symbols, result.symbolCount, SymbolKind::Function, "caller") == 1);
+    TEST_CHECK(countKindName(symbols, result.symbolCount, SymbolKind::Function, "Duplicate") == 2);
     for (uint32_t i = 0; i < result.symbolCount; ++i) {
-        assert(symbols[i].ordinal == i);
-        if (i > 0) assert(symbols[i - 1].location.identifierOffset <= symbols[i].location.identifierOffset);
+        TEST_CHECK(symbols[i].ordinal == i);
+        if (i > 0) TEST_CHECK(symbols[i - 1].location.identifierOffset <= symbols[i].location.identifierOffset);
     }
 
     const char* malformed = "namespace Broken { class Open { void maybe( ;\n";
     DocumentSymbol malformedSymbols[16] = {};
     SymbolScanResult malformedResult = {};
-    assert(ScanDocumentSymbols(malformed, static_cast<uint32_t>(std::string(malformed).size()), 42, 1,
+    TEST_CHECK(ScanDocumentSymbols(malformed, static_cast<uint32_t>(std::string(malformed).size()), 42, 1,
                                malformedSymbols, 16, &malformedResult));
-    assert(malformedResult.success);
-    assert(countKindName(malformedSymbols, malformedResult.symbolCount, SymbolKind::Namespace, "Broken") == 1);
-    assert(countKindName(malformedSymbols, malformedResult.symbolCount, SymbolKind::Class, "Open") == 1);
+    TEST_CHECK(malformedResult.success);
+    TEST_CHECK(countKindName(malformedSymbols, malformedResult.symbolCount, SymbolKind::Namespace, "Broken") == 1);
+    TEST_CHECK(countKindName(malformedSymbols, malformedResult.symbolCount, SymbolKind::Class, "Open") == 1);
 }
 
 static void testDatabase() {
@@ -157,28 +157,28 @@ static void testDatabase() {
     SymbolDatabaseInit(&database, projectStorage, 1024, documentStorage, 16, scratchStorage, 256);
     const char* first = "namespace A { class Alpha {}; void build() {} }\n";
     const char* second = "struct Beta {}; static int state;\n";
-    assert(SymbolDatabaseIndexDocument(&database, "C:/symbols/first.cpp", 10, 1, false,
+    TEST_CHECK(SymbolDatabaseIndexDocument(&database, "C:/symbols/first.cpp", 10, 1, false,
                                       first, static_cast<uint32_t>(std::string(first).size())));
-    assert(SymbolDatabaseIndexDocument(&database, "C:/symbols/second.cpp", 11, 1, true,
+    TEST_CHECK(SymbolDatabaseIndexDocument(&database, "C:/symbols/second.cpp", 11, 1, true,
                                       second, static_cast<uint32_t>(std::string(second).size())));
-    assert(SymbolDatabaseDocumentCount(&database) == 2);
-    assert(SymbolDatabaseProjectSymbolCount(&database) > 0);
-    assert(hasKindName(database, SymbolKind::Class, "Alpha"));
-    assert(hasKindName(database, SymbolKind::StaticVariable, "state"));
+    TEST_CHECK(SymbolDatabaseDocumentCount(&database) == 2);
+    TEST_CHECK(SymbolDatabaseProjectSymbolCount(&database) > 0);
+    TEST_CHECK(hasKindName(database, SymbolKind::Class, "Alpha"));
+    TEST_CHECK(hasKindName(database, SymbolKind::StaticVariable, "state"));
     uint32_t matches[100] = {};
-    assert(SymbolDatabaseLookupByKind(&database, SymbolKind::Class, matches, 100) >= 1);
-    assert(SymbolDatabaseFindSymbols(&database, "build", false, matches, 100) >= 1);
-    assert(SymbolDatabaseFindSymbols(&database, "ALP", false, matches, 100) >= 1);
-    assert(SymbolDatabaseLookupByPrefix(&database, "Al", true, matches, 100) >= 1);
+    TEST_CHECK(SymbolDatabaseLookupByKind(&database, SymbolKind::Class, matches, 100) >= 1);
+    TEST_CHECK(SymbolDatabaseFindSymbols(&database, "build", false, matches, 100) >= 1);
+    TEST_CHECK(SymbolDatabaseFindSymbols(&database, "ALP", false, matches, 100) >= 1);
+    TEST_CHECK(SymbolDatabaseLookupByPrefix(&database, "Al", true, matches, 100) >= 1);
     const uint32_t before = database.incrementalIndexCount;
     const char* changed = "namespace A { class Alpha {}; void rebuild() {} }\n";
-    assert(SymbolDatabaseIndexDocument(&database, "C:/symbols/first.cpp", 10, 2, true,
+    TEST_CHECK(SymbolDatabaseIndexDocument(&database, "C:/symbols/first.cpp", 10, 2, true,
                                       changed, static_cast<uint32_t>(std::string(changed).size())));
-    assert(database.incrementalIndexCount == before + 1);
-    assert(SymbolDatabaseFindSymbols(&database, "rebuild", true, matches, 100) == 1);
-    assert(SymbolDatabaseLookupByName(&database, "build", true, matches, 100) == 0);
-    assert(SymbolDatabaseRemoveDocument(&database, "C:/symbols/second.cpp"));
-    assert(SymbolDatabaseDocumentCount(&database) == 1);
+    TEST_CHECK(database.incrementalIndexCount == before + 1);
+    TEST_CHECK(SymbolDatabaseFindSymbols(&database, "rebuild", true, matches, 100) == 1);
+    TEST_CHECK(SymbolDatabaseLookupByName(&database, "build", true, matches, 100) == 0);
+    TEST_CHECK(SymbolDatabaseRemoveDocument(&database, "C:/symbols/second.cpp"));
+    TEST_CHECK(SymbolDatabaseDocumentCount(&database) == 1);
 }
 
 static void testProjectIndexAndBounds() {
@@ -202,41 +202,41 @@ static void testProjectIndexAndBounds() {
     NormalizePath((root / "src" / "dirty.cpp").generic_string().c_str(), dirty.path, sizeof(dirty.path));
     TextBufferInit(&dirty.buffer);
     const char* dirtyText = "void DirtyOnly() {}\n";
-    assert(TextBufferSet(&dirty.buffer, dirtyText, static_cast<uint32_t>(std::string(dirtyText).size())));
+    TEST_CHECK(TextBufferSet(&dirty.buffer, dirtyText, static_cast<uint32_t>(std::string(dirtyText).size())));
     dirty.buffer.dirty = true;
     dirty.buffer.generation = 17;
-    assert(SymbolDatabaseIndexProject(&database, fileSystem, root.generic_string().c_str(), &dirty, 1, 77));
-    assert(database.fullIndexCount == 1);
-    assert(hasKindName(database, SymbolKind::Function, "DirtyOnly"));
-    assert(!hasKindName(database, SymbolKind::Function, "DiskStale"));
-    assert(hasKindName(database, SymbolKind::Function, "DiskOnly"));
+    TEST_CHECK(SymbolDatabaseIndexProject(&database, fileSystem, root.generic_string().c_str(), &dirty, 1, 77));
+    TEST_CHECK(database.fullIndexCount == 1);
+    TEST_CHECK(hasKindName(database, SymbolKind::Function, "DirtyOnly"));
+    TEST_CHECK(!hasKindName(database, SymbolKind::Function, "DiskStale"));
+    TEST_CHECK(hasKindName(database, SymbolKind::Function, "DiskOnly"));
     uint32_t indices[64] = {};
-    assert(SymbolDatabaseLookupByFile(&database, dirty.path, indices, 64) >= 1);
+    TEST_CHECK(SymbolDatabaseLookupByFile(&database, dirty.path, indices, 64) >= 1);
     const ProjectSymbol* dirtySymbol = SymbolDatabaseProjectSymbolAt(&database, indices[0]);
-    assert(dirtySymbol && dirtySymbol->symbol.location.documentId == dirty.documentId);
-    assert(dirtySymbol->symbol.location.generation == dirty.buffer.generation);
-    assert(dirtySymbol->symbol.location.line == 1);
-    assert(dirtySymbol->symbol.location.column == 6);
+    TEST_CHECK(dirtySymbol && dirtySymbol->symbol.location.documentId == dirty.documentId);
+    TEST_CHECK(dirtySymbol->symbol.location.generation == dirty.buffer.generation);
+    TEST_CHECK(dirtySymbol->symbol.location.line == 1);
+    TEST_CHECK(dirtySymbol->symbol.location.column == 6);
     const uint32_t previousIncremental = database.incrementalIndexCount;
     const char* changed = "void DirtyChanged() {}\n";
-    assert(SymbolDatabaseIndexDocument(&database, dirty.path, dirty.documentId, 18, true,
+    TEST_CHECK(SymbolDatabaseIndexDocument(&database, dirty.path, dirty.documentId, 18, true,
                                       changed, static_cast<uint32_t>(std::string(changed).size())));
-    assert(database.incrementalIndexCount == previousIncremental + 1);
-    assert(hasKindName(database, SymbolKind::Function, "DirtyChanged"));
-    assert(!hasKindName(database, SymbolKind::Function, "DirtyOnly"));
+    TEST_CHECK(database.incrementalIndexCount == previousIncremental + 1);
+    TEST_CHECK(hasKindName(database, SymbolKind::Function, "DirtyChanged"));
+    TEST_CHECK(!hasKindName(database, SymbolKind::Function, "DirtyOnly"));
 
     TextBuffer selected = {};
     TextBufferInit(&selected);
-    assert(TextBufferSet(&selected, changed, static_cast<uint32_t>(std::string(changed).size())));
+    TEST_CHECK(TextBufferSet(&selected, changed, static_cast<uint32_t>(std::string(changed).size())));
     const uint32_t changedCount = SymbolDatabaseLookupByName(&database, "DirtyChanged", true, indices, 64);
-    assert(changedCount == 1);
+    TEST_CHECK(changedCount == 1);
     const ProjectSymbol* changedSymbol = SymbolDatabaseProjectSymbolAt(&database, indices[0]);
-    assert(changedSymbol);
+    TEST_CHECK(changedSymbol);
     const uint32_t changedLength = static_cast<uint32_t>(std::string(changedSymbol->symbol.name).size());
-    assert(SelectTextRange(&selected, changedSymbol->symbol.location.identifierOffset, changedLength));
+    TEST_CHECK(SelectTextRange(&selected, changedSymbol->symbol.location.identifierOffset, changedLength));
     char selectedText[32] = {};
-    assert(GetSelectedText(&selected, selectedText, sizeof(selectedText)) == changedLength);
-    assert(std::string(selectedText) == "DirtyChanged");
+    TEST_CHECK(GetSelectedText(&selected, selectedText, sizeof(selectedText)) == changedLength);
+    TEST_CHECK(std::string(selectedText) == "DirtyChanged");
 
     static ProjectSymbol tinyProjectStorage[2];
     static SymbolDocument tinyDocumentStorage[2];
@@ -244,13 +244,13 @@ static void testProjectIndexAndBounds() {
     SymbolDatabase tiny = {};
     SymbolDatabaseInit(&tiny, tinyProjectStorage, 2, tinyDocumentStorage, 2, tinyScratchStorage, 32);
     const char* many = "namespace N { class A {}; struct B {}; enum E { X }; void f() {} }\n";
-    assert(SymbolDatabaseIndexDocument(&tiny, "C:/tiny.cpp", 1, 1, false, many,
+    TEST_CHECK(SymbolDatabaseIndexDocument(&tiny, "C:/tiny.cpp", 1, 1, false, many,
                                       static_cast<uint32_t>(std::string(many).size())));
-    assert(SymbolDatabaseIsTruncated(&tiny));
-    assert(SymbolDatabaseProjectSymbolCount(&tiny) <= 2);
+    TEST_CHECK(SymbolDatabaseIsTruncated(&tiny));
+    TEST_CHECK(SymbolDatabaseProjectSymbolCount(&tiny) <= 2);
     char longQuery[kSymbolMaxQueryBytes + 2] = {};
     for (uint32_t i = 0; i < kSymbolMaxQueryBytes + 1; ++i) longQuery[i] = 'a';
-    assert(SymbolDatabaseFindSymbols(&database, longQuery, false, indices, 64) == 0);
+    TEST_CHECK(SymbolDatabaseFindSymbols(&database, longQuery, false, indices, 64) == 0);
 
     const fs::path largeRoot = fs::temp_directory_path() / "guidexos-symbol-index-large-test";
     fs::remove_all(largeRoot, cleanupError);
@@ -267,13 +267,13 @@ static void testProjectIndexAndBounds() {
     static DocumentSymbol largeScratchStorage[64];
     SymbolDatabase large = {};
     SymbolDatabaseInit(&large, largeProjectStorage, 256, largeDocumentStorage, 160, largeScratchStorage, 64);
-    assert(SymbolDatabaseIndexProject(&large, fileSystem, largeRoot.generic_string().c_str(), nullptr, 0, 88));
-    assert(SymbolDatabaseDocumentCount(&large) == 128);
-    assert(SymbolDatabaseProjectSymbolCount(&large) == 128);
-    assert(std::string(SymbolDatabaseProjectSymbolAt(&large, 0)->symbol.name) == "ProjectSymbol00");
+    TEST_CHECK(SymbolDatabaseIndexProject(&large, fileSystem, largeRoot.generic_string().c_str(), nullptr, 0, 88));
+    TEST_CHECK(SymbolDatabaseDocumentCount(&large) == 128);
+    TEST_CHECK(SymbolDatabaseProjectSymbolCount(&large) == 128);
+    TEST_CHECK(std::string(SymbolDatabaseProjectSymbolAt(&large, 0)->symbol.name) == "ProjectSymbol00");
     uint32_t visible[100] = {};
-    assert(SymbolDatabaseFindSymbols(&large, "", false, visible, 100) == 100);
-    assert(SymbolDatabaseLookupByPrefix(&large, "ProjectSymbol", true, visible, 100) == 128);
+    TEST_CHECK(SymbolDatabaseFindSymbols(&large, "", false, visible, 100) == 100);
+    TEST_CHECK(SymbolDatabaseLookupByPrefix(&large, "ProjectSymbol", true, visible, 100) == 128);
     fs::remove_all(largeRoot, cleanupError);
     fs::remove_all(root, cleanupError);
 }

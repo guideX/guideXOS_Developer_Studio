@@ -1370,6 +1370,8 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     if (!fileSystem.stat(fileSystem.userData, manifestPath, &manifestFileInfo) || manifestFileInfo.kind != FileInfoKind::RegularFile) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
     if (manifestFileInfo.size > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::ProjectFileTooLarge); return false; }
     result->manifestDiagnostic.available = true;
+    copyText(result->manifestDiagnostic.projectMetadataPath,
+             sizeof(result->manifestDiagnostic.projectMetadataPath), metadataPath);
     copyText(result->manifestDiagnostic.manifestPath, sizeof(result->manifestDiagnostic.manifestPath), manifestPath);
     result->manifestDiagnostic.manifestExpectedSize = manifestFileInfo.size;
     result->manifestDiagnostic.projectMetadataExpectedSize = metadataInfo.size;
@@ -1401,11 +1403,16 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
         return false;
     }
     const bool identityMatches = ValidateApplicationManifestIdentity(manifest, project, generation, &result->manifestDiagnostic);
+    result->manifestDiagnostic.validationCount = 1;
+    copyText(result->manifestDiagnostic.validationRole,
+             sizeof(result->manifestDiagnostic.validationRole), "application");
     // The validator owns the field-by-field identity portion of the diagnostic
     // and clears that portion on each call. Restore the loader-owned raw input
     // evidence after it returns so a failure can be tied to the exact files and
     // generation that were read for this request.
     result->manifestDiagnostic.available = true;
+    copyText(result->manifestDiagnostic.projectMetadataPath,
+             sizeof(result->manifestDiagnostic.projectMetadataPath), metadataPath);
     copyText(result->manifestDiagnostic.manifestPath, sizeof(result->manifestDiagnostic.manifestPath), manifestPath);
     result->manifestDiagnostic.manifestExpectedSize = manifestFileInfo.size;
     result->manifestDiagnostic.manifestBytesRead = manifestSize;

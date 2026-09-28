@@ -1,6 +1,6 @@
 #include "developer_studio_debug_symbols.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -30,23 +30,23 @@ static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t proc
 static std::vector<unsigned char> readFile(const char* path, const char* fallback) {
     std::ifstream input(path, std::ios::binary);
     if (!input.good()) { input.clear(); input.open(fallback, std::ios::binary); }
-    assert(input.good());
+    TEST_CHECK(input.good());
     input.seekg(0, std::ios::end);
     const std::streamsize size = input.tellg();
     input.seekg(0, std::ios::beg);
     std::vector<unsigned char> bytes(static_cast<size_t>(size));
     input.read(reinterpret_cast<char*>(bytes.data()), size);
-    assert(input.good() || input.eof());
+    TEST_CHECK(input.good() || input.eof());
     return bytes;
 }
 
 static void put32(Memory* memory, uint64_t address, uint32_t value) {
-    assert(memory && address >= memory->base && address - memory->base + 4 <= sizeof(memory->bytes));
+    TEST_CHECK(memory && address >= memory->base && address - memory->base + 4 <= sizeof(memory->bytes));
     for (uint32_t i = 0; i < 4; ++i) memory->bytes[address - memory->base + i] = static_cast<uint8_t>(value >> (i * 8));
 }
 
 static void put64(Memory* memory, uint64_t address, uint64_t value) {
-    assert(memory && address >= memory->base && address - memory->base + 8 <= sizeof(memory->bytes));
+    TEST_CHECK(memory && address >= memory->base && address - memory->base + 8 <= sizeof(memory->bytes));
     for (uint32_t i = 0; i < 8; ++i) memory->bytes[address - memory->base + i] = static_cast<uint8_t>(value >> (i * 8));
 }
 
@@ -59,7 +59,7 @@ static const DebugDwarfVariable* findVariable(const DebugDwarfMapper& mapper,
 }
 
 static DebugDwarfValueNode* childByName(DebugDwarfVariableView* view, uint64_t parentId, const char* name) {
-    assert(view && parentId > 0 && parentId <= view->nodeCount);
+    TEST_CHECK(view && parentId > 0 && parentId <= view->nodeCount);
     DebugDwarfValueNode& parent = view->nodes[parentId - 1];
     for (uint32_t i = 0; i < parent.childCount; ++i) {
         const uint64_t childId = parent.childNodeIds[i];
@@ -86,19 +86,19 @@ static uint64_t findTypeDie(const DebugDwarfMapper& mapper, const char* name) {
 
 static uint64_t frameLocation(const DebugDwarfMapper& mapper, const DebugDwarfVariable& variable,
                              uint64_t frameBase) {
-    assert(variable.dieOffset != 0);
+    TEST_CHECK(variable.dieOffset != 0);
     int index = -1;
     for (uint32_t i = 0; i < mapper.debugInfoVariableCount; ++i)
         if (mapper.debugVariables[i].dieOffset == variable.dieOffset) { index = static_cast<int>(mapper.debugVariables[i].dieIndex); break; }
-    assert(index >= 0);
+    TEST_CHECK(index >= 0);
     const DebugDwarfDieInfo& die = mapper.dies[index];
-    assert(die.hasLocation && !die.locationIsList && die.locationLength >= 2 && die.location[0] == 0x91);
+    TEST_CHECK(die.hasLocation && !die.locationIsList && die.locationLength >= 2 && die.location[0] == 0x91);
     int64_t value = 0;
     uint32_t shift = 0;
     uint8_t byte = 0;
     uint32_t cursor = 1;
     do {
-        assert(cursor < die.locationLength);
+        TEST_CHECK(cursor < die.locationLength);
         byte = die.location[cursor++];
         value |= static_cast<int64_t>(byte & 0x7f) << shift;
         shift += 7;
@@ -112,27 +112,27 @@ static DebugDwarfMemberInfo memberNamed(const DebugDwarfMapper& mapper, uint64_t
         const DebugDwarfDieInfo* die = 0;
         for (uint32_t i = 0; i < mapper.debugInfoDieCount; ++i)
             if (mapper.dies[i].offset == typeOffset) { die = &mapper.dies[i]; break; }
-        assert(die);
+        TEST_CHECK(die);
         if (die->tag == 0x0f || die->tag == 0x16 || die->tag == 0x26 || die->tag == 0x35) {
-            assert(die->hasType);
+            TEST_CHECK(die->hasType);
             typeOffset = die->typeReference;
         } else break;
     }
     DebugDwarfTypeInfo type = {};
-    assert(DebugDwarfDescribeType(&mapper, typeOffset, &type));
+    TEST_CHECK(DebugDwarfDescribeType(&mapper, typeOffset, &type));
     for (uint32_t i = 0; i < type.memberCount; ++i) {
         DebugDwarfMemberInfo member = {};
-        assert(DebugDwarfDescribeMember(&mapper, typeOffset, i, &member));
+        TEST_CHECK(DebugDwarfDescribeMember(&mapper, typeOffset, i, &member));
         if (std::strcmp(member.name, name) == 0) return member;
     }
-    assert(false);
+    TEST_CHECK(false);
     return DebugDwarfMemberInfo();
 }
 
 static uint64_t memberAddress(const DebugDwarfMapper& mapper, uint64_t base,
                               uint64_t typeOffset, const char* name) {
     const DebugDwarfMemberInfo member = memberNamed(mapper, typeOffset, name);
-    assert(member.hasByteOffset && !member.byteOffsetIsExpression && member.byteOffset >= 0);
+    TEST_CHECK(member.hasByteOffset && !member.byteOffsetIsExpression && member.byteOffset >= 0);
     return base + static_cast<uint64_t>(member.byteOffset);
 }
 
@@ -141,20 +141,20 @@ int main() {
         "tests/fixtures/debugger-phase10/build/bin/amd64/debugger-phase10.elf",
         "../tests/fixtures/debugger-phase10/build/bin/amd64/debugger-phase10.elf");
     char sha[65] = {};
-    assert(DebugDwarfComputeSha256(elf.data(), elf.size(), sha, sizeof(sha)));
+    TEST_CHECK(DebugDwarfComputeSha256(elf.data(), elf.size(), sha, sizeof(sha)));
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
-    assert(DebugDwarfMapperLoad(&mapper, "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase10",
+    TEST_CHECK(DebugDwarfMapperLoad(&mapper, "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase10",
                                 "phase10", "native", "amd64", "build/bin/amd64/debugger-phase10.elf",
                                 elf.size(), sha, 9, elf.data(), elf.size(), 10, &error));
-    assert(mapper.debugInfoReady && mapper.dwarfVersion == 5);
+    TEST_CHECK(mapper.debugInfoReady && mapper.dwarfVersion == 5);
     const uint64_t incompleteTypeDie = findTypeDie(mapper, "gx_file_info");
-    assert(incompleteTypeDie != 0);
+    TEST_CHECK(incompleteTypeDie != 0);
     DebugDwarfTypeInfo incompleteType = {};
-    assert(DebugDwarfDescribeType(&mapper, incompleteTypeDie, &incompleteType));
-    assert(!incompleteType.complete && incompleteType.memberCount == 0);
+    TEST_CHECK(DebugDwarfDescribeType(&mapper, incompleteTypeDie, &incompleteType));
+    TEST_CHECK(!incompleteType.complete && incompleteType.memberCount == 0);
     const uint64_t inspectAddress = findFunctionAddress(mapper, "inspect");
-    assert(inspectAddress != 0);
+    TEST_CHECK(inspectAddress != 0);
 
     static Memory memory = {};
     memory.base = 0x700000;
@@ -172,7 +172,7 @@ int main() {
     frame.frameBase = frameBase;
 
     static DebugDwarfVariableView view = {};
-    assert(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
+    TEST_CHECK(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
     const DebugDwarfVariable* point = findVariable(mapper, view, "point");
     const DebugDwarfVariable* config = findVariable(mapper, view, "config");
     const DebugDwarfVariable* rect = findVariable(mapper, view, "rect");
@@ -180,8 +180,8 @@ int main() {
     const DebugDwarfVariable* node = findVariable(mapper, view, "node");
     const DebugDwarfVariable* wide = findVariable(mapper, view, "wide");
     const DebugDwarfVariable* nothing = findVariable(mapper, view, "nothing");
-    assert(point && config && rect && values && node && wide && nothing);
-    assert(config->address != 0 && config->rawByteCount == 8);
+    TEST_CHECK(point && config && rect && values && node && wide && nothing);
+    TEST_CHECK(config->address != 0 && config->rawByteCount == 8);
     const uint64_t pointAddress = frameLocation(mapper, *point, frameBase);
     const uint64_t configAddress = frameLocation(mapper, *config, frameBase);
     const uint64_t rectAddress = frameLocation(mapper, *rect, frameBase);
@@ -204,53 +204,53 @@ int main() {
     put64(&memory, memberAddress(mapper, nodeAddress, node->typeDieOffset, "next"), nodeAddress);
     put64(&memory, configAddress, configTarget);
     put64(&memory, nothingAddress, 0);
-    assert(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
+    TEST_CHECK(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
 
-    assert(view.nodes[rect->nodeId - 1].childCount == 0);
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, rect->nodeId));
+    TEST_CHECK(view.nodes[rect->nodeId - 1].childCount == 0);
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, rect->nodeId));
     DebugDwarfValueNode* originNode = childByName(&view, rect->nodeId, "origin");
     DebugDwarfValueNode* widthNode = childByName(&view, rect->nodeId, "width");
-    assert(originNode && widthNode && std::strcmp(widthNode->valueDisplay, "100") == 0);
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, originNode->nodeId));
+    TEST_CHECK(originNode && widthNode && std::strcmp(widthNode->valueDisplay, "100") == 0);
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, originNode->nodeId));
     DebugDwarfValueNode* xNode = childByName(&view, originNode->nodeId, "x");
     DebugDwarfValueNode* yNode = childByName(&view, originNode->nodeId, "y");
-    assert(xNode && yNode && xNode->address == originAddress && yNode->address == originAddress + 4 &&
+    TEST_CHECK(xNode && yNode && xNode->address == originAddress && yNode->address == originAddress + 4 &&
            std::strcmp(xNode->valueDisplay, "10") == 0 && std::strcmp(yNode->valueDisplay, "20") == 0);
 
     const uint32_t nodesBeforeCollapse = view.nodeCount;
     const uint32_t readsBeforeCollapse = view.targetMemoryReadCount;
     view.nodes[rect->nodeId - 1].expanded = false;
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, rect->nodeId));
-    assert(view.nodeCount == nodesBeforeCollapse && view.targetMemoryReadCount == readsBeforeCollapse);
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, rect->nodeId));
+    TEST_CHECK(view.nodeCount == nodesBeforeCollapse && view.targetMemoryReadCount == readsBeforeCollapse);
 
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, values->nodeId));
-    assert(childByName(&view, values->nodeId, "[0]") &&
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, values->nodeId));
+    TEST_CHECK(childByName(&view, values->nodeId, "[0]") &&
            std::strcmp(childByName(&view, values->nodeId, "[0]")->valueDisplay, "1") == 0 &&
            std::strcmp(childByName(&view, values->nodeId, "[2]")->valueDisplay, "3") == 0 &&
            childByName(&view, values->nodeId, "[2]")->address == valuesAddress + 8);
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, config->nodeId));
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, config->nodeId));
     DebugDwarfValueNode* enabled = childByName(&view, config->nodeId, "enabled");
     DebugDwarfValueNode* count = childByName(&view, config->nodeId, "count");
     if (!enabled || !count || std::strcmp(enabled ? enabled->valueDisplay : "", "true") != 0 ||
         std::strcmp(count ? count->valueDisplay : "", "4") != 0) {
-        assert(false);
+        TEST_CHECK(false);
     }
 
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, node->nodeId));
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, node->nodeId));
     DebugDwarfValueNode* next = childByName(&view, node->nodeId, "next");
-    assert(next && next->expandable);
+    TEST_CHECK(next && next->expandable);
     const uint32_t readsBeforeCycle = view.targetMemoryReadCount;
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, next->nodeId));
-    assert(view.targetMemoryReadCount == readsBeforeCycle && next->childCount == 1 &&
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, next->nodeId));
+    TEST_CHECK(view.targetMemoryReadCount == readsBeforeCycle && next->childCount == 1 &&
            std::strcmp(view.nodes[next->childNodeIds[0] - 1].valueDisplay, "<cycle>") == 0);
 
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, wide->nodeId));
-    assert(view.nodes[wide->nodeId - 1].childCount == kDebugDwarfMaxValueChildren &&
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, wide->nodeId));
+    TEST_CHECK(view.nodes[wide->nodeId - 1].childCount == kDebugDwarfMaxValueChildren &&
            view.nodes[wide->nodeId - 1].truncated);
 
     const uint32_t readsBeforeNull = view.targetMemoryReadCount;
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, nothing->nodeId));
-    assert(view.targetMemoryReadCount == readsBeforeNull &&
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view, nothing->nodeId));
+    TEST_CHECK(view.targetMemoryReadCount == readsBeforeNull &&
            std::strcmp(view.nodes[nothing->nodeId - 1].valueDisplay, "nullptr") == 0);
 
     uint32_t typeDieCount = 0;
@@ -283,28 +283,28 @@ int main() {
               << " node=0x" << nodeAddress << std::dec << "\n";
 
     put64(&memory, configAddress, 0x740000);
-    assert(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
+    TEST_CHECK(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
     const DebugDwarfVariable* invalidConfig = findVariable(mapper, view, "config");
-    assert(invalidConfig && DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view,
+    TEST_CHECK(invalidConfig && DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view,
                                                   invalidConfig->nodeId));
-    assert(std::strcmp(view.nodes[invalidConfig->nodeId - 1].valueDisplay, "<unreadable>") == 0);
+    TEST_CHECK(std::strcmp(view.nodes[invalidConfig->nodeId - 1].valueDisplay, "<unreadable>") == 0);
 
     put64(&memory, configAddress, 0x0001000000000000ull);
-    assert(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
+    TEST_CHECK(DebugDwarfInspectVariables(&mapper, frame, readMemory, &memory, &view));
     const DebugDwarfVariable* nonCanonicalConfig = findVariable(mapper, view, "config");
-    assert(nonCanonicalConfig && !view.nodes[nonCanonicalConfig->nodeId - 1].expandable);
+    TEST_CHECK(nonCanonicalConfig && !view.nodes[nonCanonicalConfig->nodeId - 1].expandable);
     const uint32_t readsBeforeNonCanonical = view.targetMemoryReadCount;
-    assert(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view,
+    TEST_CHECK(DebugDwarfExpandValue(&mapper, frame, readMemory, &memory, &view,
                                  nonCanonicalConfig->nodeId));
-    assert(view.targetMemoryReadCount == readsBeforeNonCanonical &&
+    TEST_CHECK(view.targetMemoryReadCount == readsBeforeNonCanonical &&
            std::strcmp(view.nodes[nonCanonicalConfig->nodeId - 1].valueDisplay, "<unreadable>") == 0);
 
     DebugDwarfFrameContext wrongOwner = frame;
     wrongOwner.processId = 43;
-    assert(!DebugDwarfExpandValue(&mapper, wrongOwner, readMemory, &memory, &view, invalidConfig->nodeId));
+    TEST_CHECK(!DebugDwarfExpandValue(&mapper, wrongOwner, readMemory, &memory, &view, invalidConfig->nodeId));
     DebugDwarfFrameContext stale = frame;
     stale.stopGeneration = 6;
-    assert(!DebugDwarfExpandValue(&mapper, stale, readMemory, &memory, &view, rect->nodeId));
+    TEST_CHECK(!DebugDwarfExpandValue(&mapper, stale, readMemory, &memory, &view, rect->nodeId));
 
     std::cout << "Developer Studio structured variables test PASS\n";
     return 0;

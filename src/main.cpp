@@ -180,6 +180,7 @@ using guidexos::developer_studio::WorkspaceControllerGoUp;
 using guidexos::developer_studio::WorkspaceControllerInit;
 using guidexos::developer_studio::WorkspaceControllerSetProjectOpenObserver;
 using guidexos::developer_studio::WorkspaceControllerOpenDocument;
+using guidexos::developer_studio::WorkspaceControllerOpenProjectFrom;
 using guidexos::developer_studio::WorkspaceControllerOpenWorkspace;
 using guidexos::developer_studio::WorkspaceControllerRefresh;
 using guidexos::developer_studio::WorkspaceControllerSaveActive;
@@ -860,6 +861,9 @@ static bool g_outputFollowTail = true;
 static uint32_t g_problemSelected = 0;
 static char g_textScratch[256] = {};
 static char g_phase29eTraceBuffer[640] = {};
+static char g_phase29kTraceBuffer[1024] = {};
+static uint32_t g_phase29kTraceCount = 0;
+static bool g_phase29eTraceEmittedForCurrentRequest = false;
 static char g_lineScratch[256] = {};
 static SyntaxRenderRun g_renderRuns[9000] = {};
 static BuildController g_buildController = {};
@@ -1914,11 +1918,19 @@ static void phase29eManifestTrace(gx_app_context* ctx, const WorkspaceProjectOpe
     appendText(line, capacity, diagnostic.manifestPath);
     appendText(line, capacity, " request_id="); appendUnsigned(line, capacity, event.requestId);
     appendText(line, capacity, " request_generation="); appendUnsigned(line, capacity, event.requestGeneration);
-    appendText(line, capacity, " candidate_id="); appendUnsigned(line, capacity, event.candidateId);
+    appendText(line, capacity, " tx="); appendUnsigned(line, capacity, event.transactionId);
+    appendText(line, capacity, " role="); appendText(line, capacity, diagnostic.validationRole);
+    appendText(line, capacity, " validation_count="); appendUnsigned(line, capacity, diagnostic.validationCount);
+    appendText(line, capacity, " request_generation="); appendUnsigned(line, capacity, event.requestGeneration);
+    logMarker(ctx, line);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_MANIFEST_GENERATION tx=");
+    appendUnsigned(line, capacity, event.transactionId);
+    appendText(line, capacity, " candidate="); appendUnsigned(line, capacity, event.candidateId);
     appendText(line, capacity, " candidate_generation="); appendUnsigned(line, capacity, event.candidateGeneration);
     appendText(line, capacity, " candidate_project_generation="); appendUnsigned(line, capacity, event.candidateProjectGeneration);
     appendText(line, capacity, " expected_identity_generation="); appendUnsigned(line, capacity, diagnostic.generation.expectedIdentityGeneration);
     appendText(line, capacity, " parsed_identity_generation="); appendUnsigned(line, capacity, diagnostic.generation.parsedIdentityGeneration);
+    appendText(line, capacity, " project_metadata_path="); appendText(line, capacity, diagnostic.projectMetadataPath);
     logMarker(ctx, line);
     copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29E_MANIFEST_READ");
     appendText(line, capacity, " project_metadata_size="); appendUnsigned(line, capacity, diagnostic.projectMetadataExpectedSize);
@@ -1972,9 +1984,14 @@ static void phase29eManifestTrace(gx_app_context* ctx, const WorkspaceProjectOpe
 static void phase28z_project_open_observer(void* userData, const WorkspaceProjectOpenEvent& event) {
     gx_app_context* ctx = static_cast<gx_app_context*>(userData);
     if (!ctx || !g_phase28qDiagnostic) return;
-    if ((event.state == WorkspaceProjectOpenState::Loaded || event.state == WorkspaceProjectOpenState::Failed) &&
-        event.manifestDiagnostic && event.manifestDiagnostic->available)
+    if (event.state == WorkspaceProjectOpenState::LoadStarted)
+        g_phase29eTraceEmittedForCurrentRequest = false;
+    if (!g_phase29eTraceEmittedForCurrentRequest &&
+        (event.state == WorkspaceProjectOpenState::Loaded || event.state == WorkspaceProjectOpenState::Failed) &&
+        event.manifestDiagnostic && event.manifestDiagnostic->available) {
         phase29eManifestTrace(ctx, event, *event.manifestDiagnostic);
+        g_phase29eTraceEmittedForCurrentRequest = true;
+    }
     if (event.state == WorkspaceProjectOpenState::LoadStarted &&
         g_phase29dStartupOwner.state == DiagnosticStartupState::RequestSubmitted &&
         phase29dTextEquals(event.path, g_phase29dStartupOwner.request.projectPath)) {
@@ -2008,38 +2025,131 @@ static void phase28z_project_open_observer(void* userData, const WorkspaceProjec
         appendText(g_textScratch, sizeof(g_textScratch), event.path ? event.path : "");
         logMarker(ctx, g_textScratch);
     }
-    if (g_phase29cProjectTraceCount >= 32) return;
-    ++g_phase29cProjectTraceCount;
-    copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29C_PROJECT_LOAD_");
-    switch (event.state) {
-    case WorkspaceProjectOpenState::LoadStarted: appendText(g_textScratch, sizeof(g_textScratch), "REQUEST_ACCEPTED"); break;
-    case WorkspaceProjectOpenState::Loaded: appendText(g_textScratch, sizeof(g_textScratch), "FILES_LOADED"); break;
-    case WorkspaceProjectOpenState::CandidateAllocated: appendText(g_textScratch, sizeof(g_textScratch), "CANDIDATE_ALLOCATED"); break;
-    case WorkspaceProjectOpenState::RefreshStarted: appendText(g_textScratch, sizeof(g_textScratch), "REFRESH_STARTED"); break;
-    case WorkspaceProjectOpenState::Validated: appendText(g_textScratch, sizeof(g_textScratch), "VALIDATED"); break;
-    case WorkspaceProjectOpenState::Committing: appendText(g_textScratch, sizeof(g_textScratch), "COMMIT_STARTED"); break;
-    case WorkspaceProjectOpenState::Active: appendText(g_textScratch, sizeof(g_textScratch), "ACTIVE_PUBLISHED"); break;
-    case WorkspaceProjectOpenState::Ready: appendText(g_textScratch, sizeof(g_textScratch), "READY"); break;
-    case WorkspaceProjectOpenState::Failed: appendText(g_textScratch, sizeof(g_textScratch), "FAILED"); break;
-    default: appendText(g_textScratch, sizeof(g_textScratch), "UNKNOWN"); break;
+    if (g_phase29cProjectTraceCount < 32) {
+        ++g_phase29cProjectTraceCount;
+        copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29C_PROJECT_LOAD_");
+        switch (event.state) {
+        case WorkspaceProjectOpenState::LoadStarted: appendText(g_textScratch, sizeof(g_textScratch), "REQUEST_ACCEPTED"); break;
+        case WorkspaceProjectOpenState::Loaded: appendText(g_textScratch, sizeof(g_textScratch), "FILES_LOADED"); break;
+        case WorkspaceProjectOpenState::CandidateAllocated: appendText(g_textScratch, sizeof(g_textScratch), "CANDIDATE_ALLOCATED"); break;
+        case WorkspaceProjectOpenState::RefreshStarted: appendText(g_textScratch, sizeof(g_textScratch), "REFRESH_STARTED"); break;
+        case WorkspaceProjectOpenState::Validated: appendText(g_textScratch, sizeof(g_textScratch), "VALIDATED"); break;
+        case WorkspaceProjectOpenState::Committing: appendText(g_textScratch, sizeof(g_textScratch), "COMMIT_STARTED"); break;
+        case WorkspaceProjectOpenState::Active: appendText(g_textScratch, sizeof(g_textScratch), "ACTIVE_PUBLISHED"); break;
+        case WorkspaceProjectOpenState::Ready: appendText(g_textScratch, sizeof(g_textScratch), "READY"); break;
+        case WorkspaceProjectOpenState::Failed: appendText(g_textScratch, sizeof(g_textScratch), "FAILED"); break;
+        default: appendText(g_textScratch, sizeof(g_textScratch), "UNKNOWN"); break;
+        }
+        appendText(g_textScratch, sizeof(g_textScratch), " worker=sync state=");
+        appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(event.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " request=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.requestId);
+        appendText(g_textScratch, sizeof(g_textScratch), " candidate=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.candidateId);
+        appendText(g_textScratch, sizeof(g_textScratch), " refresh=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.refreshGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " active_generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.activeProjectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " candidate_generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), event.candidateProjectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " error=");
+        appendText(g_textScratch, sizeof(g_textScratch), ProjectErrorName(event.error));
+        appendText(g_textScratch, sizeof(g_textScratch), " path=");
+        appendText(g_textScratch, sizeof(g_textScratch), event.path ? event.path : "");
+        logMarker(ctx, g_textScratch);
     }
-    appendText(g_textScratch, sizeof(g_textScratch), " worker=sync state=");
-    appendText(g_textScratch, sizeof(g_textScratch), WorkspaceProjectOpenStateName(event.state));
-    appendText(g_textScratch, sizeof(g_textScratch), " request=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.requestId);
-    appendText(g_textScratch, sizeof(g_textScratch), " candidate=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.candidateId);
-    appendText(g_textScratch, sizeof(g_textScratch), " refresh=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.refreshGeneration);
-    appendText(g_textScratch, sizeof(g_textScratch), " active_generation=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.activeProjectGeneration);
-    appendText(g_textScratch, sizeof(g_textScratch), " candidate_generation=");
-    appendUnsigned(g_textScratch, sizeof(g_textScratch), event.candidateProjectGeneration);
-    appendText(g_textScratch, sizeof(g_textScratch), " error=");
-    appendText(g_textScratch, sizeof(g_textScratch), ProjectErrorName(event.error));
-    appendText(g_textScratch, sizeof(g_textScratch), " path=");
-    appendText(g_textScratch, sizeof(g_textScratch), event.path ? event.path : "");
-    logMarker(ctx, g_textScratch);
+
+    if (g_phase29kTraceCount < 64) {
+        ++g_phase29kTraceCount;
+        char* txLine = g_phase29kTraceBuffer;
+        const uint32_t txCapacity = sizeof(g_phase29kTraceBuffer);
+        copyText(txLine, txCapacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_STAGE tx=");
+        appendUnsigned(txLine, txCapacity, event.transactionId);
+        appendText(txLine, txCapacity, " tx_generation="); appendUnsigned(txLine, txCapacity, event.transactionGeneration);
+        appendText(txLine, txCapacity, " state="); appendText(txLine, txCapacity, WorkspaceProjectOpenStateName(event.state));
+        appendText(txLine, txCapacity, " caller="); appendText(txLine, txCapacity, event.caller ? event.caller : "unknown");
+        appendText(txLine, txCapacity, " request="); appendUnsigned(txLine, txCapacity, event.requestId);
+        appendText(txLine, txCapacity, " request_generation="); appendUnsigned(txLine, txCapacity, event.requestGeneration);
+        appendText(txLine, txCapacity, " entry_depth="); appendUnsigned(txLine, txCapacity, event.entryDepth);
+        appendText(txLine, txCapacity, " max_entry_depth="); appendUnsigned(txLine, txCapacity, event.maximumEntryDepth);
+        appendText(txLine, txCapacity, " reentries="); appendUnsigned(txLine, txCapacity, event.reentryCount);
+        logMarker(ctx, txLine);
+        copyText(txLine, txCapacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_STATE tx=");
+        appendUnsigned(txLine, txCapacity, event.transactionId);
+        appendText(txLine, txCapacity, " state="); appendText(txLine, txCapacity, WorkspaceProjectOpenStateName(event.state));
+        appendText(txLine, txCapacity, " candidate="); appendUnsigned(txLine, txCapacity, event.candidateId);
+        appendText(txLine, txCapacity, " candidate_generation="); appendUnsigned(txLine, txCapacity, event.candidateGeneration);
+        appendText(txLine, txCapacity, " candidate_project_generation="); appendUnsigned(txLine, txCapacity, event.candidateProjectGeneration);
+        appendText(txLine, txCapacity, " refresh_generation="); appendUnsigned(txLine, txCapacity, event.refreshGeneration);
+        appendText(txLine, txCapacity, " validations="); appendUnsigned(txLine, txCapacity, event.manifestValidationCount);
+        appendText(txLine, txCapacity, " load_stages="); appendUnsigned(txLine, txCapacity, event.loadStageCount);
+        appendText(txLine, txCapacity, " refresh_count="); appendUnsigned(txLine, txCapacity, event.refreshCount);
+        appendText(txLine, txCapacity, " commit_count="); appendUnsigned(txLine, txCapacity, event.commitCount);
+        logMarker(ctx, txLine);
+        copyText(txLine, txCapacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_OWNER tx=");
+        appendUnsigned(txLine, txCapacity, event.transactionId);
+        appendText(txLine, txCapacity, " state="); appendText(txLine, txCapacity, WorkspaceProjectOpenStateName(event.state));
+        appendText(txLine, txCapacity, " in_progress="); appendUnsigned(txLine, txCapacity, event.controllerLoadInProgress ? 1u : 0u);
+        appendText(txLine, txCapacity, " tx_active="); appendUnsigned(txLine, txCapacity, event.transactionActive ? 1u : 0u);
+        appendText(txLine, txCapacity, " owner_matches="); appendUnsigned(txLine, txCapacity, event.transactionOwnerMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " result="); appendText(txLine, txCapacity, ProjectErrorName(event.error));
+        logMarker(ctx, txLine);
+        copyText(txLine, txCapacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_IDENTITY tx=");
+        appendUnsigned(txLine, txCapacity, event.transactionId);
+        appendText(txLine, txCapacity, " state="); appendText(txLine, txCapacity, WorkspaceProjectOpenStateName(event.state));
+        appendText(txLine, txCapacity, " owner_pointer="); appendUnsigned(txLine, txCapacity, event.transactionOwnerPointerMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " tx_id="); appendUnsigned(txLine, txCapacity, event.transactionIdMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " tx_generation="); appendUnsigned(txLine, txCapacity, event.transactionGenerationMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " request_id="); appendUnsigned(txLine, txCapacity, event.requestIdMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " request_generation="); appendUnsigned(txLine, txCapacity, event.requestGenerationMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " candidate_id="); appendUnsigned(txLine, txCapacity, event.candidateIdMatches ? 1u : 0u);
+        appendText(txLine, txCapacity, " candidate_generation="); appendUnsigned(txLine, txCapacity, event.candidateGenerationMatches ? 1u : 0u);
+        logMarker(ctx, txLine);
+        if (event.reentryCount != 0) {
+            copyText(txLine, txCapacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_REENTRY tx=");
+            appendUnsigned(txLine, txCapacity, event.transactionId);
+            appendText(txLine, txCapacity, " count="); appendUnsigned(txLine, txCapacity, event.reentryCount);
+            appendText(txLine, txCapacity, " caller="); appendText(txLine, txCapacity, event.lastReentryCaller ? event.lastReentryCaller : "unknown");
+            logMarker(ctx, txLine);
+        }
+        if (event.state == WorkspaceProjectOpenState::Loaded && event.manifestDiagnostic && event.manifestDiagnostic->available) {
+            copyText(txLine, txCapacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_MANIFEST tx=");
+            appendUnsigned(txLine, txCapacity, event.transactionId);
+            appendText(txLine, txCapacity, " role="); appendText(txLine, txCapacity, event.manifestRole ? event.manifestRole : "-");
+            appendText(txLine, txCapacity, " path="); appendText(txLine, txCapacity, event.manifestPath ? event.manifestPath : "-");
+            appendText(txLine, txCapacity, " project_metadata_path=");
+            appendText(txLine, txCapacity, event.manifestDiagnostic->projectMetadataPath);
+            logMarker(ctx, txLine);
+        }
+    }
+}
+
+static void phase29kProjectTxResult(gx_app_context* ctx, const WorkspaceController& controller,
+                                    bool accepted) {
+    if (!ctx || !g_phase28qDiagnostic || g_phase29kTraceCount >= 64) return;
+    ++g_phase29kTraceCount;
+    char* line = g_phase29kTraceBuffer;
+    const uint32_t capacity = sizeof(g_phase29kTraceBuffer);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_RESULT tx=");
+    appendUnsigned(line, capacity, controller.projectOpenTransactionId);
+    appendText(line, capacity, " tx_generation="); appendUnsigned(line, capacity, controller.projectOpenTransactionGeneration);
+    appendText(line, capacity, " request="); appendUnsigned(line, capacity, controller.projectOpenRequestId);
+    appendText(line, capacity, " request_generation="); appendUnsigned(line, capacity, controller.projectOpenRequestGeneration);
+    appendText(line, capacity, " state="); appendText(line, capacity, WorkspaceProjectOpenStateName(controller.projectOpenState));
+    appendText(line, capacity, " accepted="); appendUnsigned(line, capacity, accepted ? 1u : 0u);
+    appendText(line, capacity, " result="); appendText(line, capacity, ProjectErrorName(controller.lastProjectError));
+    appendText(line, capacity, " reentries="); appendUnsigned(line, capacity, controller.projectOpenReentryCount);
+    appendText(line, capacity, " max_entry_depth="); appendUnsigned(line, capacity, controller.projectOpenMaximumEntryDepth);
+    appendText(line, capacity, " load_in_progress="); appendUnsigned(line, capacity, controller.projectOpenInProgress ? 1u : 0u);
+    appendText(line, capacity, " active_generation="); appendUnsigned(line, capacity, controller.model.projectGeneration);
+    logMarker(ctx, line);
+    copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29K_PROJECT_TX_COUNTS tx=");
+    appendUnsigned(line, capacity, controller.projectOpenTransactionId);
+    appendText(line, capacity, " manifest_validations="); appendUnsigned(line, capacity, controller.projectOpenManifestValidationCount);
+    appendText(line, capacity, " load_stages="); appendUnsigned(line, capacity, controller.projectOpenLoadStageCount);
+    appendText(line, capacity, " refresh_count="); appendUnsigned(line, capacity, controller.projectOpenRefreshCount);
+    appendText(line, capacity, " commit_count="); appendUnsigned(line, capacity, controller.projectOpenCommitCount);
+    logMarker(ctx, line);
 }
 
 static void phase28z_fs_event(gx_app_context* ctx, const char* operation,
@@ -7523,7 +7633,7 @@ static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_validation=PASS");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create=PASS");
     if (created.rollbackAttempted && created.rollbackSucceeded) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_rollback=PASS");
-    if (!WorkspaceControllerOpenProject(&g_controller, created.project.rootPath)) {
+    if (!WorkspaceControllerOpenProjectFrom(&g_controller, created.project.rootPath, "project_create_open")) {
         writeOutput("Project created; project open failed");
         reportProjectFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL", g_controller.lastProjectError);
         return false;
@@ -7584,7 +7694,7 @@ static void commitProjectOpen(gx_app_context* ctx) {
     g_includeTargetPickerOpen = false;
     g_ownershipPanelOpen = false;
     stopProjectSearch(ctx);
-    if (WorkspaceControllerOpenProject(&g_controller, g_prompt)) {
+    if (WorkspaceControllerOpenProjectFrom(&g_controller, g_prompt, "project_path_dialog")) {
         resetProjectSessionUi();
         debuggerWorkspaceLoadForProject(ctx);
         DebugControllerClearBreakpoints(&g_debugController);
@@ -12244,8 +12354,9 @@ static void phase28qPump(gx_app_context* ctx) {
         phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_ENTRY", nullptr);
         SymbolDatabase* diagnosticSymbolDatabase = g_controller.symbolDatabase;
         g_controller.symbolDatabase = nullptr;
-        const bool projectOpened = WorkspaceControllerOpenProject(
-            &g_controller, g_phase29dStartupOwner.request.projectPath);
+        const bool projectOpened = WorkspaceControllerOpenProjectFrom(
+            &g_controller, g_phase29dStartupOwner.request.projectPath, "phase28q_startup_pump");
+        phase29kProjectTxResult(ctx, g_controller, projectOpened);
         g_controller.symbolDatabase = diagnosticSymbolDatabase;
         phase28v_startup_event(ctx, "PHASE28Q_PROJECT_OPEN_RETURN", projectOpened ? "opened" : "rejected");
         if (g_phase29dStartupOwner.state == DiagnosticStartupState::RequestSubmitted) {
@@ -16522,6 +16633,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_phase28zFsTraceCount = 0;
     g_phase28zProjectTraceCount = 0;
     g_phase29cProjectTraceCount = 0;
+    g_phase29kTraceCount = 0;
+    g_phase29eTraceEmittedForCurrentRequest = false;
     phase28z_startup_stage(ctx, 1);
     phase28y_startup_stage(ctx, 2, "initial_sentinel_probe_complete");
     phase28y_startup_event(ctx, "initial_q_sentinel", g_phase28qDiagnostic ? "present" : "absent");

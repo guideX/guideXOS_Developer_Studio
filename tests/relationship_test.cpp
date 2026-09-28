@@ -1,6 +1,6 @@
 #include "developer_studio_relationships.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstring>
 
 using namespace guidexos::developer_studio;
@@ -18,7 +18,7 @@ static uint32_t g_forwards[256] = {};
 static uint32_t g_symbolGroups[256] = {};
 
 static void index(SymbolDatabase* database, const char* path, uint64_t id, const char* text) {
-    assert(SymbolDatabaseIndexDocument(database, path, id, 1, false, text,
+    TEST_CHECK(SymbolDatabaseIndexDocument(database, path, id, 1, false, text,
                                        static_cast<uint32_t>(std::strlen(text))));
 }
 
@@ -56,9 +56,9 @@ static uint32_t build(SymbolDatabase* database, SymbolRelationshipGraph* graph) 
     SymbolRelationshipGraphService service = {};
     SymbolRelationshipGraphServiceInit(&service, graph, &building);
     uint64_t operation = 0;
-    assert(SymbolRelationshipGraphBuildStart(&service, database, nullptr, "relationship-test", 7, "", 0, &operation));
-    while (SymbolRelationshipGraphBuildIsActive(&service)) assert(SymbolRelationshipGraphBuildPoll(&service, operation, 8, 0));
-    assert(SymbolRelationshipGraphBuildInfo(&service)->state == RelationshipGraphState::Completed);
+    TEST_CHECK(SymbolRelationshipGraphBuildStart(&service, database, nullptr, "relationship-test", 7, "", 0, &operation));
+    while (SymbolRelationshipGraphBuildIsActive(&service)) TEST_CHECK(SymbolRelationshipGraphBuildPoll(&service, operation, 8, 0));
+    TEST_CHECK(SymbolRelationshipGraphBuildInfo(&service)->state == RelationshipGraphState::Completed);
     *graph = *service.completedGraph;
     return service.completedGraph->relationshipCount;
 }
@@ -83,19 +83,19 @@ int main() {
     uint32_t parameterCount = 0;
     bool complete = false;
     bool approximate = false;
-    assert(NormalizeRelationshipSignature("BuildProject( const BuildOptions &options = BuildOptions() )",
+    TEST_CHECK(NormalizeRelationshipSignature("BuildProject( const BuildOptions &options = BuildOptions() )",
                                           normalized, sizeof(normalized), &parameterCount,
                                           &complete, &approximate));
-    assert(std::strcmp(normalized, "BuildProject(const BuildOptions&)") == 0);
-    assert(parameterCount == 1 && complete && !approximate);
-    assert(NormalizeRelationshipSignature("Call(void (*callback)(int value), int values[4])",
+    TEST_CHECK(std::strcmp(normalized, "BuildProject(const BuildOptions&)") == 0);
+    TEST_CHECK(parameterCount == 1 && complete && !approximate);
+    TEST_CHECK(NormalizeRelationshipSignature("Call(void (*callback)(int value), int values[4])",
                                           normalized, sizeof(normalized), &parameterCount,
                                           &complete, &approximate));
-    assert(std::strcmp(normalized, "Call(void(*)(int),int[4])") == 0);
+    TEST_CHECK(std::strcmp(normalized, "Call(void(*)(int),int[4])") == 0);
 
     SymbolRelationshipGraph graph = {};
     const uint32_t relationshipCount = build(&database, &graph);
-    assert(relationshipCount >= 5);
+    TEST_CHECK(relationshipCount >= 5);
     const ProjectSymbol* drawDeclaration = findSymbol(database, "Draw", SymbolDeclarationRole::Declaration);
     const ProjectSymbol* drawDefinition = findSymbol(database, "Draw", SymbolDeclarationRole::Definition);
     const ProjectSymbol* buildDeclaration = findSymbol(database, "BuildProject", SymbolDeclarationRole::Declaration);
@@ -106,8 +106,8 @@ int main() {
     const ProjectSymbol* staticDefinition = findSymbol(database, "instanceCount", SymbolDeclarationRole::Definition);
     const ProjectSymbol* constructorDeclaration = findSymbolKind(database, "Renderer", SymbolDeclarationRole::Declaration, SymbolKind::Constructor);
     const ProjectSymbol* constructorDefinition = findSymbolKind(database, "Renderer", SymbolDeclarationRole::Definition, SymbolKind::Constructor);
-    assert(drawDeclaration && drawDefinition && buildDeclaration && buildDefinition && rendererForward && rendererDefinition);
-    assert(staticDeclaration && staticDefinition && constructorDeclaration && constructorDefinition);
+    TEST_CHECK(drawDeclaration && drawDefinition && buildDeclaration && buildDefinition && rendererForward && rendererDefinition);
+    TEST_CHECK(staticDeclaration && staticDefinition && constructorDeclaration && constructorDefinition);
     const uint64_t drawDeclarationId = SymbolRelationshipSymbolId(*drawDeclaration, "include/renderer.h");
     const uint64_t drawDefinitionId = SymbolRelationshipSymbolId(*drawDefinition, "src/renderer.cpp");
     const uint64_t buildDeclarationId = SymbolRelationshipSymbolId(*buildDeclaration, "include/renderer.h");
@@ -115,19 +115,19 @@ int main() {
     const uint64_t staticDeclarationId = SymbolRelationshipSymbolId(*staticDeclaration, "include/renderer.h");
     const uint64_t staticDefinitionId = SymbolRelationshipSymbolId(*staticDefinition, "src/renderer.cpp");
     SymbolRelationship candidates[8] = {};
-    assert(SymbolRelationshipGraphFindDefinitions(&graph, drawDeclarationId, candidates, 8) >= 1);
-    assert(candidates[0].target.symbolId == drawDefinitionId || candidates[0].source.symbolId == drawDefinitionId);
-    assert(candidates[0].confidence == SymbolRelationshipConfidence::Exact);
-    assert(SymbolRelationshipGraphHasRelationship(&graph, drawDeclarationId, drawDefinitionId));
-    assert(SymbolRelationshipGraphFindDefinitions(&graph, buildDeclarationId, candidates, 8) >= 1);
-    assert(SymbolRelationshipGraphFindDefinitions(&graph, rendererForwardId, candidates, 8) >= 1);
-    assert(SymbolRelationshipGraphFindDefinitions(&graph, staticDeclarationId, candidates, 8) >= 1);
-    assert(candidates[0].target.symbolId == staticDefinitionId || candidates[0].source.symbolId == staticDefinitionId);
+    TEST_CHECK(SymbolRelationshipGraphFindDefinitions(&graph, drawDeclarationId, candidates, 8) >= 1);
+    TEST_CHECK(candidates[0].target.symbolId == drawDefinitionId || candidates[0].source.symbolId == drawDefinitionId);
+    TEST_CHECK(candidates[0].confidence == SymbolRelationshipConfidence::Exact);
+    TEST_CHECK(SymbolRelationshipGraphHasRelationship(&graph, drawDeclarationId, drawDefinitionId));
+    TEST_CHECK(SymbolRelationshipGraphFindDefinitions(&graph, buildDeclarationId, candidates, 8) >= 1);
+    TEST_CHECK(SymbolRelationshipGraphFindDefinitions(&graph, rendererForwardId, candidates, 8) >= 1);
+    TEST_CHECK(SymbolRelationshipGraphFindDefinitions(&graph, staticDeclarationId, candidates, 8) >= 1);
+    TEST_CHECK(candidates[0].target.symbolId == staticDefinitionId || candidates[0].source.symbolId == staticDefinitionId);
     const uint64_t rendererDefinitionId = SymbolRelationshipSymbolId(*rendererDefinition, "include/renderer.h");
-    assert(rendererDefinitionId != rendererForwardId);
-    assert(SymbolRelationshipGraphFindDeclarations(&graph, drawDefinitionId, candidates, 8) >= 1);
-    assert(SymbolRelationshipGraphIsCurrent(&graph, "relationship-test", 7, database.symbolDatabaseGeneration));
-    assert(!SymbolRelationshipGraphIsCurrent(&graph, "relationship-test", 8, database.symbolDatabaseGeneration));
+    TEST_CHECK(rendererDefinitionId != rendererForwardId);
+    TEST_CHECK(SymbolRelationshipGraphFindDeclarations(&graph, drawDefinitionId, candidates, 8) >= 1);
+    TEST_CHECK(SymbolRelationshipGraphIsCurrent(&graph, "relationship-test", 7, database.symbolDatabaseGeneration));
+    TEST_CHECK(!SymbolRelationshipGraphIsCurrent(&graph, "relationship-test", 8, database.symbolDatabaseGeneration));
 
     SymbolRelationshipGraph cancelledCompleted = {};
     SymbolRelationshipGraph cancelledBuilding = {};
@@ -142,10 +142,10 @@ int main() {
     SymbolRelationshipGraphService cancelledService = {};
     SymbolRelationshipGraphServiceInit(&cancelledService, &cancelledCompleted, &cancelledBuilding);
     uint64_t cancelledOperation = 0;
-    assert(SymbolRelationshipGraphBuildStart(&cancelledService, &database, nullptr, "relationship-test", 7, "", 0, &cancelledOperation));
-    assert(SymbolRelationshipGraphBuildIsActive(&cancelledService));
-    assert(SymbolRelationshipGraphBuildCancel(&cancelledService, cancelledOperation));
-    assert(SymbolRelationshipGraphBuildPoll(&cancelledService, cancelledOperation, 1, 0));
-    assert(SymbolRelationshipGraphBuildInfo(&cancelledService)->state == RelationshipGraphState::Cancelled);
+    TEST_CHECK(SymbolRelationshipGraphBuildStart(&cancelledService, &database, nullptr, "relationship-test", 7, "", 0, &cancelledOperation));
+    TEST_CHECK(SymbolRelationshipGraphBuildIsActive(&cancelledService));
+    TEST_CHECK(SymbolRelationshipGraphBuildCancel(&cancelledService, cancelledOperation));
+    TEST_CHECK(SymbolRelationshipGraphBuildPoll(&cancelledService, cancelledOperation, 1, 0));
+    TEST_CHECK(SymbolRelationshipGraphBuildInfo(&cancelledService)->state == RelationshipGraphState::Cancelled);
     return 0;
 }

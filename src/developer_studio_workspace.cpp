@@ -9,8 +9,12 @@ static char g_workspaceDocumentReadBuffer[kMaxEditorBytes + 1];
 
 struct WorkspaceProjectLoadTransaction {
     WorkspaceController* owner;
+    uint64_t transactionId;
+    uint64_t transactionGeneration;
     uint64_t requestId;
+    uint64_t requestGeneration;
     uint64_t candidateId;
+    uint64_t candidateGeneration;
     uint64_t refreshGeneration;
     bool active;
     WorkspaceModel candidate;
@@ -20,6 +24,9 @@ static WorkspaceProjectLoadTransaction g_workspaceProjectLoad = {};
 static uint64_t g_nextWorkspaceProjectCandidateId = 1;
 static uint64_t g_nextWorkspaceProjectCandidateGeneration = 1;
 static uint64_t g_nextWorkspaceProjectRefreshGeneration = 1;
+static uint64_t g_nextWorkspaceProjectTransactionId = 1;
+static uint64_t g_nextWorkspaceProjectTransactionGeneration = 1;
+static uint32_t g_workspaceProjectOpenEntryDepth = 0;
 
 static void setControllerError(WorkspaceController* controller, ModelErrorCode code);
 static void setModelError(WorkspaceModel* model, ModelErrorCode code);
@@ -29,8 +36,13 @@ static bool copyEntryName(char* output, uint32_t outputSize, const char* input);
 
 static bool projectLoadIsCurrent(const WorkspaceController* controller, uint64_t requestId) {
     return controller && controller->projectOpenInProgress && g_workspaceProjectLoad.active &&
-        g_workspaceProjectLoad.owner == controller && g_workspaceProjectLoad.requestId == requestId &&
-        controller->projectOpenRequestId == requestId;
+        g_workspaceProjectLoad.owner == controller &&
+        g_workspaceProjectLoad.transactionId == controller->projectOpenTransactionId &&
+        g_workspaceProjectLoad.transactionGeneration == controller->projectOpenTransactionGeneration &&
+        g_workspaceProjectLoad.requestId == requestId && controller->projectOpenRequestId == requestId &&
+        g_workspaceProjectLoad.requestGeneration == controller->projectOpenRequestGeneration &&
+        g_workspaceProjectLoad.candidateId == controller->projectOpenCandidateId &&
+        g_workspaceProjectLoad.candidateGeneration == controller->projectOpenCandidateGeneration;
 }
 
 static uint64_t nextWorkspaceProjectId(uint64_t* value) {
@@ -40,6 +52,15 @@ static uint64_t nextWorkspaceProjectId(uint64_t* value) {
     return result;
 }
 
+struct WorkspaceProjectOpenEntryScope {
+    WorkspaceProjectOpenEntryScope() {
+        if (g_workspaceProjectOpenEntryDepth != UINT32_MAX) ++g_workspaceProjectOpenEntryDepth;
+    }
+    ~WorkspaceProjectOpenEntryScope() {
+        if (g_workspaceProjectOpenEntryDepth != 0) --g_workspaceProjectOpenEntryDepth;
+    }
+};
+
 static void releaseProjectLoadTransaction(WorkspaceController* controller) {
     if (!controller) return;
     controller->projectOpenInProgress = false;
@@ -47,7 +68,9 @@ static void releaseProjectLoadTransaction(WorkspaceController* controller) {
         g_workspaceProjectLoad.active = false;
         g_workspaceProjectLoad.owner = nullptr;
         g_workspaceProjectLoad.requestId = 0;
+        g_workspaceProjectLoad.requestGeneration = 0;
         g_workspaceProjectLoad.candidateId = 0;
+        g_workspaceProjectLoad.candidateGeneration = 0;
         g_workspaceProjectLoad.refreshGeneration = 0;
         WorkspaceModelInit(&g_workspaceProjectLoad.candidate);
     }
@@ -57,9 +80,14 @@ static void notifyProjectOpen(WorkspaceController* controller, WorkspaceProjectO
                               const char* path, ProjectErrorCode error) {
     if (!controller) return;
     controller->projectOpenState = state;
+    if (g_workspaceProjectLoad.active && g_workspaceProjectLoad.owner == controller &&
+        controller->projectOpenLoadStageCount != UINT32_MAX)
+        ++controller->projectOpenLoadStageCount;
     if (controller->projectOpenObserver) {
         WorkspaceProjectOpenEvent event = {};
         event.state = state;
+        event.transactionId = controller->projectOpenTransactionId;
+        event.transactionGeneration = controller->projectOpenTransactionGeneration;
         event.requestId = controller->projectOpenRequestId;
         event.requestGeneration = controller->projectOpenRequestGeneration;
         event.activeProjectGeneration = controller->model.projectGeneration;
@@ -68,6 +96,33 @@ static void notifyProjectOpen(WorkspaceController* controller, WorkspaceProjectO
         event.candidateProjectGeneration = g_workspaceProjectLoad.active &&
             g_workspaceProjectLoad.owner == controller ? g_workspaceProjectLoad.candidate.projectGeneration : 0;
         event.refreshGeneration = controller->projectOpenRefreshGeneration;
+        event.entryDepth = g_workspaceProjectOpenEntryDepth;
+        event.maximumEntryDepth = controller->projectOpenMaximumEntryDepth;
+        event.reentryCount = controller->projectOpenReentryCount;
+        event.manifestValidationCount = controller->projectOpenManifestValidationCount;
+        event.loadStageCount = controller->projectOpenLoadStageCount;
+        event.refreshCount = controller->projectOpenRefreshCount;
+        event.commitCount = controller->projectOpenCommitCount;
+        event.transactionActive = g_workspaceProjectLoad.active;
+        event.controllerLoadInProgress = controller->projectOpenInProgress;
+        event.transactionOwnerPointerMatches = g_workspaceProjectLoad.owner == controller;
+        event.transactionIdMatches = g_workspaceProjectLoad.transactionId == controller->projectOpenTransactionId;
+        event.transactionGenerationMatches =
+            g_workspaceProjectLoad.transactionGeneration == controller->projectOpenTransactionGeneration;
+        event.requestIdMatches = g_workspaceProjectLoad.requestId == controller->projectOpenRequestId;
+        event.requestGenerationMatches =
+            g_workspaceProjectLoad.requestGeneration == controller->projectOpenRequestGeneration;
+        event.candidateIdMatches = g_workspaceProjectLoad.candidateId == controller->projectOpenCandidateId;
+        event.candidateGenerationMatches =
+            g_workspaceProjectLoad.candidateGeneration == controller->projectOpenCandidateGeneration;
+        event.transactionOwnerMatches = g_workspaceProjectLoad.active && controller->projectOpenInProgress &&
+            event.transactionOwnerPointerMatches && event.transactionIdMatches &&
+            event.transactionGenerationMatches && event.requestIdMatches && event.requestGenerationMatches &&
+            event.candidateIdMatches && event.candidateGenerationMatches;
+        event.caller = controller->projectOpenCaller;
+        event.lastReentryCaller = controller->projectOpenLastReentryCaller;
+        event.manifestRole = controller->lastManifestDiagnostic.validationRole;
+        event.manifestPath = controller->lastManifestDiagnostic.manifestPath;
         event.error = error;
         event.path = path;
         event.manifestDiagnostic = &controller->lastManifestDiagnostic;
@@ -238,12 +293,23 @@ void WorkspaceControllerInit(WorkspaceController* controller, const WorkspaceFil
     controller->symbolDatabase = nullptr;
     controller->projectOpenRequestId = 0;
     controller->projectOpenRequestGeneration = 0;
+    controller->projectOpenTransactionId = 0;
+    controller->projectOpenTransactionGeneration = 0;
     controller->projectOpenGeneration = 0;
     controller->projectOpenState = WorkspaceProjectOpenState::Idle;
     controller->projectOpenInProgress = false;
     controller->projectOpenCandidateId = 0;
     controller->projectOpenCandidateGeneration = 0;
     controller->projectOpenRefreshGeneration = 0;
+    controller->projectOpenEntryDepth = 0;
+    controller->projectOpenMaximumEntryDepth = 0;
+    controller->projectOpenReentryCount = 0;
+    controller->projectOpenManifestValidationCount = 0;
+    controller->projectOpenLoadStageCount = 0;
+    controller->projectOpenRefreshCount = 0;
+    controller->projectOpenCommitCount = 0;
+    __builtin_memset(controller->projectOpenCaller, 0, sizeof(controller->projectOpenCaller));
+    __builtin_memset(controller->projectOpenLastReentryCaller, 0, sizeof(controller->projectOpenLastReentryCaller));
     controller->projectOpenFailure = ProjectErrorCode::None;
     __builtin_memset(&controller->projectLoadScratch, 0, sizeof(controller->projectLoadScratch));
     __builtin_memset(&controller->lastManifestDiagnostic, 0, sizeof(controller->lastManifestDiagnostic));
@@ -321,26 +387,59 @@ bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const cha
 }
 
 bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char* path) {
+    return WorkspaceControllerOpenProjectFrom(controller, path, "workspace_api");
+}
+
+bool WorkspaceControllerOpenProjectFrom(WorkspaceController* controller, const char* path,
+                                        const char* caller) {
+    WorkspaceProjectOpenEntryScope entryScope;
     if (!controller || !controller->fileSystem.stat || !controller->fileSystem.read || !controller->fileSystem.list) {
         if (controller) setProjectError(controller, ProjectErrorCode::NullInput);
         return false;
     }
     if (controller->projectOpenInProgress || g_workspaceProjectLoad.active) {
+        WorkspaceController* owner = g_workspaceProjectLoad.active ? g_workspaceProjectLoad.owner : controller;
+        if (owner) {
+            if (owner->projectOpenReentryCount != UINT32_MAX) ++owner->projectOpenReentryCount;
+            if (g_workspaceProjectOpenEntryDepth > owner->projectOpenMaximumEntryDepth)
+                owner->projectOpenMaximumEntryDepth = g_workspaceProjectOpenEntryDepth;
+            const char* reentryCaller = caller ? caller : "workspace_api";
+            (void)copyEntryName(owner->projectOpenLastReentryCaller,
+                                sizeof(owner->projectOpenLastReentryCaller), reentryCaller);
+        }
         setProjectError(controller, ProjectErrorCode::LoadInProgress);
         return false;
     }
     ++controller->projectOpenRequestId;
     controller->projectOpenRequestGeneration = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateGeneration);
+    controller->projectOpenTransactionId = nextWorkspaceProjectId(&g_nextWorkspaceProjectTransactionId);
+    controller->projectOpenTransactionGeneration =
+        nextWorkspaceProjectId(&g_nextWorkspaceProjectTransactionGeneration);
     controller->projectOpenGeneration = 0;
     controller->projectOpenInProgress = true;
     controller->projectOpenCandidateId = nextWorkspaceProjectId(&g_nextWorkspaceProjectCandidateId);
     controller->projectOpenCandidateGeneration = controller->projectOpenRequestGeneration;
     controller->projectOpenRefreshGeneration = 0;
+    controller->projectOpenEntryDepth = g_workspaceProjectOpenEntryDepth;
+    controller->projectOpenMaximumEntryDepth = g_workspaceProjectOpenEntryDepth;
+    controller->projectOpenReentryCount = 0;
+    controller->projectOpenManifestValidationCount = 0;
+    controller->projectOpenLoadStageCount = 0;
+    controller->projectOpenRefreshCount = 0;
+    controller->projectOpenCommitCount = 0;
+    __builtin_memset(controller->projectOpenLastReentryCaller, 0,
+                      sizeof(controller->projectOpenLastReentryCaller));
+    (void)copyEntryName(controller->projectOpenCaller, sizeof(controller->projectOpenCaller),
+                        caller ? caller : "workspace_api");
     controller->projectOpenFailure = ProjectErrorCode::None;
     __builtin_memset(&controller->lastManifestDiagnostic, 0, sizeof(controller->lastManifestDiagnostic));
     g_workspaceProjectLoad.owner = controller;
+    g_workspaceProjectLoad.transactionId = controller->projectOpenTransactionId;
+    g_workspaceProjectLoad.transactionGeneration = controller->projectOpenTransactionGeneration;
     g_workspaceProjectLoad.requestId = controller->projectOpenRequestId;
+    g_workspaceProjectLoad.requestGeneration = controller->projectOpenRequestGeneration;
     g_workspaceProjectLoad.candidateId = controller->projectOpenCandidateId;
+    g_workspaceProjectLoad.candidateGeneration = controller->projectOpenCandidateGeneration;
     g_workspaceProjectLoad.refreshGeneration = 0;
     g_workspaceProjectLoad.active = true;
     WorkspaceModelInit(&g_workspaceProjectLoad.candidate);
@@ -366,6 +465,7 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
     ProjectOperationResult result;
     if (!LoadProject(controller->fileSystem, path, &result, &controller->projectLoadScratch, &validationGeneration)) {
         controller->lastManifestDiagnostic = result.manifestDiagnostic;
+        controller->projectOpenManifestValidationCount = result.manifestDiagnostic.validationCount;
         setProjectError(controller, result.error);
         controller->projectOpenFailure = result.error;
         notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, requestPath, result.error);
@@ -374,8 +474,11 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
         return false;
     }
     controller->lastManifestDiagnostic = result.manifestDiagnostic;
+    controller->projectOpenManifestValidationCount = result.manifestDiagnostic.validationCount;
     notifyProjectOpen(controller, WorkspaceProjectOpenState::Loaded, result.project.rootPath, ProjectErrorCode::None);
     if (!projectLoadIsCurrent(controller, requestId)) {
+        // The observer is synchronous. Keep the owner snapshot in the failure
+        // event so diagnostics can show which identity component changed.
         setProjectError(controller, ProjectErrorCode::LoadInProgress);
         controller->projectOpenFailure = ProjectErrorCode::LoadInProgress;
         notifyProjectOpen(controller, WorkspaceProjectOpenState::Failed, result.project.rootPath, ProjectErrorCode::LoadInProgress);
@@ -396,6 +499,7 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
                       result.project.rootPath, ProjectErrorCode::None);
     g_workspaceProjectLoad.refreshGeneration = nextWorkspaceProjectId(&g_nextWorkspaceProjectRefreshGeneration);
     controller->projectOpenRefreshGeneration = g_workspaceProjectLoad.refreshGeneration;
+    controller->projectOpenRefreshCount = 1;
     notifyProjectOpen(controller, WorkspaceProjectOpenState::RefreshStarted, result.project.rootPath, ProjectErrorCode::None);
     // Symbol publication is deliberately deferred until the candidate model
     // has passed refresh and is committed below.
@@ -425,6 +529,7 @@ bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char*
     }
     notifyProjectOpen(controller, WorkspaceProjectOpenState::Committing,
                       result.project.rootPath, ProjectErrorCode::None);
+    ++controller->projectOpenCommitCount;
     controller->model = g_workspaceProjectLoad.candidate;
     controller->listingTruncated = candidateListingTruncated;
     controller->lastProjectError = ProjectErrorCode::None;

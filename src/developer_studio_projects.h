@@ -104,6 +104,9 @@ enum class ManifestIdentityMismatchField {
 
 struct ManifestValidationDiagnostic {
     bool available;
+    uint32_t validationCount;
+    char validationRole[24];
+    char projectMetadataPath[kMaxPathBytes];
     char manifestPath[kMaxPathBytes];
     uint64_t manifestExpectedSize;
     uint64_t manifestBytesRead;

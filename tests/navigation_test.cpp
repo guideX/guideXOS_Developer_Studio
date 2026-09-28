@@ -1,6 +1,6 @@
 #include "developer_studio_workspace.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstring>
 #include <iostream>
 
@@ -33,24 +33,24 @@ int main() {
 
     uint32_t index = kMaxOpenDocuments;
     OutputErrorCode error = OutputErrorCode::None;
-    assert(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 2, 2, &index, &error));
-    assert(index == controller.model.activeDocument);
+    TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 2, 2, &index, &error));
+    TEST_CHECK(index == controller.model.activeDocument);
     Document* document = WorkspaceControllerActiveDocument(&controller);
-    assert(document && document->buffer.caret == 6 && !document->buffer.dirty);
+    TEST_CHECK(document && document->buffer.caret == 6 && !document->buffer.dirty);
 
-    assert(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 99, 99, &index, &error));
-    assert(error == OutputErrorCode::NavigationLocationClamped);
-    assert(document->buffer.dirty == false);
-    assert(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.other.project", "src/main.cpp", 1, 1, &index, &error));
-    assert(error == OutputErrorCode::DiagnosticProjectMismatch);
-    assert(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "../outside.cpp", 1, 1, &index, &error));
-    assert(error == OutputErrorCode::DiagnosticPathOutsideProject);
-    assert(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "missing.cpp", 1, 1, &index, &error));
-    assert(error == OutputErrorCode::DiagnosticFileNotFound);
+    TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 99, 99, &index, &error));
+    TEST_CHECK(error == OutputErrorCode::NavigationLocationClamped);
+    TEST_CHECK(document->buffer.dirty == false);
+    TEST_CHECK(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.other.project", "src/main.cpp", 1, 1, &index, &error));
+    TEST_CHECK(error == OutputErrorCode::DiagnosticProjectMismatch);
+    TEST_CHECK(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "../outside.cpp", 1, 1, &index, &error));
+    TEST_CHECK(error == OutputErrorCode::DiagnosticPathOutsideProject);
+    TEST_CHECK(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "missing.cpp", 1, 1, &index, &error));
+    TEST_CHECK(error == OutputErrorCode::DiagnosticFileNotFound);
 
     document->buffer.dirty = true;
-    assert(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 1, 1, &index, &error));
-    assert(document->buffer.dirty);
+    TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 1, 1, &index, &error));
+    TEST_CHECK(document->buffer.dirty);
     std::cout << "Developer Studio diagnostic navigation PASS\n";
     return 0;
 }

@@ -33,6 +33,8 @@ enum class WorkspaceProjectOpenState {
 
 struct WorkspaceProjectOpenEvent {
     WorkspaceProjectOpenState state;
+    uint64_t transactionId;
+    uint64_t transactionGeneration;
     uint64_t requestId;
     uint64_t requestGeneration;
     uint64_t activeProjectGeneration;
@@ -40,6 +42,27 @@ struct WorkspaceProjectOpenEvent {
     uint64_t candidateGeneration;
     uint64_t candidateProjectGeneration;
     uint64_t refreshGeneration;
+    uint32_t entryDepth;
+    uint32_t maximumEntryDepth;
+    uint32_t reentryCount;
+    uint32_t manifestValidationCount;
+    uint32_t loadStageCount;
+    uint32_t refreshCount;
+    uint32_t commitCount;
+    bool transactionActive;
+    bool controllerLoadInProgress;
+    bool transactionOwnerPointerMatches;
+    bool transactionIdMatches;
+    bool transactionGenerationMatches;
+    bool requestIdMatches;
+    bool requestGenerationMatches;
+    bool candidateIdMatches;
+    bool candidateGenerationMatches;
+    bool transactionOwnerMatches;
+    const char* caller;
+    const char* lastReentryCaller;
+    const char* manifestRole;
+    const char* manifestPath;
     ProjectErrorCode error;
     const char* path;
     const ManifestValidationDiagnostic* manifestDiagnostic;
@@ -57,12 +80,23 @@ struct WorkspaceController {
     SymbolDatabase* symbolDatabase;
     uint64_t projectOpenRequestId;
     uint64_t projectOpenRequestGeneration;
+    uint64_t projectOpenTransactionId;
+    uint64_t projectOpenTransactionGeneration;
     uint64_t projectOpenGeneration;
     WorkspaceProjectOpenState projectOpenState;
     bool projectOpenInProgress;
     uint64_t projectOpenCandidateId;
     uint64_t projectOpenCandidateGeneration;
     uint64_t projectOpenRefreshGeneration;
+    uint32_t projectOpenEntryDepth;
+    uint32_t projectOpenMaximumEntryDepth;
+    uint32_t projectOpenReentryCount;
+    uint32_t projectOpenManifestValidationCount;
+    uint32_t projectOpenLoadStageCount;
+    uint32_t projectOpenRefreshCount;
+    uint32_t projectOpenCommitCount;
+    char projectOpenCaller[48];
+    char projectOpenLastReentryCaller[48];
     ProjectErrorCode projectOpenFailure;
     ProjectLoadScratch projectLoadScratch;
     ManifestValidationDiagnostic lastManifestDiagnostic;
@@ -79,6 +113,8 @@ WorkspaceProjectOpenState WorkspaceControllerProjectOpenState(const WorkspaceCon
 const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state);
 bool WorkspaceControllerOpenWorkspace(WorkspaceController* controller, const char* path);
 bool WorkspaceControllerOpenProject(WorkspaceController* controller, const char* path);
+bool WorkspaceControllerOpenProjectFrom(WorkspaceController* controller, const char* path,
+                                        const char* caller);
 bool WorkspaceControllerCreateProject(WorkspaceController* controller, const ProjectCreateRequest& request, ProjectOperationResult* result);
 bool WorkspaceControllerReloadProject(WorkspaceController* controller);
 bool WorkspaceControllerRefresh(WorkspaceController* controller);
