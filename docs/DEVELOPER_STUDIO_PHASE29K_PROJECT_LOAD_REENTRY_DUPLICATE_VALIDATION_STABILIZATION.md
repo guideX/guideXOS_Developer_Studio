@@ -15,7 +15,7 @@ One new fresh QEMU boot reached Phase 29C `ready` with a single startup request.
 | Standalone Developer Studio | `main` | `b40a858e004c4c532f17443830028ee2238a95cb` |
 | Server integration | `v0.5_DEVELOPER_STUDIO` | `edcc80f0134b504ff90aa50859dfbf0f131d6921` |
 
-At inspection, `main` matched `origin/main` (`0` ahead / `0` behind). The server branch compared as `125` local-only commits and `198` upstream-only commits, which differs from the Phase 29J narrative that described it as one commit ahead. No branch, remote, authentication, or history changes were made; the server history was not reconciled.
+At inspection, both local branches matched their configured upstreams (`0` ahead / `0` behind). This differs from the Phase 29J narrative that described the server branch as one commit ahead. No branch, remote, authentication, or history changes were made.
 
 The pre-existing untracked standalone validation artifacts were preserved:
 
