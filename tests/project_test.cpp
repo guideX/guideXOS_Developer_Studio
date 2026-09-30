@@ -50,6 +50,7 @@ struct TestContext {
     bool ownerMutationApplied = false;
     WorkspaceProjectLoadCheckpoint checkpoints[64] = {};
     WorkspaceProjectLoadOwnershipResult checkpointResults[64] = {};
+    std::string checkpointPaths[64];
     uint32_t checkpointCount = 0;
 };
 
@@ -58,6 +59,7 @@ static void projectLoadTrace(void* userData, const WorkspaceProjectOpenEvent& ev
     if (!context || context->checkpointCount >= 64) return;
     context->checkpoints[context->checkpointCount] = event.checkpoint;
     context->checkpointResults[context->checkpointCount] = event.ownershipResult;
+    context->checkpointPaths[context->checkpointCount] = event.path ? event.path : "";
     ++context->checkpointCount;
 }
 
@@ -219,6 +221,13 @@ static bool traceHasCheckpoint(const TestContext& context, WorkspaceProjectLoadC
     return false;
 }
 
+static int traceCheckpointIndex(const TestContext& context, WorkspaceProjectLoadCheckpoint checkpoint) {
+    for (uint32_t i = 0; i < context.checkpointCount; ++i) {
+        if (context.checkpoints[i] == checkpoint) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 static Project makeProject() {
     Project project = {};
     project.formatVersion = 1;
@@ -295,6 +304,28 @@ static void runProjectReentryCase(const fs::path& projectRoot,
                                   WorkspaceProjectLoadOwnershipResult::Current));
     TEST_CHECK(traceHasCheckpoint(context, WorkspaceProjectLoadCheckpoint::TransactionReleased,
                                   WorkspaceProjectLoadOwnershipResult::TransactionNotActive));
+    const int loadStartedIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::LoadStarted);
+    const int observerEntryIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::ObserverCallback);
+    const int observerReturnIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::ObserverReturn);
+    const int loadStartedReturnIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::LoadStartedReturned);
+    const int ownerCheckIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::LoadStartedOwnerCheck);
+    const int metadataPathBeginIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::MetadataPathBegin);
+    const int metadataPathReadyIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::MetadataPathReady);
+    const int metadataStatIndex = traceCheckpointIndex(context, WorkspaceProjectLoadCheckpoint::MetadataStatCall);
+    TEST_CHECK(loadStartedIndex >= 0 && observerEntryIndex > loadStartedIndex);
+    TEST_CHECK(observerReturnIndex > observerEntryIndex && loadStartedReturnIndex > observerReturnIndex);
+    TEST_CHECK(ownerCheckIndex > loadStartedReturnIndex && metadataPathBeginIndex > ownerCheckIndex);
+    TEST_CHECK(metadataPathReadyIndex > metadataPathBeginIndex && metadataStatIndex > metadataPathReadyIndex);
+    TEST_CHECK(context.checkpointResults[ownerCheckIndex] == WorkspaceProjectLoadOwnershipResult::Current);
+    char expectedNormalizedRoot[kMaxPathBytes] = {};
+    char expectedMetadataPath[kMaxPathBytes] = {};
+    TEST_CHECK(NormalizePath(projectRoot.string().c_str(), expectedNormalizedRoot,
+                             sizeof(expectedNormalizedRoot)));
+    TEST_CHECK(JoinWorkspacePath(expectedNormalizedRoot, "guidexos.project",
+                                 expectedMetadataPath, sizeof(expectedMetadataPath)));
+    TEST_CHECK(context.checkpointPaths[metadataPathBeginIndex] == expectedNormalizedRoot);
+    TEST_CHECK(context.checkpointPaths[metadataPathReadyIndex] == expectedMetadataPath);
+    TEST_CHECK(context.checkpointPaths[metadataStatIndex] == expectedMetadataPath);
     TEST_CHECK(controller.model.hasProject);
     TEST_CHECK(controller.model.projectGeneration == controller.projectOpenCandidateProjectGeneration);
     TEST_CHECK(controller.projectOpenTransactionId != 0);

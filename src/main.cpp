@@ -1990,6 +1990,40 @@ static void phase29eManifestTrace(gx_app_context* ctx, const WorkspaceProjectOpe
 static void phase29lProjectLoadTrace(void* userData, const WorkspaceProjectOpenEvent& event) {
     gx_app_context* ctx = static_cast<gx_app_context*>(userData);
     if (!ctx || !g_phase28qDiagnostic) return;
+    const char* phase29mStage = nullptr;
+    if (event.state == WorkspaceProjectOpenState::LoadStarted) {
+        if (event.checkpoint == WorkspaceProjectLoadCheckpoint::ObserverCallback)
+            phase29mStage = "observer_enter";
+        else if (event.checkpoint == WorkspaceProjectLoadCheckpoint::ObserverReturn)
+            phase29mStage = "observer_return";
+    }
+    switch (event.checkpoint) {
+    case WorkspaceProjectLoadCheckpoint::LoadStartedReturned: phase29mStage = "load_started_return"; break;
+    case WorkspaceProjectLoadCheckpoint::LoadStartedOwnerCheck: phase29mStage = "owner_check_current"; break;
+    case WorkspaceProjectLoadCheckpoint::MetadataPathBegin: phase29mStage = "metadata_path_begin"; break;
+    case WorkspaceProjectLoadCheckpoint::MetadataPathReady: phase29mStage = "metadata_path_ready"; break;
+    case WorkspaceProjectLoadCheckpoint::MetadataStatCall: phase29mStage = "metadata_stat_call"; break;
+    default: break;
+    }
+    char* line = g_phase29lTraceBuffer;
+    const uint32_t capacity = sizeof(g_phase29lTraceBuffer);
+    if (phase29mStage) {
+        copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29M stage=");
+        appendText(line, capacity, phase29mStage);
+        appendText(line, capacity, " owner=");
+        appendText(line, capacity, WorkspaceProjectLoadOwnershipResultName(event.ownershipResult));
+        appendText(line, capacity, " request="); appendUnsigned(line, capacity, event.requestId);
+        appendText(line, capacity, " tx="); appendUnsigned(line, capacity, event.transactionId);
+        if (event.path && event.path[0]) {
+            appendText(line, capacity, " path="); appendText(line, capacity, event.path);
+        }
+        logMarker(ctx, line);
+    }
+    if (event.checkpoint == WorkspaceProjectLoadCheckpoint::LoadStartedReturned ||
+        event.checkpoint == WorkspaceProjectLoadCheckpoint::LoadStartedOwnerCheck ||
+        event.checkpoint == WorkspaceProjectLoadCheckpoint::MetadataPathBegin ||
+        event.checkpoint == WorkspaceProjectLoadCheckpoint::MetadataPathReady ||
+        event.checkpoint == WorkspaceProjectLoadCheckpoint::MetadataStatCall) return;
     if (g_phase29lTupleCount >= 64 || g_phase29lRecordCount + 10 > 512) {
         if (!g_phase29lOverflowEmitted) {
             g_phase29lOverflowEmitted = true;
@@ -1999,8 +2033,6 @@ static void phase29lProjectLoadTrace(void* userData, const WorkspaceProjectOpenE
     }
     ++g_phase29lTupleCount;
     const char* checkpoint = WorkspaceProjectLoadCheckpointName(event.checkpoint);
-    char* line = g_phase29lTraceBuffer;
-    const uint32_t capacity = sizeof(g_phase29lTraceBuffer);
 
     copyText(line, capacity, "DEVELOPER_STUDIO_PHASE29L_OWNER checkpoint=");
     appendText(line, capacity, checkpoint);

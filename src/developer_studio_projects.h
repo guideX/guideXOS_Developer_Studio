@@ -87,13 +87,17 @@ struct ManifestValidationGeneration {
 
 enum class ProjectLoadCheckpoint {
     ProjectMetadataValidated = 0,
-    ApplicationManifestValidated
+    ApplicationManifestValidated,
+    MetadataPathBegin,
+    MetadataPathReady,
+    MetadataStatCall
 };
 
 struct ManifestValidationDiagnostic;
 using ProjectLoadCheckpointObserver = void (*)(void* userData,
                                                 ProjectLoadCheckpoint checkpoint,
-                                                const ManifestValidationDiagnostic* diagnostic);
+                                                const ManifestValidationDiagnostic* diagnostic,
+                                                const char* path);
 
 enum class ManifestIdentityMismatchField {
     None = 0,

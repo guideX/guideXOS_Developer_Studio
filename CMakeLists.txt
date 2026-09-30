@@ -344,6 +344,7 @@ add_executable(developerstudio.elf
     target_compile_options(developerstudio.elf PRIVATE
         --target=${GUIDEXOS_COMPILER_TRIPLE}
         -ffreestanding
+        $<$<STREQUAL:${GUIDEXOS_TARGET_ARCHITECTURE},amd64>:-mno-red-zone>
         -fno-exceptions
         -fno-rtti
         -fno-stack-protector

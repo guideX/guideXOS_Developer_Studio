@@ -1331,8 +1331,14 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
         if (!parentPath(normalized, root, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidParentPath); return false; }
     } else { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
     char* metadataPath = scratch->metadataPath;
+    if (checkpointObserver)
+        checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::MetadataPathBegin, nullptr, root);
     if (!joinProjectPath(root, kProjectFileName, metadataPath, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
+    if (checkpointObserver)
+        checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::MetadataPathReady, nullptr, metadataPath);
     FileInfo metadataInfo = {};
+    if (checkpointObserver)
+        checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::MetadataStatCall, nullptr, metadataPath);
     if (!fileSystem.stat(fileSystem.userData, metadataPath, &metadataInfo) || metadataInfo.kind != FileInfoKind::RegularFile) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
     if (metadataInfo.size > kMaxProjectFileBytes) { setResult(result, ProjectErrorCode::ProjectFileTooLarge); return false; }
     char* metadata = scratch->metadataBytes;
@@ -1374,7 +1380,7 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     if (generation) result->manifestDiagnostic.generation = *generation;
     if (checkpointObserver)
         checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::ProjectMetadataValidated,
-                           &result->manifestDiagnostic);
+                           &result->manifestDiagnostic, metadataPath);
     char* manifestPath = scratch->manifestPath;
     if (!joinProjectPath(root, project.manifestPath, manifestPath, kMaxPathBytes)) { setResult(result, ProjectErrorCode::InvalidRelativePath); return false; }
     if (!verifyRequiredFiles(fileSystem, project)) { setResult(result, ProjectErrorCode::RequiredFileMissing); return false; }
@@ -1446,7 +1452,7 @@ bool LoadProject(const ProjectFileSystem& fileSystem, const char* rootOrMetadata
     result->error = ProjectErrorCode::None;
     if (checkpointObserver)
         checkpointObserver(checkpointUserData, ProjectLoadCheckpoint::ApplicationManifestValidated,
-                           &result->manifestDiagnostic);
+                           &result->manifestDiagnostic, manifestPath);
     return true;
 }
 

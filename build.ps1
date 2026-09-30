@@ -309,6 +309,7 @@ $compileFlags = @(
     # freestanding mapper/table limits on AMD64 as well as ARM64; hosted test
     # binaries use the larger defaults because they are compiled separately.
     $compileFlags += "-DGXOS_DEVELOPER_STUDIO_BARE_METAL"
+    if ($TargetArchitecture -eq "amd64") { $compileFlags += "-mno-red-zone" }
     if ($TargetArchitecture -eq "arm64") { $compileFlags += "-DGXOS_DEVELOPER_STUDIO_AARCH64" }
     if ($Phase12Proof) { $compileFlags += "-DGXOS_PHASE12_SMOKE" }
     if ($Configuration -eq "DebugSymbols") {

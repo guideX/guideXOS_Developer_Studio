@@ -428,6 +428,11 @@ const char* WorkspaceProjectLoadCheckpointName(WorkspaceProjectLoadCheckpoint ch
     case WorkspaceProjectLoadCheckpoint::TransactionCreated: return "transaction_created";
     case WorkspaceProjectLoadCheckpoint::CandidateCreated: return "candidate_created";
     case WorkspaceProjectLoadCheckpoint::LoadStarted: return "load_started";
+    case WorkspaceProjectLoadCheckpoint::LoadStartedReturned: return "load_started_return";
+    case WorkspaceProjectLoadCheckpoint::LoadStartedOwnerCheck: return "owner_check_current";
+    case WorkspaceProjectLoadCheckpoint::MetadataPathBegin: return "metadata_path_begin";
+    case WorkspaceProjectLoadCheckpoint::MetadataPathReady: return "metadata_path_ready";
+    case WorkspaceProjectLoadCheckpoint::MetadataStatCall: return "metadata_stat_call";
     case WorkspaceProjectLoadCheckpoint::ProjectMetadataValidated: return "metadata_validated";
     case WorkspaceProjectLoadCheckpoint::ApplicationManifestValidated: return "manifest_validated";
     case WorkspaceProjectLoadCheckpoint::Loaded: return "loaded";
@@ -546,16 +551,36 @@ const char* WorkspaceProjectOpenStateName(WorkspaceProjectOpenState state) {
 }
 
 static void workspaceProjectLoadCheckpoint(void* userData, ProjectLoadCheckpoint checkpoint,
-    const ManifestValidationDiagnostic* diagnostic) {
+    const ManifestValidationDiagnostic* diagnostic, const char* path) {
     WorkspaceController* controller = static_cast<WorkspaceController*>(userData);
-    if (!controller || !diagnostic) return;
-    controller->lastManifestDiagnostic = *diagnostic;
-    controller->projectOpenManifestValidationCount = diagnostic->validationCount;
-    WorkspaceProjectLoadCheckpoint workspaceCheckpoint =
-        checkpoint == ProjectLoadCheckpoint::ProjectMetadataValidated ?
-            WorkspaceProjectLoadCheckpoint::ProjectMetadataValidated :
-            WorkspaceProjectLoadCheckpoint::ApplicationManifestValidated;
-    emitProjectLoadTrace(controller, workspaceCheckpoint, controller->model.rootPath,
+    if (!controller) return;
+    WorkspaceProjectLoadCheckpoint workspaceCheckpoint;
+    switch (checkpoint) {
+    case ProjectLoadCheckpoint::MetadataPathBegin:
+        workspaceCheckpoint = WorkspaceProjectLoadCheckpoint::MetadataPathBegin;
+        break;
+    case ProjectLoadCheckpoint::MetadataPathReady:
+        workspaceCheckpoint = WorkspaceProjectLoadCheckpoint::MetadataPathReady;
+        break;
+    case ProjectLoadCheckpoint::MetadataStatCall:
+        workspaceCheckpoint = WorkspaceProjectLoadCheckpoint::MetadataStatCall;
+        break;
+    case ProjectLoadCheckpoint::ProjectMetadataValidated:
+        if (!diagnostic) return;
+        workspaceCheckpoint = WorkspaceProjectLoadCheckpoint::ProjectMetadataValidated;
+        controller->lastManifestDiagnostic = *diagnostic;
+        controller->projectOpenManifestValidationCount = diagnostic->validationCount;
+        break;
+    case ProjectLoadCheckpoint::ApplicationManifestValidated:
+        if (!diagnostic) return;
+        workspaceCheckpoint = WorkspaceProjectLoadCheckpoint::ApplicationManifestValidated;
+        controller->lastManifestDiagnostic = *diagnostic;
+        controller->projectOpenManifestValidationCount = diagnostic->validationCount;
+        break;
+    default:
+        return;
+    }
+    emitProjectLoadTrace(controller, workspaceCheckpoint, path ? path : controller->model.rootPath,
                          ProjectErrorCode::None, controller->projectOpenRequestId);
 }
 
@@ -670,6 +695,11 @@ bool WorkspaceControllerOpenProjectFrom(WorkspaceController* controller, const c
     emitProjectLoadTrace(controller, WorkspaceProjectLoadCheckpoint::TransactionCreated,
                          requestPath, ProjectErrorCode::None, requestId);
     notifyProjectOpen(controller, WorkspaceProjectOpenState::LoadStarted, requestPath, ProjectErrorCode::None);
+    emitProjectLoadTrace(controller, WorkspaceProjectLoadCheckpoint::LoadStartedReturned,
+                         requestPath, ProjectErrorCode::None, requestId);
+    controller->lastProjectLoadOwnershipResult = projectLoadOwnershipResult(controller, requestId);
+    emitProjectLoadTrace(controller, WorkspaceProjectLoadCheckpoint::LoadStartedOwnerCheck,
+                         requestPath, ProjectErrorCode::None, requestId);
     if (controller->model.open && WorkspaceModelHasDirtyDocuments(&controller->model)) {
         setControllerError(controller, ModelErrorCode::UnsavedChanges);
         setProjectError(controller, ProjectErrorCode::UnsavedChanges);
