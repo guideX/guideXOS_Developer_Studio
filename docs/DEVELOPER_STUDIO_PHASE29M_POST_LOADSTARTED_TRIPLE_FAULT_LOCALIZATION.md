@@ -8,7 +8,7 @@ The first recovered architectural fault is a supervisor page fault in the Native
 #PF vector 14, error=0, RIP=0x500d1e26, CR2=0x7000a5f7
 ```
 
-The faulting operation is `movsbl (%rax,%rcx), %eax` in `lengthOf()` (`src/main.cpp:1395`). An enabled timer IRQ interrupted AMD64 application code compiled with the SysV red zone enabled. The interrupt frame and saved registers used the same CPL0 stack and overwrote the function's red-zone locals: the saved text pointer became the interrupted RBP (`0x6fffa370`), and the saved length became the interrupted RFLAGS (`0x10287`). The resulting read crossed the NativeElf stack's upper boundary. This is stack-local corruption by IRQ entry, not stack exhaustion, a bad project pointer, or an ownership mismatch.
+The faulting operation is `movsbl (%rax,%rcx), %eax` in `lengthOf()` (`src/main.cpp:1395`). An enabled timer IRQ interrupted AMD64 application code compiled with the SysV red zone enabled. Long-mode interrupt entry pushed its 40-byte `SS/RSP/RFLAGS/CS/RIP` frame onto the same CPL0 stack, overwriting the function's red-zone locals: the saved text pointer became the interrupted RSP (`0x6fffa370`, equal to RBP), and the saved length became the interrupted RFLAGS (`0x10287`). The resulting read crossed the NativeElf stack's upper boundary. This is stack-local corruption by IRQ entry, not stack exhaustion, a bad project pointer, or an ownership mismatch.
 
 The old exception path had no usable exception gates for vectors 0–31. The original #PF therefore raised #GP during delivery, escalated to #DF, then raised another #GP while trying to deliver #DF; QEMU reported a triple fault. The repair disables the AMD64 red zone for NativeElf builds, installs and validates exception gates, and gives #DF a dedicated TSS/IST stack. Exception diagnostics write a bounded record to debugcon and halt; they do not call serial or UI/filesystem code.
 
@@ -57,9 +57,9 @@ The exact packaged ELF was stripped, so it has no DWARF/symbol table. Its disass
 500d1e26: movsbl (%rax,%rcx),%eax  ; #PF
 ```
 
-At the fault, the loaded pointer in RAX equals both RBP and RSP. RCX equals RFLAGS exactly. In this frameless-local layout, the pointer and length locals at `-0x10(%rbp)` and `-0x18(%rbp)` sit in the AMD64 128-byte red zone. The timer interrupt saves the interrupted register/CPU frame below RSP on the same stack; its saved RBP and RFLAGS overwrite those red-zone slots. `RAX + RCX = 0x7000a5f7`, exactly CR2.
+At the fault, the loaded pointer in RAX equals both RBP and RSP. RCX equals RFLAGS exactly. In this frameless-local layout, the pointer and length locals at `-0x10(%rbp)` and `-0x18(%rbp)` sit in the AMD64 128-byte red zone. The long-mode interrupt frame saves old RSP at `RBP-0x10` and RFLAGS at `RBP-0x18`, directly overwriting those two locals. `RAX + RCX = 0x7000a5f7`, exactly CR2.
 
-The preceding bounds branch compared the local length with the caller's `0x140` limit. The corrupted length `0x10287` made the `jae` branch fall through to the byte read. This explains the invalid index without requiring an invalid caller buffer or expired project state.
+QEMU records hardware interrupt vector `0x20` at RIP `0x500d1e1f`, immediately after the bounds branch and before the pointer/length reloads. At that point RCX was `0x35`, below the caller's `0x140` limit, so the preceding `jae` was correctly not taken. After IRQ return, the function reloaded the red-zone locals: the pointer was now the saved RSP (equal to RBP) and the length was the saved RFLAGS (`0x10287`). The branch was valid; the IRQ frame corrupted the values consumed by the subsequent read.
 
 ## Stack, pointer, path, and observer audit
 
