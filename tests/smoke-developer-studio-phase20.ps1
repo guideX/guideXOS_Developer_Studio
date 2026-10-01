@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery')]
+    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'Phase29NReadiness')]
     [string]$Case = 'ConditionEditor',
     [string]$ServerRoot = 'D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO',
     [string]$FixtureRoot = '',
@@ -19,6 +19,9 @@ if (-not $FixtureRoot) { $FixtureRoot = Join-Path $RepoRoot 'tests\fixtures\debu
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $FixtureRoot = [IO.Path]::GetFullPath($FixtureRoot)
 $Executable = Join-Path $ServerRoot 'guideXOSServer.experimental.exe'
+$FixtureProject = Get-Content -LiteralPath (Join-Path $FixtureRoot 'guidexos.project') -Raw | ConvertFrom-Json
+$script:FixtureProjectId = [string]$FixtureProject.projectId
+if (-not $script:FixtureProjectId) { throw 'Phase 20 hosted smoke fixture has no project ID' }
 $script:Parts = New-Object 'System.Collections.Generic.List[string]'
 $script:LastInput = ''
 $script:ExpectedMarker = ''
@@ -239,6 +242,22 @@ function Test-Marker([string]$Marker) {
     return [bool](Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $Marker -Quiet -ErrorAction SilentlyContinue)
 }
 
+function Test-PersistedBreakpoint([string]$SourcePath, [int]$Line, [int]$Column) {
+    $workspacePath = Join-Path $FixtureRoot 'guidexos.debugger.json'
+    if (-not (Test-Path -LiteralPath $workspacePath -PathType Leaf)) { return $false }
+    try {
+        $workspace = Get-Content -LiteralPath $workspacePath -Raw | ConvertFrom-Json
+        foreach ($breakpoint in @($workspace.breakpoints)) {
+            if ($breakpoint.sourcePath -eq $SourcePath -and
+                [int]$breakpoint.line -eq $Line -and
+                [int]$breakpoint.column -eq $Column -and
+                [bool]$breakpoint.enabled -and
+                $breakpoint.action -eq 'BREAK') { return $true }
+        }
+    } catch { return $false }
+    return $false
+}
+
 function Get-PanelBreakpointCount() {
     $needle = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_open=PASS tab=0 count='
     $match = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $needle -ErrorAction SilentlyContinue |
@@ -363,7 +382,7 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
     }
 }
 
-function Add-InitialSetup() {
+function Add-InitialSetup([bool]$ReadinessOnly = $false) {
     Add-Command 'gui.start'
     Add-Wait 8
     Add-Command 'desktop.launch com.guidexos.developerstudio'
@@ -376,8 +395,11 @@ function Add-InitialSetup() {
     Add-Text $FixtureRoot.ToLowerInvariant()
     Add-Key 13
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS'
+    Add-WaitMarker 'text="Outline indexing disabled in this build"'
     Add-Command "gui.activate $script:WindowId"
-    Add-Click 300 180
+    # Stay in the editor text area; x=300 overlaps the breakpoint gutter.
+    # The first editor row makes line navigation deterministic.
+    Add-Click 340 86
     Add-Wait 1
     Add-Key 83 3
     Add-Wait 1
@@ -385,14 +407,24 @@ function Add-InitialSetup() {
         Add-Key 40
         Add-WaitMilliseconds 150
     }
+    $caretMarker = 'text="Document: main.cpp  Line ' + $BreakpointLine + ', Column 1"'
+    Add-WaitMarker $caretMarker
     Add-Command "gui.activate $script:WindowId"
     Add-Wait 1
     Add-Key 120
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS'
-    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=PENDING'
-    # Normalize any stale rows left by an interrupted legacy smoke through
-    # the real Breakpoints panel. The runtime part inspects the bounded panel
-    # count marker and disables only the known stale leading row when present.
+    $breakpointMarker = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=WORKSPACE_PERSISTED project_id=' + $script:FixtureProjectId + ' pgen=1 op=0 symgen=0 id=none src=src/main.cpp line=' + $BreakpointLine + ' col=1 enabled=1 state=NotStarted'
+    Add-WaitMarker $breakpointMarker
+    # Before debug start F9 persists breakpoint intent in the workspace. The
+    # runtime controller has no breakpoint ID or mapping state until the
+    # debug build publishes symbols and beginDebugSession materializes it.
+    # Start a real session before opening the runtime Breakpoints manager; the
+    # editor condition UI operates on materialized controller rows, not the
+    # persisted pre-start workspace intent.
+    Add-Key 116 2
+    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+    if ($ReadinessOnly) { return }
     Add-OpenDebugBreakpoints
     $script:Parts.Add('NORMALIZE|breakpoints')
     # Keep the real panel open and select the intended row for all following
@@ -434,7 +466,7 @@ function Add-ConditionEditorCase() {
     Add-Key 32
     Add-LogSnapshot
     Add-WaitMarkerFresh 'text=counter == 2 enabled=TRUE'
-    Add-Key 116 2
+    Add-Key 116
     Add-LogSnapshot
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
@@ -449,7 +481,7 @@ function Add-ConditionEditorCase() {
 function Add-ConditionErrorRecoveryCase() {
     Add-InitialSetup
     Add-SetCondition 'unknown_value == 2'
-    Add-Key 116 2
+    Add-Key 116
     Add-LogSnapshot
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
     Add-WaitMarker 'Debug: breakpoint condition error'
@@ -484,12 +516,18 @@ function Add-ConditionErrorRecoveryCase() {
     Add-TargetedClose
 }
 
+function Add-Phase29NReadinessCase() {
+    Add-InitialSetup $true
+    Add-TargetedClose
+}
+
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) 'experimental hosted Server exists'
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot 'guidexos.project') -PathType Leaf) 'Phase 20 fixture project exists'
 Assert-True ($BreakpointLine -gt 0) 'breakpoint line is positive'
 
 if ($Case -eq 'ConditionEditor') { Add-ConditionEditorCase }
-else { Add-ConditionErrorRecoveryCase }
+elseif ($Case -eq 'ConditionErrorRecovery') { Add-ConditionErrorRecoveryCase }
+else { Add-Phase29NReadinessCase }
 
 $startInfo = New-Object Diagnostics.ProcessStartInfo
 $script:StdoutPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-phase20-$([Guid]::NewGuid().ToString('N')).out")
@@ -547,6 +585,7 @@ try {
     $script:CapturedText = Get-LiveText
     Assert-True ($script:Process.ExitCode -eq 0) "Phase 20 hosted Server exits with code 0 (actual=$($script:Process.ExitCode))"
     Assert-True ((Test-Marker 'debug_shutdown_complete=PASS') -or (Test-Marker 'shutdownStage=complete')) 'targeted close reaches shutdown complete'
+    Assert-True (Test-PersistedBreakpoint 'src/main.cpp' $BreakpointLine 1) 'F9 persists the requested project-relative source breakpoint before debug start'
     if ($Case -eq 'ConditionEditor') {
         Assert-True (Test-Marker 'debug_condition_commit=INVALID') 'invalid syntax is reported by the real editor'
         Assert-True ((Test-Marker 'text=counter = 2 parse=INVALID state=CONDITION_REPLACED') -and
@@ -556,13 +595,21 @@ try {
         Write-Host 'condition_editor_valid=PASS'
         Write-Host 'condition_editor_invalid_edit_clear_cancel=PASS'
         Write-Host 'condition_editor_modal_close=PASS'
-    } else {
+    } elseif ($Case -eq 'ConditionErrorRecovery') {
         $falseHits = Get-MarkerCount 'Debug: breakpoint condition false; continuing'
         Assert-True $falseHits -ge 2 'ConditionError recovery reaches false, false, true behavior'
         Assert-True ((Test-Marker 'ConditionError') -or (Test-Marker 'Debug: breakpoint condition error')) 'hosted ConditionError is surfaced'
         Assert-True (Test-Marker 'debug_condition_commit=PASS') 'ConditionError recovery commits a valid replacement through the editor'
         Assert-True (Test-Marker 'debug_condition_clear=PASS') 'ConditionError recovery clears the condition afterward'
         Write-Host 'condition_error_recovery=PASS'
+    } else {
+        Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY') 'hosted DWARF load reaches Ready'
+        Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION') 'hosted DWARF sources associate with the project root'
+        Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_PATH kind=dwarf_compilation_entry') 'breakpoint source retains its raw DWARF compilation entry'
+        Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND') 'source breakpoint reaches Verified/BOUND'
+        Assert-True (Test-Marker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT') 'source breakpoint is hit'
+        Assert-True (Test-Marker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING') 'Continue resumes the hosted target'
+        Write-Host 'phase29n_hosted_symbol_breakpoint_readiness=PASS'
     }
 } catch {
     $script:CapturedText = Get-LiveText

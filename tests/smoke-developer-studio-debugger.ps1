@@ -66,6 +66,10 @@ function Add-Delay([System.Collections.Generic.List[string]]$Parts, [int]$Second
     $Parts.Add("WAIT|$([Math]::Max(1, $Seconds))")
 }
 
+function Add-WaitMarker([System.Collections.Generic.List[string]]$Parts, [string]$Marker, [int]$TimeoutSeconds) {
+    $Parts.Add("WAITMARK|$([Math]::Max(1, $TimeoutSeconds))|$Marker")
+}
+
 function Add-Key([System.Collections.Generic.List[string]]$Parts, [int]$KeyCode, [int]$Modifiers = 0, [bool]$WaitForUi = $false) {
     Add-ServerLine $Parts "gui.keyto 1000 $KeyCode down $Modifiers"
     if ($WaitForUi) { Add-ShortDelay $Parts }
@@ -174,7 +178,7 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
-        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
         $recent = @($lines | Select-Object -Last 80)
         $serverExitCode = if ($process -and $process.HasExited) { $process.ExitCode } else { 'unknown' }
         $header = @(
@@ -243,10 +247,9 @@ Add-ShortDelay $parts
 
 # Ctrl+F5 starts the real Developer Studio build -> hosted launch -> bind -> trap path.
 Add-Key $parts 116 2 $true
-# The Continue variant still has to let the hosted target reach its real
-# breakpoint before issuing F5; a short fixed delay makes the soak race the
-# launch/stop transition on slower hosts.
-Add-Delay $parts $DebugWaitSeconds
+# Continue/inspection cases wait on the actual stopped-session milestone, so
+# they proceed as soon as the hosted target publishes a usable source stop.
+Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS' $DebugWaitSeconds
 
 if ($InteractiveWatch) {
     # Open the product's Debug menu and Watch tab through compositor mouse
@@ -278,11 +281,13 @@ if ($InteractiveWatch) {
 }
 
 if ($ContinueBreakpoint) {
-    # F5 continues the real stopped target. The fixture remains alive after
-    # the breakpointed instruction, so the smoke can observe Running without
-    # relying on process exit to imply successful continuation.
-    Add-Key $parts 116 0 $true
+    # F5 is a global debugger command while a session is paused.  Exercise the
+    # production keyboard route after source navigation and locals inspection,
+    # when focus may belong to another pane.
+    Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
+    Add-Key $parts 116 0 $true
+    Add-Delay $parts 2
 } elseif ($StepInto) {
     # F11 begins the real user source-step operation from the breakpoint stop.
     Add-Key $parts 122 0 $true
@@ -396,6 +401,21 @@ try {
         $value = $part.Substring($separator + 1)
         if ($kind -eq 'WAIT') {
             Start-Sleep -Seconds ([Math]::Max(1, [int]$value))
+        } elseif ($kind -eq 'WAITMARK') {
+            $markerSeparator = $value.IndexOf('|')
+            if ($markerSeparator -lt 1) { throw "Invalid hosted marker wait: $value" }
+            $markerTimeout = [Math]::Max(1, [int]$value.Substring(0, $markerSeparator))
+            $marker = $value.Substring($markerSeparator + 1)
+            $markerDeadline = (Get-Date).AddSeconds($markerTimeout)
+            $markerObserved = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $markerDeadline) {
+                if ((Get-LiveHostedText $stdoutPath $stderrPath).Contains($marker)) {
+                    $markerObserved = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-True $markerObserved "hosted target publishes $marker before the bounded wait expires"
         } elseif ($kind -eq 'WAITSHUTDOWN') {
             Wait-ForShutdown $process $stdoutPath $stderrPath ([int]$value) | Out-Null
             Write-Host "PASS: WAITSHUTDOWN reached complete (bounded state poll)"
@@ -441,6 +461,56 @@ try {
         throw "Debugger Phase 3B smoke timed out after $MaxRuntimeSeconds seconds"
     }
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS')) "Ctrl+F5 starts the hosted debug session"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_SELECTED .*result=execution_and_debug_same_per_project_elf') "hosted debug uses one identity-owned ELF for execution and DWARF"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=PROJECT_READY .*result=project_open_and_build_ready') "hosted project and build are ready before symbol selection"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_HASH_VALIDATED .*result=sha256_matches_completed_build') "hosted debug artifact hash matches the completed build"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ELF_VALIDATION_COMPLETE .*result=valid') "hosted debug ELF header validates"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY .*mapper_state=Ready result=none') "hosted DWARF parser reaches Ready"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=SOURCE_TABLE_CREATED .*result=source_table_present') "hosted DWARF creates a source table"
+    $hostedDwarfSummaryPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF .*dwarf=[1-9]\d* .*cu=[1-9]\d* dies=[1-9]\d* .*files=[1-9]\d* .*rows=[1-9]\d* .*line_bytes=[1-9]\d* .*result=Ready'
+    if ($text -notmatch $hostedDwarfSummaryPattern) {
+        Write-Host 'Captured hosted DWARF summary diagnostics:'
+        @($text -split "`r?`n" | Where-Object { $_ -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF|DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=(DWARF_READY|SOURCE_TABLE_CREATED)' } | Select-Object -Last 20)
+    }
+    Assert-True ($text -match $hostedDwarfSummaryPattern) "hosted DWARF source, DIE, and line-table counts are observable"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF_SECTIONS .*symgen=\d+ arch=[^ ]+ elf_sections=[1-9]\d* debug_info_bytes=[1-9]\d* debug_line_bytes=[1-9]\d*') "hosted DWARF section byte totals are observable"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION .*result=associated') "DWARF source root associates with the project"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_MATCH .*requested=src/main\.cpp dwarf=src/main\.cpp line=' + [regex]::Escape([string]$BreakpointLine) + ' result=exact_match requested_normalized=src/main\.cpp dwarf_normalized=src/main\.cpp') "the requested source path matches its normalized DWARF source"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_PATH kind=dwarf_compilation_entry pgen=\d+ op=\d+ symgen=\d+ id=\d+ part=1/\d+ value=') "the request retains its raw DWARF compilation entry"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=PENDING .*state=Pending') "runtime breakpoint enters Pending only after symbol publication"
+    $mappedBreakpointPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=MAPPED pgen=\d+ op=\d+ symgen=\d+ id=(\d+) src=src/main\.cpp line=' + [regex]::Escape([string]$BreakpointLine) + ' col=1 enabled=1 state=Mapped err=none addr=0x[0-9A-Fa-f]+ addrs=[1-9]\d*'
+    if ($text -notmatch $mappedBreakpointPattern) {
+        Write-Host 'Captured Phase 29N hosted symbol/breakpoint diagnostics:'
+        @($text -split "`r?`n" | Where-Object { $_ -match 'DEVELOPER_STUDIO_PHASE29N_HOST_|debug_binding|breakpoint bound' } | Select-Object -Last 80)
+    }
+    Assert-True ($text -match $mappedBreakpointPattern) "the requested source line maps to an executable address"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND .*state=Verified') "the hosted backend acknowledges breakpoint installation"
+    $hostSymbolLifecycle = @(
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=PROJECT_READY',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_SELECTED',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=SYMBOL_LOAD_BEGIN',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_HASH_VALIDATED',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ELF_VALIDATION_BEGIN',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_LOAD_BEGIN',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ELF_VALIDATION_COMPLETE',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=SOURCE_TABLE_CREATED',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=SYMBOL_MODEL_PUBLISHED',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=BREAKPOINT_REMAP_BEGIN',
+        'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=BREAKPOINT_REMAP_COMPLETE'
+    )
+    $previousHostSymbolPosition = -1
+    $hostSymbolLifecycleOrdered = $true
+    foreach ($stage in $hostSymbolLifecycle) {
+        $stagePosition = $text.IndexOf($stage, [StringComparison]::Ordinal)
+        if ($stagePosition -lt 0 -or $stagePosition -le $previousHostSymbolPosition) {
+            $hostSymbolLifecycleOrdered = $false
+            break
+        }
+        $previousHostSymbolPosition = $stagePosition
+    }
+    Assert-True $hostSymbolLifecycleOrdered "hosted project, artifact, DWARF, source, publication, and remap stages are ordered"
     if (-not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) {
         Write-Host 'Captured hosted breakpoint-pause diagnostics:'
         @($text -split "`r?`n" | Where-Object { $_ -notmatch 'draw_text' -and $_ -match '\[DevelopmentRun\]|\[NativeElf|\[NativeAppDebugger\]|target-created|debug_|GUIDEXOS_PHASE3B_FIXTURE|Phase3B draw_rect caller|breakpoint|bound|Bound|Verified|trap|execution|runtime|Native app|Debug:' } | Select-Object -Last 300)
@@ -461,10 +531,15 @@ try {
                      $text.Contains('draw_text windowId=1000 pos=620,198 text="true"')) "the hosted Watch UI retains and evaluates a real comparison"
     }
     if ($ContinueBreakpoint) {
-        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING') -and
-                     $text.Contains('[NativeAppDebugger] breakpoint continuation accepted') -and
-                     $text.Contains('EXCEPTION_SINGLE_STEP') -and
-                     $text.Contains('rebound=true')) "F5 continues through a real single-step and rebinds the breakpoint"
+        $continueEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING') -and
+                            $text.Contains('[NativeAppDebugger] breakpoint continuation accepted') -and
+                            $text.Contains('EXCEPTION_SINGLE_STEP') -and
+                            $text.Contains('rebound=true')
+        if (-not $continueEvidence) {
+            Write-Host 'Captured hosted Continue diagnostics:'
+            @($text -split "`r?`n" | Where-Object { $_ -match 'PHASE29N_HOST_CONTINUE|Continue unavailable|breakpoint continuation|EXCEPTION_SINGLE_STEP|rebound=|debug_state=|debug_transition=' } | Select-Object -Last 80)
+        }
+        Assert-True $continueEvidence "Continue completes the breakpoint single-step and rebinds the breakpoint"
     } elseif ($StepInto -or $StepOver -or $StepOut -or $MixedLifecycle) {
         $overlapStop = if ($OverlapStepOut) { "Debug: paused | Breakpoint | src/main.cpp:$OverlapBreakpointLine" } else { "" }
         $stepEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING') -and
@@ -593,6 +668,8 @@ try {
     if (-not $smokeSucceeded) {
         $failureText = if ($text) { $text } else { Get-LiveHostedText $stdoutPath $stderrPath }
         Write-ShutdownTrace "smoke failure" $failureText
+    } elseif ($TraceDirectory -and $TraceArtifactName -and $text) {
+        Write-ShutdownTrace "smoke success" $text
     }
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
     if ($process) { $process.Dispose() }

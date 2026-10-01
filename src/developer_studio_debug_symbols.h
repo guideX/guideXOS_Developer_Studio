@@ -130,6 +130,7 @@ enum class DebugDwarfArtifactMismatch {
 
 struct DebugDwarfSourceFile {
     char relativePath[kDebugMapperMaxPathBytes];
+    char compilationPath[kDebugMapperMaxPathBytes];
     bool external;
 };
 

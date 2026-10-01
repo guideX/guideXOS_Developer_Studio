@@ -257,6 +257,8 @@ int main() {
     assert(std::strcmp(mapper.diagnosticSourceDirectory, "src") == 0);
     assert(std::strcmp(mapper.diagnosticSourceCandidate, "src/main.cpp") == 0);
     assert(std::strcmp(mapper.diagnosticSourceNormalized, "src/main.cpp") == 0);
+    assert(std::strcmp(mapper.sourceFiles[0].compilationPath, "src/main.cpp") == 0);
+    assert(std::strcmp(mapper.sourceFiles[0].relativePath, "src/main.cpp") == 0);
     uint64_t addresses[kDebugMapperMaxAddressesPerLine] = {};
     uint32_t count = 0; uint64_t primary = 0;
     assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src\\main.cpp", 42, addresses, 8, &count, &primary, &error));

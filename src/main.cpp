@@ -889,6 +889,7 @@ static DebugWatchCollection g_debugWatches = {};
 static DebugWatchCollection& debugWatches() { return g_debugWatches; }
 static DebugDwarfMapper g_debugMapper = {};
 static uint32_t g_debugMapperGeneration = 0;
+static uint64_t g_phase29nLastBoundSessionGeneration = 0;
 static unsigned char g_debugArtifactBytes[guidexos::developer_studio::kDebugMapperMaxElfBytes] = {};
 // The launch target contains several bounded path/argument buffers and is
 // live across symbol loading and controller startup. Keep it out of the
@@ -5917,6 +5918,367 @@ static void phase29hParserFailureTrace(gx_app_context* ctx, const DebugDwarfMapp
     logMarker(ctx, g_textScratch);
 }
 
+static bool phase29nHostedTraceEnabled() {
+    return !g_phase28qDiagnostic && buildService().backend == BuildBackendKind::Hosted;
+}
+
+static void phase29nHostedContinueTrace(gx_app_context* ctx, const char* source) {
+    if (!ctx || !phase29nHostedTraceEnabled()) return;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_CONTINUE source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "unknown");
+    appendText(g_textScratch, sizeof(g_textScratch), " pgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " op=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.target.buildOperationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " active=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.active ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " state=");
+    appendText(g_textScratch, sizeof(g_textScratch), DebugSessionStateName(g_debugController.state));
+    appendText(g_textScratch, sizeof(g_textScratch), " stop=");
+    appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
+    appendText(g_textScratch, sizeof(g_textScratch), " backend_exec=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                   static_cast<uint32_t>(g_debugController.backendExecutionState));
+    appendText(g_textScratch, sizeof(g_textScratch), " cap=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                   g_debugController.capabilities.canContinue ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                   DebugControllerCanContinue(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " ctx=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.valid ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " ctx_session=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.sessionGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29nHostedSymbolStageTrace(gx_app_context* ctx, const char* stage,
+                                           const DebugTarget* target,
+                                           const DebugDwarfMapper* mapper,
+                                           const char* result) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target || !stage) return;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=");
+    appendText(g_textScratch, sizeof(g_textScratch), stage);
+    appendText(g_textScratch, sizeof(g_textScratch), " project_id=");
+    appendText(g_textScratch, sizeof(g_textScratch), target->projectId[0] ? target->projectId : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " project_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " build_operation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " arch=");
+    appendText(g_textScratch, sizeof(g_textScratch), target->architecture[0] ? target->architecture : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " symbol_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper ? mapper->identity.mapperGeneration : 0);
+    appendText(g_textScratch, sizeof(g_textScratch), " mapper_state=");
+    appendText(g_textScratch, sizeof(g_textScratch), mapper ?
+               DebugDwarfMapperStateName(mapper->state) : "NotStarted");
+    appendText(g_textScratch, sizeof(g_textScratch), " result=");
+    appendText(g_textScratch, sizeof(g_textScratch), result ? result : "unknown");
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29nHostedSymbolPathTrace(gx_app_context* ctx, const char* kind,
+                                          const DebugTarget* target, const char* path) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target) return;
+    const uint32_t pathLength = lengthOf(path ? path : "", kMaxPathBytes);
+    static const uint32_t chunkBytes = 72u;
+    const uint32_t chunkCount = pathLength == 0 ? 1u : (pathLength + chunkBytes - 1u) / chunkBytes;
+    for (uint32_t chunk = 0; chunk < chunkCount; ++chunk) {
+        char pathPart[73] = {};
+        const uint32_t start = chunk * chunkBytes;
+        const uint32_t count = pathLength > start ?
+            ((pathLength - start) < chunkBytes ? pathLength - start : chunkBytes) : 0;
+        for (uint32_t i = 0; i < count; ++i) pathPart[i] = path[start + i];
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL_PATH kind=");
+        appendText(g_textScratch, sizeof(g_textScratch), kind ? kind : "unknown");
+        appendText(g_textScratch, sizeof(g_textScratch), " project_generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " build_operation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+        appendText(g_textScratch, sizeof(g_textScratch), " part=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), chunk + 1u);
+        appendText(g_textScratch, sizeof(g_textScratch), "/");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), chunkCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " value=");
+        appendText(g_textScratch, sizeof(g_textScratch), pathPart[0] ? pathPart : "-");
+        logMarker(ctx, g_textScratch);
+    }
+}
+
+static void phase29nHostedBreakpointSourcePathTrace(gx_app_context* ctx,
+                                                    const DebugTarget* target,
+                                                    const DebugDwarfMapper* mapper,
+                                                    const DebugBreakpoint* breakpoint,
+                                                    const char* kind,
+                                                    const char* path) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target || !mapper || !breakpoint) return;
+    const uint32_t pathLength = lengthOf(path ? path : "", kMaxPathBytes);
+    static const uint32_t chunkBytes = 60u;
+    const uint32_t chunkCount = pathLength == 0 ? 1u : (pathLength + chunkBytes - 1u) / chunkBytes;
+    for (uint32_t chunk = 0; chunk < chunkCount; ++chunk) {
+        char pathPart[61] = {};
+        const uint32_t start = chunk * chunkBytes;
+        const uint32_t count = pathLength > start ?
+            ((pathLength - start) < chunkBytes ? pathLength - start : chunkBytes) : 0;
+        for (uint32_t i = 0; i < count; ++i) pathPart[i] = path[start + i];
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_PATH kind=");
+        appendText(g_textScratch, sizeof(g_textScratch), kind ? kind : "unknown");
+        appendText(g_textScratch, sizeof(g_textScratch), " pgen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " op=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+        appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " id=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->id);
+        appendText(g_textScratch, sizeof(g_textScratch), " part=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), chunk + 1u);
+        appendText(g_textScratch, sizeof(g_textScratch), "/");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), chunkCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " value=");
+        appendText(g_textScratch, sizeof(g_textScratch), pathPart[0] ? pathPart : "-");
+        logMarker(ctx, g_textScratch);
+    }
+}
+
+static void phase29nHostedArtifactTrace(gx_app_context* ctx, const DebugTarget* target,
+                                        const char* absolutePath) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target) return;
+    phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_SELECTED", target, nullptr,
+                                   "execution_and_debug_same_per_project_elf");
+    phase29nHostedSymbolPathTrace(ctx, "execution_relative", target, target->executablePath);
+    phase29nHostedSymbolPathTrace(ctx, "debug_artifact", target, absolutePath);
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_ARTIFACT project_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " build_operation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " build_configuration=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_buildController.request.configuration[0] ?
+               g_buildController.request.configuration : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " kind=per_project_debug_build size=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->artifactSize);
+    appendText(g_textScratch, sizeof(g_textScratch), " sha256=");
+    appendText(g_textScratch, sizeof(g_textScratch), target->artifactSha256[0] ? target->artifactSha256 : "-");
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29nHostedSourceAssociationTrace(gx_app_context* ctx,
+                                                 const DebugTarget* target,
+                                                 const DebugDwarfMapper* mapper) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target || !mapper) return;
+    phase29nHostedSymbolStageTrace(ctx, "SOURCE_TABLE_CREATED", target, mapper,
+        mapper->sourceFileCount ? "source_table_present" : "source_table_empty");
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION pgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " op=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " root=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.project.sourceRoot[0] ?
+               g_controller.model.project.sourceRoot : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " result=");
+    appendText(g_textScratch, sizeof(g_textScratch), !mapper->diagnosticSourceAssociationAttempted ? "not_attempted" :
+               (mapper->diagnosticSourceAssociationSucceeded ? "associated" : "rejected"));
+    appendText(g_textScratch, sizeof(g_textScratch), " files=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->sourceFileCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " external=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->externalSourceCount);
+    logMarker(ctx, g_textScratch);
+    phase29nHostedSymbolPathTrace(ctx, "project_root", target, target->projectRoot);
+    phase29nHostedSymbolPathTrace(ctx, "last_compilation_directory", target,
+                                  mapper->diagnosticSourceDirectory);
+    phase29nHostedSymbolPathTrace(ctx, "last_dwarf_candidate", target,
+                                  mapper->diagnosticSourceCandidate);
+    phase29nHostedSymbolPathTrace(ctx, "last_dwarf_normalized", target,
+                                  mapper->diagnosticSourceNormalized);
+}
+
+static void phase29nHostedDwarfSummaryTrace(gx_app_context* ctx, const DebugTarget* target,
+                                           const DebugDwarfMapper* mapper) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target || !mapper) return;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_DWARF pgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " op=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " dwarf=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->dwarfVersion);
+    appendText(g_textScratch, sizeof(g_textScratch), " elf_sections=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->elfSectionHeaderCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " info_bytes=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->debugInfoSectionBytes);
+    appendText(g_textScratch, sizeof(g_textScratch), " cu=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->debugInfoCompilationUnitCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " dies=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->debugInfoDieCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " funcs=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->debugInfoFunctionCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " vars=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->debugInfoVariableCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " files=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->sourceFileCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " external=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->externalSourceCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " rows=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->lineRowCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " line_bytes=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->lineSectionBytes);
+    appendText(g_textScratch, sizeof(g_textScratch), " truncated=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->truncated ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " result=");
+    appendText(g_textScratch, sizeof(g_textScratch), DebugDwarfMapperStateName(mapper->state));
+    logMarker(ctx, g_textScratch);
+
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_DWARF_SECTIONS pgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " op=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+    appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " arch=");
+    appendText(g_textScratch, sizeof(g_textScratch), target->architecture[0] ? target->architecture : "-");
+    appendText(g_textScratch, sizeof(g_textScratch), " elf_sections=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->elfSectionHeaderCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " debug_info_bytes=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->debugInfoSectionBytes);
+    appendText(g_textScratch, sizeof(g_textScratch), " debug_line_bytes=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->lineSectionBytes);
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29nHostedBreakpointTrace(gx_app_context* ctx, const char* stage,
+                                          const DebugTarget* target,
+                                          const DebugDwarfMapper* mapper,
+                                          const DebugController* controller) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !target || !mapper || !controller) return;
+    for (uint32_t i = 0; i < controller->breakpointCount &&
+         i < guidexos::developer_studio::kDebugMaxBreakpoints; ++i) {
+        const DebugBreakpoint& breakpoint = controller->breakpoints[i];
+        const char* dwarfSource = "not_found";
+        const char* dwarfCompilationPath = "not_found";
+        for (uint32_t source = 0; source < mapper->sourceFileCount; ++source) {
+            if (PathsEqual(mapper->sourceFiles[source].relativePath,
+                           breakpoint.location.relativePath)) {
+                dwarfSource = mapper->sourceFiles[source].relativePath;
+                dwarfCompilationPath = mapper->sourceFiles[source].compilationPath;
+                break;
+            }
+        }
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_MATCH pgen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " op=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+        appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " id=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.id);
+        appendText(g_textScratch, sizeof(g_textScratch), " requested=");
+        appendText(g_textScratch, sizeof(g_textScratch), breakpoint.location.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " dwarf=");
+        appendText(g_textScratch, sizeof(g_textScratch), dwarfSource);
+        appendText(g_textScratch, sizeof(g_textScratch), " line=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.location.line);
+        appendText(g_textScratch, sizeof(g_textScratch), " result=");
+        appendText(g_textScratch, sizeof(g_textScratch), PathsEqual(dwarfSource,
+            breakpoint.location.relativePath) ? "exact_match" : "no_match");
+        appendText(g_textScratch, sizeof(g_textScratch), " requested_normalized=");
+        appendText(g_textScratch, sizeof(g_textScratch), breakpoint.location.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " dwarf_normalized=");
+        appendText(g_textScratch, sizeof(g_textScratch), dwarfSource);
+        logMarker(ctx, g_textScratch);
+        phase29nHostedBreakpointSourcePathTrace(ctx, target, mapper, &breakpoint,
+                                                "dwarf_compilation_entry", dwarfCompilationPath);
+
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=");
+        appendText(g_textScratch, sizeof(g_textScratch), stage ? stage : "unknown");
+        appendText(g_textScratch, sizeof(g_textScratch), " pgen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " op=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+        appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " id=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.id);
+        appendText(g_textScratch, sizeof(g_textScratch), " src=");
+        appendText(g_textScratch, sizeof(g_textScratch), breakpoint.location.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " line=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.location.line);
+        appendText(g_textScratch, sizeof(g_textScratch), " col=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.location.column);
+        appendText(g_textScratch, sizeof(g_textScratch), " enabled=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.enabled ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " state=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugBreakpointStateName(breakpoint.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " err=");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(breakpoint.mappingError));
+        appendText(g_textScratch, sizeof(g_textScratch), " addr=");
+        if (breakpoint.location.instructionAddress.valid)
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), breakpoint.location.instructionAddress.value);
+        else appendText(g_textScratch, sizeof(g_textScratch), "-");
+        appendText(g_textScratch, sizeof(g_textScratch), " addrs=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.mappedAddressCount);
+        logMarker(ctx, g_textScratch);
+    }
+}
+
+static void phase29nHostedWorkspaceBreakpointTrace(gx_app_context* ctx,
+                                                   const char* sourcePath,
+                                                   uint32_t line, uint32_t column) {
+    if (!ctx || !phase29nHostedTraceEnabled() || !sourcePath ||
+        DebugControllerIsActive(&g_debugController)) return;
+    const int32_t index = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace, sourcePath, line);
+    const DebuggerWorkspaceBreakpoint* breakpoint = index >= 0 ?
+        &g_debuggerWorkspace.breakpoints[static_cast<uint32_t>(index)] : nullptr;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=WORKSPACE_PERSISTED project_id=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.project.projectId);
+    appendText(g_textScratch, sizeof(g_textScratch), " pgen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_controller.model.projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " op=0 symgen=0 id=none src=");
+    appendText(g_textScratch, sizeof(g_textScratch), sourcePath);
+    appendText(g_textScratch, sizeof(g_textScratch), " line=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), line);
+    appendText(g_textScratch, sizeof(g_textScratch), " col=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), column);
+    appendText(g_textScratch, sizeof(g_textScratch), " enabled=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint && breakpoint->enabled ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " state=NotStarted");
+    logMarker(ctx, g_textScratch);
+}
+
+static void phase29nHostedBoundBreakpointTrace(gx_app_context* ctx) {
+    if (!phase29nHostedTraceEnabled() || !DebugControllerIsActive(&g_debugController) ||
+        g_debugController.sessionGeneration == 0 ||
+        g_phase29nLastBoundSessionGeneration == g_debugController.sessionGeneration) return;
+    bool verified = false;
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i)
+        if (g_debugController.breakpoints[i].enabled &&
+            g_debugController.breakpoints[i].state == DebugBreakpointState::Verified) {
+            verified = true;
+            break;
+        }
+    if (!verified) return;
+    phase29nHostedBreakpointTrace(ctx, "BOUND", &g_debugController.target, &g_debugMapper,
+                                 &g_debugController);
+    g_phase29nLastBoundSessionGeneration = g_debugController.sessionGeneration;
+}
+
 static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) {
     if (!target) return false;
     phase28v_startup_event(ctx, "SYMBOL_LOAD_ENTRY", nullptr);
@@ -5926,9 +6288,13 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         DebugDwarfMapperReset(&g_debugMapper);
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = DebugDwarfError::ArtifactChanged;
+        phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_PATH_REJECTED", target, &g_debugMapper,
+                                       "artifact_path_rejected");
         reportDebugMessage(ctx, "Debug info: artifact path rejected");
         return false;
     }
+    phase29nHostedArtifactTrace(ctx, target, absolutePath);
+    phase29nHostedSymbolStageTrace(ctx, "SYMBOL_LOAD_BEGIN", target, &g_debugMapper, "loading");
     phase28v_startup_event(ctx, "SYMBOL_PATH_READY", nullptr);
     FileInfo info = {};
     const bool statOk = fsStat(&g_fileSystemContext, absolutePath, &info);
@@ -5941,6 +6307,8 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
             DebugDwarfError::LimitExceeded : DebugDwarfError::ArtifactChanged;
         phase29hArtifactTrace(ctx, "symbol_stat", target, info.size, nullptr,
                               statOk ? "invalid_or_oversized_file" : "stat_failed");
+        phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_STAT_FAILED", target, &g_debugMapper,
+                                      statOk ? "invalid_or_oversized_file" : "stat_failed");
         reportDebugMessage(ctx, "Debug info: executable could not be read");
         return false;
     }
@@ -5950,6 +6318,8 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = DebugDwarfError::ArtifactChanged;
         phase29hArtifactTrace(ctx, "symbol_stat", target, info.size, nullptr, "build_size_mismatch");
+        phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_SIZE_MISMATCH", target, &g_debugMapper,
+                                      "build_size_mismatch");
         reportDebugMessage(ctx, "Debug info: artifact size differs from the completed build");
         return false;
     }
@@ -5963,6 +6333,8 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         g_debugMapper.state = guidexos::developer_studio::DebugDwarfMapperState::Failed;
         g_debugMapper.error = DebugDwarfError::ArtifactChanged;
         phase29hArtifactTrace(ctx, "symbol_read", target, bytesRead, nullptr, "partial_read");
+        phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_READ_FAILED", target, &g_debugMapper,
+                                      "partial_read");
         reportDebugMessage(ctx, "Debug info: executable read was incomplete");
         return false;
     }
@@ -5979,15 +6351,23 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         phase29hArtifactTrace(ctx, "symbol_hash", target, bytesRead,
                               hashComputed ? actualSha256 : nullptr,
                               hashComputed ? "build_hash_mismatch" : "hash_failed");
+        phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_HASH_FAILED", target, &g_debugMapper,
+            hashComputed ? "build_hash_mismatch" : "hash_failed");
         reportDebugMessage(ctx, "Debug info: captured executable identity does not match the build result");
         return false;
     }
+    phase29nHostedSymbolStageTrace(ctx, "ARTIFACT_HASH_VALIDATED", target, &g_debugMapper,
+                                   "sha256_matches_completed_build");
     phase29hArtifactTrace(ctx, "symbol_read", target, bytesRead, actualSha256, "exact_read_hash_match");
     phase28v_startup_event(ctx, "SYMBOL_HASH_READY", nullptr);
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_HASH_PASS");
     DebugDwarfError error = DebugDwarfError::None;
     phase28v_startup_event(ctx, "SYMBOL_MAPPER_ENTRY", nullptr);
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_SYMBOL_MAPPER_BEGIN");
+    phase29nHostedSymbolStageTrace(ctx, "ELF_VALIDATION_BEGIN", target, &g_debugMapper,
+                                   "production_mapper_will_validate");
+    phase29nHostedSymbolStageTrace(ctx, "DWARF_LOAD_BEGIN", target, &g_debugMapper,
+                                   "elf_bytes_identity_validated");
     guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(
         g_phase28qDiagnostic ? phase28vDebugMapperProgress :
             (g_phase28mDiagnostic ? phase28mDebugMapperProgress : nullptr), ctx);
@@ -5997,6 +6377,12 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
         nextDebugMapperGeneration(), &error, target->buildOperationId);
     guidexos::developer_studio::DebugDwarfMapperSetProgressCallback(nullptr, nullptr);
     phase29gSourceAssociationTrace(ctx, loaded);
+    phase29nHostedSymbolStageTrace(ctx, "ELF_VALIDATION_COMPLETE", target, &g_debugMapper,
+        g_debugMapper.elfHeaderValid ? "valid" : "rejected");
+    phase29nHostedSymbolStageTrace(ctx, loaded ? "DWARF_READY" : "DWARF_FAILED",
+                                   target, &g_debugMapper, DebugDwarfErrorName(error));
+    phase29nHostedSourceAssociationTrace(ctx, target, &g_debugMapper);
+    phase29nHostedDwarfSummaryTrace(ctx, target, &g_debugMapper);
     phase28v_startup_event(ctx, "SYMBOL_MAPPER_RETURN", nullptr);
     if (!loaded) {
         phase29hArtifactTrace(ctx, "symbol_parser", target, info.size, actualSha256,
@@ -6052,6 +6438,8 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
     }
     phase29hArtifactTrace(ctx, "symbol_snapshot", target, g_debugMapper.identity.executableSize,
                           g_debugMapper.identity.sha256, "parsed");
+    phase29nHostedSymbolStageTrace(ctx, "SYMBOL_MODEL_PUBLISHED", target, &g_debugMapper,
+                                   "mapper_ready_for_breakpoint_remap");
     if (g_phase28qDiagnostic) {
         copyText(g_textScratch, sizeof(g_textScratch), "DEVELOPER_STUDIO_PHASE29H_SYMBOL_SNAPSHOT mapper_generation=");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
@@ -6402,6 +6790,8 @@ static bool beginDebugSession(gx_app_context* ctx) {
         return false;
     }
     phase29gDebugStartBoundary(ctx, "TARGET_CONSTRUCTION_RETURN", "success");
+    phase29nHostedSymbolStageTrace(ctx, "PROJECT_READY", &target, nullptr,
+                                   "project_open_and_build_ready");
     phase29hArtifactTrace(ctx, "build_complete", &target, target.artifactSize,
                           target.artifactSha256, "snapshot_captured");
     phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_READY");
@@ -6453,10 +6843,18 @@ static bool beginDebugSession(gx_app_context* ctx) {
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_BREAKPOINT_MAP_ENTRY");
     DebugErrorCode mappingError = DebugErrorCode::None;
     phase29gDebugStartBoundary(ctx, "BREAKPOINT_BINDING_ENTER", "entered");
+    phase29nHostedBreakpointTrace(ctx, "PENDING", &target, &g_debugMapper,
+                                 &g_debugController);
+    phase29nHostedSymbolStageTrace(ctx, "BREAKPOINT_REMAP_BEGIN", &target, &g_debugMapper,
+                                   "symbol_model_published");
     const bool artifactStableForMapping = phase29hVerifyArtifactSnapshot(ctx, &target, "breakpoint_mapping_read");
     const bool breakpointsMapped = artifactStableForMapping && DebugControllerMapBreakpoints(
         &g_debugController, &g_debugMapper, &mappingError);
     if (!artifactStableForMapping) mappingError = DebugErrorCode::ArtifactChanged;
+    phase29nHostedSymbolStageTrace(ctx, "BREAKPOINT_REMAP_COMPLETE", &target, &g_debugMapper,
+        breakpointsMapped ? "all_enabled_breakpoints_mapped" : DebugErrorName(mappingError));
+    phase29nHostedBreakpointTrace(ctx, breakpointsMapped ? "MAPPED" : "SETTLED",
+        &target, &g_debugMapper, &g_debugController);
     if (!breakpointsMapped && mappingError == DebugErrorCode::ArtifactChanged)
         phase29hArtifactMismatchTrace(ctx, &g_debugMapper, &target);
     phase29gDebugStartBoundary(ctx, "BREAKPOINT_BINDING_RETURN",
@@ -7168,6 +7566,7 @@ static void pollDebug(gx_app_context* ctx) {
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_DEBUG_POLL_UI_ENTRY");
     phase28u_host_trace(ctx, "DEBUG_CONTROLLER_POLL_ENTRY");
     const bool controllerPollReady = DebugControllerPoll(&g_debugController, g_debugBackend, &g_debugMapper);
+    phase29nHostedBoundBreakpointTrace(ctx);
     if (g_phase28qDiagnostic && g_phase28qStage == 3 && !g_phase29fDebugPollReturnObserved) {
         g_phase29fDebugPollReturnObserved = true;
         phase29fDebugStartTrace(ctx, "client_poll_return", controllerPollReady ?
@@ -8456,8 +8855,16 @@ static void drawOutline(gx_app_context* ctx) {
     drawText(ctx, 16, kOutlineTop - 7, "OUTLINE");
     const uint32_t documentIndex = activeOutlineDocumentIndex();
     const SymbolDocument* document = SymbolDatabaseDocumentAt(&g_symbolDatabase, documentIndex);
-    if (!document || document->symbolCount == 0) {
-        drawText(ctx, 16, kOutlineTop + 15, "No symbols");
+    if (!document) {
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+        drawText(ctx, 16, kOutlineTop + 15, "Outline indexing disabled in this build");
+#else
+        drawText(ctx, 16, kOutlineTop + 15, "Document symbols not indexed");
+#endif
+        return;
+    }
+    if (document->symbolCount == 0) {
+        drawText(ctx, 16, kOutlineTop + 15, "No declarations found");
         return;
     }
     ensureOutlineSelectionVisible();
@@ -13415,6 +13822,8 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", "workspace_mutation");
         return false;
     }
+    phase29nHostedWorkspaceBreakpointTrace(ctx, relative, line,
+        activeColumn(document->buffer, line - 1) + 1);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
     return true;
 }
@@ -13659,6 +14068,7 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
         return true;
     }
     if (keyCode == 116) {
+        phase29nHostedContinueTrace(ctx, "debug_panel_key");
         if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CAN_CONTINUE_ENTRY");
         const bool canContinue = DebugControllerCanContinue(&g_debugController);
         if (g_phase28qDiagnostic) logMarker(ctx, canContinue ?
@@ -15550,6 +15960,27 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         requestDebug(ctx);
         return;
     }
+    // F5 continues a paused debug target even when source navigation or
+    // inspection left keyboard focus on another pane.  Preserve the normal
+    // Run Project meaning when no debug session owns the key.
+    if (keyCode == 116 && modifiers == 0) {
+        phase29nHostedContinueTrace(ctx, "normal_key");
+        if (DebugControllerCanContinue(&g_debugController)) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (!DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {
+                copyText(g_textScratch, sizeof(g_textScratch), "Debug continue failed: ");
+                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
+                reportDebugMessage(ctx, g_textScratch);
+            }
+            return;
+        }
+        if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+            writeStudioOutput("Debug target is running; Continue is unavailable");
+            return;
+        }
+        requestRun(ctx);
+        return;
+    }
     if (keyCode == 117 && modifiers == 0 && DebugControllerIsActive(&g_debugController)) {
         requestDebugPause(ctx);
         return;
@@ -15744,23 +16175,6 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         requestDebugStepInto(ctx);
         return;
     }
-    if (keyCode == 116) {
-        if (DebugControllerCanContinue(&g_debugController)) {
-            DebugErrorCode error = DebugErrorCode::None;
-            if (!DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {
-                copyText(g_textScratch, sizeof(g_textScratch), "Debug continue failed: ");
-                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
-                reportDebugMessage(ctx, g_textScratch);
-            }
-            return;
-        }
-        if (DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
-            writeStudioOutput("Debug target is running; Continue is unavailable");
-            return;
-        }
-        requestRun(ctx);
-        return;
-    }
     if (keyCode == 114) {
         openFindBar(false, false);
         findNavigate(WorkspaceControllerActiveDocument(&g_controller),
@@ -15844,7 +16258,9 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         }
         return;
     }
-    if (g_debugPanelOpen) {
+    const bool clickDebugToolbar = button == GX_MOUSE_BUTTON_LEFT &&
+        action == GX_MOUSE_ACTION_DOWN && y < 48 && x >= 580 && x < 700;
+    if (g_debugPanelOpen && !clickDebugToolbar && !g_debugMenuOpen) {
         if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN)
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_mouse_down=SEEN");
         if (action == GX_MOUSE_ACTION_WHEEL) return;
@@ -16457,6 +16873,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
+            phase29nHostedContinueTrace(ctx, "debug_menu");
             DebugErrorCode error = DebugErrorCode::None;
             if (!DebugControllerCanContinue(&g_debugController) ||
                 !DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {

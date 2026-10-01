@@ -493,6 +493,8 @@ static bool addSourceFile(DebugDwarfMapper* mapper, const char* projectRoot,
     }
     const uint32_t index = mapper->sourceFileCount++;
     copyText(mapper->sourceFiles[index].relativePath, sizeof(mapper->sourceFiles[index].relativePath), relative);
+    copyText(mapper->sourceFiles[index].compilationPath,
+             sizeof(mapper->sourceFiles[index].compilationPath), combined);
     mapper->sourceFiles[index].external = false;
     *outIndex = static_cast<uint16_t>(index);
     return true;
