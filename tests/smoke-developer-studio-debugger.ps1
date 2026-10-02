@@ -21,6 +21,7 @@ param(
     [switch]$OverlapStepOut,
     [int]$OverlapBreakpointLine = 20,
     [switch]$InteractiveWatch,
+    [switch]$PositiveGxsmLifecycle,
     [string]$TraceDirectory = "",
     [int]$TraceRunIndex = 0,
     [string]$TraceArtifactName = ""
@@ -28,15 +29,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$StepOutProof = $StepOut -or $RepeatedStepOut -or $ContinueAfterStepOut -or $SteppingLifecycle -or
+$StepOutProof = $StepOut -or $RepeatedStepOut -or $ContinueAfterStepOut -or $SteppingLifecycle -or $PositiveGxsmLifecycle -or
                 $StepOutThenStepInto -or $StepOutThenStepOver -or $OverlapStepOut
 if (-not $FixtureRoot) {
-    $FixtureRoot = Join-Path $RepoRoot $(if ($SteppingLifecycle) { "tests\fixtures\debugger-phase15" } elseif ($StepOutProof) { "tests\fixtures\debugger-phase8" } else { "tests\fixtures\debugger-phase3b" })
+    $FixtureRoot = Join-Path $RepoRoot $(if ($PositiveGxsmLifecycle) { "tests\fixtures\debugger-phase29q-positive" } elseif ($SteppingLifecycle) { "tests\fixtures\debugger-phase15" } elseif ($StepOutProof) { "tests\fixtures\debugger-phase8" } else { "tests\fixtures\debugger-phase3b" })
 }
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $FixtureRoot = [IO.Path]::GetFullPath($FixtureRoot)
 $Executable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
-$WatchExpression = if ($SteppingLifecycle) { 'counter == 2' } elseif ($FixtureRoot -match 'debugger-phase15') { 'total' } elseif ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
+$WatchExpression = if ($PositiveGxsmLifecycle -or $SteppingLifecycle) { 'counter == 2' } elseif ($FixtureRoot -match 'debugger-phase15') { 'total' } elseif ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
+
+$restoreDebuggerConfiguration = $SteppingLifecycle -or $PositiveGxsmLifecycle
+$debuggerConfiguration = $null
+$debuggerBackupConfiguration = $null
+$debuggerConfigurationPrior = $null
+$debuggerBackupConfigurationPrior = $null
+$debuggerConfigurationExisted = $false
+$debuggerBackupConfigurationExisted = $false
+if ($restoreDebuggerConfiguration) {
+    # Load one deterministic source breakpoint for this run instead of
+    # toggling a row that may have been left by an earlier UI session. Restore
+    # both generated workspace files in finally so the smoke leaves retained
+    # fixture artifacts unchanged.
+    $debuggerConfiguration = Join-Path $FixtureRoot "guidexos.debugger.json"
+    $debuggerBackupConfiguration = "$debuggerConfiguration.bak"
+    $debuggerConfigurationExisted = [IO.File]::Exists($debuggerConfiguration)
+    $debuggerBackupConfigurationExisted = [IO.File]::Exists($debuggerBackupConfiguration)
+    if ($debuggerConfigurationExisted) { $debuggerConfigurationPrior = [IO.File]::ReadAllBytes($debuggerConfiguration) }
+    if ($debuggerBackupConfigurationExisted) { $debuggerBackupConfigurationPrior = [IO.File]::ReadAllBytes($debuggerBackupConfiguration) }
+    $enabledBreakpointConfiguration = if ($PositiveGxsmLifecycle) {
+        '{"version":1,"breakpoints":[{"sourcePath":"src/main.cpp","line":4,"column":1,"enabled":true,"action":"BREAK","condition":"","hitPolicy":"NONE","hitThreshold":0,"logTemplate":""}],"watches":[]}'
+    } else {
+        '{"version":1,"breakpoints":[{"sourcePath":"src/main.cpp","line":42,"column":1,"enabled":true,"action":"BREAK","condition":"","hitPolicy":"NONE","hitThreshold":0,"logTemplate":""}],"watches":["counter == 2"]}'
+    }
+    [IO.File]::WriteAllText($debuggerConfiguration, $enabledBreakpointConfiguration, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($debuggerBackupConfiguration, $enabledBreakpointConfiguration, [Text.UTF8Encoding]::new($false))
+}
 
 if ($StepOutProof -and $FixtureRoot -match 'debugger-phase8') {
     if ($BreakpointLine -eq 20) { $BreakpointLine = 9 }
@@ -62,7 +90,7 @@ function Add-ShortDelay([System.Collections.Generic.List[string]]$Parts) {
     # stdin.  The previous cmd.exe pipeline encoded every delay into one
     # command line and could exceed cmd.exe's command-line limit once an
     # interactive Watch expression was added.
-    if ($SteppingLifecycle) { $Parts.Add("WAITMS|100") }
+    if ($SteppingLifecycle -or $PositiveGxsmLifecycle) { $Parts.Add("WAITMS|100") }
     else { $Parts.Add("WAIT|1") }
 }
 
@@ -72,6 +100,18 @@ function Add-Delay([System.Collections.Generic.List[string]]$Parts, [int]$Second
 
 function Add-WaitMarker([System.Collections.Generic.List[string]]$Parts, [string]$Marker, [int]$TimeoutSeconds) {
     $Parts.Add("WAITMARK|$([Math]::Max(1, $TimeoutSeconds))|$Marker")
+}
+
+function Add-WaitMarkerCount([System.Collections.Generic.List[string]]$Parts, [string]$Marker, [int]$Count, [int]$TimeoutSeconds) {
+    $Parts.Add("WAITCOUNT|$([Math]::Max(1, $Count))|$([Math]::Max(1, $TimeoutSeconds))|$Marker")
+}
+
+function Add-WaitNewMarker([System.Collections.Generic.List[string]]$Parts, [string]$Marker, [int]$TimeoutSeconds) {
+    $Parts.Add("WAITNEW|$([Math]::Max(1, $TimeoutSeconds))|$Marker")
+}
+
+function Add-WaitFromBaseline([System.Collections.Generic.List[string]]$Parts, [string]$Marker, [int]$TimeoutSeconds) {
+    $Parts.Add("WAITBASE|$([Math]::Max(1, $TimeoutSeconds))|$Marker")
 }
 
 function Add-Key([System.Collections.Generic.List[string]]$Parts, [int]$KeyCode, [int]$Modifiers = 0, [bool]$WaitForUi = $false) {
@@ -182,7 +222,9 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
-        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|debug_inspection|debug_ui_watch_result|GXSM|NativeAppDebugger|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|PHASE29F|PHASE29G|DEBUG_START|START_API|SYMBOL_INITIALIZATION|BREAKPOINT_BINDING|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
+        $proof = @($lines | Where-Object { $_ -match 'debug_step_(request|complete)=|debug_ui_step_route=|debug_stop_context=authoritative|debug_ui_watch_result=refreshed .*expression=counter' })
+        $gxsm = @($lines | Where-Object { $_ -match '\[NativeAppDebugger\] GXSM (validation|variables accepted|variable read result)' })
         $recent = @($lines | Select-Object -Last 80)
         $serverExitCode = if ($process -and $process.HasExited) { $process.ExitCode } else { 'unknown' }
         $header = @(
@@ -193,7 +235,7 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
             "boundedLifecycleMarkerCount=$($lifecycle.Count)",
             "--- recent bounded lifecycle markers ---"
         )
-        $body = ($header + $lifecycle + @("--- recent output ---") + $recent) -join "`r`n"
+        $body = ($header + $lifecycle + @("--- retained debugger proof records ---") + $proof + @("--- retained GXSM backend records ---") + $gxsm + @("--- recent output ---") + $recent) -join "`r`n"
         if ($body.Length -gt 65536) { $body = $body.Substring($body.Length - 65536) }
         Set-Content -LiteralPath $artifact -Value $body -Encoding UTF8
         Write-Host "Shutdown trace artifact: $artifact"
@@ -204,12 +246,13 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in debugger fixture exists"
-Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut, $SteppingLifecycle) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
+Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut, $SteppingLifecycle, $PositiveGxsmLifecycle) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
 Assert-True (-not ($RepeatedStepOut -and $ContinueAfterStepOut)) "Step Out follow-up mode is unambiguous"
 Assert-True (-not ($StepOutThenStepInto -and $StepOutThenStepOver)) "post-Step Out mode is unambiguous"
 Assert-True (-not ($MixedLifecycle -and ($RepeatedStepOut -or $ContinueAfterStepOut -or $StepOutThenStepInto -or $StepOutThenStepOver -or $SteppingLifecycle))) "mixed lifecycle follow-up mode is unambiguous"
 Assert-True (-not $StepOutKeyboard -or $SteppingLifecycle) "keyboard Step Out route is limited to the complete stepping lifecycle"
 Assert-True (-not $SteppingLifecycle -or ($FixtureRoot -match 'debugger-phase15' -and $BreakpointLine -eq 42)) "stepping lifecycle uses the documented Phase 15 line-42 fixture entry"
+Assert-True (-not $PositiveGxsmLifecycle -or ($FixtureRoot -match 'debugger-phase29q-positive' -and $BreakpointLine -eq 4)) "positive GXSM lifecycle uses its compiler-produced line-4 fixture entry"
 Assert-True ((-not $RepeatedStepOut -and -not $ContinueAfterStepOut -and -not $StepOutThenStepInto -and -not $StepOutThenStepOver -and -not $MixedLifecycle) -or $StepOut -or $MixedLifecycle) "Step Out follow-up requires Step Out mode"
 Assert-True (-not $OverlapStepOut -or $StepOut) "overlap proof requires Step Out mode"
 $parts = New-Object 'System.Collections.Generic.List[string]'
@@ -219,7 +262,7 @@ Add-ServerLine $parts 'gui.start'
 # marker-gated; this is only the existing bounded GUI boot allowance.
 Add-Delay $parts 8
 Add-ServerLine $parts 'desktop.launch com.guidexos.developerstudio'
-if ($SteppingLifecycle) {
+if ($SteppingLifecycle -or $PositiveGxsmLifecycle) {
     Add-WaitMarker $parts 'Desktop launch successful: com.guidexos.developerstudio' $DebugWaitSeconds
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS' $DebugWaitSeconds
 }
@@ -239,7 +282,7 @@ foreach ($character in $FixtureRoot.ToLowerInvariant().ToCharArray()) {
     Add-ShortDelay $parts
 }
 Add-Key $parts 13 0 $true
-if ($SteppingLifecycle) { Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS' $DebugWaitSeconds }
+if ($SteppingLifecycle -or $PositiveGxsmLifecycle) { Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS' $DebugWaitSeconds }
 else { Add-Delay $parts 10 }
 # Normalize the imported workspace through the real Save All shortcut before
 # any debugger input is sent. This is safe whether the workspace is already
@@ -247,26 +290,47 @@ else { Add-Delay $parts 10 }
 Add-Key $parts 83 3 $true
 Add-Delay $parts 2
 
-# Move the real editor caret to src/main.cpp:20 and arm F9.
-for ($index = 1; $index -lt $BreakpointLine; ++$index) { Add-Key $parts 40 0 $false }
-Add-Key $parts 120 0 $true
+# Move the real editor caret to src/main.cpp:20 and arm F9 when the smoke owns
+# breakpoint creation. Positive/Phase 15 lifecycle modes load one deterministic
+# persisted breakpoint, so walking dozens of source rows only adds UI queue load.
+if (-not ($PositiveGxsmLifecycle -or $SteppingLifecycle)) {
+    for ($index = 1; $index -lt $BreakpointLine; ++$index) { Add-Key $parts 40 0 $false }
+}
+if (-not ($PositiveGxsmLifecycle -or $SteppingLifecycle)) { Add-Key $parts 120 0 $true }
 if ($OverlapStepOut) {
     Assert-True ($OverlapBreakpointLine -gt $BreakpointLine) "overlap breakpoint is after the initial callee breakpoint"
     for ($index = $BreakpointLine; $index -lt $OverlapBreakpointLine; ++$index) { Add-Key $parts 40 0 $false }
     Add-Key $parts 120 0 $true
 }
-if ($SteppingLifecycle) { Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS' $DebugWaitSeconds }
+if ($PositiveGxsmLifecycle -or $SteppingLifecycle) { Add-ShortDelay $parts }
 else { Add-Delay $parts 30 }
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 
 # Ctrl+F5 starts the real Developer Studio build -> hosted launch -> bind -> trap path.
 Add-Key $parts 116 2 $true
+if ($PositiveGxsmLifecycle) {
+    Add-Delay $parts 2
+    Add-ShortDelay $parts
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-ServerLine $parts 'nativeapp.processes'
+} elseif ($SteppingLifecycle) {
+    Add-Delay $parts 2
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-ServerLine $parts 'nativeapp.processes'
+}
 # Continue/inspection cases wait on the actual stopped-session milestone, so
 # they proceed as soon as the hosted target publishes a usable source stop.
 Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS' $DebugWaitSeconds
+if ($SteppingLifecycle) {
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=0 expression=counter == 2 status=6' $DebugWaitSeconds
+}
+if ($PositiveGxsmLifecycle) {
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-WaitMarker $parts '[NativeAppDebugger] GXSM validation process=' $DebugWaitSeconds
+}
 
-if ($InteractiveWatch -or $SteppingLifecycle) {
+if ($InteractiveWatch -or $PositiveGxsmLifecycle) {
     # Open the product's Debug menu and Watch tab through compositor mouse
     # events, then add a deterministic comparison against the stopped target.
     Add-ServerLine $parts 'gui.activate 1000'
@@ -291,8 +355,20 @@ if ($InteractiveWatch -or $SteppingLifecycle) {
     }
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
+    if ($PositiveGxsmLifecycle) {
+        $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=0 expression=counter == 2 status=1')
+        $parts.Add('MARKERBASE|[NativeAppDebugger] GXSM variables accepted=1 version=2')
+        $parts.Add('MARKERBASE|[NativeAppDebugger] GXSM variable read result=PASS')
+    }
     Add-Key $parts 13 0 $true
-    Add-Delay $parts 4
+    if ($PositiveGxsmLifecycle) {
+        Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=0 expression=counter == 2 status=1' $DebugWaitSeconds
+        Add-ServerLine $parts 'nativeapp.debuglog 200'
+        Add-WaitFromBaseline $parts '[NativeAppDebugger] GXSM variables accepted=1 version=2' $DebugWaitSeconds
+        Add-WaitFromBaseline $parts '[NativeAppDebugger] GXSM variable read result=PASS' $DebugWaitSeconds
+    } else {
+        Add-Delay $parts 4
+    }
 }
 
 if ($ContinueBreakpoint) {
@@ -359,6 +435,82 @@ if ($ContinueBreakpoint) {
     Add-ShortDelay $parts
     Add-Key $parts 116 0 $true
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING' $DebugWaitSeconds
+} elseif ($PositiveGxsmLifecycle) {
+    # The generated GXSM fixture starts at the assignment on line 4. Check a
+    # frame switch at the initial stop, restore frame 0, mutate the local with
+    # Step Over, then leave its scope with Step Out and Continue to exit.
+    Add-Mouse $parts 1000 380 105 1 'down' $false
+    Add-Mouse $parts 1000 380 105 1 'up' $true
+    Add-Key $parts 40 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_selected_frame=PASS index=1' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 64'
+    Add-Key $parts 38 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_selected_frame=PASS index=0' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 64'
+    Add-Mouse $parts 1000 480 105 1 'down' $false
+    Add-Mouse $parts 1000 480 105 1 'up' $true
+    Add-Delay $parts 2
+    Add-Mouse $parts 1000 700 105 1 'down' $false
+    Add-Mouse $parts 1000 700 105 1 'up' $true
+    Add-Delay $parts 2
+
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 121 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOver command_gen=1' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 64'
+
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Mouse $parts 1000 610 30 1 'down' $false
+    Add-Mouse $parts 1000 610 30 1 'up' $true
+    Add-Mouse $parts 1000 620 141 1 'down' $false
+    Add-Mouse $parts 1000 620 141 1 'up' $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOut command_gen=2' $DebugWaitSeconds
+    # The internal return trap can refresh the Watch before its caller stop is
+    # published. Re-submit the existing expression at that stop to prove the
+    # out-of-scope result comes from a fresh evaluation of the caller frame.
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Mouse $parts 1000 610 30 1 'down' $false
+    Add-Mouse $parts 1000 610 30 1 'up' $true
+    Add-Mouse $parts 1000 620 340 1 'down' $false
+    Add-Mouse $parts 1000 620 340 1 'up' $true
+    Add-Key $parts 69 0 $true
+    Add-ShortDelay $parts
+    Add-Key $parts 13 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_edit=PASS' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 64'
+
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')
+    Add-Key $parts 116 0 $true
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-ServerLine $parts 'nativeapp.processes'
+
+    # Relaunch the same compiler-produced target after its runtime has exited.
+    # Counted waits require a new build/start/stop marker instead of matching
+    # the evidence from the first debugger session.
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS')
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session=2')
+    Add-Key $parts 116 2 $true
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session=2' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS' $DebugWaitSeconds
+    Add-Delay $parts 2
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-ServerLine $parts 'nativeapp.processes'
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')
+    Add-Key $parts 116 0 $true
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-ServerLine $parts 'nativeapp.processes'
 } elseif ($StepOut) {
     # Use the real Debug menu row for the return-address Step Out operation
     # from the deepest fixture frame. The controller must stop at the
@@ -412,6 +564,12 @@ if ($DiagnosticOnly) {
     Add-ServerLine $parts 'nativeapp.processes'
     Add-ServerLine $parts 'desktop.windows.owners'
     Add-ServerLine $parts 'nativeapp.debuglog 64'
+} elseif ($PositiveGxsmLifecycle) {
+    # Both hosted target sessions have already published fresh EXITED markers;
+    # retain their process and debugger evidence before shutting down the
+    # bounded test server.
+    Add-ServerLine $parts 'nativeapp.processes'
+    Add-ServerLine $parts 'nativeapp.debuglog 200'
 } else {
     # Targeted gui.close is the authoritative hosted shutdown request. The
     # app owns the stop/teardown sequence; no focused confirmation keystroke
@@ -425,6 +583,7 @@ if ($DiagnosticOnly) {
 Add-ServerLine $parts 'exit'
 
 $startInfo = New-Object Diagnostics.ProcessStartInfo
+$startInfo.EnvironmentVariables["GUIDEXOS_SERVER_ROOT"] = $ServerRoot
 $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-debugger-$([Guid]::NewGuid().ToString('N')).out")
 $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-debugger-$([Guid]::NewGuid().ToString('N')).err")
 $startInfo.FileName = $env:ComSpec
@@ -438,6 +597,7 @@ $startInfo.RedirectStandardError = $false
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
 $text = ""
+$markerBaselines = @{}
 $smokeSucceeded = $false
 try {
     Assert-True $process.Start() "streamed hosted UI proof starts"
@@ -459,13 +619,105 @@ try {
             $markerDeadline = (Get-Date).AddSeconds($markerTimeout)
             $markerObserved = $false
             while (-not $process.HasExited -and (Get-Date) -lt $markerDeadline) {
-                if ((Get-LiveHostedText $stdoutPath $stderrPath).Contains($marker)) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                if ($liveText.Contains($marker)) {
                     $markerObserved = $true
                     break
                 }
+                $failureMarker = @(
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=FAILED',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=ERROR',
+                    'DEVELOPER_STUDIO_PHASE28U_HOST DEBUG_CONTROLLER_START_FAILED',
+                    'DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_CONTROLLER_START_REJECTED'
+                ) | Where-Object { $liveText.Contains($_) } | Select-Object -First 1
+                if ($failureMarker) { throw "Hosted target reported $failureMarker before milestone '$marker'" }
                 Start-Sleep -Milliseconds 100
             }
             Assert-True $markerObserved "hosted target publishes $marker before the bounded wait expires"
+        } elseif ($kind -eq 'WAITCOUNT') {
+            $fields = @($value -split '\|', 3)
+            if ($fields.Count -ne 3) { throw "Invalid counted hosted marker wait: $value" }
+            $requiredCount = [Math]::Max(1, [int]$fields[0])
+            $markerTimeout = [Math]::Max(1, [int]$fields[1])
+            $marker = $fields[2]
+            $markerDeadline = (Get-Date).AddSeconds($markerTimeout)
+            $markerObserved = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $markerDeadline) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                if ([regex]::Matches($liveText, [regex]::Escape($marker)).Count -ge $requiredCount) {
+                    $markerObserved = $true
+                    break
+                }
+                $failureMarker = @(
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=FAILED',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=ERROR',
+                    'DEVELOPER_STUDIO_PHASE28U_HOST DEBUG_CONTROLLER_START_FAILED',
+                    'DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_CONTROLLER_START_REJECTED'
+                ) | Where-Object { $liveText.Contains($_) } | Select-Object -First 1
+                if ($failureMarker) { throw "Hosted target reported $failureMarker before counted milestone '$marker' ($requiredCount)" }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-True $markerObserved "hosted target publishes occurrence $requiredCount of $marker before the bounded wait expires"
+        } elseif ($kind -eq 'WAITNEW') {
+            $markerSeparator = $value.IndexOf('|')
+            if ($markerSeparator -lt 1) { throw "Invalid new hosted marker wait: $value" }
+            $markerTimeout = [Math]::Max(1, [int]$value.Substring(0, $markerSeparator))
+            $marker = $value.Substring($markerSeparator + 1)
+            $baselineCount = [regex]::Matches((Get-LiveHostedText $stdoutPath $stderrPath), [regex]::Escape($marker)).Count
+            $markerDeadline = (Get-Date).AddSeconds($markerTimeout)
+            $markerObserved = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $markerDeadline) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                if ([regex]::Matches($liveText, [regex]::Escape($marker)).Count -gt $baselineCount) {
+                    $markerObserved = $true
+                    break
+                }
+                $failureMarker = @(
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=FAILED',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=ERROR',
+                    'DEVELOPER_STUDIO_PHASE28U_HOST DEBUG_CONTROLLER_START_FAILED',
+                    'DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_CONTROLLER_START_REJECTED'
+                ) | Where-Object { $liveText.Contains($_) } | Select-Object -First 1
+                if ($failureMarker) { throw "Hosted target reported $failureMarker before new milestone '$marker'" }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-True $markerObserved "hosted target publishes a new $marker marker after its previous occurrence count ($baselineCount)"
+        } elseif ($kind -eq 'MARKERBASE') {
+            $markerBaselines[$value] = [regex]::Matches(
+                (Get-LiveHostedText $stdoutPath $stderrPath), [regex]::Escape($value)).Count
+        } elseif ($kind -eq 'WAITBASE') {
+            $markerSeparator = $value.IndexOf('|')
+            if ($markerSeparator -lt 1) { throw "Invalid baseline hosted marker wait: $value" }
+            $markerTimeout = [Math]::Max(1, [int]$value.Substring(0, $markerSeparator))
+            $marker = $value.Substring($markerSeparator + 1)
+            if (-not $markerBaselines.ContainsKey($marker)) { throw "Missing hosted marker baseline: $marker" }
+            $baselineCount = [int]$markerBaselines[$marker]
+            $markerDeadline = (Get-Date).AddSeconds($markerTimeout)
+            $markerObserved = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $markerDeadline) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                if ([regex]::Matches($liveText, [regex]::Escape($marker)).Count -gt $baselineCount) {
+                    $markerObserved = $true
+                    break
+                }
+                $failureMarker = @(
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER build_complete=FAILED',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=ERROR',
+                    'DEVELOPER_STUDIO_PHASE28U_HOST DEBUG_CONTROLLER_START_FAILED',
+                    'DEVELOPER_STUDIO_PHASE29F_DEBUG_START_RESULT code=DEBUG_START_CONTROLLER_START_REJECTED'
+                ) | Where-Object { $liveText.Contains($_) } | Select-Object -First 1
+                if ($failureMarker) { throw "Hosted target reported $failureMarker before fresh-session milestone '$marker' ($baselineCount)" }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-True $markerObserved "hosted target publishes a fresh-session $marker marker after baseline count ($baselineCount)"
         } elseif ($kind -eq 'WAITSHUTDOWN') {
             Wait-ForShutdown $process $stdoutPath $stderrPath ([int]$value) | Out-Null
             Write-Host "PASS: WAITSHUTDOWN reached complete (bounded state poll)"
@@ -490,11 +742,18 @@ try {
     Assert-True ($text -match 'window id=1000 ownerPid=\d+ ownerName=nativeelf:com.guidexos.developerstudio') "Developer Studio window ownership is published"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS') -and
                  $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS')) "fixture project opens through Developer Studio"
-    if ($text -notmatch 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)') {
+    if ($text -notmatch 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)' -and
+        -not ($SteppingLifecycle -and $text -match 'debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:42 source_map=current')) {
         Write-Host 'Captured breakpoint diagnostics:'
         @($text -split "`r?`n" | Where-Object { $_ -match 'debug_|F9|breakpoint|editor|focus|Caret|project_open|project_metadata' } | Select-Object -Last 160)
     }
-    Assert-True ($text -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)') "F9 arms the source breakpoint in the editor"
+    if ($PositiveGxsmLifecycle) {
+        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND .*src=src/main\.cpp line=4 col=1 enabled=1 state=Verified') "the fixture's enabled line-4 breakpoint binds to the hosted target"
+    } elseif ($SteppingLifecycle) {
+        Assert-True ($text -match 'debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:42 source_map=current') "the metadata-free Phase 15 source breakpoint produces an authoritative line-42 stop"
+    } else {
+        Assert-True ($text -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)') "F9 arms the source breakpoint in the editor"
+    }
     if (-not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS')) {
         Write-Host 'Captured debug diagnostics:'
         @($text -split "`r?`n" | Where-Object { $_ -notmatch 'draw_text' -and $_ -match '\[DevelopmentRun\]|\[NativeElf|\[NativeAppDebugger\]|Native app|Debug|debug_|GUIDEXOS_PHASE3B_FIXTURE|Build:|Run:|target-created|breakpoint|Project build|launch|Launch|execution|mapped|runtime' } | Select-Object -Last 240)
@@ -511,22 +770,33 @@ try {
         throw "Debugger Phase 3B smoke timed out after $MaxRuntimeSeconds seconds"
     }
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS')) "Ctrl+F5 starts the hosted debug session"
-    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_SELECTED .*result=execution_and_debug_same_per_project_elf') "hosted debug uses one identity-owned ELF for execution and DWARF"
+    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_SELECTED .*result=execution_and_debug_same_per_project_elf') "hosted debug uses one identity-owned ELF for execution and symbols"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=PROJECT_READY .*result=project_open_and_build_ready') "hosted project and build are ready before symbol selection"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ARTIFACT_HASH_VALIDATED .*result=sha256_matches_completed_build') "hosted debug artifact hash matches the completed build"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=ELF_VALIDATION_COMPLETE .*result=valid') "hosted debug ELF header validates"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY .*mapper_state=Ready result=none') "hosted DWARF parser reaches Ready"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=SOURCE_TABLE_CREATED .*result=source_table_present') "hosted DWARF creates a source table"
-    $hostedDwarfSummaryPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF .*dwarf=[1-9]\d* .*cu=[1-9]\d* dies=[1-9]\d* .*files=[1-9]\d* .*rows=[1-9]\d* .*line_bytes=[1-9]\d* .*result=Ready'
-    if ($text -notmatch $hostedDwarfSummaryPattern) {
-        Write-Host 'Captured hosted DWARF summary diagnostics:'
-        @($text -split "`r?`n" | Where-Object { $_ -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF|DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=(DWARF_READY|SOURCE_TABLE_CREATED)' } | Select-Object -Last 20)
+    if ($PositiveGxsmLifecycle) {
+        $hostedGxsmSummaryPattern = 'DEVELOPER_STUDIO_PHASE29Q_HOST_GXSM project_generation=\d+ build_operation=\d+ symbol_generation=\d+ elf_sha256=[0-9A-F]{64} version=2 trailer_offset=\d+ trailer_size=\d+ source_files=[1-9]\d* source_records=[1-9]\d* variable_records=[1-9]\d* result=accepted'
+        if ($text -notmatch $hostedGxsmSummaryPattern) {
+            Write-Host 'Captured hosted GXSM symbol diagnostics:'
+            @($text -split "`r?`n" | Where-Object { $_ -match 'DEVELOPER_STUDIO_PHASE29Q_HOST_GXSM|DEVELOPER_STUDIO_PHASE29N_HOST_DWARF|DWARF_READY|SOURCE_TABLE_CREATED' } | Select-Object -Last 24)
+        }
+        Assert-True ($text -match $hostedGxsmSummaryPattern) "hosted symbol mapper accepts the exact GXSM v2 trailer and reports source/variable counts"
+    } else {
+        $hostedDwarfSummaryPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF .*dwarf=[1-9]\d* .*cu=[1-9]\d* dies=[1-9]\d* .*files=[1-9]\d* .*rows=[1-9]\d* .*line_bytes=[1-9]\d* .*result=Ready'
+        if ($text -notmatch $hostedDwarfSummaryPattern) {
+            Write-Host 'Captured hosted DWARF summary diagnostics:'
+            @($text -split "`r?`n" | Where-Object { $_ -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF|DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=(DWARF_READY|SOURCE_TABLE_CREATED)' } | Select-Object -Last 20)
+        }
+        Assert-True ($text -match $hostedDwarfSummaryPattern) "hosted DWARF source, DIE, and line-table counts are observable"
+        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF_SECTIONS .*symgen=\d+ arch=[^ ]+ elf_sections=[1-9]\d* debug_info_bytes=[1-9]\d* debug_line_bytes=[1-9]\d*') "hosted DWARF section byte totals are observable"
     }
-    Assert-True ($text -match $hostedDwarfSummaryPattern) "hosted DWARF source, DIE, and line-table counts are observable"
-    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF_SECTIONS .*symgen=\d+ arch=[^ ]+ elf_sections=[1-9]\d* debug_info_bytes=[1-9]\d* debug_line_bytes=[1-9]\d*') "hosted DWARF section byte totals are observable"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION .*result=associated') "DWARF source root associates with the project"
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_MATCH .*requested=src/main\.cpp dwarf=src/main\.cpp line=' + [regex]::Escape([string]$BreakpointLine) + ' result=exact_match requested_normalized=src/main\.cpp dwarf_normalized=src/main\.cpp') "the requested source path matches its normalized DWARF source"
-    Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_PATH kind=dwarf_compilation_entry pgen=\d+ op=\d+ symgen=\d+ id=\d+ part=1/\d+ value=') "the request retains its raw DWARF compilation entry"
+    if (-not $PositiveGxsmLifecycle) {
+        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_PATH kind=dwarf_compilation_entry pgen=\d+ op=\d+ symgen=\d+ id=\d+ part=1/\d+ value=') "the request retains its raw DWARF compilation entry"
+    }
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=PENDING .*state=Pending') "runtime breakpoint enters Pending only after symbol publication"
     $mappedBreakpointPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=MAPPED pgen=\d+ op=\d+ symgen=\d+ id=(\d+) src=src/main\.cpp line=' + [regex]::Escape([string]$BreakpointLine) + ' col=1 enabled=1 state=Mapped err=none addr=0x[0-9A-Fa-f]+ addrs=[1-9]\d*'
     if ($text -notmatch $mappedBreakpointPattern) {
@@ -560,7 +830,7 @@ try {
         }
         $previousHostSymbolPosition = $stagePosition
     }
-    Assert-True $hostSymbolLifecycleOrdered "hosted project, artifact, DWARF, source, publication, and remap stages are ordered"
+    Assert-True $hostSymbolLifecycleOrdered "hosted project, artifact, symbol, source, publication, and remap stages are ordered"
     if (-not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) {
         Write-Host 'Captured hosted breakpoint-pause diagnostics:'
         @($text -split "`r?`n" | Where-Object { $_ -notmatch 'draw_text' -and $_ -match '\[DevelopmentRun\]|\[NativeElf|\[NativeAppDebugger\]|target-created|debug_|GUIDEXOS_PHASE3B_FIXTURE|Phase3B draw_rect caller|breakpoint|bound|Bound|Verified|trap|execution|runtime|Native app|Debug:' } | Select-Object -Last 300)
@@ -590,7 +860,7 @@ try {
             @($text -split "`r?`n" | Where-Object { $_ -match 'PHASE29N_HOST_CONTINUE|Continue unavailable|breakpoint continuation|EXCEPTION_SINGLE_STEP|rebound=|debug_state=|debug_transition=' } | Select-Object -Last 80)
         }
         Assert-True $continueEvidence "Continue completes the breakpoint single-step and rebinds the breakpoint"
-    } elseif ($StepInto -or $StepOver -or $StepOut -or $MixedLifecycle -or $SteppingLifecycle) {
+    } elseif ($StepInto -or $StepOver -or $StepOut -or $MixedLifecycle -or $SteppingLifecycle -or $PositiveGxsmLifecycle) {
         $overlapStop = if ($OverlapStepOut) { "Debug: paused | Breakpoint | src/main.cpp:$OverlapBreakpointLine" } else { "" }
         $stepEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING') -and
                         (($OverlapStepOut -and $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) -or
@@ -599,6 +869,7 @@ try {
                          (($StepInto -and $text.Contains('[NativeAppDebugger] user source-step accepted') -and $text.Contains('Debug: step into')) -or
                           ($StepOver -and $text.Contains('Debug: step over')) -or
                           ($SteppingLifecycle -and $text.Contains('Debug: step into') -and $text.Contains('Debug: step over') -and $text.Contains('Debug: step out')) -or
+                          ($PositiveGxsmLifecycle -and $text.Contains('Debug: step over') -and $text.Contains('Debug: step out')) -or
                           ($MixedLifecycle -and $text.Contains('Debug: step into') -and $text.Contains('Debug: step over')) -or
                            ($OverlapStepOut -and $text.Contains('Debug: step out') -and
                            $text.Contains($overlapStop) -and
@@ -619,6 +890,85 @@ try {
         }
         if ($StepInto) { Assert-True $stepEvidence "F11 performs a real hosted source-level Step Into" }
         elseif ($StepOver) { Assert-True $stepEvidence "F10 performs a real hosted source-level Step Over fallback" }
+        elseif ($PositiveGxsmLifecycle) {
+            $initialWatchPattern = 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=1 session_gen=(\d+) stop_gen=(\d+) function=debugProbe source=src/main\.cpp value=1 accepted=1 error_category=0 error=<none> request_stop_gen=\d+ request_thread=\d+ request_frame=0'
+            $frameChangePattern = 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=\d+ session_gen=\d+ stop_gen=\d+ function=gx_main source=src/main\.cpp value=0 accepted=0 error_category=2 error=.* request_stop_gen=\d+ request_thread=\d+ request_frame=1'
+            $laterValuePattern = 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=1 session_gen=(\d+) stop_gen=(\d+) function=debugProbe source=src/main\.cpp value=0 accepted=1 error_category=0 error=<none> request_stop_gen=\d+ request_thread=\d+ request_frame=0'
+            $scopeExitPattern = 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=\d+ session_gen=\d+ stop_gen=\d+ function=gx_main source=src/main\.cpp value=0 accepted=0 error_category=2 error=.* request_stop_gen=\d+ request_thread=\d+ request_frame=0'
+            $initialWatch = @($text -split "`r?`n" | Where-Object { $_ -match $initialWatchPattern } | Select-Object -First 1)
+            $allPositiveWatches = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2' })
+            $frameChange = @($text -split "`r?`n" | Where-Object { $_ -match $frameChangePattern } | Select-Object -First 1)
+            $laterWatch = @($text -split "`r?`n" | Where-Object { $_ -match $laterValuePattern } | Select-Object -First 1)
+            $scopeExit = @($text -split "`r?`n" | Where-Object { $_ -match $scopeExitPattern } | Select-Object -First 1)
+            $stepOverLine = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_step_complete=StepOver command_gen=1 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:5 source_map=current' } | Select-Object -First 1)
+            $stepOutLine = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_step_complete=StepOut command_gen=2 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:10 source_map=current' } | Select-Object -First 1)
+            $gxsmHeader = @($text -split "`r?`n" | Where-Object { $_ -match '\[NativeAppDebugger\] GXSM validation process=(\d+) native_runtime=(\d+) present=1 valid=1 version=2 trailer_offset=(\d+) trailer_size=(\d+) trailer_fnv1a64=0x[0-9A-Fa-f]+ source_files=1 functions=2 source_records=4 variable_records=2 .*result=accepted' })
+            $gxsmVariablesAccepted = @($text -split "`r?`n" | Where-Object { $_ -match '\[NativeAppDebugger\] GXSM variables accepted=1 version=2 records_header=2 records_resolved=\d+ records_truncated=0 function=debugProbe pc=0x[0-9A-Fa-f]+ session_gen=\d+ stop_gen=\d+ frame=0' })
+            $counterReads = @($text -split "`r?`n" | Where-Object { $_ -match '\[NativeAppDebugger\] GXSM variable read result=PASS .* frame=0 pc=0x[0-9A-Fa-f]+ rbp=0x[0-9A-Fa-f]+ function=debugProbe source=src/main\.cpp:3 name=counter type=signed_i32 location=rbp_relative frame_offset=-\d+ width=4 live_pc=\d+-\d+ address=0x[0-9A-Fa-f]+ raw_bytes=(02 00 00 00|03 00 00 00) raw=0x[23] signed_value=[23]' })
+            $counterTwoReads = @($counterReads | Where-Object { $_ -match 'raw_bytes=02 00 00 00 raw=0x2 signed_value=2' })
+            $counterThreeReads = @($counterReads | Where-Object { $_ -match 'raw_bytes=03 00 00 00 raw=0x3 signed_value=3' })
+            $counterTwoRead = @($counterTwoReads | Select-Object -First 1)
+            $counterThreeRead = @($counterThreeReads | Select-Object -First 1)
+            $gxsmValidationSessionIds = @($gxsmVariablesAccepted | ForEach-Object {
+                [regex]::Match($_, 'session_gen=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            $gxsmValidationProcessIds = @($gxsmHeader | ForEach-Object {
+                [regex]::Match($_, 'process=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            $counterTwoReadSessionIds = @($counterTwoReads | ForEach-Object {
+                [regex]::Match($_, 'session_gen=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            $counterThreeReadSessionIds = @($counterThreeReads | ForEach-Object {
+                [regex]::Match($_, 'session_gen=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            $counterTwoAddressBySession = @($counterTwoReads | ForEach-Object {
+                $sessionId = [regex]::Match($_, 'session_gen=(\d+)').Groups[1].Value
+                $address = [regex]::Match($_, 'address=0x([0-9A-Fa-f]+)').Groups[1].Value
+                "$sessionId`:$address"
+            } | Sort-Object -Unique)
+            Write-Host 'Captured positive GXSM/watch proof records:'
+            @($text -split "`r?`n" | Where-Object { $_ -match 'GXSM validation|GXSM variable read|debug_ui_watch_result=|debug_step_complete=|debug_stop_context=|debug_inspection=|debug_ui_selected_frame=' } | Select-Object -Last 120)
+            Write-Host "GXSM record counts: headers=$($gxsmHeader.Count) variable_accepts=$($gxsmVariablesAccepted.Count) counter_reads=$($counterReads.Count) value2_sessions=$($counterTwoReadSessionIds -join ',') value3_sessions=$($counterThreeReadSessionIds -join ',')"
+            $watchSessionGenerations = @($allPositiveWatches | ForEach-Object {
+                [regex]::Match($_, 'session_gen=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            $initialWatchSession = if ($initialWatch.Count -gt 0) { [regex]::Match($initialWatch[0], 'session_gen=(\d+)').Groups[1].Value } else { '' }
+            $relaunchWatch = @($allPositiveWatches | Where-Object {
+                $_ -match $initialWatchPattern -and
+                [regex]::Match($_, 'session_gen=(\d+)').Groups[1].Value -ne $initialWatchSession
+            } | Select-Object -First 1)
+            $initialStop = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_stop_context=authoritative reason=Breakpoint .*function=debugProbe source=src/main\.cpp:4 source_map=current' } | Select-Object -First 1)
+            $laterStop = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_step_complete=StepOver command_gen=1 .*source=src/main\.cpp:5 source_map=current' } | Select-Object -First 1)
+            Assert-True ($initialWatch.Count -ge 1 -and $laterWatch.Count -ge 1 -and $relaunchWatch.Count -ge 1 -and $watchSessionGenerations.Count -ge 2 -and $initialStop.Count -ge 1 -and $laterStop.Count -ge 1) "counter == 2 is true at the breakpoint, false after Step Over, and freshly true in the relaunch session"
+            Assert-True ($frameChange.Count -ge 1) "changing to the caller frame explicitly makes the callee counter unavailable"
+            Assert-True ($scopeExit.Count -ge 1) "Step Out to gx_main reports counter unavailable after its scope ends"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_edit=PASS')) "the existing watch is freshly reevaluated at the caller stop"
+            Assert-True ($stepOverLine.Count -eq 1 -and $stepOutLine.Count -eq 1) "Step Over and Step Out publish fresh source stops in debugProbe and gx_main"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_selected_frame=PASS index=1') -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_selected_frame=PASS index=0')) "frame selection moves to the caller and back to frame 0"
+            Assert-True ($gxsmValidationProcessIds.Count -ge 2 -and $gxsmValidationSessionIds.Count -ge 2) "NativeAppDebugger accepts the compiler-produced GXSM v2 header and variable records in both target sessions with bounded capacities"
+            Assert-True ($counterTwoRead.Count -ge 1 -and $counterThreeRead.Count -ge 1) "target stack reads yield raw counter bytes 2 then 3 from the same live record"
+            Assert-True ($counterTwoReadSessionIds.Count -ge 2 -and $counterTwoAddressBySession.Count -ge 2 -and $counterThreeReadSessionIds.Count -ge 1) "both launches reread counter=2 at distinct runtime addresses and Step Over reads counter=3 from the first launch"
+            $hostedGxsmRows = @($text -split "`r?`n" | Where-Object { $_ -match $hostedGxsmSummaryPattern })
+            $buildOperations = @($hostedGxsmRows | ForEach-Object {
+                [regex]::Match($_, 'build_operation=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            $targetProcesses = @($counterReads | ForEach-Object {
+                [regex]::Match($_, 'process=(\d+)').Groups[1].Value
+            } | Sort-Object -Unique)
+            Assert-True ($hostedGxsmRows.Count -ge 2 -and $buildOperations.Count -ge 2 -and $targetProcesses.Count -ge 2) "relaunch binds a fresh build generation and target process and performs a new GXSM-backed read"
+            if ($counterTwoRead.Count -eq 1) {
+                $readLine = [regex]::Match($counterTwoRead[0], 'rbp=0x([0-9A-Fa-f]+).*frame_offset=(-\d+).*address=0x([0-9A-Fa-f]+)')
+                Assert-True $readLine.Success "raw read trace includes frame base, metadata offset, and target address"
+                $rbpValue = [Convert]::ToUInt64($readLine.Groups[1].Value, 16)
+                $offsetValue = [int]$readLine.Groups[2].Value
+                $addressValue = [Convert]::ToUInt64($readLine.Groups[3].Value, 16)
+                Assert-True (($rbpValue - [uint64](-$offsetValue)) -eq $addressValue) "RBP plus the signed GXSM offset equals the raw-read target address"
+            }
+            Assert-True ($text -match 'debug_inspection=invalidated .*context_valid=0 stack_valid=0 locals_valid=0' -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING')) "Continue invalidates the previous stopped value before target exit"
+            Assert-True (([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')).Count -ge 2) "both positive GXSM target sessions exit and tear down cleanly"
+        }
         elseif ($SteppingLifecycle) {
             $stepIntoPattern = 'debug_step_complete=StepInto command_gen=1 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:43 source_map=current'
             $stepOverPattern = 'debug_step_complete=StepOver command_gen=2 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:48 source_map=current'
@@ -698,7 +1048,7 @@ try {
         }
     }
     Assert-True ($text -match 'target-created.*processId=\d+.*nativeRuntimeId=\d+.*gate=closed') "hosted service publishes exact target identity before release"
-    if (-not $DiagnosticOnly) {
+    if (-not $DiagnosticOnly -and -not $PositiveGxsmLifecycle) {
         $shutdownMarkers = @(
             'debug_shutdown_request=targeted_close',
             'debug_stop=requested',
@@ -715,8 +1065,8 @@ try {
         }
         Assert-True ($text -match 'runtimeId=\d+ appId=com\.guidexos\.developerstudio .*state=Exited .*windows=\d+/\d+/0 .*shutdownStage=complete shutdownStageCode=6') "Server durable shutdown state records Exited, released windows, and complete"
         Assert-True ($text -match 'Native app debug log: \d+') "bounded Server lifecycle log query is available"
-        $debugLogEntryCount = ([regex]::Matches($text, '(?m)^#\d+ runtimeId=')).Count
-        Assert-True ($debugLogEntryCount -le 64) "failure-diagnostic lifecycle log remains bounded to 64 entries"
+        $debugLogQueryCounts = @([regex]::Matches($text, 'Native app debug log: (\d+)') | ForEach-Object { [int]$_.Groups[1].Value })
+        Assert-True ($debugLogQueryCounts.Count -ge 1 -and @($debugLogQueryCounts | Where-Object { $_ -gt 64 }).Count -eq 0) "each queried Server lifecycle log remains bounded to 64 entries"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested')) "the hosted debugger stop is requested through the product close path"
         if (-not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')) {
             Write-Host 'Captured hosted debugger-stop diagnostics:'
@@ -728,6 +1078,9 @@ try {
             @($text -split "`r?`n" | Where-Object { $_ -match 'close|Close|Debug|debug|run|Run|exit|Exit|process|Process|window|Window|dirty|prompt|confirm|error|Error' } | Select-Object -Last 220)
         }
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS')) "Developer Studio closes cleanly after teardown"
+    } elseif ($PositiveGxsmLifecycle) {
+        $targetCleanupCount = ([regex]::Matches($text, '\[NativeAppRuntime\] Cleanup complete app=com\.example\.debuggerphase29qpositive .* state=Exited exitCode=0 cleanedWindows=0 remainingWindows=0')).Count
+        Assert-True ($targetCleanupCount -ge 2) "both positive GXSM targets release their native runtime resources cleanly"
     } elseif (($ContinueBreakpoint -or $ContinueAfterStepOut) -and $DiagnosticOnly) {
         Assert-True ($text.Contains('Debug: process running')) "the hosted UI remains responsive after Continue"
     } elseif ($ContinueBreakpoint) {
@@ -743,7 +1096,8 @@ try {
         @($text -split "`r?`n" | Where-Object { $_ -match 'close|Close|Debug|debug|run|Run|exit|Exit|process|Process|error|Error|fail|Fail' } | Select-Object -Last 180)
     }
     Assert-True ($process.ExitCode -eq 0) "hosted Server exits cleanly after the debugger proof (exit code $($process.ExitCode))"
-    if ($StepOutThenStepInto) { Write-Host 'Developer Studio Debugger Phase 18 Step Out -> Step Into smoke PASS' }
+    if ($PositiveGxsmLifecycle) { Write-Host 'Developer Studio Phase 29Q positive GXSM lifecycle smoke PASS' }
+    elseif ($StepOutThenStepInto) { Write-Host 'Developer Studio Debugger Phase 18 Step Out -> Step Into smoke PASS' }
     elseif ($StepOutThenStepOver) { Write-Host 'Developer Studio Debugger Phase 18 Step Out -> Step Over smoke PASS' }
     elseif ($OverlapStepOut) { Write-Host 'Developer Studio Debugger Phase 18 overlapping Step Out smoke PASS' }
     elseif ($StepInto) { Write-Host 'Developer Studio Debugger Phase 5 end-to-end smoke PASS' }
@@ -760,5 +1114,17 @@ try {
     }
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
     if ($process) { $process.Dispose() }
+    if ($restoreDebuggerConfiguration) {
+        if ($debuggerConfigurationExisted) {
+            [IO.File]::WriteAllBytes($debuggerConfiguration, $debuggerConfigurationPrior)
+        } else {
+            Remove-Item -LiteralPath $debuggerConfiguration -Force -ErrorAction SilentlyContinue
+        }
+        if ($debuggerBackupConfigurationExisted) {
+            [IO.File]::WriteAllBytes($debuggerBackupConfiguration, $debuggerBackupConfigurationPrior)
+        } else {
+            Remove-Item -LiteralPath $debuggerBackupConfiguration -Force -ErrorAction SilentlyContinue
+        }
+    }
     Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
 }

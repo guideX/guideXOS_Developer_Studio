@@ -1272,6 +1272,10 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         }
     }
     mapper->bootstrapSourceMap = true;
+    mapper->bootstrapSourceMapVersion = version;
+    mapper->bootstrapSourceMapOffset = static_cast<uint32_t>(start);
+    mapper->bootstrapSourceMapBytes = payload;
+    mapper->bootstrapSourceMappingCount = mappingCount;
     mapper->debugInfoReady = true;
     mapper->state = DebugDwarfMapperState::Ready;
     mapper->error = DebugDwarfError::None;

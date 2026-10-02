@@ -547,6 +547,10 @@ struct DebugDwarfMapper {
     uint32_t debugInfoParseMilliseconds;
     bool debugInfoReady;
     bool bootstrapSourceMap;
+    uint32_t bootstrapSourceMapVersion;
+    uint32_t bootstrapSourceMapOffset;
+    uint32_t bootstrapSourceMapBytes;
+    uint32_t bootstrapSourceMappingCount;
     uint32_t bootstrapVariableCount;
     // Bounded failure context for an artifact source path that cannot be
     // associated with the current project root. Empty on successful loads.
