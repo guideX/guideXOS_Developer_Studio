@@ -24,6 +24,8 @@ The repository-native validation tiers and bounded hosted debugger soak are docu
 
 A workspace is any directory that Developer Studio can browse and edit. It does not need metadata. A project is a validated guideXOS application workspace with a `guidexos.project` file, identity, target profile, source root, and App Model manifest. The shell labels these states as `Workspace:` and `Project:` respectively; opening a project never upgrades or modifies an arbitrary workspace.
 
+File Explorer can activate supported standalone documents through the App Model without opening a project first. Developer Studio uses its existing workspace document loader and canonical App ID; the registered extensions, byte/path limits, runtime gating, and validation are described in [docs/APP_MODEL_DOCUMENT_ACTIVATION.md](docs/APP_MODEL_DOCUMENT_ACTIVATION.md).
+
 ## Project workflow
 
 Use `File -> New Project` or `Ctrl+N` to create the one supported template, `Native GUI Application`. Enter a display name, absolute parent location, optional folder name, and application ID. `Tab` or `Enter` advances through the bounded fields; `Enter` on Application ID creates the project; `Escape` cancels without filesystem changes. The folder is derived as a lowercase, hyphenated name when left blank.

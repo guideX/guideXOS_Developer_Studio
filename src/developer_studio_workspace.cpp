@@ -990,6 +990,90 @@ bool WorkspaceControllerGoUp(WorkspaceController* controller) {
     return WorkspaceControllerRefresh(controller);
 }
 
+bool IsAppModelDocumentPathSupported(const char* path) {
+    if (!path || path[0] == '\0' || PathContainsTraversal(path)) return false;
+    const char* name = BaseName(path);
+    uint32_t length = 0;
+    while (length < kMaxNameBytes && name[length] != '\0') ++length;
+    if (length == kMaxNameBytes) return false;
+    uint32_t dot = length;
+    for (uint32_t i = 0; i < length; ++i) if (name[i] == '.') dot = i;
+    if (dot == length || dot == 0 || dot + 1 >= length) return false;
+    static const char* const extensions[] = {
+        ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".txt"
+    };
+    const char* extension = name + dot;
+    for (uint32_t candidate = 0; candidate < sizeof(extensions) / sizeof(extensions[0]); ++candidate) {
+        uint32_t i = 0;
+        while (extension[i] != '\0' && extensions[candidate][i] != '\0') {
+            char left = extension[i];
+            char right = extensions[candidate][i];
+            if (left >= 'A' && left <= 'Z') left = static_cast<char>(left + ('a' - 'A'));
+            if (right >= 'A' && right <= 'Z') right = static_cast<char>(right + ('a' - 'A'));
+            if (left != right) break;
+            ++i;
+        }
+        if (extension[i] == '\0' && extensions[candidate][i] == '\0') return true;
+    }
+    return false;
+}
+
+bool WorkspaceControllerOpenStandaloneDocument(WorkspaceController* controller, const char* path) {
+    if (!controller || !path || path[0] == '\0' || PathContainsTraversal(path)) {
+        if (controller) setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    char normalized[kMaxPathBytes];
+    if (!NormalizePath(path, normalized, sizeof(normalized))) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    uint32_t pathLength = 0;
+    while (pathLength < sizeof(normalized) && normalized[pathLength] != '\0') ++pathLength;
+    if (pathLength == sizeof(normalized)) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    const bool absolute = normalized[0] == '/' ||
+        (pathLength >= 3 && normalized[1] == ':' && normalized[2] == '/');
+    if (!absolute) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    if (!IsAppModelDocumentPathSupported(normalized)) {
+        setControllerError(controller, ModelErrorCode::UnsupportedFile);
+        return false;
+    }
+    uint32_t separator = pathLength;
+    while (separator > 0 && normalized[separator - 1] != '/') --separator;
+    if (separator == 0 || separator == pathLength) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    uint32_t rootLength = separator - 1;
+    if (rootLength == 0) rootLength = 1;
+    if (pathLength >= 3 && normalized[1] == ':' && separator == 3) rootLength = 3;
+    char parent[kMaxPathBytes] = {};
+    if (rootLength >= sizeof(parent)) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    for (uint32_t i = 0; i < rootLength; ++i) parent[i] = normalized[i];
+    parent[rootLength] = '\0';
+    // The containing directory is a projectless workspace; the existing
+    // document loader still enforces workspace containment and reads the file.
+    if (!WorkspaceControllerOpenWorkspace(controller, parent)) return false;
+    if (!WorkspaceControllerOpenDocument(controller, normalized)) return false;
+    const int active = FindOpenDocument(&controller->model, normalized);
+    if (active < 0) {
+        setControllerError(controller, ModelErrorCode::DocumentNotFound);
+        return false;
+    }
+    controller->model.activeDocument = static_cast<uint32_t>(active);
+    setControllerError(controller, ModelErrorCode::None);
+    return true;
+}
+
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path) {
     if (rejectProjectLoadReentry(controller)) return false;
     if (!controller || !controller->model.open || !controller->fileSystem.stat || !controller->fileSystem.read) { if (controller) setControllerError(controller, ModelErrorCode::WorkspaceNotOpen); return false; }

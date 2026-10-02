@@ -180,6 +180,8 @@ using guidexos::developer_studio::WorkspaceControllerGoUp;
 using guidexos::developer_studio::WorkspaceControllerInit;
 using guidexos::developer_studio::WorkspaceControllerSetProjectOpenObserver;
 using guidexos::developer_studio::WorkspaceControllerOpenDocument;
+using guidexos::developer_studio::WorkspaceControllerOpenStandaloneDocument;
+using guidexos::developer_studio::IsAppModelDocumentPathSupported;
 using guidexos::developer_studio::WorkspaceControllerOpenProjectFrom;
 using guidexos::developer_studio::WorkspaceControllerOpenWorkspace;
 using guidexos::developer_studio::WorkspaceControllerRefresh;
@@ -5351,6 +5353,54 @@ static bool saveDocument(gx_app_context* ctx, uint32_t index) {
         }
     }
     return true;
+}
+
+static void openAppModelDocumentActivation(gx_app_context* ctx) {
+    if (!ctx || !ctx->host || ctx->host->size < offsetof(gx_host_calls, get_document_activation_path) +
+        sizeof(ctx->host->get_document_activation_path) || !ctx->host->get_document_activation_path) return;
+    char path[kMaxPathBytes] = {};
+    uint32_t requiredBytes = 0;
+    const gx_result result = ctx->host->get_document_activation_path(ctx, path, sizeof(path), &requiredBytes);
+    if (result == GX_OK && requiredBytes == 0) return;
+    if (result != GX_OK || requiredBytes < 2 || requiredBytes > sizeof(path) || path[requiredBytes - 1] != '\0') {
+        const char* reason = requiredBytes > sizeof(path) ? "path_exceeds_editor_bound" : "activation_context_unavailable";
+        writeOutput("App Model document activation failed: path could not be copied safely");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=FAIL", reason);
+        return;
+    }
+    if (!IsAppModelDocumentPathSupported(path)) {
+        writeOutput("App Model document activation rejected: unsupported document type");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=FAIL", "unsupported_extension");
+        return;
+    }
+    if (!WorkspaceControllerOpenStandaloneDocument(&g_controller, path)) {
+        writeOutput("App Model document activation failed: requested file could not be opened");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=FAIL", currentError());
+        return;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || !document->used || !document->path[0]) {
+        writeOutput("App Model document activation failed: editor document was not created");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=FAIL", "document_not_created");
+        return;
+    }
+    g_editorFocused = true;
+    g_inputMode = InputMode::Normal;
+    uint64_t hash = 1469598103934665603ull;
+    for (uint32_t i = 0; i < document->buffer.length; ++i) {
+        hash ^= static_cast<unsigned char>(document->buffer.data[i]);
+        hash *= 1099511628211ull;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=PASS received=");
+    appendText(g_textScratch, sizeof(g_textScratch), path);
+    appendText(g_textScratch, sizeof(g_textScratch), " model=");
+    appendText(g_textScratch, sizeof(g_textScratch), document->path);
+    appendText(g_textScratch, sizeof(g_textScratch), " bytes=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), document->buffer.length);
+    appendText(g_textScratch, sizeof(g_textScratch), " fnv1a64=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), hash);
+    logMarker(ctx, g_textScratch);
+    writeOutput("App Model document opened");
 }
 
 static bool saveAll(gx_app_context* ctx) {
@@ -17914,6 +17964,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     phase29dStartupTrace(ctx, "WINDOW_CREATED");
     if (g_phase28mDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28M_APP_LAUNCH_PASS");
     if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28Q_APP_LAUNCH_PASS");
+    openAppModelDocumentActivation(ctx);
     drawShell(ctx);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS");
     if (g_phase28qDiagnostic &&

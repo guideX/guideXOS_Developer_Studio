@@ -23,6 +23,7 @@ $PackageBin = Join-Path $PackageRoot ("bin\" + $TargetArchitecture)
 $Manifest = Join-Path $RepoRoot "app\app.json"
 $ModelTest = Join-Path $ServerRoot "tmp\developer-studio-model-test.exe"
 $ProjectTest = Join-Path $ServerRoot "tmp\developer-studio-project-test.exe"
+$AppModelActivationTest = Join-Path $ServerRoot "tmp\developer-studio-appmodel-activation-test.exe"
 $StartupTest = Join-Path $ServerRoot "tmp\developer-studio-startup-test.exe"
 $SentinelTest = Join-Path $ServerRoot "tmp\developer-studio-sentinel-test.exe"
 $RunTest = Join-Path $ServerRoot "tmp\developer-studio-run-test.exe"
@@ -115,8 +116,15 @@ try {
             "-o", $ProjectTest
         )
         & $ProjectTest
-    if ($LASTEXITCODE -ne 0) { throw "Developer Studio project test failed with exit code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { throw "Developer Studio project test failed with exit code $LASTEXITCODE" }
     }
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\appmodel_activation_test.cpp",
+        "-o", $AppModelActivationTest
+    )
+    & $AppModelActivationTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio App Model document activation test failed with exit code $LASTEXITCODE" }
     Invoke-Checked "g++" @(
         "-std=c++11", "-Wall", "-Wextra", "-pedantic",
         "-Isrc", "src\developer_studio_startup.cpp", "tests\startup_test.cpp",
@@ -411,6 +419,7 @@ $compileFlags = @(
 } finally {
     if (Test-Path -LiteralPath $ModelTest) { Remove-Item -LiteralPath $ModelTest -Force }
     if (Test-Path -LiteralPath $ProjectTest) { Remove-Item -LiteralPath $ProjectTest -Force }
+    if (Test-Path -LiteralPath $AppModelActivationTest) { Remove-Item -LiteralPath $AppModelActivationTest -Force }
     if (Test-Path -LiteralPath $StartupTest) { Remove-Item -LiteralPath $StartupTest -Force }
     if (Test-Path -LiteralPath $SentinelTest) { Remove-Item -LiteralPath $SentinelTest -Force }
     if (Test-Path -LiteralPath $RunTest) { Remove-Item -LiteralPath $RunTest -Force }

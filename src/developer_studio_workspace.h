@@ -211,6 +211,8 @@ bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* contr
 bool WorkspaceControllerEnterSelected(WorkspaceController* controller);
 bool WorkspaceControllerGoUp(WorkspaceController* controller);
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path);
+bool IsAppModelDocumentPathSupported(const char* path);
+bool WorkspaceControllerOpenStandaloneDocument(WorkspaceController* controller, const char* path);
 bool WorkspaceControllerUpdateDocumentSymbols(WorkspaceController* controller, uint32_t documentIndex);
 bool WorkspaceControllerOpenDocumentAtLocation(WorkspaceController* controller, const char* projectId, const char* relativePath,
                                                uint32_t line, uint32_t column, uint32_t* outDocumentIndex, OutputErrorCode* error);
