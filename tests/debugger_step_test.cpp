@@ -13,8 +13,10 @@ struct StepFake {
     bool pending = false;
     bool wrongThread = false;
     bool exitBeforeStepStop = false;
+    bool pauseRequested = false;
     uint32_t stepCalls = 0;
     uint32_t resumeCalls = 0;
+    uint32_t pauseCalls = 0;
     uint64_t nextRip = 0x104;
     uint64_t nextStopGeneration = 4;
     DebugRegisterContext lastContext = {};
@@ -179,6 +181,26 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
     snapshot->sessionGeneration = generation;
     snapshot->processId = 12;
     snapshot->nativeRuntimeId = 77;
+    if (fake->pauseRequested) {
+        fake->pauseRequested = false;
+        snapshot->state = DebugSessionState::Paused;
+        snapshot->stopReason = DebugStopReason::UserPause;
+        snapshot->executionState = DebugBackendExecutionState::PausedAtUserPause;
+        snapshot->threadId = 44;
+        snapshot->stopGeneration = fake->nextStopGeneration++;
+        snapshot->instructionPointer = 0x108;
+        snapshot->registerContext = fake->lastContext;
+        snapshot->registerContext.valid = true;
+        snapshot->registerContext.threadId = 44;
+        snapshot->registerContext.stopGeneration = snapshot->stopGeneration;
+        snapshot->registerContext.commandGeneration = 0;
+        snapshot->registerContext.rip = 0x108;
+        snapshot->registerContext.rsp = 0x700000;
+        snapshot->registerContext.rbp = 0x700100;
+        snapshot->registerContext.stackLow = 0x700000;
+        snapshot->registerContext.stackHigh = 0x702000;
+        return true;
+    }
     if (!fake->pending) {
         snapshot->state = DebugSessionState::Stepping;
         snapshot->executionState = DebugBackendExecutionState::UserSourceStepPending;
@@ -220,13 +242,22 @@ static bool stepInstruction(void* userData, uint64_t, const DebugRegisterContext
     return true;
 }
 
+static bool pauseExecution(void* userData, uint64_t) {
+    StepFake* fake = static_cast<StepFake*>(userData);
+    fake->pauseRequested = true;
+    ++fake->pauseCalls;
+    return true;
+}
+
 static DebugBackend makeBackend(StepFake* fake) {
     DebugBackend backend = {};
     backend.userData = fake;
     backend.capabilities.canStepInto = true;
     backend.capabilities.canContinue = true;
+    backend.capabilities.canPause = true;
     backend.poll = poll;
     backend.stepInstruction = stepInstruction;
+    backend.pause = pauseExecution;
     backend.resumeExecution = [](void* userData, uint64_t, const DebugRegisterContext&) {
         ++static_cast<StepFake*>(userData)->resumeCalls;
         return true;
@@ -451,6 +482,9 @@ int main() {
     assert(!DebugControllerContinue(&controller, backend, &error));
     assert(controller.sourceStep.active && controller.sourceStep.commandGeneration == stepIntoCommandGeneration &&
            fake.stepCalls == stepCallsBeforeRejectedCommands);
+    assert(!DebugControllerPause(&controller, backend, &error));
+    assert(error == DebugErrorCode::TargetNotRunning && fake.pauseCalls == 0 &&
+           controller.sourceStep.active && controller.sourceStep.commandGeneration == stepIntoCommandGeneration);
     assert(DebugControllerPoll(&controller, backend, &mapper));
     assert(controller.state == DebugSessionState::Stepping);
     assert(controller.sourceStep.active && controller.sourceStep.stepCount == 1);
@@ -477,6 +511,15 @@ int main() {
            controller.backendExecutionState == DebugBackendExecutionState::Running &&
            controller.stopGeneration == 0 && controller.lastStopGeneration == 5 &&
            !controller.stoppedContext.valid && !controller.callStack.valid && !controller.variables.valid);
+    assert(DebugControllerPause(&controller, backend, &error));
+    assert(fake.pauseCalls == 1 && fake.pauseRequested && controller.pauseRequestPending);
+    assert(DebugControllerPoll(&controller, backend, &mapper));
+    assert(controller.state == DebugSessionState::Paused && controller.stopReason == DebugStopReason::UserPause &&
+           controller.backendExecutionState == DebugBackendExecutionState::PausedAtUserPause &&
+           controller.stopGeneration == 6 && controller.lastStopGeneration == 6 &&
+           controller.stoppedContext.valid && controller.stoppedContext.commandGeneration == 0 &&
+           !controller.sourceStep.active && controller.sourceStep.status == DebugSourceStepStatus::Cancelled &&
+           controller.stepCompletionGeneration == 5 && !controller.pauseRequestPending && fake.stepCalls == 2);
 
     static DebugController exitDuringStep = {};
     preparePausedController(&exitDuringStep, true);
