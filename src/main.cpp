@@ -862,7 +862,8 @@ static bool g_outputFocused = false;
 static uint32_t g_outputScroll = 0;
 static bool g_outputFollowTail = true;
 static uint32_t g_problemSelected = 0;
-static char g_textScratch[256] = {};
+static char g_textScratch[1536] = {};
+static char g_debugStopTraceScratch[1536] = {};
 static char g_phase29eTraceBuffer[640] = {};
 static char g_phase29kTraceBuffer[1024] = {};
 static uint32_t g_phase29kTraceCount = 0;
@@ -961,7 +962,7 @@ static uint64_t g_debugTraceLastTransitionSequence = 0;
 static DebugStepOperationKind g_debugTraceLastStepOperation = DebugStepOperationKind::None;
 static uint64_t g_debugTraceLastStepGeneration = 0;
 static uint64_t g_debugTraceLastStepCompletionGeneration = 0;
-static char g_debugTraceScratch[4][256] = {};
+static char g_debugTraceScratch[4][512] = {};
 static DebuggerWorkspace g_debuggerWorkspace = {};
 static char g_debuggerWorkspaceStatus[96] = {};
 static uint64_t g_debuggerWorkspaceMaterializedGeneration = 0;
@@ -2377,6 +2378,232 @@ static uint64_t debugTraceTemporaryBindingId(DebugStepOperationKind kind) {
     return 0;
 }
 
+static uint64_t debugTraceTemporaryAddress(DebugStepOperationKind kind) {
+    switch (kind) {
+    case DebugStepOperationKind::StepOver: return g_debugController.stepOver.returnAddress;
+    case DebugStepOperationKind::StepOut: return g_debugController.stepOut.rawReturnAddress;
+    case DebugStepOperationKind::SourceStep: case DebugStepOperationKind::None: break;
+    }
+    return 0;
+}
+
+static uint64_t debugTraceCommandGeneration(DebugStepOperationKind kind) {
+    switch (kind) {
+    case DebugStepOperationKind::SourceStep: return g_debugController.sourceStep.commandGeneration;
+    case DebugStepOperationKind::StepOver: return g_debugController.stepOver.commandGeneration;
+    case DebugStepOperationKind::StepOut: return g_debugController.stepOut.commandGeneration;
+    case DebugStepOperationKind::None: break;
+    }
+    return 0;
+}
+
+static const char* debugTraceStepCommandName(DebugStepOperationKind kind) {
+    switch (kind) {
+    case DebugStepOperationKind::SourceStep: return "StepInto";
+    case DebugStepOperationKind::StepOver: return "StepOver";
+    case DebugStepOperationKind::StepOut: return "StepOut";
+    case DebugStepOperationKind::None: return "None";
+    }
+    return "None";
+}
+
+static void traceDebugUiStepRoute(gx_app_context* ctx, const char* route,
+                                  const char* command, const char* binding) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    copyText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_step_route=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), route);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " command=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), command);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " binding=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), binding);
+    logMarker(ctx, g_debugStopTraceScratch);
+}
+
+static void traceDebugStepRequest(gx_app_context* ctx, const char* command,
+                                  uint64_t startingStopGeneration, bool accepted,
+                                  DebugErrorCode error, const char* backendMode) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    copyText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_request=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), command);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " result=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), accepted ? "accepted" : "rejected");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " command_gen=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), accepted ?
+        debugTraceCommandGeneration(g_debugController.lastStepOperation) : 0);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " session_gen=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), g_debugController.sessionGeneration);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " target_gen=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), g_debugController.target.projectGeneration);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " start_stop_gen=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), startingStopGeneration);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " state=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), DebugSessionStateName(g_debugController.state));
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " backend_mode=");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), backendMode ? backendMode : "unknown");
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " can_into=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), g_debugController.capabilities.canStepInto ? 1u : 0u);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " can_over=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), g_debugController.capabilities.canStepOver ? 1u : 0u);
+    appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " can_out=");
+    appendUnsigned(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), g_debugController.capabilities.canStepOut ? 1u : 0u);
+    if (!accepted) {
+        appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), " error=");
+        appendText(g_debugStopTraceScratch, sizeof(g_debugStopTraceScratch), DebugErrorName(error));
+    }
+    logMarker(ctx, g_debugStopTraceScratch);
+}
+
+static void traceDebugStoppedContext(gx_app_context* ctx, bool sourceMapped,
+                                     bool stackBuilt, bool localsBuilt) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    const DebugStackFrame* current = DebugControllerCallStackFrameAt(&g_debugController, 0);
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop_context=authoritative reason=");
+    appendText(g_textScratch, sizeof(g_textScratch), DebugStopReasonName(g_debugController.stopReason));
+    appendText(g_textScratch, sizeof(g_textScratch), " session_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " target_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.target.projectGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " process=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.processId);
+    appendText(g_textScratch, sizeof(g_textScratch), " runtime=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.nativeRuntimeId);
+    appendText(g_textScratch, sizeof(g_textScratch), " thread=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentThreadId);
+    appendText(g_textScratch, sizeof(g_textScratch), " stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " command_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.commandGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " raw_pc=");
+    appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.reportedInstructionPointer);
+    appendText(g_textScratch, sizeof(g_textScratch), " normalized_pc=");
+    appendHexAddress(g_textScratch, sizeof(g_textScratch), g_debugController.currentInstructionAddress.value);
+    appendText(g_textScratch, sizeof(g_textScratch), " module_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " symbol_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " selected_frame=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.selectedFrameIndex);
+    appendText(g_textScratch, sizeof(g_textScratch), " function=");
+    appendText(g_textScratch, sizeof(g_textScratch), current && current->functionName[0] ? current->functionName : "<unknown>");
+    appendText(g_textScratch, sizeof(g_textScratch), " source=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath[0] ?
+        g_debugController.currentLocation.relativePath : "<none>");
+    appendText(g_textScratch, sizeof(g_textScratch), ":");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+    appendText(g_textScratch, sizeof(g_textScratch), " source_map=");
+    appendText(g_textScratch, sizeof(g_textScratch), sourceMapped ? "current" : "failed");
+    appendText(g_textScratch, sizeof(g_textScratch), " can_continue=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerCanContinue(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_step_into=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerCanStepInto(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_step_over=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerCanStepOver(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_step_out=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), guidexos::developer_studio::DebugControllerCanStepOut(&g_debugController) ? 1u : 0u);
+    logMarker(ctx, g_textScratch);
+
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_inspection=refreshed stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " stack_valid=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), stackBuilt && g_debugController.callStack.valid &&
+        !g_debugController.callStack.stale ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " stack_stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.stopGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " frame_count=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.result.frameCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " locals_valid=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), localsBuilt && g_debugController.variables.valid &&
+        !g_debugController.variables.stale ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " locals_stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.variables.stopGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " arguments=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.variables.argumentCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " locals=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.variables.localCount);
+    const DebugWatchItem* watch = nullptr;
+    if (g_debugController.watches) {
+        for (uint32_t i = 0; i < kDebugWatchMaxWatches; ++i) {
+            const DebugWatchItem* candidate = guidexos::developer_studio::DebugWatchCollectionAt(
+                g_debugController.watches, i);
+            if (candidate && candidate->used) { watch = candidate; break; }
+        }
+    }
+    if (watch) {
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_id=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), watch->id);
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_expr=");
+        appendText(g_textScratch, sizeof(g_textScratch), watch->expression);
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_state=");
+        appendText(g_textScratch, sizeof(g_textScratch), guidexos::developer_studio::DebugWatchStateName(watch->result.state));
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_session_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), watch->result.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_stop_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), watch->result.stopGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_value=");
+        appendText(g_textScratch, sizeof(g_textScratch), watch->result.valueDisplay[0] ?
+            watch->result.valueDisplay : "<none>");
+    } else {
+        appendText(g_textScratch, sizeof(g_textScratch), " watch=none");
+    }
+    logMarker(ctx, g_textScratch);
+
+    if (g_debugController.stopReason == DebugStopReason::Step &&
+        g_debugController.stoppedContext.commandGeneration != 0) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=");
+        appendText(g_textScratch, sizeof(g_textScratch),
+                   debugTraceStepCommandName(g_debugController.lastStepOperation));
+        appendText(g_textScratch, sizeof(g_textScratch), " command_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.commandGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " session_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " target_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.target.projectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " stop_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " source=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentLocation.line);
+        appendText(g_textScratch, sizeof(g_textScratch), " source_map=");
+        appendText(g_textScratch, sizeof(g_textScratch), sourceMapped ? "current" : "failed");
+        logMarker(ctx, g_textScratch);
+    }
+}
+
+static void traceDebugInspectionInvalidated(gx_app_context* ctx) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_inspection=invalidated last_stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.lastStopGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " live_stop_gen=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+    appendText(g_textScratch, sizeof(g_textScratch), " context_valid=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stoppedContext.valid ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " stack_valid=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.callStack.valid &&
+        !g_debugController.callStack.stale ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " locals_valid=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.variables.valid &&
+        !g_debugController.variables.stale ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " watches_stale=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch),
+        g_debugController.watches && g_debugController.watches->treeStale ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_continue=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerCanContinue(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_step_into=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerCanStepInto(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_step_over=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), DebugControllerCanStepOver(&g_debugController) ? 1u : 0u);
+    appendText(g_textScratch, sizeof(g_textScratch), " can_step_out=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), guidexos::developer_studio::DebugControllerCanStepOut(&g_debugController) ? 1u : 0u);
+    logMarker(ctx, g_textScratch);
+}
+
 static void emitDebugLifecycleTrace(gx_app_context* ctx) {
     // This is intentionally a debug-session diagnostic path. It writes only
     // to the existing host log and emits at state/binding/cleanup changes;
@@ -2423,6 +2650,10 @@ static void emitDebugLifecycleTrace(gx_app_context* ctx) {
                stepOut.active || g_debugController.stepOver.active || g_debugController.sourceStep.active ? "TRUE" : "FALSE");
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " generation=");
     appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceStepGeneration(stepKind));
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " start_stop_gen=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceStepGeneration(stepKind));
+    appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " command_gen=");
+    appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceCommandGeneration(stepKind));
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " session=");
     appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), g_debugController.sessionGeneration);
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " completion=");
@@ -2433,6 +2664,10 @@ static void emitDebugLifecycleTrace(gx_app_context* ctx) {
     appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceTemporaryBreakpointId(stepKind));
     appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " temp_binding=");
     appendUnsigned(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceTemporaryBindingId(stepKind));
+    if (debugTraceTemporaryAddress(stepKind) != 0) {
+        appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " temp_address=");
+        appendHexAddress(stepMarker, sizeof(g_debugTraceScratch[1]), debugTraceTemporaryAddress(stepKind));
+    }
     if (stepOut.rawReturnAddress != 0) {
         appendText(stepMarker, sizeof(g_debugTraceScratch[1]), " return=");
         appendHexAddress(stepMarker, sizeof(g_debugTraceScratch[1]), stepOut.rawReturnAddress);
@@ -4780,6 +5015,7 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
                              uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
                              uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
                              uint64_t auxiliaryAddress, uint32_t readByteCount,
+                             uint64_t commandGeneration,
                              HostedDebugResult* outResult) {
     NativeFileSystemContext* context = static_cast<NativeFileSystemContext*>(userData);
     const bool tracePhase28mPoll = g_phase28mDiagnostic && g_phase28mStage == 21 &&
@@ -4838,6 +5074,7 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     request.stopGeneration = stopGeneration;
     request.auxiliaryAddress = auxiliaryAddress;
     request.readByteCount = readByteCount;
+    request.commandGeneration = commandGeneration;
     static gx_development_debug_snapshot snapshot = {};
     __builtin_memset(&snapshot, 0, sizeof(snapshot));
     snapshot.size = sizeof(snapshot);
@@ -4880,6 +5117,7 @@ static bool hostDebugCommand(void* userData, HostedDebugCommand command, uint64_
     outResult->bindingInstalled = snapshot.bindingInstalled != 0;
     outResult->bindingCount = snapshot.bindingCount;
     outResult->stopGeneration = snapshot.context.stopGeneration;
+    outResult->commandGeneration = snapshot.commandGeneration;
     outResult->pauseReason = snapshot.pauseReason;
     outResult->rflagsBeforeStep = snapshot.rflagsBeforeStep;
     outResult->rflagsWithTrapFlag = snapshot.rflagsWithTrapFlag;
@@ -7164,8 +7402,11 @@ static void requestDebugStepInto(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
         return;
     }
+    const uint64_t startingStopGeneration = g_debugController.stopGeneration;
     DebugErrorCode error = DebugErrorCode::None;
-    if (!DebugControllerStepInto(&g_debugController, g_debugBackend, &g_debugMapper, &error)) {
+    const bool accepted = DebugControllerStepInto(&g_debugController, g_debugBackend, &g_debugMapper, &error);
+    traceDebugStepRequest(ctx, "StepInto", startingStopGeneration, accepted, error, "source_single_step");
+    if (!accepted) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug step into failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
@@ -7179,8 +7420,13 @@ static void requestDebugStepOver(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
         return;
     }
+    const uint64_t startingStopGeneration = g_debugController.stopGeneration;
     DebugErrorCode error = DebugErrorCode::None;
-    if (!DebugControllerStepOver(&g_debugController, g_debugBackend, &g_debugMapper, &error)) {
+    const bool accepted = DebugControllerStepOver(&g_debugController, g_debugBackend, &g_debugMapper, &error);
+    traceDebugStepRequest(ctx, "StepOver", startingStopGeneration, accepted, error,
+        accepted && g_debugController.stepOver.mode == guidexos::developer_studio::DebugStepOverMode::TemporaryReturnBreakpoint ?
+            "temporary_return_breakpoint" : "bounded_source_single_step");
+    if (!accepted) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug step over failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
         reportDebugMessage(ctx, g_textScratch);
@@ -7194,6 +7440,7 @@ static void requestDebugStepOut(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
         return;
     }
+    const uint64_t startingStopGeneration = g_debugController.stopGeneration;
     // Breakpoint-pane mutations can leave the controller's derived call-stack
     // cache empty while the integrated UI still has an authoritative paused
     // stack.  Refresh that production UI/backend view before gating Step Out.
@@ -7204,6 +7451,8 @@ static void requestDebugStepOut(gx_app_context* ctx) {
     }
     DebugErrorCode error = DebugErrorCode::None;
     const bool accepted = DebugControllerStepOut(&g_debugController, g_debugBackend, &g_debugMapper, &error);
+    traceDebugStepRequest(ctx, "StepOut", startingStopGeneration, accepted, error,
+                          "temporary_return_breakpoint");
     if (!accepted) {
         copyText(g_textScratch, sizeof(g_textScratch), "Debug step out failed: ");
         appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
@@ -7738,8 +7987,10 @@ static void pollDebug(gx_app_context* ctx) {
         if (g_debugController.state == DebugSessionState::Running) {
             reportDebugMessage(ctx, "Debug: process running");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING");
+            traceDebugInspectionInvalidated(ctx);
         } else if (g_debugController.state == DebugSessionState::Stepping) {
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING");
+            traceDebugInspectionInvalidated(ctx);
         } else if (g_debugController.state == DebugSessionState::Stopping) {
             reportDebugMessage(ctx, "Debug: stopping target");
         } else if (g_debugController.state == DebugSessionState::Paused &&
@@ -7805,6 +8056,10 @@ static void pollDebug(gx_app_context* ctx) {
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS");
             else
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PARTIAL");
+            const bool variablesBuilt = stackBuilt && g_debugController.variables.valid &&
+                !g_debugController.variables.stale &&
+                g_debugController.variables.stopGeneration == g_debugController.stopGeneration;
+            traceDebugStoppedContext(ctx, resolved, stackBuilt, variablesBuilt);
             if (tracePhase28qStopProcessing)
                 phase28v_startup_event(ctx, "DEBUG_POST_REFRESH_VARIABLES_RETURN", nullptr);
             const bool editorExecution = debugEditorUpdateExecution(ctx, true);
@@ -10864,8 +11119,46 @@ static bool debugUiEvaluateExpressionText(const char* expression,
 
 static bool debugUiEvaluateWatch(uint32_t index) {
     if (index >= kDebugUiMaxWatches || !g_debugUiWatches[index].used) return false;
-    return debugUiEvaluateExpressionText(g_debugUiWatches[index].expression,
-                                          &g_debugUiWatches[index].result);
+    const bool evaluated = debugUiEvaluateExpressionText(g_debugUiWatches[index].expression,
+                                                           &g_debugUiWatches[index].result);
+    gx_app_context* ctx = g_fileSystemContext.app;
+    if (ctx && ctx->host && ctx->host->log) {
+        const gx_development_debug_expression& result = g_debugUiWatches[index].result;
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), index);
+        appendText(g_textScratch, sizeof(g_textScratch), " expression=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_debugUiWatches[index].expression);
+        appendText(g_textScratch, sizeof(g_textScratch), " status=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), result.status);
+        appendText(g_textScratch, sizeof(g_textScratch), " session_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), result.sessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " stop_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), result.stopGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " function=");
+        appendText(g_textScratch, sizeof(g_textScratch), result.functionName[0] ? result.functionName : "<unknown>");
+        appendText(g_textScratch, sizeof(g_textScratch), " source=");
+        appendText(g_textScratch, sizeof(g_textScratch), result.sourcePath[0] ? result.sourcePath : "<none>");
+        appendText(g_textScratch, sizeof(g_textScratch), " value=");
+        if (result.resultKind == GX_DEVELOPMENT_DEBUG_EXPRESSION_RESULT_POINTER)
+            appendHexAddress(g_textScratch, sizeof(g_textScratch), result.pointerValue);
+        else appendSigned64(g_textScratch, sizeof(g_textScratch), result.signedValue);
+        appendText(g_textScratch, sizeof(g_textScratch), " accepted=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), evaluated ? 1u : 0u);
+        appendText(g_textScratch, sizeof(g_textScratch), " error_category=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), result.errorCategory);
+        appendText(g_textScratch, sizeof(g_textScratch), " error=");
+        appendText(g_textScratch, sizeof(g_textScratch),
+                   result.errorMessage[0] ? result.errorMessage : "<none>");
+        appendText(g_textScratch, sizeof(g_textScratch), " request_stop_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.stopGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " request_thread=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.currentThreadId);
+        appendText(g_textScratch, sizeof(g_textScratch), " request_frame=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSelectedFrame);
+        logMarker(ctx, g_textScratch);
+    }
+    return evaluated;
 }
 
 static const char* debugDataTipSelectedSourcePath(uint32_t* frameIndex) {
@@ -14160,9 +14453,21 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
         requestDebugPause(ctx);
         return true;
     }
-    if (keyCode == 121) { requestDebugStepOver(ctx); return true; }
-    if (keyCode == 122 && (modifiers & GX_KEY_MOD_SHIFT)) { requestDebugStepOut(ctx); return true; }
-    if (keyCode == 122) { requestDebugStepInto(ctx); return true; }
+    if (keyCode == 121) {
+        traceDebugUiStepRoute(ctx, "keyboard_debug_panel", "StepOver", "F10");
+        requestDebugStepOver(ctx);
+        return true;
+    }
+    if (keyCode == 122 && (modifiers & GX_KEY_MOD_SHIFT)) {
+        traceDebugUiStepRoute(ctx, "keyboard_debug_panel", "StepOut", "Shift+F11");
+        requestDebugStepOut(ctx);
+        return true;
+    }
+    if (keyCode == 122) {
+        traceDebugUiStepRoute(ctx, "keyboard_debug_panel", "StepInto", "F11");
+        requestDebugStepInto(ctx);
+        return true;
+    }
     if (!debugUiCurrentAbiAvailable()) return false;
     if (keyCode == 9) {
         g_debugPanelTab = (g_debugPanelTab + 1) % kDebugUiTabCount;
@@ -16164,14 +16469,17 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         return;
     }
     if (keyCode == 121) {
+        traceDebugUiStepRoute(ctx, "keyboard_global", "StepOver", "F10");
         requestDebugStepOver(ctx);
         return;
     }
     if ((modifiers & GX_KEY_MOD_SHIFT) && !(modifiers & (GX_KEY_MOD_CTRL | GX_KEY_MOD_ALT)) && keyCode == 122) {
+        traceDebugUiStepRoute(ctx, "keyboard_global", "StepOut", "Shift+F11");
         requestDebugStepOut(ctx);
         return;
     }
     if (keyCode == 122) {
+        traceDebugUiStepRoute(ctx, "keyboard_global", "StepInto", "F11");
         requestDebugStepInto(ctx);
         return;
     }
@@ -16881,9 +17189,16 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
                 writeStudioOutput(g_textScratch);
             }
-        } else if (row == 2) requestDebugStepInto(ctx);
-        else if (row == 3) requestDebugStepOver(ctx);
-        else if (row == 4) requestDebugStepOut(ctx);
+        } else if (row == 2) {
+            traceDebugUiStepRoute(ctx, "debug_menu", "StepInto", "menu_row_2");
+            requestDebugStepInto(ctx);
+        } else if (row == 3) {
+            traceDebugUiStepRoute(ctx, "debug_menu", "StepOver", "menu_row_3");
+            requestDebugStepOver(ctx);
+        } else if (row == 4) {
+            traceDebugUiStepRoute(ctx, "debug_menu", "StepOut", "menu_row_4");
+            requestDebugStepOut(ctx);
+        }
         else if (row == 5) requestDebugPause(ctx);
         else if (row == 6) requestDebugStop(ctx, "debug_menu_stop");
         else if (row == 7) toggleBreakpointAtCaret(ctx);

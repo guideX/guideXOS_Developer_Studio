@@ -135,6 +135,8 @@ static void applyRegisterSnapshot(const HostedDebugResult& result,
     snapshot->registerContext.threadId = result.registerContext.threadId;
     snapshot->registerContext.sessionGeneration = result.registerContext.sessionGeneration;
     snapshot->registerContext.stopGeneration = result.registerContext.stopGeneration;
+    snapshot->commandGeneration = result.commandGeneration;
+    snapshot->registerContext.commandGeneration = result.commandGeneration;
     snapshot->registerContext.rip = result.registerContext.rip;
     snapshot->registerContext.rflags = result.registerContext.rflags;
     snapshot->registerContext.rsp = result.registerContext.rsp;
@@ -219,7 +221,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
         __builtin_memset(&debugResult, 0, sizeof(debugResult));
         if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::Poll, handle,
                                               generation, outSnapshot->processId, outSnapshot->nativeRuntimeId,
-                                              0, 0, backend->runController.request.artifactSha256, 0, 0, false, 0, 0, &debugResult)) {
+                                              0, 0, backend->runController.request.artifactSha256, 0, 0, false, 0, 0, 0, &debugResult)) {
             if (backend->runController.closeRequested) {
                 // Close/cancel owns the remainder of this lifecycle. The
                 // deployment poll remains authoritative while the native
@@ -251,6 +253,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
         }
         if (debugResult.threadId != 0) outSnapshot->threadId = debugResult.threadId;
         outSnapshot->debugHandle = handle;
+        outSnapshot->commandGeneration = debugResult.commandGeneration;
         outSnapshot->stackLow = debugResult.stackLow;
         outSnapshot->stackHigh = debugResult.stackHigh;
         if (debugResult.status == 3 &&
@@ -297,6 +300,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.threadId = debugResult.registerContext.threadId;
             outSnapshot->registerContext.sessionGeneration = debugResult.registerContext.sessionGeneration;
             outSnapshot->registerContext.stopGeneration = debugResult.registerContext.stopGeneration;
+            outSnapshot->registerContext.commandGeneration = debugResult.commandGeneration;
             outSnapshot->registerContext.rip = debugResult.registerContext.rip;
             outSnapshot->registerContext.rflags = debugResult.registerContext.rflags;
             outSnapshot->registerContext.rsp = debugResult.registerContext.rsp;
@@ -334,6 +338,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->targetAddress.value = debugResult.targetAddress;
             outSnapshot->breakpointBindingId = debugResult.bindingId;
             outSnapshot->executionState = DebugBackendExecutionState::UserSourceStepPending;
+            outSnapshot->stopGeneration = debugResult.stopGeneration;
+            outSnapshot->commandGeneration = debugResult.commandGeneration;
             outSnapshot->registerContext.valid = debugResult.registerContext.valid;
             outSnapshot->registerContext.architecture = static_cast<DebugArchitecture>(debugResult.registerContext.architecture);
             outSnapshot->registerContext.processId = debugResult.registerContext.processId;
@@ -341,6 +347,7 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* outS
             outSnapshot->registerContext.threadId = debugResult.registerContext.threadId;
             outSnapshot->registerContext.sessionGeneration = debugResult.registerContext.sessionGeneration;
             outSnapshot->registerContext.stopGeneration = debugResult.registerContext.stopGeneration;
+            outSnapshot->registerContext.commandGeneration = debugResult.commandGeneration;
             outSnapshot->registerContext.rip = debugResult.registerContext.rip;
             outSnapshot->registerContext.rflags = debugResult.registerContext.rflags;
             outSnapshot->registerContext.rsp = debugResult.registerContext.rsp;
@@ -411,7 +418,7 @@ static bool bindSoftwareBreakpoint(void* userData, const DebugTarget&, uint64_t 
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::BindSoftwareBreakpoint,
                                           backend->runController.result.handle, sessionGeneration, processId,
                                           nativeRuntimeId, breakpoint.id, breakpoint.location.instructionAddress.value,
-                                          backend->runController.request.artifactSha256, 0, 0, false, 0, 0, &result)) {
+                                          backend->runController.request.artifactSha256, 0, 0, false, 0, 0, 0, &result)) {
         copyText(outBinding->message, sizeof(outBinding->message), result.errorMessage[0] ? result.errorMessage : "software breakpoint bind failed");
         return true;
     }
@@ -430,12 +437,13 @@ static bool debugCommand(void* userData, HostedDebugCommand command, uint64_t ha
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
                          uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
                          uint64_t auxiliaryAddress, uint32_t readByteCount,
+                         uint64_t commandGeneration,
                          HostedDebugResult* outResult) {
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     return backend && backend->runService.debugCommand && backend->runService.debugCommand(
         backend->runService.userData, command, handle, sessionGeneration, processId, nativeRuntimeId,
         breakpointId, targetAddress, artifactSha256, threadId, stopGeneration, reinstallBreakpoint,
-        auxiliaryAddress, readByteCount, outResult);
+        auxiliaryAddress, readByteCount, commandGeneration, outResult);
 }
 
 static bool pause(void* userData, uint64_t sessionGeneration) {
@@ -448,7 +456,7 @@ static bool pause(void* userData, uint64_t sessionGeneration) {
                                           backend->runController.result.handle, sessionGeneration,
                                           0, backend->runController.result.nativeRuntimeId,
                                           0, 0, backend->runController.request.artifactSha256,
-                                          0, 0, false, 0, 0, &result)) return false;
+                                          0, 0, false, 0, 0, 0, &result)) return false;
     return result.status == 7;
 }
 
@@ -465,7 +473,7 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, reinstallBreakpoint, 0, 0, &result)) {
+                                          context.stopGeneration, reinstallBreakpoint, 0, 0, 0, &result)) {
         DebugControllerTrace("HOSTED_CONTINUE_COMMAND_FAILED");
         return false;
     }
@@ -496,7 +504,7 @@ static bool stepInstruction(void* userData, uint64_t sessionGeneration,
                                           backend->internalTrapStopPending ? 0 : targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
                                           context.stopGeneration, backend->internalTrapStopPending ? false : reinstallBreakpoint,
-                                          0, 0, &result)) return false;
+                                          0, 0, context.commandGeneration, &result)) return false;
     if (result.status != 6 || result.singleStepKind != 2) return false;
     backend->userStepStopPending = false;
     backend->internalTrapStopPending = false;
@@ -518,7 +526,7 @@ static bool resumeExecution(void* userData, uint64_t sessionGeneration,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, 0, 0,
                                           backend->runController.request.artifactSha256, context.threadId,
-                                          context.stopGeneration, false, targetAddress, 0, &result)) {
+                                          context.stopGeneration, false, targetAddress, 0, 0, &result)) {
         DebugControllerTrace("HOSTED_RESUME_COMMAND_FAILED");
         return false;
     }
@@ -568,7 +576,7 @@ static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t proc
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ReadMemory,
                                           backend->runController.result.handle, sessionGeneration, processId,
                                           nativeRuntimeId, 0, address, backend->runController.request.artifactSha256,
-                                          0, 0, false, 0, requested, &result) || result.status != 1 ||
+                                          0, 0, false, 0, requested, 0, &result) || result.status != 1 ||
         result.byteCount == 0 || result.byteCount > requested) return false;
     for (uint32_t i = 0; i < result.byteCount; ++i) bytes[i] = result.bytes[i];
     if (returned) *returned = result.byteCount;
@@ -589,7 +597,7 @@ static bool readTargetMemory(void* userData, uint64_t sessionGeneration, uint64_
                                           backend->runController.result.handle, sessionGeneration,
                                           processId, nativeRuntimeId, 0, address,
                                           backend->runController.request.artifactSha256, threadId,
-                                          stopGeneration, false, 0, requested, &result) ||
+                                          stopGeneration, false, 0, requested, 0, &result) ||
         result.status != 1 || result.byteCount != requested) return false;
     for (uint32_t i = 0; i < result.byteCount; ++i) bytes[i] = result.bytes[i];
     if (returned) *returned = result.byteCount;
@@ -607,7 +615,8 @@ static bool stepOverCall(void* userData, uint64_t sessionGeneration,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId, temporaryBreakpointId,
                                           callAddress, backend->runController.request.artifactSha256,
-                                          context.threadId, context.stopGeneration, false, returnAddress, 0, &result)) return false;
+                                          context.threadId, context.stopGeneration, false, returnAddress, 0,
+                                          context.commandGeneration, &result)) return false;
     const bool accepted = result.status == 1 ||
         (result.status == 3 && result.trapKind == 1 && result.internalBreakpointTrap);
     if (!accepted) return false;
@@ -632,7 +641,7 @@ static bool stepOutReturn(void* userData, uint64_t sessionGeneration,
                                           context.processId, context.nativeRuntimeId, temporaryBreakpointId,
                                           targetAddress, backend->runController.request.artifactSha256,
                                           context.threadId, context.stopGeneration, reinstallBreakpoint,
-                                          returnAddress, 0, &result)) return false;
+                                          returnAddress, 0, context.commandGeneration, &result)) return false;
     const bool accepted = result.status == 1 ||
         (result.status == 3 && result.trapKind == 1 && result.internalBreakpointTrap);
     if (!accepted) return false;
@@ -677,7 +686,7 @@ static bool stop(void* userData, uint64_t generation) {
                 backend->runService.userData, HostedDebugCommand::CancelExecution,
                 backend->runController.result.handle, generation, processId, runtimeId,
                 0, 0, backend->runController.request.artifactSha256, threadId,
-                stopGeneration, false, 0, 0, &result);
+                stopGeneration, false, 0, 0, 0, &result);
         backend->lastStopStatus = result.status;
         if (!cancelled) { backend->lastStopRoute = 8; return false; }
         if (result.status != 1u && result.status != 4u) { backend->lastStopRoute = 9; return false; }

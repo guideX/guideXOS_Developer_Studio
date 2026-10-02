@@ -208,7 +208,6 @@ static void clearStepOver(DebugController* controller, DebugStepOverStatus statu
     controller->stepOver.active = false;
     controller->stepOver.status = status;
     controller->stepOver.mode = DebugStepOverMode::None;
-    controller->stepOver.temporaryInstalled = false;
     if (reason) copyText(controller->stepOver.reason, sizeof(controller->stepOver.reason), reason);
 }
 
@@ -217,8 +216,12 @@ static void clearStepOut(DebugController* controller, DebugStepOutStatus status,
     if (!controller) return;
     controller->stepOut.active = false;
     controller->stepOut.status = status;
-    controller->stepOut.temporaryInstalled = false;
     if (reason) copyText(controller->stepOut.reason, sizeof(controller->stepOut.reason), reason);
+}
+
+static uint64_t allocateStepCommandGeneration(DebugController* controller) {
+    if (!controller || controller->nextStepCommandGeneration == UINT64_MAX) return 0;
+    return ++controller->nextStepCommandGeneration;
 }
 
 static bool canonicalAmd64Address(uint64_t address) {
@@ -295,6 +298,8 @@ static void clearStoppedContext(DebugController* controller) {
     for (uint32_t i = 0; i < sizeof(controller->currentLocation); ++i) locationBytes[i] = 0;
     controller->currentThreadId = 0;
     controller->reportedInstructionPointer = 0;
+    // Keep lastStopGeneration as a per-session high-water mark while the
+    // current stopped context is invalidated during execution.
     controller->stopGeneration = 0;
     unsigned char* contextBytes = reinterpret_cast<unsigned char*>(&controller->stoppedContext);
     for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) contextBytes[i] = 0;
@@ -544,7 +549,8 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
             controller->reportedInstructionPointer = snapshot.registerContext.rip;
         }
         controller->currentThreadId = snapshot.threadId != 0 ? snapshot.threadId : snapshot.registerContext.threadId;
-        controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->stopGeneration + 1 : snapshot.stopGeneration;
+        controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->lastStopGeneration + 1 : snapshot.stopGeneration;
+        controller->lastStopGeneration = controller->stopGeneration;
         if (snapshot.registerContext.valid) controller->stoppedContext = snapshot.registerContext;
         if (snapshot.stopReason == DebugStopReason::UserPause) controller->pauseRequestPending = false;
     } else if (continuingFromBreakpoint || continuingFromSourceStep || continuingFromUserPause) {
@@ -578,7 +584,8 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
     controller->currentInstructionAddress = snapshot.targetAddress;
     controller->currentThreadId = snapshot.threadId;
     controller->reportedInstructionPointer = snapshot.instructionPointer;
-    controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->stopGeneration + 1 : snapshot.stopGeneration;
+    controller->stopGeneration = snapshot.stopGeneration == 0 ? controller->lastStopGeneration + 1 : snapshot.stopGeneration;
+    controller->lastStopGeneration = controller->stopGeneration;
     if (snapshot.registerContext.valid) controller->stoppedContext = snapshot.registerContext;
     observeBinding(controller, snapshot.breakpointBindingId, snapshot.targetAddress.value,
                    snapshot.bindingOwnerCount, snapshot.bindingInstalled || snapshot.bindingOwnerCount != 0);
@@ -625,7 +632,7 @@ static bool bindBreakpointsIfReady(DebugController* controller, const DebugBacke
             HostedDebugResult restored = {};
             const bool restoredSuccessfully = backend.debugCommand(backend.userData, HostedDebugCommand::RestoreAll,
                 controller->debugHandle, controller->sessionGeneration, snapshot.processId, snapshot.nativeRuntimeId,
-                0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, &restored);
+                0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, 0, &restored);
             for (uint32_t rollbackIndex = 0; rollbackIndex < controller->breakpointCount; ++rollbackIndex) {
                 DebugBreakpoint& rollback = controller->breakpoints[rollbackIndex];
                 if (rollback.backendBindingId == 0) continue;
@@ -670,7 +677,7 @@ static bool bindAndReleaseIfReady(DebugController* controller, const DebugBacken
     HostedDebugResult released = {};
     if (!backend.debugCommand(backend.userData, HostedDebugCommand::ReleaseExecution, controller->debugHandle,
                               controller->sessionGeneration, snapshot->processId, snapshot->nativeRuntimeId,
-                               0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, &released)) {
+                               0, 0, controller->target.artifactSha256, 0, 0, false, 0, 0, 0, &released)) {
         controller->error = DebugErrorCode::BackendError;
         setMessage(controller, released.errorMessage[0] ? released.errorMessage : "Hosted debugger could not release the launch gate");
         return false;
@@ -707,11 +714,15 @@ static void publishSourceStepStop(DebugController* controller, const DebugBacken
     controller->reportedInstructionPointer = snapshot.instructionPointer == 0 ?
         snapshot.registerContext.rip : snapshot.instructionPointer;
     controller->currentThreadId = snapshot.threadId;
-    controller->stopGeneration = controller->stopGeneration == UINT64_MAX ? 1 : controller->stopGeneration + 1;
+    controller->stopGeneration = snapshot.stopGeneration;
+    controller->lastStopGeneration = snapshot.stopGeneration;
     controller->stoppedContext = snapshot.registerContext;
     controller->stoppedContext.stopGeneration = controller->stopGeneration;
+    controller->stoppedContext.commandGeneration = snapshot.commandGeneration;
     controller->currentLocation = location;
     controller->currentLocation.instructionAddress = controller->currentInstructionAddress;
+    controller->lastStepOperation = DebugStepOperationKind::SourceStep;
+    controller->stepCompletionGeneration = controller->stopGeneration;
     controller->sourceStep.lastAddress = snapshot.registerContext.rip;
     controller->sourceStep.lastSourceLocation = location;
     clearSourceStep(controller, status, message);
@@ -730,7 +741,10 @@ static bool processSourceStepTrap(DebugController* controller, const DebugBacken
         snapshot.processId != operation.processId || snapshot.nativeRuntimeId != controller->nativeRuntimeId ||
         snapshot.threadId != operation.threadId || !debugRegisterContextValidForController(snapshot.registerContext) ||
         snapshot.registerContext.sessionGeneration != operation.sessionGeneration ||
-        snapshot.registerContext.threadId != operation.threadId) {
+        snapshot.registerContext.threadId != operation.threadId ||
+        snapshot.stopGeneration <= operation.stopGeneration ||
+        snapshot.registerContext.stopGeneration != snapshot.stopGeneration ||
+        snapshot.commandGeneration != operation.commandGeneration) {
         controller->error = snapshot.threadId != operation.threadId ? DebugErrorCode::WrongStepThread : DebugErrorCode::StaleSourceStep;
         setMessage(controller, "Rejected stale or wrong-thread source-step event");
         clearSourceStep(controller, DebugSourceStepStatus::Failed, controller->lastMessage);
@@ -809,7 +823,7 @@ static bool removeStepOverBreakpoint(DebugController* controller, const DebugBac
     const bool removed = backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
         controller->debugHandle, controller->sessionGeneration, controller->processId,
         controller->nativeRuntimeId, operation.temporaryBreakpointId, operation.returnAddress,
-        controller->target.artifactSha256, 0, 0, false, 0, 0, &result);
+        controller->target.artifactSha256, 0, 0, false, 0, 0, operation.commandGeneration, &result);
     if (removed) {
         ++controller->stepCleanupCount;
         observeBinding(controller, result.bindingId != 0 ? result.bindingId : operation.temporaryBindingId,
@@ -862,7 +876,9 @@ static bool startStepOverCall(DebugController* controller, const DebugBackend& b
                 DebugStopReason::Step, "Step over call detected");
     appendEvent(controller, DebugEventKind::StepOverTemporaryBreakpointBound, DebugSessionState::Stepping,
                 DebugStopReason::Step, "Step over temporary return breakpoint bound");
-    if (!backend.stepOverCall(backend.userData, controller->sessionGeneration, context,
+    DebugRegisterContext stepContext = context;
+    stepContext.commandGeneration = operation->commandGeneration;
+    if (!backend.stepOverCall(backend.userData, controller->sessionGeneration, stepContext,
                               callAddress, returnAddress, temporaryId)) {
         removeStepOverBreakpoint(controller, backend, *operation);
         operation->temporaryInstalled = false;
@@ -908,7 +924,9 @@ static bool startStepOverSourceInstruction(DebugController* controller, const De
         operation->breakpointAddress = address;
         operation->reinstallBreakpoint = reinstall;
     }
-    if (!backend.stepInstruction(backend.userData, controller->sessionGeneration, context,
+    DebugRegisterContext stepContext = context;
+    stepContext.commandGeneration = operation->commandGeneration;
+    if (!backend.stepInstruction(backend.userData, controller->sessionGeneration, stepContext,
                                 breakpointId, bindingId, address, fromBreakpoint && reinstall)) {
         if (error) *error = DebugErrorCode::StepOverFailed;
         setMessage(controller, "Step over source instruction request was rejected");
@@ -939,12 +957,15 @@ static void publishStepOverStop(DebugController* controller, const DebugBackendS
     controller->reportedInstructionPointer = snapshot.instructionPointer == 0 ?
         snapshot.registerContext.rip : snapshot.instructionPointer;
     controller->currentThreadId = snapshot.threadId;
-    controller->stopGeneration = snapshot.stopGeneration != 0 ? snapshot.stopGeneration :
-        (controller->stopGeneration == UINT64_MAX ? 1 : controller->stopGeneration + 1);
+    controller->stopGeneration = snapshot.stopGeneration;
+    controller->lastStopGeneration = snapshot.stopGeneration;
     controller->stoppedContext = snapshot.registerContext;
     controller->stoppedContext.stopGeneration = controller->stopGeneration;
+    controller->stoppedContext.commandGeneration = snapshot.commandGeneration;
     controller->currentLocation = location;
     controller->currentLocation.instructionAddress = controller->currentInstructionAddress;
+    controller->lastStepOperation = DebugStepOperationKind::StepOver;
+    controller->stepCompletionGeneration = controller->stopGeneration;
     controller->stepOver.lastAddress = controller->currentInstructionAddress.value;
     controller->stepOver.lastSourceLocation = location;
     clearStepOver(controller, status, message);
@@ -959,9 +980,20 @@ static bool processStepOverSourceTrap(DebugController* controller, const DebugBa
     if (!controller || !controller->stepOver.active || !snapshot.singleStepTrap ||
         snapshot.singleStepKind != static_cast<uint32_t>(HostedDebugSingleStepKind::UserSource)) return false;
     DebugStepOverOperation& operation = controller->stepOver;
-    if (snapshot.sessionGeneration != 0 && snapshot.sessionGeneration != operation.sessionGeneration) return false;
-    if (snapshot.processId != operation.processId || snapshot.nativeRuntimeId != operation.nativeRuntimeId ||
-        snapshot.threadId != operation.threadId || !debugRegisterContextValidForController(snapshot.registerContext)) return false;
+    if ((snapshot.sessionGeneration != 0 && snapshot.sessionGeneration != operation.sessionGeneration) ||
+        snapshot.stopGeneration <= operation.stopGeneration ||
+        snapshot.registerContext.stopGeneration != snapshot.stopGeneration ||
+        snapshot.commandGeneration != operation.commandGeneration ||
+        snapshot.processId != operation.processId || snapshot.nativeRuntimeId != operation.nativeRuntimeId ||
+        snapshot.threadId != operation.threadId || !debugRegisterContextValidForController(snapshot.registerContext) ||
+        snapshot.registerContext.sessionGeneration != operation.sessionGeneration ||
+        snapshot.registerContext.threadId != operation.threadId) {
+        controller->error = DebugErrorCode::StaleStepOver;
+        if (operation.temporaryInstalled && removeStepOverBreakpoint(controller, backend, operation))
+            operation.temporaryInstalled = false;
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Rejected stale Step Over single-step completion");
+        return false;
+    }
     ++operation.instructionCount;
     operation.lastAddress = snapshot.registerContext.rip;
     DebugSourceLocation location = {};
@@ -1007,8 +1039,16 @@ static bool processStepOverInternalTrap(DebugController* controller, const Debug
     if ((snapshot.sessionGeneration != 0 && snapshot.sessionGeneration != operation.sessionGeneration) ||
         snapshot.processId != operation.processId || snapshot.nativeRuntimeId != operation.nativeRuntimeId ||
         snapshot.threadId != operation.threadId || snapshot.targetAddress.value != operation.returnAddress ||
-        snapshot.breakpointBindingId != operation.temporaryBindingId) {
+        snapshot.breakpointBindingId != operation.temporaryBindingId ||
+        !debugRegisterContextValidForController(snapshot.registerContext) ||
+        snapshot.registerContext.sessionGeneration != operation.sessionGeneration ||
+        snapshot.registerContext.threadId != operation.threadId ||
+        snapshot.registerContext.stopGeneration != snapshot.stopGeneration ||
+        snapshot.stopGeneration <= operation.stopGeneration ||
+        snapshot.commandGeneration != operation.commandGeneration) {
         controller->error = DebugErrorCode::StaleStepOver;
+        if (operation.temporaryInstalled && removeStepOverBreakpoint(controller, backend, operation))
+            operation.temporaryInstalled = false;
         clearStepOver(controller, DebugStepOverStatus::Failed, "Rejected stale Step Over return trap");
         return false;
     }
@@ -1072,7 +1112,7 @@ static bool removeStepOutBreakpoint(DebugController* controller, const DebugBack
     const bool removed = backend.debugCommand(backend.userData, HostedDebugCommand::RemoveSoftwareBreakpointOwner,
         controller->debugHandle, controller->sessionGeneration, controller->processId,
         controller->nativeRuntimeId, operation.temporaryBreakpointId, operation.rawReturnAddress,
-        controller->target.artifactSha256, 0, 0, false, 0, 0, &result);
+        controller->target.artifactSha256, 0, 0, false, 0, 0, operation.commandGeneration, &result);
     if (removed) {
         ++controller->stepCleanupCount;
         observeBinding(controller, result.bindingId != 0 ? result.bindingId : operation.temporaryBindingId,
@@ -1098,10 +1138,11 @@ static void publishStepOutStop(DebugController* controller, const DebugBackendSn
     controller->reportedInstructionPointer = snapshot.instructionPointer == 0 ?
         snapshot.registerContext.rip : snapshot.instructionPointer;
     controller->currentThreadId = snapshot.threadId;
-    controller->stopGeneration = snapshot.stopGeneration != 0 ? snapshot.stopGeneration :
-        (controller->stopGeneration == UINT64_MAX ? 1 : controller->stopGeneration + 1);
+    controller->stopGeneration = snapshot.stopGeneration;
+    controller->lastStopGeneration = snapshot.stopGeneration;
     controller->stoppedContext = snapshot.registerContext;
     controller->stoppedContext.stopGeneration = controller->stopGeneration;
+    controller->stoppedContext.commandGeneration = snapshot.commandGeneration;
     controller->currentLocation = location;
     controller->currentLocation.instructionAddress = controller->currentInstructionAddress;
     controller->lastStepOperation = DebugStepOperationKind::StepOut;
@@ -1122,9 +1163,17 @@ static bool processStepOutInternalTrap(DebugController* controller, const DebugB
         snapshot.processId != operation.processId || snapshot.nativeRuntimeId != operation.nativeRuntimeId ||
         snapshot.threadId != operation.threadId || snapshot.targetAddress.value != operation.rawReturnAddress ||
         snapshot.breakpointBindingId != operation.temporaryBindingId ||
+        !debugRegisterContextValidForController(snapshot.registerContext) ||
+        snapshot.registerContext.sessionGeneration != operation.sessionGeneration ||
+        snapshot.registerContext.threadId != operation.threadId ||
+        snapshot.registerContext.stopGeneration != snapshot.stopGeneration ||
+        snapshot.stopGeneration <= operation.stopGeneration ||
+        snapshot.commandGeneration != operation.commandGeneration ||
         (snapshot.internalBreakpointPurpose != 0 &&
          snapshot.internalBreakpointPurpose != static_cast<uint32_t>(HostedDebugInternalBreakpointPurpose::StepOut))) {
         controller->error = DebugErrorCode::StaleStepOut;
+        if (operation.temporaryInstalled && removeStepOutBreakpoint(controller, backend, operation))
+            operation.temporaryInstalled = false;
         clearStepOut(controller, DebugStepOutStatus::Failed, "Rejected stale Step Out return trap");
         return false;
     }
@@ -1646,6 +1695,8 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->targetExecutionReleased = false;
     controller->backendExecutionState = DebugBackendExecutionState::None;
     controller->stopGeneration = 0;
+    controller->lastStopGeneration = 0;
+    controller->nextStepCommandGeneration = 0;
     unsigned char* startContextBytes = reinterpret_cast<unsigned char*>(&controller->stoppedContext);
     for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) startContextBytes[i] = 0;
     controller->pauseRequestPending = false;
@@ -2031,7 +2082,7 @@ bool DebugControllerReleaseDeferredExecution(DebugController* controller,
                               controller->debugHandle, controller->sessionGeneration,
                               controller->processId, controller->nativeRuntimeId,
                               0, 0, controller->target.artifactSha256, 0, 0,
-                              false, 0, 0, &released)) {
+                              false, 0, 0, 0, &released)) {
         if (error) *error = DebugErrorCode::BackendError;
         controller->error = DebugErrorCode::BackendError;
         setMessage(controller, released.errorMessage[0] ? released.errorMessage :
@@ -2335,6 +2386,12 @@ bool DebugControllerCanStepOut(const DebugController* controller) {
 bool DebugControllerStepInto(DebugController* controller, const DebugBackend& backend,
                              const DebugDwarfMapper* mapper, DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
+    if (controller && controller->active && controller->state == DebugSessionState::Paused &&
+        !DebugControllerStoppedContextIsCurrent(controller)) {
+        if (error) *error = DebugErrorCode::StaleStopContext;
+        controller->error = DebugErrorCode::StaleStopContext;
+        return false;
+    }
     if (!controller || !mapper || !DebugControllerCanStepInto(controller) ||
         !DebugDwarfMapperIsReady(mapper) || !backend.stepInstruction) {
         if (error) *error = !backend.stepInstruction || !controller || !controller->capabilities.canStepInto ?
@@ -2347,12 +2404,17 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
         controller->error = DebugErrorCode::StaleStopContext;
         return false;
     }
-    const DebugRegisterContext startContext = controller->stoppedContext;
+    DebugRegisterContext startContext = controller->stoppedContext;
     DebugSourceStepOperation operation = DebugSourceStepOperation();
     operation.active = true;
     operation.status = DebugSourceStepStatus::Active;
     operation.sessionGeneration = controller->sessionGeneration;
     operation.stopGeneration = controller->stopGeneration;
+    operation.commandGeneration = allocateStepCommandGeneration(controller);
+    if (operation.commandGeneration == 0) {
+        if (error) *error = DebugErrorCode::SourceStepFailed;
+        return false;
+    }
     operation.processId = controller->processId;
     operation.threadId = controller->currentThreadId;
     operation.startingAddress = controller->currentInstructionAddress.value;
@@ -2376,6 +2438,7 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
         operation.reinstallBreakpoint = breakpoint.enabled;
     }
     controller->sourceStep = operation;
+    startContext.commandGeneration = operation.commandGeneration;
     controller->lastStepOperation = DebugStepOperationKind::SourceStep;
     appendEvent(controller, DebugEventKind::StepRequested, DebugSessionState::Stepping,
                 DebugStopReason::Step, "User source-step requested");
@@ -2400,6 +2463,12 @@ bool DebugControllerStepInto(DebugController* controller, const DebugBackend& ba
 bool DebugControllerStepOver(DebugController* controller, const DebugBackend& backend,
                              const DebugDwarfMapper* mapper, DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
+    if (controller && controller->active && controller->state == DebugSessionState::Paused &&
+        !DebugControllerStoppedContextIsCurrent(controller)) {
+        controller->error = DebugErrorCode::StaleStopContext;
+        if (error) *error = controller->error;
+        return false;
+    }
     if (!controller || !mapper || !DebugControllerCanStepOver(controller) ||
         !DebugDwarfMapperIsReady(mapper) || !backend.readMemory || !backend.bindSoftwareBreakpoint ||
         !backend.stepOverCall || !backend.debugCommand) {
@@ -2417,6 +2486,11 @@ bool DebugControllerStepOver(DebugController* controller, const DebugBackend& ba
     operation.mode = DebugStepOverMode::SourceSingleStep;
     operation.sessionGeneration = controller->sessionGeneration;
     operation.stopGeneration = controller->stopGeneration;
+    operation.commandGeneration = allocateStepCommandGeneration(controller);
+    if (operation.commandGeneration == 0) {
+        if (error) *error = DebugErrorCode::StepOverFailed;
+        return false;
+    }
     operation.processId = controller->processId;
     operation.nativeRuntimeId = controller->nativeRuntimeId;
     operation.threadId = controller->currentThreadId;
@@ -2455,7 +2529,9 @@ bool DebugControllerStepOver(DebugController* controller, const DebugBackend& ba
     }
     (void)byteCount;
     if (instruction.kind == DebugAmd64InstructionKind::Call) {
-        if (!startStepOverCall(controller, backend, &controller->stepOver, controller->stoppedContext,
+        DebugRegisterContext stepContext = controller->stoppedContext;
+        stepContext.commandGeneration = operation.commandGeneration;
+        if (!startStepOverCall(controller, backend, &controller->stepOver, stepContext,
                                operation.startingAddress, instruction.returnAddress, error)) {
             clearStepOver(controller, DebugStepOverStatus::Failed, controller->lastMessage);
             return false;
@@ -2465,8 +2541,10 @@ bool DebugControllerStepOver(DebugController* controller, const DebugBackend& ba
     // Unsupported/unknown non-call encodings use the proven bounded source
     // stepping engine. The call path is selected only after a safe decoder
     // result, so F10 never invents a return address.
+    DebugRegisterContext stepContext = controller->stoppedContext;
+    stepContext.commandGeneration = operation.commandGeneration;
     if (!startStepOverSourceInstruction(controller, backend, &controller->stepOver,
-                                        controller->stoppedContext, error)) {
+                                        stepContext, error)) {
         clearStepOver(controller, DebugStepOverStatus::Failed, controller->lastMessage);
         return false;
     }
@@ -2477,6 +2555,12 @@ bool DebugControllerStepOver(DebugController* controller, const DebugBackend& ba
 bool DebugControllerStepOut(DebugController* controller, const DebugBackend& backend,
                             const DebugDwarfMapper* mapper, DebugErrorCode* error) {
     if (error) *error = DebugErrorCode::None;
+    if (controller && controller->active && controller->state == DebugSessionState::Paused &&
+        !DebugControllerStoppedContextIsCurrent(controller)) {
+        controller->error = DebugErrorCode::StaleStopContext;
+        if (error) *error = controller->error;
+        return false;
+    }
     if (!controller || !mapper || !DebugDwarfMapperIsReady(mapper) ||
         !backend.bindSoftwareBreakpoint || !backend.debugCommand || !backend.stepOutReturn ||
         !controller->active || controller->state != DebugSessionState::Paused ||
@@ -2539,6 +2623,11 @@ bool DebugControllerStepOut(DebugController* controller, const DebugBackend& bac
     operation.status = DebugStepOutStatus::Active;
     operation.sessionGeneration = controller->sessionGeneration;
     operation.stopGeneration = controller->stopGeneration;
+    operation.commandGeneration = allocateStepCommandGeneration(controller);
+    if (operation.commandGeneration == 0) {
+        if (error) *error = DebugErrorCode::StepOutFailed;
+        return false;
+    }
     operation.processId = controller->processId;
     operation.nativeRuntimeId = controller->nativeRuntimeId;
     operation.threadId = controller->currentThreadId;
@@ -2608,8 +2697,10 @@ bool DebugControllerStepOut(DebugController* controller, const DebugBackend& bac
                    binding.ownerCount == 0 ? 1 : binding.ownerCount, true);
     appendEvent(controller, DebugEventKind::StepOutStarted, DebugSessionState::Stepping,
                 DebugStopReason::Step, "User Step Out requested");
+    DebugRegisterContext stepContext = controller->stoppedContext;
+    stepContext.commandGeneration = operation.commandGeneration;
     if (!backend.stepOutReturn(backend.userData, controller->sessionGeneration,
-                               controller->stoppedContext, operation.breakpointId,
+                               stepContext, operation.breakpointId,
                                operation.bindingId, controller->currentInstructionAddress.value,
                                operation.reinstallBreakpoint, operation.rawReturnAddress,
                                operation.temporaryBreakpointId)) {

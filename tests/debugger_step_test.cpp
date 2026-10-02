@@ -12,9 +12,11 @@ namespace {
 struct StepFake {
     bool pending = false;
     bool wrongThread = false;
+    bool exitBeforeStepStop = false;
     uint32_t stepCalls = 0;
     uint32_t resumeCalls = 0;
     uint64_t nextRip = 0x104;
+    uint64_t nextStopGeneration = 4;
     DebugRegisterContext lastContext = {};
 };
 
@@ -25,6 +27,7 @@ struct StepOverFake {
     uint32_t removeCalls = 0;
     uint32_t callCalls = 0;
     uint32_t resumeCalls = 0;
+    uint64_t commandGeneration = 0;
 };
 
 struct StepOutFake {
@@ -37,6 +40,7 @@ struct StepOutFake {
     uint64_t returnAddress = 0x201;
     uint64_t bindingId = 600;
     uint64_t temporaryId = 0;
+    uint64_t commandGeneration = 0;
 };
 
 static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapshot* snapshot) {
@@ -59,6 +63,7 @@ static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapsho
     snapshot->bindingInstalled = fake->overlapUserBreakpoint;
     snapshot->instructionPointer = fake->returnAddress + 1;
     snapshot->stopGeneration = 4;
+    snapshot->commandGeneration = fake->commandGeneration;
     snapshot->executionState = DebugBackendExecutionState::PausedAtStepOut;
     snapshot->registerContext.valid = true;
     snapshot->registerContext.architecture = DebugArchitecture::Amd64;
@@ -67,6 +72,7 @@ static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapsho
     snapshot->registerContext.threadId = 44;
     snapshot->registerContext.sessionGeneration = generation;
     snapshot->registerContext.stopGeneration = 4;
+    snapshot->registerContext.commandGeneration = fake->commandGeneration;
     snapshot->registerContext.rip = fake->returnAddress + 1;
     snapshot->registerContext.rflags = 0x202;
     snapshot->registerContext.rsp = 0x700110;
@@ -117,7 +123,7 @@ static bool stepOutBind(void* userData, const DebugTarget&, uint64_t, uint64_t, 
 
 static bool stepOutCommand(void* userData, HostedDebugCommand command, uint64_t, uint64_t,
                            uint64_t, uint64_t, uint64_t, uint64_t, const char*, uint64_t,
-                           uint64_t, bool, uint64_t, uint32_t, HostedDebugResult* result) {
+                           uint64_t, bool, uint64_t, uint32_t, uint64_t, HostedDebugResult* result) {
     StepOutFake* fake = static_cast<StepOutFake*>(userData);
     *result = HostedDebugResult();
     if (command == HostedDebugCommand::RemoveSoftwareBreakpointOwner) ++fake->removeCalls;
@@ -128,13 +134,14 @@ static bool stepOutCommand(void* userData, HostedDebugCommand command, uint64_t,
     return true;
 }
 
-static bool stepOutReturn(void* userData, uint64_t, const DebugRegisterContext&,
+static bool stepOutReturn(void* userData, uint64_t, const DebugRegisterContext& context,
                           uint64_t, uint64_t, uint64_t, bool, uint64_t returnAddress,
                           uint64_t temporaryBreakpointId) {
     StepOutFake* fake = static_cast<StepOutFake*>(userData);
     ++fake->stepOutCalls;
     fake->returnAddress = returnAddress;
     fake->temporaryId = temporaryBreakpointId;
+    fake->commandGeneration = context.commandGeneration;
     return true;
 }
 
@@ -178,17 +185,28 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
         snapshot->threadId = 44;
         return true;
     }
+    if (fake->exitBeforeStepStop) {
+        fake->pending = false;
+        snapshot->state = DebugSessionState::Exited;
+        snapshot->stopReason = DebugStopReason::Exited;
+        snapshot->executionState = DebugBackendExecutionState::None;
+        snapshot->exitCode = 0;
+        return true;
+    }
     fake->pending = false;
     snapshot->state = DebugSessionState::Stepping;
     snapshot->executionState = DebugBackendExecutionState::UserSourceStepPending;
     snapshot->singleStepTrap = true;
     snapshot->singleStepKind = static_cast<uint32_t>(HostedDebugSingleStepKind::UserSource);
+    snapshot->stopGeneration = fake->nextStopGeneration++;
+    snapshot->commandGeneration = fake->lastContext.commandGeneration;
     snapshot->threadId = fake->wrongThread ? 45 : 44;
     snapshot->instructionPointer = fake->nextRip;
     snapshot->registerContext = fake->lastContext;
     snapshot->registerContext.threadId = snapshot->threadId;
     snapshot->registerContext.rip = fake->nextRip;
-    snapshot->registerContext.stopGeneration = fake->lastContext.stopGeneration;
+    snapshot->registerContext.stopGeneration = snapshot->stopGeneration;
+    snapshot->registerContext.commandGeneration = snapshot->commandGeneration;
     if (!fake->wrongThread && fake->nextRip == 0x104) fake->nextRip = 0x108;
     return true;
 }
@@ -233,6 +251,7 @@ static bool overPoll(void* userData, uint64_t generation, DebugBackendSnapshot* 
     snapshot->breakpointBindingId = 500;
     snapshot->instructionPointer = 0x109;
     snapshot->stopGeneration = 4;
+    snapshot->commandGeneration = fake->commandGeneration;
     snapshot->executionState = DebugBackendExecutionState::PausedAtStepOver;
     snapshot->registerContext.valid = true;
     snapshot->registerContext.architecture = DebugArchitecture::Amd64;
@@ -241,6 +260,7 @@ static bool overPoll(void* userData, uint64_t generation, DebugBackendSnapshot* 
     snapshot->registerContext.threadId = 44;
     snapshot->registerContext.sessionGeneration = generation;
     snapshot->registerContext.stopGeneration = 4;
+    snapshot->registerContext.commandGeneration = fake->commandGeneration;
     snapshot->registerContext.rip = 0x109;
     snapshot->registerContext.rflags = 0x202;
     snapshot->registerContext.rsp = 0x700000;
@@ -273,7 +293,7 @@ static bool overBind(void* userData, const DebugTarget&, uint64_t, uint64_t, uin
 
 static bool overCommand(void* userData, HostedDebugCommand command, uint64_t, uint64_t,
                         uint64_t, uint64_t, uint64_t, uint64_t, const char*, uint64_t,
-                        uint64_t, bool, uint64_t, uint32_t, HostedDebugResult* result) {
+                        uint64_t, bool, uint64_t, uint32_t, uint64_t, HostedDebugResult* result) {
     StepOverFake* fake = static_cast<StepOverFake*>(userData);
     *result = HostedDebugResult();
     if (command == HostedDebugCommand::RemoveSoftwareBreakpointOwner) ++fake->removeCalls;
@@ -281,9 +301,11 @@ static bool overCommand(void* userData, HostedDebugCommand command, uint64_t, ui
     return true;
 }
 
-static bool overCall(void* userData, uint64_t, const DebugRegisterContext&, uint64_t,
+static bool overCall(void* userData, uint64_t, const DebugRegisterContext& context, uint64_t,
                      uint64_t, uint64_t) {
-    ++static_cast<StepOverFake*>(userData)->callCalls;
+    StepOverFake* fake = static_cast<StepOverFake*>(userData);
+    ++fake->callCalls;
+    fake->commandGeneration = context.commandGeneration;
     return true;
 }
 
@@ -349,6 +371,7 @@ static void preparePausedController(DebugController* controller, bool canStep) {
     controller->nativeRuntimeId = 77;
     controller->currentThreadId = 44;
     controller->stopGeneration = 3;
+    controller->lastStopGeneration = 3;
     controller->currentInstructionAddress = { true, 0x100 };
     std::strcpy(controller->currentLocation.relativePath, "src/main.cpp");
     controller->currentLocation.line = 10;
@@ -413,9 +436,21 @@ int main() {
     DebugErrorCode error = DebugErrorCode::None;
     assert(DebugControllerCanStepInto(&controller));
     assert(DebugControllerStepInto(&controller, backend, &mapper, &error));
+    const uint64_t stepIntoCommandGeneration = controller.sourceStep.commandGeneration;
+    assert(stepIntoCommandGeneration == 1 && fake.lastContext.commandGeneration == stepIntoCommandGeneration);
     assert(controller.state == DebugSessionState::Stepping);
     assert(!DebugRegisterContextIsValid(controller.stoppedContext));
     assert(controller.sourceStep.active && controller.sourceStep.stepCount == 0);
+    controller.capabilities.canStepOver = true;
+    const uint32_t stepCallsBeforeRejectedCommands = fake.stepCalls;
+    DebugBackend unavailableWhileStepping = {};
+    assert(!DebugControllerCanStepInto(&controller) && !DebugControllerCanStepOver(&controller) &&
+           !DebugControllerCanContinue(&controller));
+    assert(!DebugControllerStepInto(&controller, backend, &mapper, &error));
+    assert(!DebugControllerStepOver(&controller, unavailableWhileStepping, &mapper, &error));
+    assert(!DebugControllerContinue(&controller, backend, &error));
+    assert(controller.sourceStep.active && controller.sourceStep.commandGeneration == stepIntoCommandGeneration &&
+           fake.stepCalls == stepCallsBeforeRejectedCommands);
     assert(DebugControllerPoll(&controller, backend, &mapper));
     assert(controller.state == DebugSessionState::Stepping);
     assert(controller.sourceStep.active && controller.sourceStep.stepCount == 1);
@@ -428,12 +463,40 @@ int main() {
     assert(controller.currentLocation.line == 11);
     assert(controller.currentInstructionAddress.value == 0x108);
     assert(controller.stoppedContext.rip == 0x108 && controller.stoppedContext.rflags == 0x202);
+    assert(controller.stopGeneration == 5 && controller.lastStopGeneration == 5 &&
+           controller.stoppedContext.stopGeneration == 5 &&
+           controller.stoppedContext.commandGeneration == stepIntoCommandGeneration &&
+           controller.reportedInstructionPointer == 0x108 &&
+           controller.currentInstructionAddress.value == controller.stoppedContext.rip &&
+           controller.stepCompletionGeneration == 5);
     assert(DebugControllerCanStepInto(&controller));
     assert(DebugControllerCanContinue(&controller));
     assert(DebugControllerContinue(&controller, backend, &error));
     assert(fake.resumeCalls == 1 && controller.state == DebugSessionState::Running &&
            controller.stopReason == DebugStopReason::None &&
-           controller.backendExecutionState == DebugBackendExecutionState::Running);
+           controller.backendExecutionState == DebugBackendExecutionState::Running &&
+           controller.stopGeneration == 0 && controller.lastStopGeneration == 5 &&
+           !controller.stoppedContext.valid && !controller.callStack.valid && !controller.variables.valid);
+
+    static DebugController exitDuringStep = {};
+    preparePausedController(&exitDuringStep, true);
+    StepFake exitFake;
+    exitFake.exitBeforeStepStop = true;
+    DebugBackend exitBackend = makeBackend(&exitFake);
+    assert(DebugControllerStepInto(&exitDuringStep, exitBackend, &mapper, &error));
+    assert(exitDuringStep.state == DebugSessionState::Stepping && exitDuringStep.sourceStep.active);
+    assert(DebugControllerPoll(&exitDuringStep, exitBackend, &mapper));
+    assert(exitDuringStep.state == DebugSessionState::Exited);
+    assert(!exitDuringStep.active);
+    assert(exitDuringStep.stopReason == DebugStopReason::Exited);
+    assert(exitDuringStep.sourceStep.status == DebugSourceStepStatus::Cancelled);
+    assert(!exitDuringStep.sourceStep.active);
+    assert(exitDuringStep.stopGeneration == 0);
+    assert(exitDuringStep.lastStopGeneration == 3);
+    assert(exitDuringStep.stepCompletionGeneration == 0);
+    assert(!exitDuringStep.stoppedContext.valid);
+    assert(!exitDuringStep.callStack.valid);
+    assert(!exitDuringStep.variables.valid);
 
     DebugController stale = {};
     preparePausedController(&stale, true);
@@ -445,6 +508,27 @@ int main() {
     assert(stale.state == DebugSessionState::Failed);
     assert(stale.error == DebugErrorCode::WrongStepThread);
 
+    DebugController staleCommand = {};
+    preparePausedController(&staleCommand, true);
+    StepFake staleCommandFake;
+    DebugBackend staleCommandBackend = makeBackend(&staleCommandFake);
+    assert(DebugControllerStepInto(&staleCommand, staleCommandBackend, &mapper, &error));
+    const uint64_t requestedCommandGeneration = staleCommand.sourceStep.commandGeneration;
+    staleCommandFake.lastContext.commandGeneration = requestedCommandGeneration + 1;
+    assert(DebugControllerPoll(&staleCommand, staleCommandBackend, &mapper));
+    assert(staleCommand.state == DebugSessionState::Failed &&
+           staleCommand.error == DebugErrorCode::StaleSourceStep &&
+           staleCommand.stopGeneration == 0 && !staleCommand.stoppedContext.valid);
+
+    DebugController staleStop = {};
+    preparePausedController(&staleStop, true);
+    staleStop.stopGeneration = 4;
+    assert(!DebugControllerCanStepInto(&staleStop));
+    StepFake staleStopFake;
+    DebugBackend staleStopBackend = makeBackend(&staleStopFake);
+    assert(!DebugControllerStepInto(&staleStop, staleStopBackend, &mapper, &error));
+    assert(error == DebugErrorCode::StaleStopContext && !staleStop.sourceStep.active);
+
     StepOverFake overFake;
     DebugBackend overBackend = makeStepOverBackend(&overFake);
     DebugController overController = {};
@@ -454,18 +538,43 @@ int main() {
     overController.stoppedContext.rip = 0x103;
     assert(DebugControllerCanStepOver(&overController));
     assert(DebugControllerStepOver(&overController, overBackend, &mapper, &error));
+    const uint64_t stepOverCommandGeneration = overController.stepOver.commandGeneration;
     assert(overController.state == DebugSessionState::Stepping && overController.stepOver.active);
-    assert(overFake.bindCalls == 1 && overFake.callCalls == 1);
+    assert(stepOverCommandGeneration == 1 && overFake.bindCalls == 1 && overFake.callCalls == 1 &&
+           overFake.commandGeneration == stepOverCommandGeneration &&
+           overController.stepOver.mode == DebugStepOverMode::TemporaryReturnBreakpoint &&
+           overController.stepOver.temporaryBreakpointId >= 0x8000000000000001ull &&
+           overController.stepOver.returnAddress == 0x108);
     assert(DebugControllerPoll(&overController, overBackend, &mapper));
     assert(overController.state == DebugSessionState::Paused && overController.stopReason == DebugStopReason::Step);
     assert(overController.currentLocation.line == 11 && overController.currentInstructionAddress.value == 0x108);
     assert(!overController.stepOver.active && overController.stepOver.status == DebugStepOverStatus::Completed);
-    assert(overFake.removeCalls == 1);
+    assert(overFake.removeCalls == 1 && !overController.stepOver.temporaryInstalled &&
+           overController.stopGeneration == 4 && overController.lastStopGeneration == 4 &&
+           overController.stoppedContext.commandGeneration == stepOverCommandGeneration &&
+           overController.reportedInstructionPointer == 0x109 &&
+           overController.currentInstructionAddress.value == 0x108 &&
+           overController.stepCompletionGeneration == 4);
     assert(DebugControllerCanContinue(&overController));
     assert(DebugControllerContinue(&overController, overBackend, &error));
     assert(overFake.resumeCalls == 1 && overController.state == DebugSessionState::Running &&
            overController.stopReason == DebugStopReason::None &&
-           overController.backendExecutionState == DebugBackendExecutionState::Running);
+           overController.backendExecutionState == DebugBackendExecutionState::Running &&
+           overController.stopGeneration == 0 && !overController.callStack.valid &&
+           !overController.variables.valid);
+
+    DebugController staleOverCommand = {};
+    preparePausedController(&staleOverCommand, true);
+    staleOverCommand.capabilities.canStepOver = true;
+    staleOverCommand.currentInstructionAddress = { true, 0x103 };
+    staleOverCommand.stoppedContext.rip = 0x103;
+    StepOverFake staleOverFake;
+    DebugBackend staleOverBackend = makeStepOverBackend(&staleOverFake);
+    assert(DebugControllerStepOver(&staleOverCommand, staleOverBackend, &mapper, &error));
+    staleOverFake.commandGeneration = staleOverCommand.stepOver.commandGeneration + 1;
+    assert(!DebugControllerPoll(&staleOverCommand, staleOverBackend, &mapper));
+    assert(staleOverCommand.error == DebugErrorCode::StaleStepOver &&
+           !staleOverCommand.stepOver.active && staleOverFake.removeCalls == 1);
 
     StepOutFake outFake;
     DebugBackend outBackend = makeStepOutBackend(&outFake);
@@ -533,16 +642,23 @@ int main() {
            overlapController.backendExecutionState == DebugBackendExecutionState::SingleStepPending);
     assert(DebugControllerCanStepOut(&outController));
     assert(DebugControllerStepOut(&outController, outBackend, &mapper, &error));
+    const uint64_t stepOutCommandGeneration = outController.stepOut.commandGeneration;
     assert(outController.state == DebugSessionState::Stepping && outController.stepOut.active);
     assert(outController.stepOut.rawReturnAddress == 0x201 &&
            outController.stepOut.callerLookupAddress == 0x200 && outFake.bindCalls == 1 &&
-           outFake.stepOutCalls == 1);
+           outFake.stepOutCalls == 1 && stepOutCommandGeneration == 1 &&
+           outFake.commandGeneration == stepOutCommandGeneration &&
+           outController.stepOut.temporaryBreakpointId == outFake.temporaryId);
     assert(DebugControllerPoll(&outController, outBackend, &mapper));
     assert(outController.state == DebugSessionState::Paused && outController.stopReason == DebugStopReason::Step);
     assert(outController.backendExecutionState == DebugBackendExecutionState::PausedAtStepOut);
     assert(!outController.stepOut.active && outController.stepOut.status == DebugStepOutStatus::Completed);
     assert(outController.stepOut.rawReturnAddress == 0x201 && outController.stepOut.callerLookupAddress == 0x200);
-    assert(outFake.removeCalls == 1 && outController.currentInstructionAddress.value == 0x201);
+    assert(outFake.removeCalls == 1 && !outController.stepOut.temporaryInstalled &&
+           outController.currentInstructionAddress.value == 0x201 &&
+           outController.reportedInstructionPointer == 0x202 &&
+           outController.stoppedContext.commandGeneration == stepOutCommandGeneration &&
+           outController.stopGeneration == 4 && outController.lastStopGeneration == 4);
     assert(outController.stepCleanupCount == 1 && outController.stepCompletionGeneration == 4);
     assert(outController.currentLocation.line == 4 && outController.stoppedContext.rflags == 0x202);
     assert(outController.callStack.valid && outController.callStack.selectedFrameIndex == 0 &&

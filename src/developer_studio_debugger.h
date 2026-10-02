@@ -270,6 +270,7 @@ struct DebugSourceStepOperation {
     uint16_t reserved;
     uint64_t sessionGeneration;
     uint64_t stopGeneration;
+    uint64_t commandGeneration;
     uint64_t processId;
     uint64_t threadId;
     uint64_t startingAddress;
@@ -308,6 +309,7 @@ struct DebugStepOverOperation {
     uint8_t reserved;
     uint64_t sessionGeneration;
     uint64_t stopGeneration;
+    uint64_t commandGeneration;
     uint64_t processId;
     uint64_t nativeRuntimeId;
     uint64_t threadId;
@@ -350,6 +352,7 @@ struct DebugStepOutOperation {
     uint16_t reserved;
     uint64_t sessionGeneration;
     uint64_t stopGeneration;
+    uint64_t commandGeneration;
     uint64_t processId;
     uint64_t nativeRuntimeId;
     uint64_t threadId;
@@ -465,6 +468,8 @@ struct DebugRegisterContext {
     uint64_t r15;
     uint64_t stackLow;
     uint64_t stackHigh;
+    // Zero for ordinary stops and internal breakpoint-rebind steps.
+    uint64_t commandGeneration;
 };
 
 struct DebugBackendSnapshot {
@@ -498,6 +503,7 @@ struct DebugBackendSnapshot {
     uint32_t internalBreakpointPurpose;
     uint64_t stackLow;
     uint64_t stackHigh;
+    uint64_t commandGeneration;
 };
 
 struct DebugBackendBinding {
@@ -521,6 +527,7 @@ typedef bool (*DebugBackendCommandFn)(void* userData, HostedDebugCommand command
                                       const char* artifactSha256, uint64_t threadId,
                                       uint64_t stopGeneration, bool reinstallBreakpoint,
                                       uint64_t auxiliaryAddress, uint32_t readByteCount,
+                                      uint64_t commandGeneration,
                                       HostedDebugResult* outResult);
 
 typedef bool (*DebugBackendLaunchFn)(void* userData, const DebugTarget& target,
@@ -686,6 +693,8 @@ struct DebugController {
     bool targetExecutionReleased;
     DebugBackendExecutionState backendExecutionState;
     uint64_t stopGeneration;
+    uint64_t lastStopGeneration;
+    uint64_t nextStepCommandGeneration;
     DebugRegisterContext stoppedContext;
     uint64_t nextEventSequence;
     DebugAddress currentInstructionAddress;

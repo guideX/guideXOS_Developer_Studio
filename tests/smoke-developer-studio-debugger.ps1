@@ -10,11 +10,14 @@ param(
     [switch]$StepInto,
     [switch]$StepOver,
     [switch]$StepOut,
+    [int]$StepOutExpectedLine = 0,
     [switch]$RepeatedStepOut,
     [switch]$ContinueAfterStepOut,
     [switch]$StepOutThenStepInto,
     [switch]$StepOutThenStepOver,
     [switch]$MixedLifecycle,
+    [switch]$SteppingLifecycle,
+    [switch]$StepOutKeyboard,
     [switch]$OverlapStepOut,
     [int]$OverlapBreakpointLine = 20,
     [switch]$InteractiveWatch,
@@ -25,15 +28,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$StepOutProof = $StepOut -or $RepeatedStepOut -or $ContinueAfterStepOut -or
+$StepOutProof = $StepOut -or $RepeatedStepOut -or $ContinueAfterStepOut -or $SteppingLifecycle -or
                 $StepOutThenStepInto -or $StepOutThenStepOver -or $OverlapStepOut
 if (-not $FixtureRoot) {
-    $FixtureRoot = Join-Path $RepoRoot $(if ($StepOutProof) { "tests\fixtures\debugger-phase8" } else { "tests\fixtures\debugger-phase3b" })
+    $FixtureRoot = Join-Path $RepoRoot $(if ($SteppingLifecycle) { "tests\fixtures\debugger-phase15" } elseif ($StepOutProof) { "tests\fixtures\debugger-phase8" } else { "tests\fixtures\debugger-phase3b" })
 }
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $FixtureRoot = [IO.Path]::GetFullPath($FixtureRoot)
 $Executable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
-$WatchExpression = if ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
+$WatchExpression = if ($SteppingLifecycle) { 'counter == 2' } elseif ($FixtureRoot -match 'debugger-phase15') { 'total' } elseif ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
 
 if ($StepOutProof -and $FixtureRoot -match 'debugger-phase8') {
     if ($BreakpointLine -eq 20) { $BreakpointLine = 9 }
@@ -59,7 +62,8 @@ function Add-ShortDelay([System.Collections.Generic.List[string]]$Parts) {
     # stdin.  The previous cmd.exe pipeline encoded every delay into one
     # command line and could exceed cmd.exe's command-line limit once an
     # interactive Watch expression was added.
-    $Parts.Add("WAIT|1")
+    if ($SteppingLifecycle) { $Parts.Add("WAITMS|100") }
+    else { $Parts.Add("WAIT|1") }
 }
 
 function Add-Delay([System.Collections.Generic.List[string]]$Parts, [int]$Seconds) {
@@ -200,19 +204,28 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot "guidexos.project") -PathType Leaf) "checked-in debugger fixture exists"
-Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
+Assert-True ((@($ContinueBreakpoint, $StepInto, $StepOver, $StepOut, $SteppingLifecycle) | Where-Object { $_ }).Count -le 1) "debugger smoke mode is unambiguous"
 Assert-True (-not ($RepeatedStepOut -and $ContinueAfterStepOut)) "Step Out follow-up mode is unambiguous"
 Assert-True (-not ($StepOutThenStepInto -and $StepOutThenStepOver)) "post-Step Out mode is unambiguous"
-Assert-True (-not ($MixedLifecycle -and ($RepeatedStepOut -or $ContinueAfterStepOut -or $StepOutThenStepInto -or $StepOutThenStepOver))) "mixed lifecycle follow-up mode is unambiguous"
+Assert-True (-not ($MixedLifecycle -and ($RepeatedStepOut -or $ContinueAfterStepOut -or $StepOutThenStepInto -or $StepOutThenStepOver -or $SteppingLifecycle))) "mixed lifecycle follow-up mode is unambiguous"
+Assert-True (-not $StepOutKeyboard -or $SteppingLifecycle) "keyboard Step Out route is limited to the complete stepping lifecycle"
+Assert-True (-not $SteppingLifecycle -or ($FixtureRoot -match 'debugger-phase15' -and $BreakpointLine -eq 42)) "stepping lifecycle uses the documented Phase 15 line-42 fixture entry"
 Assert-True ((-not $RepeatedStepOut -and -not $ContinueAfterStepOut -and -not $StepOutThenStepInto -and -not $StepOutThenStepOver -and -not $MixedLifecycle) -or $StepOut -or $MixedLifecycle) "Step Out follow-up requires Step Out mode"
 Assert-True (-not $OverlapStepOut -or $StepOut) "overlap proof requires Step Out mode"
 $parts = New-Object 'System.Collections.Generic.List[string]'
 Add-ServerLine $parts 'gui.start'
+# Let the hosted compositor finish its process startup before requesting the
+# Developer Studio app. The app's own render and project milestones below are
+# marker-gated; this is only the existing bounded GUI boot allowance.
 Add-Delay $parts 8
 Add-ServerLine $parts 'desktop.launch com.guidexos.developerstudio'
-Add-Delay $parts 12
+if ($SteppingLifecycle) {
+    Add-WaitMarker $parts 'Desktop launch successful: com.guidexos.developerstudio' $DebugWaitSeconds
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS' $DebugWaitSeconds
+}
+else { Add-Delay $parts 12 }
 Add-ServerLine $parts 'desktop.windows.owners'
-Add-Delay $parts 5
+if (-not $SteppingLifecycle) { Add-Delay $parts 5 }
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 
@@ -226,7 +239,8 @@ foreach ($character in $FixtureRoot.ToLowerInvariant().ToCharArray()) {
     Add-ShortDelay $parts
 }
 Add-Key $parts 13 0 $true
-Add-Delay $parts 10
+if ($SteppingLifecycle) { Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS' $DebugWaitSeconds }
+else { Add-Delay $parts 10 }
 # Normalize the imported workspace through the real Save All shortcut before
 # any debugger input is sent. This is safe whether the workspace is already
 # clean or has a pending imported-document change.
@@ -241,7 +255,8 @@ if ($OverlapStepOut) {
     for ($index = $BreakpointLine; $index -lt $OverlapBreakpointLine; ++$index) { Add-Key $parts 40 0 $false }
     Add-Key $parts 120 0 $true
 }
-Add-Delay $parts 30
+if ($SteppingLifecycle) { Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS' $DebugWaitSeconds }
+else { Add-Delay $parts 30 }
 Add-ServerLine $parts 'gui.activate 1000'
 Add-ShortDelay $parts
 
@@ -251,7 +266,7 @@ Add-Key $parts 116 2 $true
 # they proceed as soon as the hosted target publishes a usable source stop.
 Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS' $DebugWaitSeconds
 
-if ($InteractiveWatch) {
+if ($InteractiveWatch -or $SteppingLifecycle) {
     # Open the product's Debug menu and Watch tab through compositor mouse
     # events, then add a deterministic comparison against the stopped target.
     Add-ServerLine $parts 'gui.activate 1000'
@@ -290,12 +305,16 @@ if ($ContinueBreakpoint) {
     Add-Delay $parts 2
 } elseif ($StepInto) {
     # F11 begins the real user source-step operation from the breakpoint stop.
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
     Add-Key $parts 122 0 $true
     Add-Delay $parts 20
 } elseif ($StepOver) {
     # F10 begins the real call-aware/fallback Step Over operation from the
     # breakpoint stop. This checked-in fixture exercises the non-call fallback;
     # the native runtime harness proves the E8 call/return path.
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
     Add-Key $parts 121 0 $true
     Add-Delay $parts 20
 } elseif ($MixedLifecycle) {
@@ -311,6 +330,35 @@ if ($ContinueBreakpoint) {
     Add-Delay $parts 20
     Add-Key $parts 116 0 $true
     Add-Delay $parts 20
+} elseif ($SteppingLifecycle) {
+    # This accepted fixture sequence is tied to the built DebugSymbols/DWARF
+    # source rows: line 42 starts in debugLoop, Step Into reaches line 43,
+    # Step Over returns through line 48, and Step Out returns to gx_main:59.
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 122 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepInto command_gen=1' $DebugWaitSeconds
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 121 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOver command_gen=2' $DebugWaitSeconds
+    if ($StepOutKeyboard) {
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
+        Add-Key $parts 122 1 $true
+    } else {
+        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ShortDelay $parts
+        Add-Mouse $parts 1000 610 30 1 'down' $false
+        Add-Mouse $parts 1000 610 30 1 'up' $true
+        Add-Mouse $parts 1000 620 141 1 'down' $false
+        Add-Mouse $parts 1000 620 141 1 'up' $true
+    }
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOut command_gen=3' $DebugWaitSeconds
+    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ShortDelay $parts
+    Add-Key $parts 116 0 $true
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING' $DebugWaitSeconds
 } elseif ($StepOut) {
     # Use the real Debug menu row for the return-address Step Out operation
     # from the deepest fixture frame. The controller must stop at the
@@ -401,6 +449,8 @@ try {
         $value = $part.Substring($separator + 1)
         if ($kind -eq 'WAIT') {
             Start-Sleep -Seconds ([Math]::Max(1, [int]$value))
+        } elseif ($kind -eq 'WAITMS') {
+            Start-Sleep -Milliseconds ([Math]::Max(1, [int]$value))
         } elseif ($kind -eq 'WAITMARK') {
             $markerSeparator = $value.IndexOf('|')
             if ($markerSeparator -lt 1) { throw "Invalid hosted marker wait: $value" }
@@ -520,7 +570,7 @@ try {
     Assert-True ($text -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_(editor_execution|execution_marker)=PASS') "the breakpoint stop publishes the editor execution marker"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS')) "the stopped hosted session builds its real call stack"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS')) "the stopped hosted session publishes real locals"
-    if ($InteractiveWatch) {
+    if ($InteractiveWatch -and -not $SteppingLifecycle) {
         $watchRow = 'draw_text windowId=1000 pos=100,198 text="' + $WatchExpression + '"'
         if (-not ($text.Contains($watchRow) -and
                   $text.Contains('draw_text windowId=1000 pos=620,198 text="true"'))) {
@@ -540,7 +590,7 @@ try {
             @($text -split "`r?`n" | Where-Object { $_ -match 'PHASE29N_HOST_CONTINUE|Continue unavailable|breakpoint continuation|EXCEPTION_SINGLE_STEP|rebound=|debug_state=|debug_transition=' } | Select-Object -Last 80)
         }
         Assert-True $continueEvidence "Continue completes the breakpoint single-step and rebinds the breakpoint"
-    } elseif ($StepInto -or $StepOver -or $StepOut -or $MixedLifecycle) {
+    } elseif ($StepInto -or $StepOver -or $StepOut -or $MixedLifecycle -or $SteppingLifecycle) {
         $overlapStop = if ($OverlapStepOut) { "Debug: paused | Breakpoint | src/main.cpp:$OverlapBreakpointLine" } else { "" }
         $stepEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=STEPPING') -and
                         (($OverlapStepOut -and $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) -or
@@ -548,6 +598,7 @@ try {
                         $text.Contains('EXCEPTION_SINGLE_STEP') -and
                          (($StepInto -and $text.Contains('[NativeAppDebugger] user source-step accepted') -and $text.Contains('Debug: step into')) -or
                           ($StepOver -and $text.Contains('Debug: step over')) -or
+                          ($SteppingLifecycle -and $text.Contains('Debug: step into') -and $text.Contains('Debug: step over') -and $text.Contains('Debug: step out')) -or
                           ($MixedLifecycle -and $text.Contains('Debug: step into') -and $text.Contains('Debug: step over')) -or
                            ($OverlapStepOut -and $text.Contains('Debug: step out') -and
                            $text.Contains($overlapStop) -and
@@ -555,7 +606,9 @@ try {
                            $text.Contains('cleanup=1') -and
                            -not ($text -match 'stale_step_out|stale_step_over')) -or
                            ($StepOut -and $text.Contains('Debug: step out') -and
-                            (($text -match 'Debug: paused \| Step \| src/main.cpp:(14|15|16|19|20|21)' -and
+                            ((($StepOutExpectedLine -gt 0) -and $text.Contains("Debug: paused | Step | src/main.cpp:$StepOutExpectedLine") -and
+                              $text.Contains('[NativeAppDebugger] internal single-step observed')) -or
+                             (($StepOutExpectedLine -eq 0) -and $text -match 'Debug: paused \| Step \| src/main.cpp:(14|15|16|19|20|21)' -and
                               $text.Contains('[NativeAppDebugger] internal single-step observed')) -or
                              ($StepOutThenStepInto -and $text.Contains('Debug: step into')) -or
                              ($StepOutThenStepOver -and $text.Contains('Debug: step over'))) -and
@@ -566,6 +619,40 @@ try {
         }
         if ($StepInto) { Assert-True $stepEvidence "F11 performs a real hosted source-level Step Into" }
         elseif ($StepOver) { Assert-True $stepEvidence "F10 performs a real hosted source-level Step Over fallback" }
+        elseif ($SteppingLifecycle) {
+            $stepIntoPattern = 'debug_step_complete=StepInto command_gen=1 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:43 source_map=current'
+            $stepOverPattern = 'debug_step_complete=StepOver command_gen=2 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:48 source_map=current'
+            $stepOutPattern = 'debug_step_complete=StepOut command_gen=3 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:59 source_map=current'
+            $stepIntoLine = @($text -split "`r?`n" | Where-Object { $_ -match $stepIntoPattern } | Select-Object -First 1)
+            $stepOverLine = @($text -split "`r?`n" | Where-Object { $_ -match $stepOverPattern } | Select-Object -First 1)
+            $stepOutLine = @($text -split "`r?`n" | Where-Object { $_ -match $stepOutPattern } | Select-Object -First 1)
+            Write-Host 'Captured authoritative step lifecycle records:'
+            @($text -split "`r?`n" | Where-Object { $_ -match 'debug_ui_step_route=|debug_step_request=|debug_step_complete=|debug_stop_context=|debug_inspection=|debug_ui_watch_result=|debug_binding=' } | Select-Object -Last 120)
+            Assert-True ($stepEvidence -and $stepIntoLine.Count -eq 1 -and $stepOverLine.Count -eq 1 -and $stepOutLine.Count -eq 1) "one authoritative new stop is published for each of Step Into, Step Over, and Step Out"
+            Assert-True ($text -match 'debug_ui_step_route=keyboard_debug_panel command=StepInto binding=F11|debug_ui_step_route=keyboard_global command=StepInto binding=F11') "actual F11 keyboard input reaches the Step Into command route"
+            Assert-True ($text -match 'debug_ui_step_route=keyboard_debug_panel command=StepOver binding=F10|debug_ui_step_route=keyboard_global command=StepOver binding=F10') "actual F10 keyboard input reaches the Step Over command route"
+            if ($StepOutKeyboard) {
+                Assert-True ($text -match 'debug_ui_step_route=keyboard_debug_panel command=StepOut binding=Shift\+F11|debug_ui_step_route=keyboard_global command=StepOut binding=Shift\+F11') "actual Shift+F11 keyboard input reaches the Step Out command route"
+            } else {
+                Assert-True ($text.Contains('debug_ui_step_route=debug_menu command=StepOut binding=menu_row_4')) "actual Debug menu input reaches the Step Out command route"
+            }
+            Assert-True ($text -match 'debug_step_request=StepInto result=accepted command_gen=1 .*start_stop_gen=1 state=Stepping backend_mode=source_single_step' -and
+                         $text -match 'debug_step_request=StepOver result=accepted command_gen=2 .*start_stop_gen=\d+ state=Stepping backend_mode=(bounded_source_single_step|temporary_return_breakpoint)' -and
+                         $text -match 'debug_step_request=StepOut result=accepted command_gen=3 .*start_stop_gen=\d+ state=Stepping backend_mode=temporary_return_breakpoint') "controller accepts each command with a session/target/starting-stop identity and implementation mode"
+            Assert-True ($text -match 'debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=1 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugLoop[^ ]* source=src/main\.cpp:43 source_map=current' -and
+                         $text -match 'debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=2 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugCaller[^ ]* source=src/main\.cpp:48 source_map=current' -and
+                         $text -match 'debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=3 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=gx_main source=src/main\.cpp:59 source_map=current') "each new stop carries its own raw/normalized PC, symbol generation, current frame, and source mapping"
+            Assert-True ($text -match 'debug_inspection=refreshed stop_gen=(\d+) stack_valid=1 stack_stop_gen=\1 frame_count=[2-9]\d* locals_valid=1 locals_stop_gen=\1 arguments=\d+ locals=\d+' -and
+                         ([regex]::Matches($text, 'debug_inspection=refreshed stop_gen=')).Count -ge 4) "stack and locals are rebuilt for the initial stop and every step generation"
+            $watchStartUnsupported = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=6 session_gen=1 stop_gen=0 .*accepted=0 error_category=13 error=authoritative GXSM metadata is unavailable \(present=0 valid=0 mappings=0 image_bytes=\d+\) request_stop_gen=1 request_thread=\d+ request_frame=0' } | Select-Object -First 1)
+            $watchAfterUnsupported = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=6 session_gen=1 stop_gen=0 .*accepted=0 error_category=13 error=authoritative GXSM metadata is unavailable \(present=0 valid=0 mappings=0 image_bytes=\d+\) request_stop_gen=\d+ request_thread=\d+ request_frame=0' -and $_ -match 'request_stop_gen=6\b' } | Select-Object -First 1)
+            Assert-True ($watchStartUnsupported.Count -eq 1 -and $watchAfterUnsupported.Count -eq 1) "the Watch panel reevaluates the fixture at STOPPED 1 and the new Step Into stop, and reports the fixture's absent GXSM variable metadata instead of a cached value"
+            Assert-True ($text -match 'debug_step=StepOut active=FALSE generation=\d+ start_stop_gen=\d+ command_gen=3 session=\d+ completion=\d+ cleanup=1 temp_id=\d+ temp_binding=\d+ temp_address=0x[0-9A-F]{16} return=0x[0-9A-F]{16} lookup=0x[0-9A-F]{16} temp=FALSE') "Step Out return breakpoint is owned by command 3 and cleaned after the caller stop"
+            Assert-True ($text -match 'debug_binding=id=\d+ address=0x[0-9A-F]{16} owners=1 refcount=1 user=1 internal=0 shared=FALSE installed=TRUE') "persistent source breakpoint remains installed after user stepping"
+            Assert-True ($text -match 'debug_inspection=invalidated .*context_valid=0 stack_valid=0 locals_valid=0' -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING')) "Continue resumes from the final step stop and retires old inspection state"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')) "the continued target reaches its owned close/exit lifecycle"
+        }
         elseif ($MixedLifecycle) {
             Write-Host 'Captured mixed lifecycle diagnostics:'
             @($text -split "`r?`n" | Where-Object { $_ -match 'Debug: (step|paused|process)|debug_step=|debug_state=|debug_transition=|breakpoint continuation|stale|invalid_transition' } | Select-Object -Last 180)
@@ -595,8 +682,8 @@ try {
                 Write-Host 'Captured overlap lifecycle markers:'
                 @($text -split "`r?`n" | Where-Object { $_ -match 'debug_session|debug_step|debug_binding|debug_transition|Debug: paused|Debug: process' } | Select-Object -Last 120)
                 Assert-True ($text -match 'debug_session=\d+ process=\d+ runtime=\d+ thread=\d+ state=' -and
-                             $text -match 'debug_step=StepOut active=TRUE generation=\d+ session=\d+ completion=\d+ cleanup=\d+ temp_id=\d+ temp_binding=\d+ return=0x[0-9A-Fa-f]+ lookup=0x[0-9A-Fa-f]+ temp=TRUE' -and
-                             $text -match 'debug_step=StepOut active=FALSE generation=\d+ session=\d+ completion=\d+ cleanup=1 temp_id=\d+ temp_binding=\d+ return=0x[0-9A-Fa-f]+ lookup=0x[0-9A-Fa-f]+ temp=FALSE') "lifecycle trace exposes session, Step Out generation, IDs, full addresses, and cleanup"
+                             $text -match 'debug_step=StepOut active=TRUE generation=\d+ .*session=\d+ completion=\d+ cleanup=\d+ temp_id=\d+ temp_binding=\d+ temp_address=0x[0-9A-Fa-f]+ return=0x[0-9A-Fa-f]+ lookup=0x[0-9A-Fa-f]+ temp=TRUE' -and
+                             $text -match 'debug_step=StepOut active=FALSE generation=\d+ .*session=\d+ completion=\d+ cleanup=1 temp_id=\d+ temp_binding=\d+ temp_address=0x[0-9A-Fa-f]+ return=0x[0-9A-Fa-f]+ lookup=0x[0-9A-Fa-f]+ temp=FALSE') "lifecycle trace exposes session, Step Out generation, IDs, full addresses, and cleanup"
                 Assert-True ($text -match 'debug_binding=id=\d+ address=0x[0-9A-Fa-f]+ owners=2 refcount=2 user=1 internal=1 shared=TRUE installed=TRUE' -and
                              $text -match 'debug_binding=id=\d+ address=0x[0-9A-Fa-f]+ owners=1 refcount=1 user=1 internal=0 shared=FALSE installed=TRUE' -and
                              $text -match 'debug_transition=.*->.* sequence=\d+ rejected=none') "lifecycle trace exposes binding refcounts and validated transitions"

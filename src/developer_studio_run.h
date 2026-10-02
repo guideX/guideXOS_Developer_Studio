@@ -165,6 +165,7 @@ struct HostedDebugResult {
     bool bindingInstalled = false;
     uint32_t bindingCount = 0;
     uint64_t stopGeneration = 0;
+    uint64_t commandGeneration = 0;
     uint32_t pauseReason = 0;
     uint32_t executionState = 0;
     uint32_t singleStepKind = 0;
@@ -193,7 +194,8 @@ struct HostedDevelopmentRunService {
                          uint64_t sessionGeneration, uint64_t processId, uint64_t nativeRuntimeId,
                          uint64_t breakpointId, uint64_t targetAddress, const char* artifactSha256,
                          uint64_t threadId, uint64_t stopGeneration, bool reinstallBreakpoint,
-    uint64_t auxiliaryAddress, uint32_t readByteCount,
+                         uint64_t auxiliaryAddress, uint32_t readByteCount,
+                         uint64_t commandGeneration,
                          HostedDebugResult* outResult);
     RunBackendKind backend;
 };
