@@ -2,6 +2,7 @@
 param(
     [string]$ServerRoot = "D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO",
     [string]$FixtureRoot = "",
+    [string]$FixtureSourceOrigin = "",
     [int]$BreakpointLine = 20,
     [int]$DebugWaitSeconds = 120,
     [int]$MaxRuntimeSeconds = 240,
@@ -39,6 +40,50 @@ $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $FixtureRoot = [IO.Path]::GetFullPath($FixtureRoot)
 $Executable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
 $WatchExpression = if ($PositiveGxsmLifecycle -or $SteppingLifecycle) { 'counter == 2' } elseif ($FixtureRoot -match 'debugger-phase15') { 'total' } elseif ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
+
+if ($PositiveGxsmLifecycle) {
+    $projectMetadataPath = Join-Path $FixtureRoot 'guidexos.project'
+    $applicationManifestPath = Join-Path $FixtureRoot 'app\app.json'
+    $sourcePath = Join-Path $FixtureRoot 'src\main.cpp'
+    $buildRecipePath = Join-Path $FixtureRoot 'build.ps1'
+    foreach ($requiredPath in @($projectMetadataPath, $applicationManifestPath, $sourcePath, $buildRecipePath)) {
+        if (-not [IO.File]::Exists($requiredPath)) { throw "Fresh hosted fixture is missing required file: $requiredPath" }
+    }
+    $pathSegments = @($FixtureRoot -split '[\\/]+' | Where-Object { $_ })
+    if ($FixtureRoot.Length -ge 160 -or @($pathSegments | Where-Object { $_.Length -ge 64 }).Count -gt 0) {
+        throw "Hosted fixture path exceeds the project normalizer's bounded path/segment limits: $FixtureRoot"
+    }
+    $projectMetadata = Get-Content -LiteralPath $projectMetadataPath -Raw | ConvertFrom-Json
+    $applicationManifest = Get-Content -LiteralPath $applicationManifestPath -Raw | ConvertFrom-Json
+    if ($projectMetadata.projectId -ne $applicationManifest.id) {
+        throw "Fixture project/application identity mismatch: project=$($projectMetadata.projectId) app=$($applicationManifest.id)"
+    }
+    if ($projectMetadata.displayName -ne $applicationManifest.displayName) {
+        throw "Fixture display name mismatch: project='$($projectMetadata.displayName)' app='$($applicationManifest.displayName)'"
+    }
+    if (-not [IO.Directory]::Exists((Join-Path $FixtureRoot $projectMetadata.sourceRoot)) -or
+        -not [IO.File]::Exists((Join-Path $FixtureRoot $projectMetadata.applicationManifest))) {
+        throw 'Fixture source root or application manifest path is invalid.'
+    }
+    $preexistingGenerated = @(Get-ChildItem -LiteralPath $FixtureRoot -Force -Recurse -ErrorAction Stop | Where-Object {
+        $_.FullName -match '[\\/](build|bin)[\\/]' -or
+        $_.Name -match '^guidexos\.debugger\.json(\.bak)?$' -or
+        $_.Extension -in @('.elf', '.o', '.obj')
+    })
+    if ($projectMetadata.projectId -ne 'com.example.debuggerphase29qpositive') {
+        throw "Unexpected Phase 29Q fixture identity: $($projectMetadata.projectId)"
+    }
+    if (-not $FixtureSourceOrigin) { $FixtureSourceOrigin = $FixtureRoot }
+    Write-Host ("FIXTURE_IDENTITY root={0} project_id={1} application_id={2} display_name='{3}' source_origin={4} generated_before={5}" -f `
+        $FixtureRoot, $projectMetadata.projectId, $applicationManifest.id, $projectMetadata.displayName, $FixtureSourceOrigin, $preexistingGenerated.Count)
+    foreach ($requiredPath in @($projectMetadataPath, $applicationManifestPath, $sourcePath, $buildRecipePath)) {
+        $file = Get-Item -LiteralPath $requiredPath
+        Write-Host ("FIXTURE_FILE path={0} bytes={1} sha256={2}" -f $file.FullName, $file.Length, (Get-FileHash -LiteralPath $requiredPath -Algorithm SHA256).Hash)
+    }
+    if ($preexistingGenerated.Count -gt 0) {
+        throw ("Fresh fixture contains prior generated files: " + (($preexistingGenerated | Select-Object -ExpandProperty FullName) -join '; '))
+    }
+}
 
 $restoreDebuggerConfiguration = $SteppingLifecycle -or $PositiveGxsmLifecycle
 $debuggerConfiguration = $null
@@ -116,13 +161,29 @@ function Add-WaitFromBaseline([System.Collections.Generic.List[string]]$Parts, [
 }
 
 function Add-Key([System.Collections.Generic.List[string]]$Parts, [int]$KeyCode, [int]$Modifiers = 0, [bool]$WaitForUi = $false) {
-    Add-ServerLine $Parts "gui.keyto 1000 $KeyCode down $Modifiers"
+    Add-ServerLine $Parts "gui.keyto __DEVSTUDIO_WINDOW__ $KeyCode down $Modifiers"
     if ($WaitForUi) { Add-ShortDelay $Parts }
 }
 
 function Add-Mouse([System.Collections.Generic.List[string]]$Parts, [int]$WindowId, [int]$X, [int]$Y, [int]$Button, [string]$Action, [bool]$WaitForUi = $false) {
-    Add-ServerLine $Parts "gui.mouse $WindowId $X $Y $Button $Action"
+    Add-ServerLine $Parts "gui.mouse __DEVSTUDIO_WINDOW__ $X $Y $Button $Action"
     if ($WaitForUi) { Add-ShortDelay $Parts }
+}
+
+function Add-WaitForDeveloperStudioWindow([System.Collections.Generic.List[string]]$Parts, [int]$TimeoutSeconds) {
+    $Parts.Add("WAITOWNER|$([Math]::Max(1, $TimeoutSeconds))")
+}
+
+function Add-WaitForInputOwner([System.Collections.Generic.List[string]]$Parts, [int]$TimeoutSeconds, [string]$WindowId, [int]$KeyCode, [int]$Modifiers) {
+    $Parts.Add("WAITKEYOWNER|$([Math]::Max(1, $TimeoutSeconds))|$WindowId|$KeyCode|$Modifiers")
+}
+
+function Add-WaitForTextMarker([System.Collections.Generic.List[string]]$Parts, [int]$TimeoutSeconds, [string]$Marker) {
+    $Parts.Add("WAITTEXT|$([Math]::Max(1, $TimeoutSeconds))|$Marker")
+}
+
+function Add-WaitForServerProcess([System.Collections.Generic.List[string]]$Parts, [int]$TimeoutSeconds) {
+    $Parts.Add("WAITSERVER|$([Math]::Max(1, $TimeoutSeconds))")
 }
 
 function Get-Key([char]$Character, [int]$Modifiers) {
@@ -223,7 +284,7 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
-        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|debug_inspection|debug_ui_watch_result|GXSM|NativeAppDebugger|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|PHASE29F|PHASE29G|DEBUG_START|START_API|SYMBOL_INITIALIZATION|BREAKPOINT_BINDING|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|debug_inspection|debug_ui_watch_result|debugger_teardown=PASS|TARGET_EXIT_NORMAL|GXSM|NativeAppDebugger|Hosted runtime key trace|poll_event skipped event|DESKTOP_WINDOW_OWNERS_|window id=|ownerPid=|Activate sent|Key queued|Bus::publish directing msg type=12|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|PHASE29F|PHASE29G|DEBUG_START|START_API|SYMBOL_INITIALIZATION|BREAKPOINT_BINDING|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
         $proof = @($lines | Where-Object { $_ -match 'debug_step_(request|complete)=|debug_ui_step_route=|debug_stop_context=authoritative|debug_ui_watch_result=refreshed .*expression=counter' })
         $gxsm = @($lines | Where-Object { $_ -match '\[NativeAppDebugger\] GXSM (validation|variables accepted|variable read result)' })
         $recent = @($lines | Select-Object -Last 80)
@@ -257,34 +318,44 @@ Assert-True (-not $PositiveGxsmLifecycle -or ($FixtureRoot -match 'debugger-phas
 Assert-True ((-not $RepeatedStepOut -and -not $ContinueAfterStepOut -and -not $StepOutThenStepInto -and -not $StepOutThenStepOver -and -not $MixedLifecycle) -or $StepOut -or $MixedLifecycle) "Step Out follow-up requires Step Out mode"
 Assert-True (-not $OverlapStepOut -or $StepOut) "overlap proof requires Step Out mode"
 $parts = New-Object 'System.Collections.Generic.List[string]'
+Add-WaitForServerProcess $parts 15
 Add-ServerLine $parts 'gui.start'
-# Let the hosted compositor finish its process startup before requesting the
-# Developer Studio app. The app's own render and project milestones below are
-# marker-gated; this is only the existing bounded GUI boot allowance.
-Add-Delay $parts 8
 Add-ServerLine $parts 'desktop.launch com.guidexos.developerstudio'
-if ($SteppingLifecycle -or $PositiveGxsmLifecycle) {
-    Add-WaitMarker $parts 'Desktop launch successful: com.guidexos.developerstudio' $DebugWaitSeconds
-    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS' $DebugWaitSeconds
-}
-else { Add-Delay $parts 12 }
-Add-ServerLine $parts 'desktop.windows.owners'
-if (-not $SteppingLifecycle) { Add-Delay $parts 5 }
-Add-ServerLine $parts 'gui.activate 1000'
-Add-ShortDelay $parts
+Add-WaitMarker $parts 'guideXOSServer server starting...' $DebugWaitSeconds
+Add-WaitMarker $parts 'Desktop launch successful: com.guidexos.developerstudio' $DebugWaitSeconds
+Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS' $DebugWaitSeconds
+Add-WaitMarker $parts 'DEVELOPER_STUDIO_PHASE29D_STARTUP_WORKSPACE_CONTROLLER_READY' $DebugWaitSeconds
+Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS' $DebugWaitSeconds
+Add-WaitMarker $parts 'DEVELOPER_STUDIO_PHASE29D_STARTUP_EVENT_LOOP_FIRST_ITERATION' $DebugWaitSeconds
+Add-WaitForDeveloperStudioWindow $parts $DebugWaitSeconds
+Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
+# The create-time MT_SetFocus may arrive before NativeAppRuntime records the
+# returned window handle and be dropped as unowned. One click in the empty body
+# makes the compositor publish a fresh MT_SetFocus after ownership is recorded.
+Add-Mouse $parts 0 300 180 1 'down' $false
+Add-Mouse $parts 0 300 180 1 'up' $true
 
 # Open the checked-in fixture through Developer Studio's real project dialog.
-Add-Mouse $parts 1000 300 180 1 'down' $false
-Add-Mouse $parts 1000 300 180 1 'up' $true
+# This harness correlation ID scopes the single UI dispatch. The product build
+# does not expose its internal project request/generation IDs in normal mode.
+$projectOpenHarnessRequestId = [Guid]::NewGuid().ToString('N')
+$projectOpenDispatch = "PROJECT_OPEN_DISPATCH request_id=$projectOpenHarnessRequestId generation=not_exposed route=Ctrl+Shift+O+path+Enter flow_count=1 raw_root=$FixtureRoot normalized_root=$([IO.Path]::GetFullPath($FixtureRoot)) fixture_exists=$([IO.Directory]::Exists($FixtureRoot)) metadata_exists=$([IO.File]::Exists((Join-Path $FixtureRoot 'guidexos.project'))) manifest_exists=$([IO.File]::Exists((Join-Path $FixtureRoot 'app\app.json')))"
+$parts.Add("DISPATCH|$projectOpenDispatch")
 Add-Key $parts 79 3 $true
+if ($PositiveGxsmLifecycle) { Add-WaitForInputOwner $parts $DebugWaitSeconds '__DEVSTUDIO_WINDOW__' 79 3 }
+Add-WaitForTextMarker $parts $DebugWaitSeconds 'draw_text windowId=__DEVSTUDIO_WINDOW__ pos=210,250 text="Enter an absolute hosted root or metadata path:"'
 foreach ($character in $FixtureRoot.ToLowerInvariant().ToCharArray()) {
     $key = Get-Key $character 0
     Add-Key $parts $key.Key $key.Modifiers
     Add-ShortDelay $parts
 }
 Add-Key $parts 13 0 $true
+$parts.Add("DISPATCHSENT|PROJECT_OPEN_DISPATCH_RESULT request_id=$projectOpenHarnessRequestId result=sent flow_count=1")
 if ($SteppingLifecycle -or $PositiveGxsmLifecycle) { Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS' $DebugWaitSeconds }
 else { Add-Delay $parts 10 }
+if ($SteppingLifecycle -or $PositiveGxsmLifecycle) {
+    $parts.Add("OPENACCEPTED|PROJECT_OPEN_ACCEPTED request_id=$projectOpenHarnessRequestId generation=not_exposed raw_root=$FixtureRoot normalized_root=$([IO.Path]::GetFullPath($FixtureRoot)) result=project_open_PASS")
+}
 # Normalize the imported workspace through the real Save All shortcut before
 # any debugger input is sent. This is safe whether the workspace is already
 # clean or has a pending imported-document change.
@@ -305,7 +376,7 @@ if ($OverlapStepOut) {
 }
 if ($PositiveGxsmLifecycle -or $SteppingLifecycle) { Add-ShortDelay $parts }
 else { Add-Delay $parts 30 }
-Add-ServerLine $parts 'gui.activate 1000'
+Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
 Add-ShortDelay $parts
 
 # Ctrl+F5 starts the real Developer Studio build -> hosted launch -> bind -> trap path.
@@ -334,7 +405,7 @@ if ($PositiveGxsmLifecycle) {
 if ($InteractiveWatch -or $PositiveGxsmLifecycle) {
     # Open the product's Debug menu and Watch tab through compositor mouse
     # events, then add a deterministic comparison against the stopped target.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Mouse $parts 1000 610 30 1 'down' $false
     Add-Mouse $parts 1000 610 30 1 'up' $true
@@ -348,13 +419,13 @@ if ($InteractiveWatch -or $PositiveGxsmLifecycle) {
         # exists. This exercises the supported activation route without
         # creating a repaint storm for every character.
         if (($watchCharacterIndex % 4) -eq 0) {
-            Add-ServerLine $parts 'gui.activate 1000'
+            Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
             Add-ShortDelay $parts
         }
         Add-Key $parts $key.Key $key.Modifiers $true
         ++$watchCharacterIndex
     }
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     if ($PositiveGxsmLifecycle) {
         $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=0 expression=counter == 2 status=1')
@@ -376,13 +447,13 @@ if ($ContinueBreakpoint) {
     # F5 is a global debugger command while a session is paused.  Exercise the
     # production keyboard route after source navigation and locals inspection,
     # when focus may belong to another pane.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 116 0 $true
     Add-Delay $parts 2
 } elseif ($StepInto) {
     # F11 begins the real user source-step operation from the breakpoint stop.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 122 0 $true
     Add-Delay $parts 20
@@ -390,18 +461,18 @@ if ($ContinueBreakpoint) {
     # F10 begins the real call-aware/fallback Step Over operation from the
     # breakpoint stop. This checked-in fixture exercises the non-call fallback;
     # the native runtime harness proves the E8 call/return path.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 121 0 $true
     Add-Delay $parts 20
 } elseif ($MixedLifecycle) {
     # Exercise a bounded source-step mixture and Continue in one hosted
     # session. The dedicated Step Out follow-up modes cover the return path.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 122 0 $true
     Add-Delay $parts 20
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 121 0 $true
     Add-Delay $parts 20
@@ -411,20 +482,20 @@ if ($ContinueBreakpoint) {
     # This accepted fixture sequence is tied to the built DebugSymbols/DWARF
     # source rows: line 42 starts in debugLoop, Step Into reaches line 43,
     # Step Over returns through line 48, and Step Out returns to gx_main:59.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 122 0 $true
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepInto command_gen=1' $DebugWaitSeconds
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 121 0 $true
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOver command_gen=2' $DebugWaitSeconds
     if ($StepOutKeyboard) {
-        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
         Add-ShortDelay $parts
         Add-Key $parts 122 1 $true
     } else {
-        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
         Add-ShortDelay $parts
         Add-Mouse $parts 1000 610 30 1 'down' $false
         Add-Mouse $parts 1000 610 30 1 'up' $true
@@ -432,7 +503,7 @@ if ($ContinueBreakpoint) {
         Add-Mouse $parts 1000 620 141 1 'up' $true
     }
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOut command_gen=3' $DebugWaitSeconds
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 116 0 $true
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING' $DebugWaitSeconds
@@ -455,13 +526,13 @@ if ($ContinueBreakpoint) {
     Add-Mouse $parts 1000 700 105 1 'up' $true
     Add-Delay $parts 2
 
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 121 0 $true
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_step_complete=StepOver command_gen=1' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.debuglog 64'
 
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Mouse $parts 1000 610 30 1 'down' $false
     Add-Mouse $parts 1000 610 30 1 'up' $true
@@ -471,7 +542,7 @@ if ($ContinueBreakpoint) {
     # The internal return trap can refresh the Watch before its caller stop is
     # published. Re-submit the existing expression at that stop to prove the
     # out-of-scope result comes from a fresh evaluation of the caller frame.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Mouse $parts 1000 610 30 1 'down' $false
     Add-Mouse $parts 1000 610 30 1 'up' $true
@@ -483,7 +554,7 @@ if ($ContinueBreakpoint) {
     Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_edit=PASS' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.debuglog 64'
 
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode)
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')
@@ -498,7 +569,7 @@ if ($ContinueBreakpoint) {
     # Relaunch the same compiler-produced target after its runtime has exited.
     # Counted waits require a new build/start/stop marker instead of matching
     # the evidence from the first debugger session.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS')
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session=2')
@@ -509,7 +580,7 @@ if ($ContinueBreakpoint) {
     Add-Delay $parts 2
     Add-ServerLine $parts 'nativeapp.debuglog 200'
     Add-ServerLine $parts 'nativeapp.processes'
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode)
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')
@@ -524,7 +595,7 @@ if ($ContinueBreakpoint) {
     # Use the real Debug menu row for the return-address Step Out operation
     # from the deepest fixture frame. The controller must stop at the
     # immediate caller's raw return address.
-    Add-ServerLine $parts 'gui.activate 1000'
+    Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Mouse $parts 1000 610 30 1 'down' $false
     Add-Mouse $parts 1000 610 30 1 'up' $true
@@ -532,7 +603,7 @@ if ($ContinueBreakpoint) {
     Add-Mouse $parts 1000 620 141 1 'up' $true
     Add-Delay $parts 20
     if ($RepeatedStepOut) {
-        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
         Add-ShortDelay $parts
         Add-Mouse $parts 1000 610 30 1 'down' $false
         Add-Mouse $parts 1000 610 30 1 'up' $true
@@ -540,17 +611,17 @@ if ($ContinueBreakpoint) {
         Add-Mouse $parts 1000 620 141 1 'up' $true
         Add-Delay $parts 20
     } elseif ($ContinueAfterStepOut) {
-        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
         Add-ShortDelay $parts
         Add-Key $parts 116 0 $true
         Add-Delay $parts 20
     } elseif ($StepOutThenStepInto -or $StepOutThenStepOver) {
-        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
         Add-ShortDelay $parts
         Add-Key $parts ($(if ($StepOutThenStepInto) { 122 } else { 121 })) 0 $true
         Add-Delay $parts 20
     } elseif ($OverlapStepOut) {
-        Add-ServerLine $parts 'gui.activate 1000'
+        Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
         Add-ShortDelay $parts
         Add-Key $parts 116 0 $true
         Add-Delay $parts 20
@@ -562,13 +633,13 @@ Add-ServerLine $parts 'log'
 Add-Delay $parts 2
 
 if ($DiagnosticOnly) {
-    Add-ServerLine $parts 'gui.close 1000'
+    Add-ServerLine $parts 'gui.close __DEVSTUDIO_WINDOW__'
     $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
 } elseif ($ContinueBreakpoint) {
     # The target is Running after Continue. The owned-window close still uses
     # the product's targeted shutdown path and requests debugger termination
     # directly rather than routing C/S through whichever window has focus.
-    Add-ServerLine $parts 'gui.close 1000'
+    Add-ServerLine $parts 'gui.close __DEVSTUDIO_WINDOW__'
     $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
     Add-ServerLine $parts 'nativeapp.processes'
     Add-ServerLine $parts 'desktop.windows.owners'
@@ -583,7 +654,7 @@ if ($DiagnosticOnly) {
     # Targeted gui.close is the authoritative hosted shutdown request. The
     # app owns the stop/teardown sequence; no focused confirmation keystroke
     # is part of the successful path.
-    Add-ServerLine $parts 'gui.close 1000'
+    Add-ServerLine $parts 'gui.close __DEVSTUDIO_WINDOW__'
     $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
     Add-ServerLine $parts 'nativeapp.processes'
     Add-ServerLine $parts 'desktop.windows.owners'
@@ -593,6 +664,7 @@ Add-ServerLine $parts 'exit'
 
 $startInfo = New-Object Diagnostics.ProcessStartInfo
 $startInfo.EnvironmentVariables["GUIDEXOS_SERVER_ROOT"] = $ServerRoot
+if ($PositiveGxsmLifecycle) { $startInfo.EnvironmentVariables["GXOS_HOSTED_INPUT_DIAGNOSTICS"] = "1" }
 $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-debugger-$([Guid]::NewGuid().ToString('N')).out")
 $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("guidexos-debugger-$([Guid]::NewGuid().ToString('N')).err")
 $startInfo.FileName = $env:ComSpec
@@ -608,15 +680,119 @@ $process.StartInfo = $startInfo
 $text = ""
 $markerBaselines = @{}
 $smokeSucceeded = $false
+$script:developerStudioWindowId = $null
+$script:developerStudioOwnerPid = $null
+$script:serverProcessId = $null
+$script:serverProcessStartTime = $null
+$processStarted = $false
+$preexistingServerProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='guideXOSServer.experimental.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $Executable })
+if ($preexistingServerProcesses.Count -gt 0) {
+    throw ("Hosted Server already owns the requested executable path: " + (($preexistingServerProcesses | ForEach-Object { "pid=$($_.ProcessId) parent=$($_.ParentProcessId)" }) -join '; '))
+}
 try {
-    Assert-True $process.Start() "streamed hosted UI proof starts"
+    $processStarted = $process.Start()
+    Assert-True $processStarted "streamed hosted UI proof starts"
     foreach ($part in $parts) {
         if ($process.HasExited) { break }
         $separator = $part.IndexOf('|')
         if ($separator -lt 0) { continue }
         $kind = $part.Substring(0, $separator)
         $value = $part.Substring($separator + 1)
-        if ($kind -eq 'WAIT') {
+        if ($kind -eq 'WAITSERVER') {
+            $serverDeadline = (Get-Date).AddSeconds([Math]::Max(1, [int]$value))
+            $serverRecord = $null
+            while (-not $process.HasExited -and (Get-Date) -lt $serverDeadline) {
+                $serverRecord = Get-CimInstance -ClassName Win32_Process -Filter "Name='guideXOSServer.experimental.exe'" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $Executable -and [int]$_.ParentProcessId -eq $process.Id } |
+                    Select-Object -First 1
+                if ($serverRecord) { break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (-not $serverRecord) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                $lastLines = @($liveText -split "`r?`n" | Select-Object -Last 24)
+                throw "Server child process was not observed within the bounded process-start wait; wrapperPid=$($process.Id) wrapperExited=$($process.HasExited) output=$($lastLines -join '`n')"
+            }
+            $script:serverProcessId = [int]$serverRecord.ProcessId
+            $script:serverProcessStartTime = [string]$serverRecord.CreationDate
+            Write-Host "SERVER_PROCESS_START pid=$script:serverProcessId parent_wrapper_pid=$($process.Id) creation_time=$script:serverProcessStartTime executable=$($serverRecord.ExecutablePath)"
+        } elseif ($kind -eq 'WAITOWNER') {
+            $ownerDeadline = (Get-Date).AddSeconds([Math]::Max(1, [int]$value))
+            $ownerTable = ''
+            $ownerMatch = $null
+            while (-not $process.HasExited -and (Get-Date) -lt $ownerDeadline) {
+                $process.StandardInput.WriteLine('desktop.windows.owners')
+                $process.StandardInput.Flush()
+                Start-Sleep -Milliseconds 500
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                $ownerBlocks = [regex]::Matches($liveText, '(?ms)DESKTOP_WINDOW_OWNERS_BEGIN\r?\n(.*?)\r?\nDESKTOP_WINDOW_OWNERS_END')
+                if ($ownerBlocks.Count -gt 0) {
+                    $ownerTable = $ownerBlocks[$ownerBlocks.Count - 1].Groups[1].Value
+                    $validOwners = [regex]::Matches($ownerTable, 'window id=(\d+) ownerPid=([1-9]\d*) ownerName=nativeelf:com\.guidexos\.developerstudio appId=com\.guidexos\.developerstudio title=guideXOS Developer Studio visible=true')
+                    if ($validOwners.Count -eq 1) {
+                        $ownerMatch = $validOwners[0]
+                        break
+                    }
+                    if ($validOwners.Count -gt 1) {
+                        throw "Ambiguous Developer Studio window ownership: $($validOwners.Count) live app-owned windows in latest owner snapshot: $ownerTable"
+                    }
+                }
+            }
+            if (-not $ownerMatch) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                $recentOwners = @($liveText -split "`r?`n" | Where-Object { $_ -match 'DESKTOP_WINDOW_OWNERS_|window id=|ownerPid=|ownerName=' } | Select-Object -Last 24)
+                throw "Developer Studio never reached one uniquely owned visible main window before project-open readiness; wrapperExited=$($process.HasExited) owner_snapshot=$ownerTable recent=$($recentOwners -join '`n')"
+            }
+            $script:developerStudioWindowId = [int]$ownerMatch.Groups[1].Value
+            $script:developerStudioOwnerPid = [int]$ownerMatch.Groups[2].Value
+            Write-Host "DEVELOPER_STUDIO_WINDOW_READY window_id=$script:developerStudioWindowId owner_pid=$script:developerStudioOwnerPid app_id=com.guidexos.developerstudio visible=true"
+        } elseif ($kind -eq 'WAITKEYOWNER') {
+            $fields = @($value -split '\|', 4)
+            if ($fields.Count -ne 4) { throw "Invalid input-owner wait: $value" }
+            $markerTimeout = [Math]::Max(1, [int]$fields[0])
+            $expectedWindowId = if ($fields[1] -eq '__DEVSTUDIO_WINDOW__') { [int]$script:developerStudioWindowId } else { [int]$fields[1] }
+            $expectedKeyCode = [int]$fields[2]
+            $expectedModifiers = [int]$fields[3]
+            $inputPattern = 'Hosted runtime key trace #[0-9]+ monoMs=[0-9]+: dequeued runtimeId=[0-9]+ appId=com\.guidexos\.developerstudio key=' + $expectedKeyCode + ' action=1 modifiers=' + $expectedModifiers + ' window=' + $expectedWindowId + ' focusedWindow=' + $expectedWindowId + ' ownsWindow=1'
+            $inputDeadline = (Get-Date).AddSeconds($markerTimeout)
+            $inputObserved = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $inputDeadline) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                if ($liveText -match $inputPattern) { $inputObserved = $true; break }
+                if ($liveText.Contains('poll_event skipped event for an unowned window') -and
+                    $liveText -match ('Hosted runtime key trace #[0-9]+ monoMs=[0-9]+: dequeued .* key=' + $expectedKeyCode + ' action=1 modifiers=' + $expectedModifiers + ' window=0 focusedWindow=0 ownsWindow=0')) {
+                    throw "Hosted key reached NativeAppRuntime without an owned focus: expected window=$expectedWindowId key=$expectedKeyCode modifiers=$expectedModifiers"
+                }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-True $inputObserved "hosted Ctrl+Shift+O reaches the owned Developer Studio window with a current focused-window identity"
+        } elseif ($kind -eq 'WAITTEXT') {
+            $markerSeparator = $value.IndexOf('|')
+            if ($markerSeparator -lt 1) { throw "Invalid hosted text wait: $value" }
+            $markerTimeout = [Math]::Max(1, [int]$value.Substring(0, $markerSeparator))
+            $marker = $value.Substring($markerSeparator + 1)
+            if ($script:developerStudioWindowId) { $marker = $marker.Replace('__DEVSTUDIO_WINDOW__', [string]$script:developerStudioWindowId) }
+            $textDeadline = (Get-Date).AddSeconds($markerTimeout)
+            $textObserved = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $textDeadline) {
+                $liveText = Get-LiveHostedText $stdoutPath $stderrPath
+                if ($liveText.Contains($marker)) { $textObserved = $true; break }
+                $failureMarker = @(
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL',
+                    'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=ERROR'
+                ) | Where-Object { $liveText.Contains($_) } | Select-Object -First 1
+                if ($failureMarker) { throw "Hosted UI reported $failureMarker before modal readiness '$marker'" }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-True $textObserved "Developer Studio displays its real project-path prompt before fixture input"
+        } elseif ($kind -eq 'DISPATCH') {
+            Write-Host $value
+        } elseif ($kind -eq 'DISPATCHSENT') {
+            Write-Host $value
+        } elseif ($kind -eq 'OPENACCEPTED') {
+            Write-Host $value
+        } elseif ($kind -eq 'WAIT') {
             Start-Sleep -Seconds ([Math]::Max(1, [int]$value))
         } elseif ($kind -eq 'WAITMS') {
             Start-Sleep -Milliseconds ([Math]::Max(1, [int]$value))
@@ -731,6 +907,10 @@ try {
             Wait-ForShutdown $process $stdoutPath $stderrPath ([int]$value) | Out-Null
             Write-Host "PASS: WAITSHUTDOWN reached complete (bounded state poll)"
         } elseif ($kind -eq 'COMMAND') {
+            if ($value.Contains('__DEVSTUDIO_WINDOW__')) {
+                if (-not $script:developerStudioWindowId) { throw "UI event refused: Developer Studio window ownership has not been established: $value" }
+                $value = $value.Replace('__DEVSTUDIO_WINDOW__', [string]$script:developerStudioWindowId)
+            }
             $process.StandardInput.WriteLine($value)
             $process.StandardInput.Flush()
         }
@@ -744,13 +924,31 @@ try {
         & taskkill.exe /PID $process.Id /T /F | Out-Null
         $process.WaitForExit()
     }
+    $process.WaitForExit()
     $text = Get-LiveHostedText $stdoutPath $stderrPath
+    $serverProcessStillRunning = $false
+    if ($script:serverProcessId) {
+        $serverCleanupDeadline = (Get-Date).AddSeconds(10)
+        do {
+            $serverRecord = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$script:serverProcessId" -ErrorAction SilentlyContinue
+            $serverProcessStillRunning = [bool]($serverRecord -and $serverRecord.ExecutablePath -and $serverRecord.ExecutablePath -ieq $Executable)
+            if (-not $serverProcessStillRunning) { break }
+            Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $serverCleanupDeadline)
+    }
+    Write-Host "SERVER_PROCESS_EXIT pid=$script:serverProcessId wrapper_pid=$($process.Id) wrapper_exit_code=$($process.ExitCode) process_reaped=$(-not $serverProcessStillRunning)"
+    Assert-True (-not $serverProcessStillRunning) "hosted Server process is gone before the next gate iteration"
 
     Assert-True ($text.Contains('Desktop launch successful: com.guidexos.developerstudio')) "Developer Studio launches through the hosted desktop"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER initial_render=PASS')) "hosted Developer Studio reaches its real initial render"
-    Assert-True ($text -match 'window id=1000 ownerPid=\d+ ownerName=nativeelf:com.guidexos.developerstudio') "Developer Studio window ownership is published"
+    Assert-True ($script:developerStudioWindowId -and
+                 $text -match ("window id=$script:developerStudioWindowId ownerPid=$script:developerStudioOwnerPid ownerName=nativeelf:com\.guidexos\.developerstudio appId=com\.guidexos\.developerstudio title=guideXOS Developer Studio visible=true")) "the visible Developer Studio main window is uniquely owned and every UI event targets it"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS') -and
                  $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS')) "fixture project opens through Developer Studio"
+    if ($SteppingLifecycle -or $PositiveGxsmLifecycle) {
+        Assert-True (([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS')).Count -eq 1 -and
+                     -not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL')) "one project-open request is accepted exactly once with no root-validation rejection"
+    }
     if ($text -notmatch 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)' -and
         -not ($SteppingLifecycle -and $text -match 'debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:42 source_map=current')) {
         Write-Host 'Captured breakpoint diagnostics:'
@@ -850,14 +1048,14 @@ try {
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS')) "the stopped hosted session builds its real call stack"
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS')) "the stopped hosted session publishes real locals"
     if ($InteractiveWatch -and -not $SteppingLifecycle) {
-        $watchRow = 'draw_text windowId=1000 pos=100,198 text="' + $WatchExpression + '"'
+        $watchRow = "draw_text windowId=$script:developerStudioWindowId pos=100,198 text=`"$WatchExpression`""
         if (-not ($text.Contains($watchRow) -and
-                  $text.Contains('draw_text windowId=1000 pos=620,198 text="true"'))) {
+                  $text.Contains("draw_text windowId=$script:developerStudioWindowId pos=620,198 text=`"true`""))) {
             Write-Host 'Captured hosted Watch rows:'
-            @($text -split "`r?`n" | Where-Object { $_ -match 'draw_text windowId=1000 pos=(100,198|620,198|220,285)|Add Watch|Edit Watch|Watch update failed|Watch' } | Select-Object -Last 160)
+            @($text -split "`r?`n" | Where-Object { $_ -match ("draw_text windowId=$script:developerStudioWindowId pos=(100,198|620,198|220,285)|Add Watch|Edit Watch|Watch update failed|Watch") } | Select-Object -Last 160)
         }
         Assert-True ($text.Contains($watchRow) -and
-                     $text.Contains('draw_text windowId=1000 pos=620,198 text="true"')) "the hosted Watch UI retains and evaluates a real comparison"
+                     $text.Contains("draw_text windowId=$script:developerStudioWindowId pos=620,198 text=`"true`"")) "the hosted Watch UI retains and evaluates a real comparison"
     }
     if ($ContinueBreakpoint) {
         $continueEvidence = $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING') -and
@@ -1135,14 +1333,48 @@ try {
     else { Write-Host 'Developer Studio Debugger Phase 3B end-to-end smoke PASS' }
     $smokeSucceeded = $true
 } finally {
+    $shutdownCommandSent = $false
+    $forcedTermination = $false
+    if ($processStarted -and -not $process.HasExited) {
+        try {
+            $process.StandardInput.WriteLine('exit')
+            $process.StandardInput.Flush()
+            $process.StandardInput.Close()
+            $shutdownCommandSent = $true
+            Write-Host "SERVER_SHUTDOWN_REQUEST sent=true reason=$(if ($smokeSucceeded) { 'smoke_complete' } else { 'smoke_failure_cleanup' })"
+        } catch {
+            Write-Host "SERVER_SHUTDOWN_REQUEST sent=false reason=$($_.Exception.Message)"
+        }
+        $shutdownDeadline = (Get-Date).AddSeconds(10)
+        while (-not $process.HasExited -and (Get-Date) -lt $shutdownDeadline) { Start-Sleep -Milliseconds 100 }
+        if (-not $process.HasExited) {
+            $forcedTermination = $true
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
+            $process.WaitForExit()
+        }
+    }
+    if ($script:serverProcessId) {
+        $leftoverServer = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$script:serverProcessId" -ErrorAction SilentlyContinue
+        if ($leftoverServer -and $leftoverServer.ExecutablePath -and $leftoverServer.ExecutablePath -ieq $Executable) {
+            Write-Host "CLEANUP_KILL_SERVER pid=$script:serverProcessId parent_wrapper_pid=$($process.Id)"
+            Stop-Process -Id $script:serverProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $leftoverServer = $null
+    if ($script:serverProcessId) {
+        $leftoverServer = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$script:serverProcessId" -ErrorAction SilentlyContinue
+    }
+    $serverProcessStillRunning = [bool]($leftoverServer -and $leftoverServer.ExecutablePath -and $leftoverServer.ExecutablePath -ieq $Executable)
+    $serverWrapperExitCode = if ($processStarted -and $process.HasExited) { $process.ExitCode } else { 'unknown' }
+    Write-Host "SERVER_PROCESS_CLEANUP pid=$script:serverProcessId wrapper_pid=$(if ($processStarted) { $process.Id } else { 'unknown' }) wrapper_exit_code=$serverWrapperExitCode shutdown_command_sent=$shutdownCommandSent forced_termination=$forcedTermination process_reaped=$(-not $serverProcessStillRunning)"
+    if ($processStarted) { $process.Dispose() }
+    $finalHostedText = Get-LiveHostedText $stdoutPath $stderrPath
+    if ($finalHostedText) { $text = $finalHostedText }
     if (-not $smokeSucceeded) {
-        $failureText = if ($text) { $text } else { Get-LiveHostedText $stdoutPath $stderrPath }
-        Write-ShutdownTrace "smoke failure" $failureText
+        Write-ShutdownTrace "smoke failure" $text
     } elseif ($TraceDirectory -and $TraceArtifactName -and $text) {
         Write-ShutdownTrace "smoke success" $text
     }
-    if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
-    if ($process) { $process.Dispose() }
     if ($restoreDebuggerConfiguration) {
         if ($debuggerConfigurationExisted) {
             [IO.File]::WriteAllBytes($debuggerConfiguration, $debuggerConfigurationPrior)
