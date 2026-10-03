@@ -684,6 +684,7 @@ struct DebugController {
     uint64_t nativeRuntimeId;
     uint64_t debugHandle;
     int32_t exitCode;
+    bool cleanupComplete;
     DebugStopReason stopReason;
     char lastMessage[kDebugMaxMessageBytes];
     // When true, runtime identity/breakpoint binding may be published by a

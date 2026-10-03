@@ -22,6 +22,7 @@ param(
     [int]$OverlapBreakpointLine = 20,
     [switch]$InteractiveWatch,
     [switch]$PositiveGxsmLifecycle,
+    [int]$ExpectedTargetExitCode = 0,
     [string]$TraceDirectory = "",
     [int]$TraceRunIndex = 0,
     [string]$TraceArtifactName = ""
@@ -484,9 +485,13 @@ if ($ContinueBreakpoint) {
 
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode)
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')
     Add-Key $parts 116 0 $true
-    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts ('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode) $DebugWaitSeconds
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS' $DebugWaitSeconds
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.debuglog 200'
     Add-ServerLine $parts 'nativeapp.processes'
 
@@ -506,9 +511,13 @@ if ($ContinueBreakpoint) {
     Add-ServerLine $parts 'nativeapp.processes'
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode)
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')
     Add-Key $parts 116 0 $true
-    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts ('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode) $DebugWaitSeconds
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS' $DebugWaitSeconds
+    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.debuglog 200'
     Add-ServerLine $parts 'nativeapp.processes'
 } elseif ($StepOut) {
@@ -1079,8 +1088,28 @@ try {
         }
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS')) "Developer Studio closes cleanly after teardown"
     } elseif ($PositiveGxsmLifecycle) {
-        $targetCleanupCount = ([regex]::Matches($text, '\[NativeAppRuntime\] Cleanup complete app=com\.example\.debuggerphase29qpositive .* state=Exited exitCode=0 cleanedWindows=0 remainingWindows=0')).Count
-        Assert-True ($targetCleanupCount -ge 2) "both positive GXSM targets release their native runtime resources cleanly"
+        $targetCleanupPattern = '\[NativeAppRuntime\] Cleanup complete app=com\.example\.debuggerphase29qpositive(?: \([^)]*\))? runtimeId=(\d+) state=Exited exitCode=' + $ExpectedTargetExitCode + ' cleanedWindows=0 remainingWindows=0'
+        $targetExitPattern = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode + ' session_gen=(\d+) target_gen=(\d+) process=(\d+) runtime=(\d+)'
+        $targetCleanupMatches = [regex]::Matches($text, $targetCleanupPattern)
+        $cleanupRuntimes = @($targetCleanupMatches | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        $targetCleanupCount = $cleanupRuntimes.Count
+        $targetExitMatches = [regex]::Matches($text, $targetExitPattern)
+        $targetExitRawCount = $targetExitMatches.Count
+        $debuggerTeardownCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')).Count
+        $exitSessions = @($targetExitMatches | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        $exitProcesses = @($targetExitMatches | ForEach-Object { $_.Groups[3].Value } | Select-Object -Unique)
+        $exitRuntimes = @($targetExitMatches | ForEach-Object { $_.Groups[4].Value } | Select-Object -Unique)
+        $watchInvalidationMatches = [regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_runtime=invalidated session_gen=(\d+) watch_count=\d+')
+        $watchInvalidationSessions = @($watchInvalidationMatches | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        $exitedStateCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')).Count
+        Write-Host "positive_gxsm_counts cleanup_runtimes=$($cleanupRuntimes.Count) target_exit_raw=$targetExitRawCount debugger_teardown_raw=$debuggerTeardownCount exited_state_raw=$exitedStateCount watch_sessions=$($watchInvalidationSessions.Count) sessions=$($exitSessions.Count) processes=$($exitProcesses.Count) runtimes=$($exitRuntimes.Count)"
+        Assert-True ($targetCleanupCount -eq 2) "both GXSM targets clean runtime resources with exact application exit code $ExpectedTargetExitCode (found $targetCleanupCount)"
+        Assert-True ($targetExitRawCount -ge 2 -and $debuggerTeardownCount -ge 2 -and $exitedStateCount -ge 2 -and
+                     $exitSessions.Count -eq 2 -and $exitProcesses.Count -eq 2 -and $exitRuntimes.Count -eq 2 -and
+                     (Compare-Object ($exitRuntimes | Sort-Object) ($cleanupRuntimes | Sort-Object)).Count -eq 0 -and
+                     -not $text.Contains('DEBUG_BACKEND_FAILED')) "target exit result and debugger teardown are reported independently for both sessions"
+        Assert-True ($watchInvalidationSessions.Count -eq 2 -and
+                     (Compare-Object ($exitSessions | Sort-Object) ($watchInvalidationSessions | Sort-Object)).Count -eq 0) "both target exits invalidate runtime watch values while preserving the logical watch for relaunch"
     } elseif (($ContinueBreakpoint -or $ContinueAfterStepOut) -and $DiagnosticOnly) {
         Assert-True ($text.Contains('Debug: process running')) "the hosted UI remains responsive after Continue"
     } elseif ($ContinueBreakpoint) {
@@ -1096,7 +1125,7 @@ try {
         @($text -split "`r?`n" | Where-Object { $_ -match 'close|Close|Debug|debug|run|Run|exit|Exit|process|Process|error|Error|fail|Fail' } | Select-Object -Last 180)
     }
     Assert-True ($process.ExitCode -eq 0) "hosted Server exits cleanly after the debugger proof (exit code $($process.ExitCode))"
-    if ($PositiveGxsmLifecycle) { Write-Host 'Developer Studio Phase 29Q positive GXSM lifecycle smoke PASS' }
+    if ($PositiveGxsmLifecycle) { Write-Host "Developer Studio positive GXSM exit lifecycle smoke PASS (targetExitCode=$ExpectedTargetExitCode)" }
     elseif ($StepOutThenStepInto) { Write-Host 'Developer Studio Debugger Phase 18 Step Out -> Step Into smoke PASS' }
     elseif ($StepOutThenStepOver) { Write-Host 'Developer Studio Debugger Phase 18 Step Out -> Step Over smoke PASS' }
     elseif ($OverlapStepOut) { Write-Host 'Developer Studio Debugger Phase 18 overlapping Step Out smoke PASS' }

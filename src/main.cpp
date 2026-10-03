@@ -7831,8 +7831,15 @@ static void pollDebug(gx_app_context* ctx) {
     if (!DebugControllerIsActive(&g_debugController)) {
         phase28v_startup_event(ctx, "DEBUG_POLL_EXITED_ENTRY", nullptr);
         if (g_debugUiSessionGeneration != 0) {
+            const uint64_t retiredSession = g_debugUiSessionGeneration;
             phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_ENTRY", nullptr);
             debugUiResetRuntimeState(true);
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_runtime=invalidated session_gen=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), retiredSession);
+            appendText(g_textScratch, sizeof(g_textScratch), " watch_count=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiWatchCount);
+            logMarker(ctx, g_textScratch);
             g_debugUiSessionGeneration = 0;
             g_debugUiStopGeneration = 0;
             phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_RETURN", nullptr);
@@ -8142,12 +8149,38 @@ static void pollDebug(gx_app_context* ctx) {
                 markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_source_navigation=FAIL", DebugErrorName(stopMappingError));
             }
         } else if (g_debugController.state == DebugSessionState::Exited) {
-            reportDebugMessage(ctx, "Debug: process exited");
+            if (g_debugController.stopReason == DebugStopReason::UserRequested) {
+                reportDebugMessage(ctx, "Debug: target terminated by debugger");
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_TERMINATED reason=user_requested session_gen=");
+            } else {
+                copyText(g_textScratch, sizeof(g_textScratch), "Debug: program exited with code ");
+                appendSigned(g_textScratch, sizeof(g_textScratch), g_debugController.exitCode);
+                reportDebugMessage(ctx, g_textScratch);
+                copyText(g_textScratch, sizeof(g_textScratch),
+                         "GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=");
+                appendSigned(g_textScratch, sizeof(g_textScratch), g_debugController.exitCode);
+                appendText(g_textScratch, sizeof(g_textScratch), " session_gen=");
+            }
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.sessionGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " target_gen=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.target.projectGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " process=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.processId);
+            appendText(g_textScratch, sizeof(g_textScratch), " runtime=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.nativeRuntimeId);
+            logMarker(ctx, g_textScratch);
+            logMarker(ctx, g_debugController.cleanupComplete ?
+                "GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS" :
+                "GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=INCOMPLETE");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED");
         } else if (g_debugController.state == DebugSessionState::Failed) {
             copyText(g_textScratch, sizeof(g_textScratch), "Debug: session failed | ");
             appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
             reportDebugMessage(ctx, g_textScratch);
+            copyText(g_textScratch, sizeof(g_textScratch), "DEBUG_BACKEND_FAILED reason=");
+            appendText(g_textScratch, sizeof(g_textScratch), g_debugController.lastMessage);
+            logMarker(ctx, g_textScratch);
             g_debugTerminalReported = true;
         }
     }
@@ -8177,6 +8210,12 @@ static void pollDebug(gx_app_context* ctx) {
         (g_debugController.state == DebugSessionState::Exited ||
          g_debugController.state == DebugSessionState::Failed) && g_debugUiSessionGeneration != 0) {
         phase28v_startup_event(ctx, "DEBUG_TERMINAL_RESET_ENTRY", nullptr);
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_runtime=invalidated session_gen=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiSessionGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " watch_count=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiWatchCount);
+        logMarker(ctx, g_textScratch);
         debugUiResetRuntimeState(true);
         g_debugUiSessionGeneration = 0;
         g_debugUiStopGeneration = 0;

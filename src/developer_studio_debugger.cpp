@@ -451,6 +451,7 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     controller->nativeRuntimeId = snapshot.nativeRuntimeId;
     controller->debugHandle = snapshot.debugHandle;
     controller->exitCode = snapshot.exitCode;
+    controller->cleanupComplete = snapshot.cleanupComplete;
     if (snapshot.breakpointBindingId != 0 && snapshot.targetAddress.valid)
         observeBinding(controller, snapshot.breakpointBindingId, snapshot.targetAddress.value,
                        snapshot.bindingOwnerCount, snapshot.bindingInstalled || snapshot.bindingOwnerCount != 0);
@@ -509,23 +510,39 @@ static void applySnapshotUnchecked(DebugController* controller, const DebugBacke
     else if (snapshot.state == DebugSessionState::Stopping && previous != DebugSessionState::Stopping)
         appendEvent(controller, DebugEventKind::Stopped, snapshot.state, DebugStopReason::UserRequested, "Debug stop requested");
     else if (snapshot.state == DebugSessionState::Exited && previous != DebugSessionState::Exited) {
-        appendEvent(controller, DebugEventKind::Exited, snapshot.state, DebugStopReason::Exited, "Hosted Native ELF target exited");
+        appendEvent(controller, DebugEventKind::Exited, snapshot.state,
+                    snapshot.stopReason == DebugStopReason::None ? DebugStopReason::Exited : snapshot.stopReason,
+                    "Hosted Native ELF target exited");
         controller->active = false;
         clearStoppedContext(controller);
         controller->lastBreakpointId = 0;
         controller->backendExecutionState = DebugBackendExecutionState::None;
         clearSourceStep(controller, DebugSourceStepStatus::Cancelled, "Source step ended because the target exited");
         clearStepOver(controller, DebugStepOverStatus::Cancelled, "Step over ended because the target exited");
+        controller->stepOver.temporaryInstalled = false;
+        controller->stepOver.temporaryBreakpointId = 0;
+        controller->stepOver.temporaryBindingId = 0;
         clearStepOut(controller, DebugStepOutStatus::Cancelled, "Step out ended because the target exited");
+        controller->stepOut.temporaryInstalled = false;
+        controller->stepOut.temporaryBreakpointId = 0;
+        controller->stepOut.temporaryBindingId = 0;
     } else if (snapshot.state == DebugSessionState::Failed && previous != DebugSessionState::Failed) {
-        appendEvent(controller, DebugEventKind::Failed, snapshot.state, snapshot.stopReason, controller->lastMessage);
+        appendEvent(controller, DebugEventKind::Failed, snapshot.state,
+                    snapshot.stopReason == DebugStopReason::None ? DebugStopReason::Unknown : snapshot.stopReason,
+                    controller->lastMessage);
         controller->active = false;
         clearStoppedContext(controller);
         controller->lastBreakpointId = 0;
         controller->backendExecutionState = DebugBackendExecutionState::None;
         clearSourceStep(controller, DebugSourceStepStatus::Failed, "Source step ended because the session failed");
         clearStepOver(controller, DebugStepOverStatus::Failed, "Step over ended because the session failed");
+        controller->stepOver.temporaryInstalled = false;
+        controller->stepOver.temporaryBreakpointId = 0;
+        controller->stepOver.temporaryBindingId = 0;
         clearStepOut(controller, DebugStepOutStatus::Failed, "Step out ended because the session failed");
+        controller->stepOut.temporaryInstalled = false;
+        controller->stepOut.temporaryBreakpointId = 0;
+        controller->stepOut.temporaryBindingId = 0;
         controller->pauseRequestPending = false;
     }
     if (snapshot.state == DebugSessionState::Exited && previous != DebugSessionState::Exited)
@@ -663,7 +680,8 @@ static bool bindBreakpointsIfReady(DebugController* controller, const DebugBacke
 
 static bool bindAndReleaseIfReady(DebugController* controller, const DebugBackend& backend,
                                   DebugBackendSnapshot* snapshot) {
-    if (!controller || !snapshot || controller->targetExecutionReleased || snapshot->nativeRuntimeId == 0 ||
+    if (!controller || !snapshot || snapshot->state == DebugSessionState::Exited ||
+        snapshot->state == DebugSessionState::Failed || controller->targetExecutionReleased || snapshot->nativeRuntimeId == 0 ||
         !backend.capabilities.canBindSoftwareBreakpoint || !backend.debugCommand) return true;
     if (!bindBreakpointsIfReady(controller, backend, *snapshot)) return false;
     if (controller->deferExecutionRelease) {
@@ -1691,6 +1709,7 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     controller->nativeRuntimeId = 0;
     controller->debugHandle = 0;
     controller->exitCode = 0;
+    controller->cleanupComplete = false;
     controller->stopReason = DebugStopReason::None;
     controller->targetExecutionReleased = false;
     controller->backendExecutionState = DebugBackendExecutionState::None;

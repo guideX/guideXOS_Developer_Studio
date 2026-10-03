@@ -445,10 +445,63 @@ int main() {
     completionSnapshot.sessionGeneration = completion.sessionGeneration;
     completionSnapshot.state = DebugSessionState::Exited;
     completionSnapshot.stopReason = DebugStopReason::Exited;
+    completionSnapshot.processId = 12;
+    completionSnapshot.nativeRuntimeId = 77;
+    completionSnapshot.exitCode = 7;
     completionSnapshot.cleanupComplete = true;
+    const uint64_t completionGeneration = completion.sessionGeneration;
+    assert(completion.state == DebugSessionState::Running);
     assert(DebugControllerApplySnapshot(&completion, completion.sessionGeneration, completionSnapshot));
     assert(completion.state == DebugSessionState::Exited && !completion.active &&
-           !completion.pauseRequestPending);
+           !completion.pauseRequestPending && completion.exitCode == 7 &&
+           completion.cleanupComplete && completion.lastTransitionSource == DebugSessionState::Running &&
+           completion.lastTransitionDestination == DebugSessionState::Exited);
+    uint32_t completionExitEvents = 0;
+    const DebugEvent* completionExitEvent = nullptr;
+    for (uint32_t i = 0; i < completion.eventCount; ++i) {
+        const DebugEvent* event = DebugControllerEventAt(&completion, i);
+        if (event && event->kind == DebugEventKind::Exited &&
+            event->sessionGeneration == completionGeneration) {
+            ++completionExitEvents;
+            completionExitEvent = event;
+        }
+    }
+    assert(completionExitEvents == 1 && completionExitEvent &&
+           completionExitEvent->state == DebugSessionState::Exited &&
+           completionExitEvent->stopReason == DebugStopReason::Exited &&
+           completionExitEvent->exitCode == 7 && completionExitEvent->processId == 12 &&
+           completionExitEvent->nativeRuntimeId == 77);
+    const uint32_t completionEventCount = completion.eventCount;
+    assert(DebugControllerApplySnapshot(&completion, completion.sessionGeneration, completionSnapshot));
+    assert(completion.eventCount == completionEventCount);
+
+    DebugBackendSnapshot userTermination = completionSnapshot;
+    userTermination.stopReason = DebugStopReason::UserRequested;
+    userTermination.exitCode = 0;
+    assert(DebugControllerStart(&completion, completionBackend, target, &error));
+    const uint64_t userTerminationGeneration = completion.sessionGeneration;
+    userTermination.sessionGeneration = userTerminationGeneration;
+    userTermination.state = DebugSessionState::Exited;
+    assert(DebugControllerApplySnapshot(&completion, userTerminationGeneration, userTermination));
+    assert(completion.state == DebugSessionState::Exited &&
+           completion.stopReason == DebugStopReason::UserRequested &&
+           completion.exitCode == 0 && completion.cleanupComplete);
+    const DebugEvent* userTerminationEvent = nullptr;
+    for (uint32_t i = 0; i < completion.eventCount; ++i) {
+        const DebugEvent* event = DebugControllerEventAt(&completion, i);
+        if (event && event->kind == DebugEventKind::Exited &&
+            event->sessionGeneration == userTerminationGeneration) userTerminationEvent = event;
+    }
+    assert(userTerminationEvent && userTerminationEvent->stopReason == DebugStopReason::UserRequested &&
+           userTerminationEvent->exitCode == 0);
+    assert(DebugControllerStart(&completion, completionBackend, target, &error));
+    assert(completion.sessionGeneration != userTerminationGeneration && completion.exitCode == 0 &&
+           !completion.cleanupComplete && completion.stopReason == DebugStopReason::None);
+    const uint64_t newestCompletionGeneration = completion.sessionGeneration;
+    assert(!DebugControllerApplySnapshot(&completion, userTerminationGeneration, userTermination));
+    assert(completion.state == DebugSessionState::Launching &&
+           completion.sessionGeneration == newestCompletionGeneration && completion.exitCode == 0 &&
+           !completion.cleanupComplete);
     assert(DebugControllerRequestStop(&controller, backend, &error));
     assert(controller.state == DebugSessionState::Stopping && fake.stops == 1);
     assert(DebugControllerPoll(&controller, backend));

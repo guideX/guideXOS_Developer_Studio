@@ -106,8 +106,9 @@ static void snapshotFromRun(const HostedDebugBackend& backend, uint64_t generati
     snapshot->debugHandle = backend.runController.result.handle;
     snapshot->exitCode = backend.runController.result.exitCode;
     snapshot->cleanupComplete = backend.runController.result.cleanupComplete;
-    snapshot->stopReason = snapshot->state == DebugSessionState::Exited ? DebugStopReason::Exited :
-        (backend.runController.closeRequested ? DebugStopReason::UserRequested : DebugStopReason::None);
+    snapshot->stopReason = snapshot->state == DebugSessionState::Failed ? DebugStopReason::Unknown :
+        (backend.runController.closeRequested ? DebugStopReason::UserRequested :
+         (snapshot->state == DebugSessionState::Exited ? DebugStopReason::Exited : DebugStopReason::None));
     snapshot->executionState = snapshot->state == DebugSessionState::Running ?
         DebugBackendExecutionState::Running : DebugBackendExecutionState::None;
     copyText(snapshot->backendName, sizeof(snapshot->backendName), "Hosted Native ELF");

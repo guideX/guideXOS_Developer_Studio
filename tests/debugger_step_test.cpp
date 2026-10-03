@@ -19,11 +19,14 @@ struct StepFake {
     uint32_t pauseCalls = 0;
     uint64_t nextRip = 0x104;
     uint64_t nextStopGeneration = 4;
+    int32_t exitCode = 7;
     DebugRegisterContext lastContext = {};
 };
 
 struct StepOverFake {
     bool trapPending = false;
+    bool exitBeforeStepStop = false;
+    uint32_t pollCalls = 0;
     uint32_t readCalls = 0;
     uint32_t bindCalls = 0;
     uint32_t removeCalls = 0;
@@ -34,6 +37,7 @@ struct StepOverFake {
 
 struct StepOutFake {
     bool overlapUserBreakpoint = false;
+    bool exitBeforeStepStop = false;
     uint32_t bindCalls = 0;
     uint32_t removeCalls = 0;
     uint32_t stepOutCalls = 0;
@@ -50,6 +54,15 @@ static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapsho
     ++fake->pollCalls;
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
+    if (fake->exitBeforeStepStop) {
+        snapshot->state = DebugSessionState::Exited;
+        snapshot->stopReason = DebugStopReason::Exited;
+        snapshot->processId = 12;
+        snapshot->nativeRuntimeId = 77;
+        snapshot->exitCode = 7;
+        snapshot->cleanupComplete = true;
+        return true;
+    }
     snapshot->state = DebugSessionState::Paused;
     snapshot->stopReason = DebugStopReason::Step;
     snapshot->processId = 12;
@@ -212,7 +225,8 @@ static bool poll(void* userData, uint64_t generation, DebugBackendSnapshot* snap
         snapshot->state = DebugSessionState::Exited;
         snapshot->stopReason = DebugStopReason::Exited;
         snapshot->executionState = DebugBackendExecutionState::None;
-        snapshot->exitCode = 0;
+        snapshot->exitCode = fake->exitCode;
+        snapshot->cleanupComplete = true;
         return true;
     }
     fake->pending = false;
@@ -267,8 +281,18 @@ static DebugBackend makeBackend(StepFake* fake) {
 
 static bool overPoll(void* userData, uint64_t generation, DebugBackendSnapshot* snapshot) {
     StepOverFake* fake = static_cast<StepOverFake*>(userData);
+    ++fake->pollCalls;
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
+    if (fake->exitBeforeStepStop) {
+        snapshot->state = DebugSessionState::Exited;
+        snapshot->stopReason = DebugStopReason::Exited;
+        snapshot->processId = 12;
+        snapshot->nativeRuntimeId = 77;
+        snapshot->exitCode = 7;
+        snapshot->cleanupComplete = true;
+        return true;
+    }
     snapshot->processId = 12;
     snapshot->nativeRuntimeId = 77;
     snapshot->threadId = 44;
@@ -530,6 +554,7 @@ int main() {
     assert(exitDuringStep.state == DebugSessionState::Stepping && exitDuringStep.sourceStep.active);
     assert(DebugControllerPoll(&exitDuringStep, exitBackend, &mapper));
     assert(exitDuringStep.state == DebugSessionState::Exited);
+    assert(exitDuringStep.exitCode == 7 && exitDuringStep.cleanupComplete);
     assert(!exitDuringStep.active);
     assert(exitDuringStep.stopReason == DebugStopReason::Exited);
     assert(exitDuringStep.sourceStep.status == DebugSourceStepStatus::Cancelled);
@@ -605,6 +630,33 @@ int main() {
            overController.backendExecutionState == DebugBackendExecutionState::Running &&
            overController.stopGeneration == 0 && !overController.callStack.valid &&
            !overController.variables.valid);
+
+    static DebugController exitDuringStepOver = {};
+    preparePausedController(&exitDuringStepOver, true);
+    exitDuringStepOver.capabilities.canStepOver = true;
+    exitDuringStepOver.currentInstructionAddress = { true, 0x103 };
+    exitDuringStepOver.stoppedContext.rip = 0x103;
+    StepOverFake exitOverFake;
+    exitOverFake.exitBeforeStepStop = true;
+    DebugBackend exitOverBackend = makeStepOverBackend(&exitOverFake);
+    assert(DebugControllerStepOver(&exitDuringStepOver, exitOverBackend, &mapper, &error));
+    const uint64_t exitOverGeneration = exitDuringStepOver.stepOver.commandGeneration;
+    assert(exitDuringStepOver.state == DebugSessionState::Stepping &&
+           exitDuringStepOver.stepOver.active && exitDuringStepOver.stepOver.temporaryInstalled);
+    assert(DebugControllerPoll(&exitDuringStepOver, exitOverBackend, &mapper));
+    assert(exitDuringStepOver.state == DebugSessionState::Exited && !exitDuringStepOver.active &&
+           exitDuringStepOver.exitCode == 7 && exitDuringStepOver.cleanupComplete &&
+           exitDuringStepOver.stepOver.commandGeneration == exitOverGeneration &&
+           !exitDuringStepOver.stepOver.active && !exitDuringStepOver.stepOver.temporaryInstalled &&
+           exitDuringStepOver.stepOver.temporaryBreakpointId == 0 &&
+           exitDuringStepOver.stepOver.status == DebugStepOverStatus::Cancelled &&
+           exitDuringStepOver.stepCompletionGeneration == 0);
+    uint32_t exitOverCompletionEvents = 0;
+    for (uint32_t i = 0; i < exitDuringStepOver.eventCount; ++i) {
+        const DebugEvent* event = DebugControllerEventAt(&exitDuringStepOver, i);
+        if (event && event->kind == DebugEventKind::StepOverCompleted) ++exitOverCompletionEvents;
+    }
+    assert(exitOverFake.pollCalls == 1 && exitOverCompletionEvents == 0);
 
     DebugController staleOverCommand = {};
     preparePausedController(&staleOverCommand, true);
@@ -684,6 +736,31 @@ int main() {
     assert(overlapFake.resumeCalls == 1 &&
            overlapController.backendExecutionState == DebugBackendExecutionState::SingleStepPending);
     assert(DebugControllerCanStepOut(&outController));
+
+    static DebugController exitDuringStepOut = {};
+    exitDuringStepOut = outController;
+    StepOutFake exitOutFake;
+    exitOutFake.exitBeforeStepStop = true;
+    DebugBackend exitOutBackend = makeStepOutBackend(&exitOutFake);
+    assert(DebugControllerStepOut(&exitDuringStepOut, exitOutBackend, &mapper, &error));
+    const uint64_t exitOutGeneration = exitDuringStepOut.stepOut.commandGeneration;
+    assert(exitDuringStepOut.state == DebugSessionState::Stepping &&
+           exitDuringStepOut.stepOut.active && exitDuringStepOut.stepOut.temporaryInstalled);
+    assert(DebugControllerPoll(&exitDuringStepOut, exitOutBackend, &mapper));
+    assert(exitDuringStepOut.state == DebugSessionState::Exited && !exitDuringStepOut.active &&
+           exitDuringStepOut.exitCode == 7 && exitDuringStepOut.cleanupComplete &&
+           exitDuringStepOut.stepOut.commandGeneration == exitOutGeneration &&
+           !exitDuringStepOut.stepOut.active && !exitDuringStepOut.stepOut.temporaryInstalled &&
+           exitDuringStepOut.stepOut.temporaryBreakpointId == 0 &&
+           exitDuringStepOut.stepOut.status == DebugStepOutStatus::Cancelled &&
+           exitDuringStepOut.stepCompletionGeneration == 0);
+    uint32_t exitOutCompletionEvents = 0;
+    for (uint32_t i = 0; i < exitDuringStepOut.eventCount; ++i) {
+        const DebugEvent* event = DebugControllerEventAt(&exitDuringStepOut, i);
+        if (event && event->kind == DebugEventKind::StepOutCompleted) ++exitOutCompletionEvents;
+    }
+    assert(exitOutFake.pollCalls == 1 && exitOutCompletionEvents == 0);
+
     assert(DebugControllerStepOut(&outController, outBackend, &mapper, &error));
     const uint64_t stepOutCommandGeneration = outController.stepOut.commandGeneration;
     assert(outController.state == DebugSessionState::Stepping && outController.stepOut.active);
@@ -707,6 +784,7 @@ int main() {
     assert(outController.callStack.valid && outController.callStack.selectedFrameIndex == 0 &&
            outController.callStack.result.frameCount == 2 && outController.callStack.result.frames[0].current);
     assert(outController.callStack.result.frames[0].instructionAddress == 0x202);
+
     assert(DebugControllerPoll(&outController, outBackend, &mapper));
     assert(outController.error == DebugErrorCode::None && outFake.pollCalls == 2 &&
            outFake.removeCalls == 1 && outController.state == DebugSessionState::Paused &&
