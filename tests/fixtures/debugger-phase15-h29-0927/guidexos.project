@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "projectId": "com.example.debuggerphase15",
+  "displayName": "Debugger Phase 15 Fixture",
+  "projectKind": "native-gui-application",
+  "sourceRoot": "src",
+  "applicationManifest": "app/app.json",
+  "defaultTargetProfile": "guidexos.amd64.hosted.native",
+  "entryPoint": "gx_main",
+  "abi": "guidexos-c-abi-v1",
+  "architecture": "amd64",
+  "outputName": "debugger-phase15"
+}

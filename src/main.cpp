@@ -6671,6 +6671,31 @@ static bool loadDebugSymbolsForTarget(gx_app_context* ctx, DebugTarget* target) 
                                    target, &g_debugMapper, DebugDwarfErrorName(error));
     phase29nHostedSourceAssociationTrace(ctx, target, &g_debugMapper);
     phase29nHostedDwarfSummaryTrace(ctx, target, &g_debugMapper);
+    if (phase29nHostedTraceEnabled() && g_debugMapper.bootstrapSourceMap) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "DEVELOPER_STUDIO_PHASE29Q_HOST_GXSM project_generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " build_operation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+        appendText(g_textScratch, sizeof(g_textScratch), " symbol_generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.mapperGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " elf_sha256=");
+        appendText(g_textScratch, sizeof(g_textScratch), g_debugMapper.identity.sha256);
+        appendText(g_textScratch, sizeof(g_textScratch), " version=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.bootstrapSourceMapVersion);
+        appendText(g_textScratch, sizeof(g_textScratch), " trailer_offset=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.bootstrapSourceMapOffset);
+        appendText(g_textScratch, sizeof(g_textScratch), " trailer_size=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.bootstrapSourceMapBytes);
+        appendText(g_textScratch, sizeof(g_textScratch), " source_files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.sourceFileCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " source_records=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.bootstrapSourceMappingCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " variable_records=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugMapper.bootstrapVariableCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " result=accepted");
+        logMarker(ctx, g_textScratch);
+    }
     phase28v_startup_event(ctx, "SYMBOL_MAPPER_RETURN", nullptr);
     if (!loaded) {
         phase29hArtifactTrace(ctx, "symbol_parser", target, info.size, actualSha256,

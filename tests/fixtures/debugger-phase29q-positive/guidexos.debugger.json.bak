@@ -1,0 +1,1 @@
+{"version":1,"breakpoints":[{"sourcePath":"src/main.cpp","line":4,"column":1,"enabled":true,"action":"BREAK","condition":"","hitPolicy":"NONE","hitThreshold":0,"logTemplate":""}],"watches":["counter == 2"]}
