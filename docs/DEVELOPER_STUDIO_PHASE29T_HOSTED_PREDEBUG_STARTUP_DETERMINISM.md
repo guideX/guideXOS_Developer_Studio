@@ -41,6 +41,33 @@ The smoke now follows this bounded sequence:
 
 No fixed startup sleep, repeated open request, retry, repeated launch, or forever poll was added. The one body click is a single focus repair after owner discovery, not a repeated retry.
 
+### Checkpoint and marker map
+
+The hosted smoke drives the real interactive path through `guideXOSServer` → desktop launch → NativeAppHost ownership → Developer Studio's project dialog. These are the observed checkpoints and the limits of what that build exposes:
+
+| Startup checkpoint | Observed evidence |
+|---|---|
+| 1. Fresh fixture root | `FIXTURE_STAGE` prints the unique destination before launch; an existing destination is rejected. |
+| 2. Fixture identity | The six tracked files are copied without rewriting project or application identity. `project_id`, `application_id`, and display name are logged and compared. |
+| 3. Required paths and writes | `FIXTURE_COPY` reports each byte count and matching source/destination SHA-256. The required project metadata, app manifest, source root, and build script are checked; `generated_before=0`; writes use closed `WriteAllBytes` handles before launch. |
+| 4. Server process created | `SERVER_PROCESS_START` records executable path, child PID, wrapper PID, and process creation time. A matching pre-existing Server process blocks launch. |
+| 5. Server entry and initialization | The Server emits `guideXOSServer server starting...`; the smoke then sends `gui.start`. This marker is emitted from Server `main`; the hosted path does not expose a separate `Lifecycle::bootstrap` completion marker. |
+| 6. Developer Studio launch | `desktop.launch com.guidexos.developerstudio` is followed by `Desktop launch successful: com.guidexos.developerstudio`. |
+| 7. App/controller construction | `GUIDEXOS_DEVELOPER_STUDIO_MARKER application_construction=PASS` and `DEVELOPER_STUDIO_PHASE29D_STARTUP_WORKSPACE_CONTROLLER_READY`. |
+| 8. Main window | `GUIDEXOS_DEVELOPER_STUDIO_MARKER main_window_creation=PASS`, then the owner query must return exactly one visible app-owned Developer Studio window with a nonzero PID. |
+| 9. Event loop | `DEVELOPER_STUDIO_PHASE29D_STARTUP_EVENT_LOOP_FIRST_ITERATION`. |
+| 10. Project-open action | Once ownership is known, one body click supplies fresh focus; the smoke waits for the owned Ctrl+Shift+O input and the actual path prompt before typing the root once. |
+| 11. Request receipt | The UI route has no separate product-side “request received” marker. The first product-side acceptance evidence is `GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS`. |
+| 12. Request accepted | The harness records `PROJECT_OPEN_DISPATCH_RESULT ... result=sent` after the single key flow and records `PROJECT_OPEN_ACCEPTED ... result=project_open_PASS` only after `project_open=PASS`. These IDs are harness correlation GUIDs. |
+| 13. Phase 29C transaction created | Internal hosted request/generation/transaction identifiers are not exposed by the normal diagnostic route. No transaction creation is inferred from the harness GUID. |
+| 14. Project metadata | `GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS`; the fixture preflight independently validates `guidexos.project`. |
+| 15. Application manifest | The app manifest exists and parses during fixture preflight and its ID/display name match the project metadata. The hosted UI route exposes no separate manifest-access marker. |
+| 16. Project `Loaded` | No individual hosted `Loaded` marker is exposed. |
+| 17. Refresh, commit, ownership, and `ready` | No hosted per-checkpoint Phase 29C/29L transaction trace is exposed. `DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=PROJECT_READY ... result=project_open_and_build_ready` plus `debug_variables=PASS` proves usable project/build/debug readiness, not the hidden individual transaction states. |
+| 18. Breakpoint/debug preparation | `GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS`, followed by authoritative breakpoint stop, call-stack, and `debug_variables=PASS` markers. |
+
+The QEMU Phase 29L observer is the path that exposes transaction ownership. Across all five fresh boots, `DEVELOPER_STUDIO_PHASE29C_PROJECT_LOAD_READY` and `DEVELOPER_STUDIO_PHASE28Q_PASS` were present; request/generation/transaction/refresh/project generation were each `1`, ownership was `CURRENT` while committed, and `TRANSACTION_NOT_ACTIVE` after release. That QEMU evidence validates the Server project-load path but does not fill in the hidden IDs or sub-checkpoints of the hosted UI request.
+
 ## Fixture, identity, and path evidence
 
 The gate makes a new directory for every iteration and refuses to reuse an existing one. It copies only `CMakeLists.txt`, `README.md`, `app/app.json`, `build.ps1`, `guidexos.project`, and `src/main.cpp`. It does not copy debugger settings, build/bin directories, ELF/object files, or other generated output, and it does not rewrite identity. File counts and SHA-256 values are checked before launch; file handles are closed before Server/project-open begins.
