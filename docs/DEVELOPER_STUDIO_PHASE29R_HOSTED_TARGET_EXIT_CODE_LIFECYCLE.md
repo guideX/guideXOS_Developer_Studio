@@ -112,4 +112,17 @@ The `-Phase29LFullAcceptance -BootCount 10` run stopped at boot 1 under the no-r
 
 The mandatory gates do not all pass: hosted code-0 target lifecycle succeeds but the hosted Server process then exits with `0xC0000005`, and QEMU full acceptance cannot start the Phase 28Q target because the staged `/P28Q` build reports `invalid_project_root`. The focused code-7 gate, 25-iteration hosted stress, code-1 regression, both package audits, and QEMU 25-boot ownership stress pass. **Phase 29R outcome: B — changes and positive-exit regression are complete, with the code-0 host-process crash and QEMU full-acceptance project-root failure outstanding.**
 
-Ending commits, push results, ahead/behind counts, and the exact preserved worktree entries will be entered at repository closeout. No physical-device verification was performed.
+## Repository closeout
+
+The implementation commits are:
+
+- Standalone Developer Studio: `5b5d794c3bf8f7c19cce68ced2d69718193402f2` (`Fix hosted target exit lifecycle propagation`).
+- Server integration: `bf78d517b513b624f61bee4ae6d144377f6c8000` (`Treat normal native app returns as exited`).
+
+Ordinary pushes to `origin main` and `origin v0.5_DEVELOPER_STUDIO` were attempted and both failed with `Permission denied (publickey)`. Remotes and authentication were not changed. At those attempts each branch was 1 ahead / 0 behind; the final standalone ledger closeout commit adds one local commit, leaving standalone 2 ahead / 0 behind and Server 1 ahead / 0 behind.
+
+The remaining standalone worktree entries are the pre-existing Phase 29Q `src/main.cpp` host GXSM trace hunk, left unstaged, plus these preserved untracked fixtures/configs: `tests/fixtures/debugger-phase15-h29-0927-phase29i-hosted-run-1/`, `tests/fixtures/debugger-phase15-h29-0927/`, `tests/fixtures/debugger-phase15/guidexos.debugger.json` and `.bak`, `tests/fixtures/debugger-phase29q-positive/guidexos.debugger.json` and `.bak`, and `tests/fixtures/debugger-phase3b/guidexos.debugger.json` and `.bak`.
+
+The remaining Server worktree entries are the user's pre-existing modified `Apps/DeveloperStudio/app.json` (SHA-256 `5793567C54ABF22423A8FCDE2F9B32E5DEEB73981E070707BA11E7D23F390401`) and `Apps/DeveloperStudio/bin/amd64/developerstudio.elf` (SHA-256 `106BD4D1C8827894AB6CE4850E5DC30E55E98A1BAA52BCA149027781B4081FE9`), plus untracked `ESP/Apps/DeveloperStudio/.phase28q-diagnostic` (content `guideXOS-phase28q`, SHA-256 `967D29A9A500A3108D7331BA47A5E2053A7C2203B81A345BE990084F3F43698A`). They were neither staged nor committed.
+
+No physical-device verification was performed.
