@@ -284,7 +284,12 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
-        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|debug_inspection|debug_ui_watch_result|debugger_teardown=PASS|TARGET_EXIT_NORMAL|GXSM|NativeAppDebugger|Hosted runtime key trace|poll_event skipped event|DESKTOP_WINDOW_OWNERS_|window id=|ownerPid=|Activate sent|Key queued|Bus::publish directing msg type=12|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|PHASE29F|PHASE29G|DEBUG_START|START_API|SYMBOL_INITIALIZATION|BREAKPOINT_BINDING|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|debug_inspection|debug_watch_runtime|debug_ui_watch_result|debugger_teardown=PASS|TARGET_EXIT_NORMAL|GXSM|NativeAppDebugger|Hosted runtime key trace|poll_event skipped event|DESKTOP_WINDOW_OWNERS_|window id=|ownerPid=|Activate sent|Key queued|Bus::publish directing msg type=12|shutdownStage=|Native app processes:|Native app debug log:|PHASE28U_HOST|PHASE29N_HOST|PHASE29F|PHASE29G|DEBUG_START|START_API|SYMBOL_INITIALIZATION|BREAKPOINT_BINDING|MATERIALIZE|WORKSPACE_BREAKPOINT' } | Select-Object -Last 160)
+        # Keep compact per-target terminal evidence ahead of verbose replay,
+        # debugger proof, and recent-output sections. The wrapper gate audits
+        # this bounded trace, so tail truncation must not drop an earlier
+        # session when the second session produces a long nativeapp.debuglog.
+        $terminalLifecycle = @($lines | Where-Object { $_ -match 'TARGET_EXIT_NORMAL code=|debugger_teardown=PASS|debug_watch_runtime=invalidated|debug_inspection=invalidated' } | Select-Object -Last 48)
         $proof = @($lines | Where-Object { $_ -match 'debug_step_(request|complete)=|debug_ui_step_route=|debug_stop_context=authoritative|debug_ui_watch_result=refreshed .*expression=counter' })
         $gxsm = @($lines | Where-Object { $_ -match '\[NativeAppDebugger\] GXSM (validation|variables accepted|variable read result)' })
         $recent = @($lines | Select-Object -Last 80)
@@ -295,10 +300,11 @@ function Write-ShutdownTrace([string]$Reason, [string]$Content) {
             "lastShutdownStage=$(Get-LastShutdownStage $Content)",
             "serverExitCode=$serverExitCode",
             "boundedLifecycleMarkerCount=$($lifecycle.Count)",
-            "--- recent bounded lifecycle markers ---"
+            "boundedTerminalLifecycleMarkerCount=$($terminalLifecycle.Count)",
+            "--- retained per-target terminal lifecycle evidence ---"
         )
-        $body = ($header + $lifecycle + @("--- retained debugger proof records ---") + $proof + @("--- retained GXSM backend records ---") + $gxsm + @("--- recent output ---") + $recent) -join "`r`n"
-        if ($body.Length -gt 65536) { $body = $body.Substring($body.Length - 65536) }
+        $body = ($header + $terminalLifecycle + @("--- recent bounded lifecycle markers ---") + $lifecycle + @("--- retained debugger proof records ---") + $proof + @("--- retained GXSM backend records ---") + $gxsm + @("--- recent output ---") + $recent) -join "`r`n"
+        if ($body.Length -gt 65536) { $body = $body.Substring(0, 65536) }
         Set-Content -LiteralPath $artifact -Value $body -Encoding UTF8
         Write-Host "Shutdown trace artifact: $artifact"
     } catch {
@@ -946,8 +952,14 @@ try {
     Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS') -and
                  $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_metadata_parse=PASS')) "fixture project opens through Developer Studio"
     if ($SteppingLifecycle -or $PositiveGxsmLifecycle) {
-        Assert-True (([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS')).Count -eq 1 -and
-                     -not $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL')) "one project-open request is accepted exactly once with no root-validation rejection"
+        # nativeapp.debuglog replays earlier host log entries with a different
+        # prefix. Count the direct product publication here; the gate wrapper
+        # separately proves that only one project-open request was dispatched.
+        $projectOpenPublished = ([regex]::Matches($text, '(?m)^\[NativeAppHost\] App: com\.guidexos\.developerstudio .* log: GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=PASS(?:\s|$)')).Count
+        $projectOpenRejected = [regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER project_open=FAIL').Count
+        $invalidProjectRoot = $text.Contains('invalid_project_root')
+        Write-Host "PROJECT_OPEN_PRODUCT_MARKERS direct_pass=$projectOpenPublished rejected=$projectOpenRejected invalid_project_root=$invalidProjectRoot"
+        Assert-True ($projectOpenPublished -eq 1 -and $projectOpenRejected -eq 0 -and -not $invalidProjectRoot) "one direct project-open result is published for the single dispatched request, with no root-validation rejection"
     }
     if ($text -notmatch 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)' -and
         -not ($SteppingLifecycle -and $text -match 'debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:42 source_map=current')) {

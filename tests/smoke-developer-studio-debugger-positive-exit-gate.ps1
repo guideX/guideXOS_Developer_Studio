@@ -60,9 +60,38 @@ $started = Get-Date
 $runToken = [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $serverExecutable = [IO.Path]::GetFullPath((Join-Path $ServerRoot 'guideXOSServer.experimental.exe'))
+$developerStudioPackageRoot = Join-Path $ServerRoot 'Apps\DeveloperStudio'
+$developerStudioManifestPath = Join-Path $developerStudioPackageRoot 'app.json'
+if (-not [IO.File]::Exists($serverExecutable)) { throw "Hosted Server executable is missing: $serverExecutable" }
+if (-not [IO.File]::Exists($developerStudioManifestPath)) { throw "Developer Studio package manifest is missing: $developerStudioManifestPath" }
+$developerStudioManifest = Get-Content -LiteralPath $developerStudioManifestPath -Raw | ConvertFrom-Json
+$amd64Entries = @($developerStudioManifest.entries | Where-Object { $_.architecture -eq 'amd64' })
+if ($developerStudioManifest.id -ne 'com.guidexos.developerstudio' -or $amd64Entries.Count -ne 1 -or
+    -not $amd64Entries[0].path) {
+    throw "Developer Studio package manifest has no unique AMD64 entry: $developerStudioManifestPath"
+}
+$developerStudioElfPath = [IO.Path]::GetFullPath((Join-Path $developerStudioPackageRoot $amd64Entries[0].path.Replace('/', [IO.Path]::DirectorySeparatorChar)))
+if (-not [IO.File]::Exists($developerStudioElfPath)) { throw "Developer Studio AMD64 package is missing: $developerStudioElfPath" }
+$developerStudioElfBytes = [IO.File]::ReadAllBytes($developerStudioElfPath)
+$developerStudioElfText = [Text.Encoding]::ASCII.GetString($developerStudioElfBytes)
+$requiredLifecycleMarkers = @(
+    'TARGET_EXIT_NORMAL code=',
+    'debugger_teardown=PASS',
+    'debug_inspection=invalidated',
+    'debug_watch_runtime=invalidated'
+)
+$missingLifecycleMarkers = @($requiredLifecycleMarkers | Where-Object { -not $developerStudioElfText.Contains($_) })
+$developerStudioElfHash = (Get-FileHash -LiteralPath $developerStudioElfPath -Algorithm SHA256).Hash
+if ($missingLifecycleMarkers.Count -gt 0) {
+    throw ("Developer Studio package is stale for the hosted terminal gate: path={0} sha256={1} missing_markers={2}. " -f `
+        $developerStudioElfPath, $developerStudioElfHash, ($missingLifecycleMarkers -join ',')) +
+        'Pass -ServerRoot for an isolated Server stage containing the current Phase 29R-compatible Developer Studio package.'
+}
 
 Write-Host 'Developer Studio hosted fresh-fixture target-exit gate'
 Write-Host "server_root=$ServerRoot"
+Write-Host ("APP_PACKAGE_AUDIT path={0} bytes={1} sha256={2} required_lifecycle_markers={3} result=PASS" -f `
+    $developerStudioElfPath, $developerStudioElfBytes.Length, $developerStudioElfHash, $requiredLifecycleMarkers.Count)
 Write-Host "fixture_source_root=$FixtureSourceRoot"
 Write-Host "fixture_source_project_id=$($sourceProjectMetadata.projectId) application_id=$($sourceApplicationManifest.id) display_name='$($sourceProjectMetadata.displayName)'"
 Write-Host "tracked_fixture_file_count=$($trackedFixtureFiles.Count) trace_directory=$TraceDirectory"

@@ -86,7 +86,7 @@ function Get-ValidationLifecycleLines {
         [int]$Maximum = 96
     )
 
-    $patterns = 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:|Native app debug log:|priority|capture|modal|owner'
+    $patterns = 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_shutdown|debug_target|debug_window|debug_inspection|debug_watch_runtime|debugger_teardown=PASS|TARGET_EXIT_NORMAL|shutdownStage=|Native app processes:|Native app debug log:|priority|capture|modal|owner'
     return @($Lines | Where-Object { $_ -match $patterns } | Select-Object -Last $Maximum)
 }
 
