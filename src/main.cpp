@@ -24,6 +24,7 @@
 #include "developer_studio_debug_editor.h"
 #include "developer_studio_debug_tips.h"
 #include "developer_studio_debugger_workspace.h"
+#include "developer_studio_app_activation.h"
 #include "developer_studio_startup.h"
 
 namespace {
@@ -5356,14 +5357,17 @@ static bool saveDocument(gx_app_context* ctx, uint32_t index) {
 }
 
 static void openAppModelDocumentActivation(gx_app_context* ctx) {
-    if (!ctx || !ctx->host || ctx->host->size < offsetof(gx_host_calls, get_document_activation_path) +
-        sizeof(ctx->host->get_document_activation_path) || !ctx->host->get_document_activation_path) return;
     char path[kMaxPathBytes] = {};
-    uint32_t requiredBytes = 0;
-    const gx_result result = ctx->host->get_document_activation_path(ctx, path, sizeof(path), &requiredBytes);
-    if (result == GX_OK && requiredBytes == 0) return;
-    if (result != GX_OK || requiredBytes < 2 || requiredBytes > sizeof(path) || path[requiredBytes - 1] != '\0') {
-        const char* reason = requiredBytes > sizeof(path) ? "path_exceeds_editor_bound" : "activation_context_unavailable";
+    const auto activation = guidexos::developer_studio::CopyAppModelActivationPath(
+        ctx, path, sizeof(path));
+    if (activation.status == guidexos::developer_studio::AppModelActivationPathStatus::Unavailable) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=UNAVAILABLE");
+        return;
+    }
+    if (activation.status == guidexos::developer_studio::AppModelActivationPathStatus::NoDocument) return;
+    if (activation.status != guidexos::developer_studio::AppModelActivationPathStatus::Ready) {
+        const char* reason = activation.status == guidexos::developer_studio::AppModelActivationPathStatus::PathTooLong
+            ? "path_exceeds_editor_bound" : "activation_context_unavailable";
         writeOutput("App Model document activation failed: path could not be copied safely");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER appmodel_document_activation=FAIL", reason);
         return;
