@@ -363,16 +363,24 @@ static bool collectSections(const unsigned char* bytes, uint64_t size,
         findSection(bytes, size, sectionOffset, sectionEntrySize, sectionCount, sectionNames, ".debug_loclists", loclists);
 }
 
-static bool parseAbbreviations(const SectionView& section, uint32_t offset,
+static bool parseAbbreviations(DebugDwarfMapper* mapper, const SectionView& section, uint32_t offset,
                                AbbrevDeclaration* declarations, uint32_t* count) {
     if (!declarations || !count || offset >= section.size) return false;
     *count = 0;
     Cursor cursor = { section.data, offset, section.size };
     while (cursor.position < cursor.end) {
+        const uint64_t declarationOffset = cursor.position;
         uint64_t codeValue = 0;
         if (!readULEB(cursor, &codeValue) || codeValue > UINT32_MAX) return false;
         if (codeValue == 0) return true;
-        if (*count >= kDebugDwarfMaxAbbreviations) return false;
+        if (*count >= kDebugDwarfMaxAbbreviations) {
+            mapper->truncated = true;
+            mapper->error = DebugDwarfError::LimitExceeded;
+            mapper->parseFailureOffset = mapper->debugAbbrevSectionOffset + declarationOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_abbrev_capacity");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "abbreviation_table_capacity_exceeded");
+            return false;
+        }
         uint64_t tagValue = 0;
         uint8_t children = 0;
         if (!readULEB(cursor, &tagValue) || tagValue > UINT16_MAX || !readByte(cursor, &children)) return false;
@@ -727,7 +735,14 @@ static bool buildIndexes(DebugDwarfMapper* mapper) {
     for (uint32_t i = 0; i < mapper->debugInfoDieCount; ++i) {
         const DebugDwarfDieInfo& die = mapper->dies[i];
         if (die.tag != kTagSubprogram) continue;
-        if (mapper->debugInfoFunctionCount >= kDebugDwarfMaxFunctions) return false;
+        if (mapper->debugInfoFunctionCount >= kDebugDwarfMaxFunctions) {
+            mapper->truncated = true;
+            mapper->error = DebugDwarfError::LimitExceeded;
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + die.offset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_function_capacity");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "function_table_capacity_exceeded");
+            return false;
+        }
         DebugDwarfFunctionInfo& function = mapper->debugFunctions[mapper->debugInfoFunctionCount++];
         function = DebugDwarfFunctionInfo();
         function.dieOffset = die.offset;
@@ -754,7 +769,14 @@ static bool buildIndexes(DebugDwarfMapper* mapper) {
         // Compilation-unit globals and formal parameters of type DIEs are
         // intentionally outside this first frame-variable index.
         if (functionIndex == UINT32_MAX) continue;
-        if (mapper->debugInfoVariableCount >= kDebugDwarfMaxVariables) return false;
+        if (mapper->debugInfoVariableCount >= kDebugDwarfMaxVariables) {
+            mapper->truncated = true;
+            mapper->error = DebugDwarfError::LimitExceeded;
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + die.offset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_variable_capacity");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "variable_table_capacity_exceeded");
+            return false;
+        }
         DebugDwarfVariableInfo& variable = mapper->debugVariables[mapper->debugInfoVariableCount++];
         variable = DebugDwarfVariableInfo();
         variable.dieOffset = die.offset;
@@ -782,13 +804,22 @@ static bool parseCompilationUnit(DebugDwarfMapper* mapper, const SectionView& in
     // of consuming another large temporary stack frame during startup.
     static AbbrevDeclaration declarations[kDebugDwarfMaxAbbreviations] = {};
     uint32_t declarationCount = 0;
-    if (!parseAbbreviations(abbrev, abbrevOffset, declarations, &declarationCount)) {
-        mapper->parseFailureOffset = mapper->debugAbbrevSectionOffset + abbrevOffset;
-        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_abbrev");
-        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "abbreviation_declaration_invalid");
+    if (!parseAbbreviations(mapper, abbrev, abbrevOffset, declarations, &declarationCount)) {
+        if (mapper->parseFailureStage[0] == '\0') {
+            mapper->parseFailureOffset = mapper->debugAbbrevSectionOffset + abbrevOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_abbrev");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "abbreviation_declaration_invalid");
+        }
         return false;
     }
-    if (mapper->debugInfoCompilationUnitCount >= kDebugDwarfMaxCompilationUnits) return false;
+    if (mapper->debugInfoCompilationUnitCount >= kDebugDwarfMaxCompilationUnits) {
+        mapper->truncated = true;
+        mapper->error = DebugDwarfError::LimitExceeded;
+        mapper->parseFailureOffset = mapper->debugInfoSectionOffset + compilationUnitOffset;
+        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_cu_capacity");
+        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "compilation_unit_table_capacity_exceeded");
+        return false;
+    }
     const uint32_t rootIndex = mapper->debugInfoDieCount;
     Cursor cursor = { info.data, dieStart, unitEnd };
     static uint32_t parentStack[kDebugDwarfMaxDies > 64 ? 64 : kDebugDwarfMaxDies] = {};
@@ -804,7 +835,23 @@ static bool parseCompilationUnit(DebugDwarfMapper* mapper, const SectionView& in
             continue;
         }
         const int abbreviationIndex = findAbbreviation(declarations, declarationCount, static_cast<uint32_t>(codeValue));
-        if (abbreviationIndex < 0 || mapper->debugInfoDieCount >= kDebugDwarfMaxDies || depth >= sizeof(parentStack) / sizeof(parentStack[0])) return false;
+        if (abbreviationIndex < 0) return false;
+        if (mapper->debugInfoDieCount >= kDebugDwarfMaxDies) {
+            mapper->truncated = true;
+            mapper->error = DebugDwarfError::LimitExceeded;
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + dieOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_die_capacity");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "die_table_capacity_exceeded");
+            return false;
+        }
+        if (depth >= sizeof(parentStack) / sizeof(parentStack[0])) {
+            mapper->truncated = true;
+            mapper->error = DebugDwarfError::LimitExceeded;
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset + dieOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_depth_capacity");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "die_nesting_workspace_capacity_exceeded");
+            return false;
+        }
         const AbbrevDeclaration& declaration = declarations[abbreviationIndex];
         DebugDwarfDieInfo& die = mapper->dies[mapper->debugInfoDieCount];
         die = DebugDwarfDieInfo();
@@ -924,9 +971,11 @@ static bool parseDebugInfo(DebugDwarfMapper* mapper, const SectionView& info,
     }
     if (!buildIndexes(mapper)) {
         copyText(mapper->statusText, sizeof(mapper->statusText), "debug variable index limit or parent failed");
-        mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
-        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_indexes");
-        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "index_limit_or_parent_reference_invalid");
+        if (mapper->parseFailureStage[0] == '\0') {
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_indexes");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "index_limit_or_parent_reference_invalid");
+        }
         return false;
     }
     mapper->debugInfoReady = mapper->debugInfoFunctionCount != 0;
@@ -2199,7 +2248,7 @@ bool DebugDwarfParseVariables(DebugDwarfMapper* mapper, const unsigned char* elf
         return false;
     }
     if (!parseDebugInfo(mapper, info, abbrev, stringOffsets, strings, addresses)) {
-        mapper->error = DebugDwarfError::MalformedDwarf;
+        if (mapper->error == DebugDwarfError::None) mapper->error = DebugDwarfError::MalformedDwarf;
         if (mapper->parseFailureStage[0] == '\0') {
             mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
             copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_info");

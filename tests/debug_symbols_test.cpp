@@ -259,10 +259,17 @@ int main() {
     assert(std::strcmp(mapper.diagnosticSourceNormalized, "src/main.cpp") == 0);
     assert(std::strcmp(mapper.sourceFiles[0].compilationPath, "src/main.cpp") == 0);
     assert(std::strcmp(mapper.sourceFiles[0].relativePath, "src/main.cpp") == 0);
-    uint64_t addresses[kDebugMapperMaxAddressesPerLine] = {};
+    uint64_t addresses[8] = {};
     uint32_t count = 0; uint64_t primary = 0;
     assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src\\main.cpp", 42, addresses, 8, &count, &primary, &error));
     assert(count == 3 && primary == 0x401000 && addresses[1] == 0x401004 && addresses[2] == 0x402000);
+    assert(error == DebugDwarfError::None && !mapper.truncated);
+    uint64_t shortAddresses[2] = {};
+    uint32_t shortCount = 0; uint64_t shortPrimary = 0;
+    assert(DebugDwarfMapperMapSourceToAddresses(&mapper, "src/main.cpp", 42,
+        shortAddresses, 2, &shortCount, &shortPrimary, &error));
+    assert(shortCount == 2 && shortPrimary == primary &&
+           error == DebugDwarfError::Truncated);
     assert(mapper.sequenceCount == 2);
     assert(std::strcmp(mapper.identity.executablePath, "build/bin/fixture.elf") == 0);
     assert(mapper.elfHeaderValid && mapper.elfType == 2 && mapper.elfMachine == 62 &&
@@ -314,11 +321,11 @@ int main() {
     const uint32_t firstARowCount = identityMapper.lineRowCount;
     const uint32_t firstAFileCount = identityMapper.sourceFileCount;
     const uint32_t firstADieCount = identityMapper.debugInfoDieCount;
-    uint64_t firstAAddresses[kDebugMapperMaxAddressesPerLine] = {};
+    uint64_t firstAAddresses[8] = {};
     uint32_t firstAAddressCount = 0;
     uint64_t firstAPrimary = 0;
     assert(DebugDwarfMapperMapSourceToAddresses(&identityMapper, "src/main.cpp", 42,
-        firstAAddresses, kDebugMapperMaxAddressesPerLine, &firstAAddressCount, &firstAPrimary, &error));
+        firstAAddresses, 8, &firstAAddressCount, &firstAPrimary, &error));
     static DebugDwarfMapper alternatingMapper = {};
     assert(DebugDwarfMapperLoad(&alternatingMapper, "D:/fixture", "fixture", "target", "amd64",
         "build/bin/fixture.elf", symbolFixture.size(),
@@ -338,7 +345,7 @@ int main() {
            alternatingMapper.diagnosticSourceAssociationSucceeded &&
            std::strcmp(alternatingMapper.diagnosticSourceNormalized, "src/main.cpp") == 0);
     assert(DebugDwarfMapperMapSourceToAddresses(&alternatingMapper, "src/main.cpp", 42,
-        addresses, kDebugMapperMaxAddressesPerLine, &count, &primary, &error));
+        addresses, 8, &count, &primary, &error));
     assert(count == firstAAddressCount && primary == firstAPrimary);
     for (uint32_t i = 0; i < count; ++i) assert(addresses[i] == firstAAddresses[i]);
     char functionName[kDebugMapperMaxFunctionNameBytes] = {};

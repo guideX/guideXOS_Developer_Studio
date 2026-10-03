@@ -29,7 +29,6 @@ static const uint32_t kDebugMapperMaxLineRows = 131072;
 static const uint32_t kDebugMapperMaxLineKeys = 32768;
 static const uint32_t kDebugMapperMaxSequences = 2048;
 #endif
-static const uint32_t kDebugMapperMaxAddressesPerLine = 8;
 static const uint32_t kDebugMapperMaxPathBytes = kMaxProjectPathBytes;
 static const uint32_t kDebugMapperMaxStringBytes = 1024;
 static const uint32_t kDebugMapperMaxSha256Bytes = 65;
@@ -44,9 +43,8 @@ static const uint32_t kDebugMapperMaxExecutableSegments = 32;
 static const uint32_t kDebugMapperMaxFunctionNameBytes = 128;
 static const uint32_t kDebugDwarfMaxCompilationUnits = 32;
 #if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
-// Clang's small hosted debugger fixture currently emits 397 DIEs and 41
-// abbreviation declarations. Keep the freestanding tables bounded while
-// leaving room for that valid artifact shape.
+// These are explicit freestanding parser ceilings. The canonical 397-DIE
+// fixture is a validation input, not the capacity that sets this bound.
 static const uint32_t kDebugDwarfMaxDies = 512u;
 static const uint32_t kDebugDwarfMaxAbbreviations = 64u;
 #else
@@ -137,9 +135,8 @@ struct DebugDwarfSourceFile {
 struct DebugDwarfLineKey {
     uint16_t sourceFileIndex;
     uint32_t line;
-    uint32_t addressCount;
-    uint64_t addresses[kDebugMapperMaxAddressesPerLine];
     uint64_t primaryAddress;
+    bool hasAddress;
     bool hasStmtAddress;
 };
 

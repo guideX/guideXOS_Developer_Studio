@@ -531,23 +531,12 @@ static bool addLineAddress(DebugDwarfMapper* mapper, uint16_t sourceFileIndex,
         ++mapper->lineKeyCount;
     }
     DebugDwarfLineKey& key = mapper->lineKeys[index];
-    for (uint32_t i = 0; i < key.addressCount; ++i) {
-        if (key.addresses[i] == address) {
-            if (isStmt && !key.hasStmtAddress) { key.hasStmtAddress = true; key.primaryAddress = address; }
-            return true;
-        }
-    }
-    if (key.addressCount < kDebugMapperMaxAddressesPerLine) {
-        key.addresses[key.addressCount++] = address;
-    } else {
-        mapper->truncated = true;
-        return true;
-    }
-    if (key.addressCount == 1 || (isStmt && !key.hasStmtAddress) ||
+    if (!key.hasAddress || (isStmt && !key.hasStmtAddress) ||
         (!key.hasStmtAddress && address < key.primaryAddress)) {
         key.primaryAddress = address;
-        if (isStmt) key.hasStmtAddress = true;
     }
+    key.hasAddress = true;
+    if (isStmt) key.hasStmtAddress = true;
     return true;
 }
 
@@ -1837,11 +1826,28 @@ bool DebugDwarfMapperMapSourceToAddresses(const DebugDwarfMapper* mapper,
         }
         if (low < mapper->lineKeyCount && mapper->lineKeys[low].sourceFileIndex == i && mapper->lineKeys[low].line == line) {
             const DebugDwarfLineKey& key = mapper->lineKeys[low];
-            const uint32_t count = key.addressCount < capacity ? key.addressCount : capacity;
-            for (uint32_t address = 0; address < count; ++address) addresses[address] = key.addresses[address];
+            uint32_t count = 0;
+            bool capacityExceeded = false;
+            for (uint32_t rowIndex = 0; rowIndex < mapper->lineRowCount; ++rowIndex) {
+                const DebugDwarfLineRow& row = mapper->rows[rowIndex];
+                if (row.sourceFileIndex != i || row.line != line) continue;
+                bool duplicate = false;
+                for (uint32_t addressIndex = 0; addressIndex < count; ++addressIndex) {
+                    if (addresses[addressIndex] == row.address) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                if (count == capacity) {
+                    capacityExceeded = true;
+                    break;
+                }
+                addresses[count++] = row.address;
+            }
             *outCount = count;
             *outPrimary = key.primaryAddress;
-            if (key.addressCount > capacity && error) *error = DebugDwarfError::Truncated;
+            if (capacityExceeded && error) *error = DebugDwarfError::Truncated;
             return count != 0;
         }
         break;
