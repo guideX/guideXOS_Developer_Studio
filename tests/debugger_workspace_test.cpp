@@ -1,4 +1,5 @@
 #include "developer_studio_debugger_workspace.h"
+#include "developer_studio_debug_editor.h"
 
 #include <cassert>
 #include <cstring>
@@ -326,8 +327,19 @@ int main() {
 
     DebuggerWorkspace mutations = {};
     DebuggerWorkspaceInit(&mutations);
+    const uint64_t emptyGeneration = mutations.breakpointGeneration;
     assert(DebuggerWorkspaceToggleBreakpoint(&mutations, "src/first.cpp", 10, 1));
+    uint32_t resolvedIndex = 99;
+    const uint64_t firstSelectionGeneration = mutations.breakpointGeneration;
+    assert(firstSelectionGeneration != emptyGeneration);
+    assert(DebuggerWorkspaceResolveBreakpoint(&mutations, "src/first.cpp", 10,
+                                              firstSelectionGeneration, &resolvedIndex));
+    assert(resolvedIndex == 0);
+    assert(!DebuggerWorkspaceResolveBreakpoint(&mutations, "src/missing.cpp", 10,
+                                               firstSelectionGeneration, &resolvedIndex));
     assert(DebuggerWorkspaceToggleBreakpoint(&mutations, "src/middle.cpp", 20, 2));
+    assert(!DebuggerWorkspaceResolveBreakpoint(&mutations, "src/first.cpp", 10,
+                                               firstSelectionGeneration, &resolvedIndex));
     assert(DebuggerWorkspaceToggleBreakpoint(&mutations, "src/last.cpp", 30, 3));
     assert(mutations.breakpointCount == 3);
     assert(DebuggerWorkspaceToggleBreakpoint(&mutations, "src/middle.cpp", 20, 2));
@@ -336,8 +348,50 @@ int main() {
     assert(mutations.breakpoints[1].enabled);
     assert(DebuggerWorkspaceRemoveBreakpoint(&mutations, "src/middle.cpp", 20));
     assert(mutations.breakpointCount == 2);
+    const uint64_t lastSelectionGeneration = mutations.breakpointGeneration;
+    assert(DebuggerWorkspaceResolveBreakpoint(&mutations, "src/last.cpp", 30,
+                                              lastSelectionGeneration, &resolvedIndex));
+    assert(resolvedIndex == 1);
+    assert(DebuggerWorkspaceRemoveBreakpoint(&mutations, "src/last.cpp", 30));
+    assert(!DebuggerWorkspaceResolveBreakpoint(&mutations, "src/last.cpp", 30,
+                                               lastSelectionGeneration, &resolvedIndex));
+    assert(DebuggerWorkspaceToggleBreakpoint(&mutations, "src/last.cpp", 30, 3));
+    const uint64_t beforeConditionEdit = mutations.breakpointGeneration;
     assert(DebuggerWorkspaceUpdateBreakpoint(&mutations, "src/last.cpp", 30,
                                              1, 2, 3, "value > 0", "value={value}"));
+    const uint64_t afterConditionEdit = mutations.breakpointGeneration;
+    assert(afterConditionEdit != beforeConditionEdit);
+    assert(!DebuggerWorkspaceResolveBreakpoint(&mutations, "src/last.cpp", 30,
+                                               beforeConditionEdit, &resolvedIndex));
+    assert(DebuggerWorkspaceResolveBreakpoint(&mutations, "src/last.cpp", 30,
+                                              afterConditionEdit, &resolvedIndex));
+    assert(resolvedIndex == 1);
+    // Editor rows are presentation projections with source identity and a
+    // runtime ID only after binding; condition text stays in the workspace.
+    DebugEditorBreakpoint editorRows[2] = {};
+    for (uint32_t i = 0; i < mutations.breakpointCount; ++i) {
+        editorRows[i].used = true;
+        editorRows[i].configured = true;
+        editorRows[i].id = 0;
+        editorRows[i].line = mutations.breakpoints[i].line;
+        editorRows[i].column = mutations.breakpoints[i].column;
+        editorRows[i].enabled = mutations.breakpoints[i].enabled;
+        std::strcpy(editorRows[i].projectId, "test.project");
+        std::strcpy(editorRows[i].sourcePath, mutations.breakpoints[i].sourcePath);
+    }
+    DebugEditorModel editorModel = {};
+    DebugEditorModelInit(&editorModel);
+    DebugEditorModelRefreshBreakpoints(&editorModel, editorRows, mutations.breakpointCount);
+    const int editorLast = DebugEditorModelFindBreakpoint(&editorModel, "test.project",
+                                                          "src/last.cpp", 30);
+    assert(editorLast >= 0);
+    const DebugEditorBreakpoint* editorLastRow = DebugEditorModelBreakpointAt(
+        &editorModel, static_cast<uint32_t>(editorLast));
+    assert(editorLastRow && editorLastRow->configured && editorLastRow->id == 0);
+    // Manager and editor source identities resolve to the same canonical
+    // project configuration record, without copying condition state to a row.
+    assert(DebuggerWorkspaceFindBreakpoint(&mutations, editorLastRow->sourcePath,
+                                            editorLastRow->line) == static_cast<int>(resolvedIndex));
     assert(std::strcmp(mutations.breakpoints[0].sourcePath, "src/first.cpp") == 0);
     assert(std::strcmp(mutations.breakpoints[1].sourcePath, "src/last.cpp") == 0);
     assert(DebuggerWorkspaceAddWatch(&mutations, "first"));

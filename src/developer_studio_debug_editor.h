@@ -8,8 +8,10 @@ namespace guidexos {
 namespace developer_studio {
 
 // The source editor intentionally mirrors the public manager limit, not the
-// debugger core's larger internal breakpoint table.  The manager snapshot is
-// the source of truth; this is only the bounded render/navigation projection.
+// debugger core's larger internal breakpoint table. This is a bounded
+// render/navigation projection: configured rows come from the project
+// debugger workspace, while IDs on live rows bind to the current session.
+// Conditions remain owned by the canonical workspace record, not this view.
 static const uint32_t kDebugEditorMaxBreakpoints = 8u;
 
 enum class DebugEditorBreakpointVisualState {

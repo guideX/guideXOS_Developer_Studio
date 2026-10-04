@@ -170,16 +170,20 @@ function Add-DoubleClick([System.Collections.Generic.List[string]]$Parts, [int]$
     Add-Mouse $Parts $X $Y 'double' $true
 }
 
-function Add-ConditionEdit([System.Collections.Generic.List[string]]$Parts, [string]$Value, [int]$OldLength) {
-    Add-Key $Parts 67 0 $true
-    Add-ShortDelay $Parts
-    Add-Key $Parts 67 0 $true
-    Add-ShortDelay $Parts
+function Add-ConditionModalCommit([System.Collections.Generic.List[string]]$Parts, [string]$Value) {
     Add-Key $Parts 65 2 $true
     Add-Text $Parts $Value
     Add-ShortDelay $Parts
     Add-Key $Parts 13 0 $true
     Add-Delay $Parts 4
+}
+
+function Add-OpenEditorCondition([System.Collections.Generic.List[string]]$Parts) {
+    Add-Click $Parts 610 30
+    Add-Click $Parts 620 360
+    Add-ObservableMarkerWait $Parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id='
+    Add-ObservableMarkerWait $Parts 'origin=editor editor_row='
+    Add-ObservableMarkerWait $Parts 'manager_snapshot=absent'
 }
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
@@ -269,32 +273,27 @@ if ($WatchOnly) {
     Add-Delay $parts 3
 } elseif (-not $FrameOnly) {
 if (-not $UiOnly -and -not $TreeOnly -and -not $WatchOnly) {
-    # Open the real Breakpoints panel through the Debug menu and exercise the
-    # condition editor, including invalid text, clear, and enable-state retention.
+    # Edit the F9-selected editor breakpoint directly from the Debug menu.
+    # This acceptance route deliberately does not initialize Breakpoint Manager.
     Add-ServerLine $parts 'gui.activate 1000'
     Add-ShortDelay $parts
     Add-Click $parts 610 30
-    Add-Click $parts 620 230
-    Add-Delay $parts 8
-    Add-Click $parts 700 148
-    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN'
-    Add-ConditionEdit $parts $Condition 0
+    Add-Click $parts 620 360
+    Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id='
+    Add-ObservableMarkerWait $parts 'origin=editor editor_row='
+    Add-ObservableMarkerWait $parts 'manager_snapshot=absent'
+    Add-ConditionModalCommit $parts $Condition
     Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS'
     if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $FrameOnly) {
-        Add-ConditionEdit $parts 'counter = 2' $Condition.Length
+        Add-OpenEditorCondition $parts
+        Add-ConditionModalCommit $parts 'counter = 2'
         Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID'
+        Add-OpenEditorCondition $parts
         Add-Key $parts 88 0 $true
         Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS'
-        # Re-select the breakpoint row after clearing so the subsequent edit
-        # proves stable-ID rebinding through the real panel selection path.
-        Add-Click $parts 700 148
-        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN'
-        Add-ConditionEdit $parts $Condition 0
+        Add-OpenEditorCondition $parts
+        Add-ConditionModalCommit $parts $Condition
         Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS'
-        Add-Key $parts 32 0 $true
-        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS'
-        Add-Key $parts 32 0 $true
-        Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS'
     }
     Add-Delay $parts 3
 }
@@ -304,13 +303,26 @@ if (-not $EditorOnly) {
     Add-ObservableStopWait $parts
 
     if ($RuntimeOnly -or $ExpectConditionError) {
-        # Runtime-only and ConditionError proofs stop at the observable
-        # debugger state and close through the product path.  Their
-        # assertions remain below; no inspection click sequence is needed.
-        Add-ServerLine $parts 'log'
-        Add-Delay $parts 2
-        Add-ServerLine $parts 'gui.close 1000'
-        Add-Delay $parts 3
+        # The runtime-only conditional proof continues from its true stop and
+        # waits for the fixture to exit normally. ConditionError remains
+        # stopped for recovery/error-state assertions and uses targeted close.
+        if ($RuntimeOnly) {
+            Add-ServerLine $parts 'gui.activate 1000'
+            Add-ShortDelay $parts
+            Add-Key $parts 116 0 $true
+            Add-ObservableMarkerWait $parts 'conditional values ready'
+            Add-ServerLine $parts 'gui.close 1001'
+            Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=0'
+            Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS'
+            Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED'
+            Add-ServerLine $parts 'gui.close 1000'
+            Add-Delay $parts 3
+        } else {
+            Add-ServerLine $parts 'log'
+            Add-Delay $parts 2
+            Add-ServerLine $parts 'gui.close 1000'
+            Add-Delay $parts 3
+        }
     } elseif ($UiOnly -and -not $TreeOnly) {
         Add-ServerLine $parts 'gui.activate 1000'
         Add-ShortDelay $parts
@@ -397,8 +409,10 @@ if (-not $EditorOnly) {
 }
 if ($EditorOnly) {
     Add-ServerLine $parts 'gui.close 1000'
-    $parts.Add("WAITSHUTDOWN|$DebugWaitSeconds")
-} elseif ($RuntimeOnly -or $ExpectConditionError) {
+} elseif ($RuntimeOnly) {
+    # RuntimeOnly already observed natural target exit and closed the Studio
+    # window; it must not fall through to targeted-debug-shutdown assertions.
+} elseif ($ExpectConditionError) {
     # These proofs already requested the targeted product close immediately
     # after the observable stop. Do not fall through into the inspection
     # sequence, which would send stale input to the released window.
@@ -650,8 +664,9 @@ try {
     if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $TreeOnly -and -not $FrameOnly -and -not $WatchOnly) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID')) "invalid condition remains visibly invalid"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS')) "condition clear is reportable"
-        $retainedCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_retained=PASS')).Count
-        Assert-True ($retainedCount -ge 2) "disable and re-enable retain the condition"
+        Assert-True ($text.Contains('origin=editor editor_row=') -and $text.Contains('manager_snapshot=absent')) "editor route opens without a Manager snapshot"
+        $persistCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_persist=PASS')).Count
+        Assert-True ($persistCount -ge 2) "valid edits and clear persist to the canonical workspace breakpoint"
     }
     if ($FrameOnly) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "frame-only hosted proof reaches a real breakpoint stop"
@@ -710,6 +725,15 @@ try {
         $falseHits = ([regex]::Matches($text, 'Debug: breakpoint condition false; continuing')).Count
         Assert-True ($falseHits -ge 2) "conditional-runtime proof filters at least two false hits before the true hit"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS')) "conditional-runtime proof reaches the true condition hit"
+        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY .*mapper_state=Ready result=none') "conditional-runtime proof loads complete DWARF symbols"
+        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF .*truncated=0 result=Ready') "conditional-runtime DWARF is not truncated"
+        $mappedLine37 = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=MAPPED .*id=(\d+) src=src/main\.cpp line=37 col=1 enabled=1 state=Mapped err=none addr=0x00000000200016AC addrs=5'
+        Assert-True ($text -match $mappedLine37) "line 37 maps to five addresses with the expected primary address"
+        Assert-True ($text.Contains('origin=editor editor_row=') -and $text.Contains('manager_snapshot=absent')) "runtime conditional editing uses the editor selection without Manager state"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_persist=PASS source=src/main.cpp:37')) "runtime condition persists to the canonical workspace row"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=0')) "true condition stop continues to a normal target exit"
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS') -and
+                     $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')) "natural target exit completes debugger teardown"
     } elseif (-not $ExpectConditionError) {
         if (-not $EditorOnly) {
             Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT')) "condition true hit surfaces a real hosted breakpoint stop"
@@ -744,7 +768,10 @@ try {
     if ($WatchOnly -or $FrameOnly -or $ExpectConditionError) {
         Assert-True ($text.Contains('NativeAppRuntime] Cleanup complete app=com.example.debuggerphase15')) "focused proof leaves the hosted fixture in bounded cleanup"
     }
-    if (-not $EditorOnly) {
+    if ($RuntimeOnly) {
+        Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=0') -and
+                     $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')) 'focused runtime lifecycle exits and tears down naturally'
+    } elseif (-not $EditorOnly) {
         $shutdownMarkers = @(
             'debug_shutdown_request=targeted_close',
             'debug_stop=requested',

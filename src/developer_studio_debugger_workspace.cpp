@@ -94,6 +94,12 @@ static void setWorkspaceError(DebuggerWorkspace* workspace, DebuggerWorkspaceErr
     copyBounded(workspace->lastErrorMessage, sizeof(workspace->lastErrorMessage), errorName(error));
 }
 
+static void advanceBreakpointGeneration(DebuggerWorkspace* workspace) {
+    if (!workspace) return;
+    workspace->breakpointGeneration = workspace->breakpointGeneration == ~static_cast<uint64_t>(0)
+        ? 1u : workspace->breakpointGeneration + 1u;
+}
+
 static bool boundedLength(const char* input, uint32_t capacity, uint32_t* length) {
     if (!input || !length) return false;
     for (uint32_t index = 0; index < capacity; ++index) {
@@ -339,6 +345,7 @@ void DebuggerWorkspaceInit(DebuggerWorkspace* workspace) {
     // them while these counts are zero. Avoid clearing every persisted
     // breakpoint/watch payload on the application stack during first launch.
     workspace->breakpointCount = 0;
+    workspace->breakpointGeneration = 1;
     workspace->watchCount = 0;
     workspace->lastError = DebuggerWorkspaceErrorCode::None;
     workspace->lastErrorMessage[0] = '\0';
@@ -374,12 +381,25 @@ int DebuggerWorkspaceFindBreakpoint(const DebuggerWorkspace* workspace, const ch
     return -1;
 }
 
+bool DebuggerWorkspaceResolveBreakpoint(const DebuggerWorkspace* workspace,
+                                        const char* sourcePath, uint32_t line,
+                                        uint64_t expectedGeneration, uint32_t* outIndex) {
+    if (outIndex) *outIndex = 0;
+    if (!workspace || expectedGeneration == 0 ||
+        workspace->breakpointGeneration != expectedGeneration) return false;
+    const int index = DebuggerWorkspaceFindBreakpoint(workspace, sourcePath, line);
+    if (index < 0) return false;
+    if (outIndex) *outIndex = static_cast<uint32_t>(index);
+    return true;
+}
+
 bool DebuggerWorkspaceAddBreakpoint(DebuggerWorkspace* workspace, const char* sourcePath, uint32_t line, uint32_t column, bool enabled, uint32_t action, uint32_t hitPolicy, uint32_t hitThreshold, const char* condition, const char* logTemplate) {
     if (!workspace || !sourcePath || !condition || !logTemplate) return false;
     char normalized[kMaxProjectPathBytes] = {};
     if (workspace->breakpointCount >= kDebuggerWorkspaceMaxBreakpoints || !validBreakpoint(sourcePath, line, column, action, hitPolicy, hitThreshold, condition, logTemplate, normalized) || DebuggerWorkspaceFindBreakpoint(workspace, normalized, line) >= 0) return false;
     DebuggerWorkspaceBreakpoint& value = workspace->breakpoints[workspace->breakpointCount++];
     __builtin_strcpy(value.sourcePath, normalized); value.line = line; value.column = column; value.enabled = enabled; value.action = action; value.hitPolicy = hitPolicy; value.hitThreshold = hitThreshold; __builtin_strcpy(value.condition, condition); __builtin_strcpy(value.logTemplate, logTemplate);
+    advanceBreakpointGeneration(workspace);
     return true;
 }
 
@@ -389,6 +409,7 @@ bool DebuggerWorkspaceToggleBreakpoint(DebuggerWorkspace* workspace, const char*
     const int index = DebuggerWorkspaceFindBreakpoint(workspace, sourcePath, line);
     if (index >= 0) {
         workspace->breakpoints[index].enabled = !workspace->breakpoints[index].enabled;
+        advanceBreakpointGeneration(workspace);
         return true;
     }
     return DebuggerWorkspaceAddBreakpoint(workspace, sourcePath, line, column, true, 0, 0, 0, "", "");
@@ -403,6 +424,7 @@ bool DebuggerWorkspaceRemoveBreakpoint(DebuggerWorkspace* workspace, const char*
     --workspace->breakpointCount;
     __builtin_memset(&workspace->breakpoints[workspace->breakpointCount], 0,
                 sizeof(workspace->breakpoints[workspace->breakpointCount]));
+    advanceBreakpointGeneration(workspace);
     return true;
 }
 
@@ -410,6 +432,7 @@ bool DebuggerWorkspaceSetBreakpointEnabled(DebuggerWorkspace* workspace, const c
                                            uint32_t line, bool enabled) {
     const int index = DebuggerWorkspaceFindBreakpoint(workspace, sourcePath, line);
     if (!workspace || index < 0) return false;
+    if (workspace->breakpoints[index].enabled != enabled) advanceBreakpointGeneration(workspace);
     workspace->breakpoints[index].enabled = enabled;
     return true;
 }
@@ -429,6 +452,7 @@ bool DebuggerWorkspaceUpdateBreakpoint(DebuggerWorkspace* workspace, const char*
     breakpoint.hitThreshold = hitThreshold;
     __builtin_strcpy(breakpoint.condition, condition);
     __builtin_strcpy(breakpoint.logTemplate, logTemplate);
+    advanceBreakpointGeneration(workspace);
     return true;
 }
 

@@ -19,6 +19,7 @@
 #include "developer_studio_ownership.h"
 #include "developer_studio_types.h"
 #include "developer_studio_debugger.h"
+#include "developer_studio_debug_watches.h"
 #include "developer_studio_debug_symbols.h"
 #include "developer_studio_debugger_hosted.h"
 #include "developer_studio_debug_editor.h"
@@ -558,6 +559,8 @@ using guidexos::developer_studio::DebugControllerStart;
 using guidexos::developer_studio::DebugControllerStepInto;
 using guidexos::developer_studio::DebugControllerStepOver;
 using guidexos::developer_studio::DebugControllerToggleBreakpoint;
+using guidexos::developer_studio::DebugExpressionAst;
+using guidexos::developer_studio::DebugExpressionParse;
 using guidexos::developer_studio::DebugErrorCode;
 using guidexos::developer_studio::DebugErrorName;
 using guidexos::developer_studio::DebugBackendExecutionState;
@@ -846,6 +849,30 @@ static uint64_t g_debugSelectedValueNode = 0;
 static uint32_t g_debugSelectedWatch = 0;
 static uint64_t g_debugEditingWatchId = 0;
 static uint64_t g_debugEditingBreakpointId = 0;
+enum class DebugBreakpointSelectionOrigin : uint32_t {
+    None = 0,
+    Editor,
+    Manager,
+    Controller
+};
+struct DebugBreakpointSelectionIdentity {
+    bool valid;
+    DebugBreakpointSelectionOrigin origin;
+    uint64_t projectGeneration;
+    uint64_t workspaceGeneration;
+    uint64_t sessionGeneration;
+    uint64_t logicalBreakpointId;
+    uint64_t managerBreakpointId;
+    uint64_t editorBreakpointId;
+    uint32_t editorRowIndex;
+    char projectId[kMaxProjectIdBytes];
+    char sourcePath[kMaxProjectPathBytes];
+    uint32_t line;
+    uint32_t column;
+};
+static DebugBreakpointSelectionIdentity g_debugSelectedBreakpointIdentity = {};
+static DebugBreakpointSelectionIdentity g_debugEditingBreakpointIdentity = {};
+static bool g_debugConditionEditorOpenMarkerPending = false;
 static uint64_t g_debugVisibleValueNodes[kDebugDwarfMaxValueNodes] = {};
 static bool g_requestExit = false;
 static bool g_workspaceSwitchPending = false;
@@ -925,7 +952,9 @@ static uint32_t g_debugUiEditingWatchIndex = 0xFFFFFFFFu;
 static uint32_t g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
 static bool g_debugUiCallStackValid = false;
 static bool g_debugUiVariablesValid = false;
-static bool g_debugUiBreakpointValid = false;
+// Manager view availability only; configured source breakpoints can exist in
+// the project debugger workspace while this snapshot is absent.
+static bool g_debugUiBreakpointSnapshotValid = false;
 static bool g_debugUiOutputValid = false;
 static char g_debugUiBreakpointConditions[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS][GX_DEVELOPMENT_DEBUG_MAX_EXPRESSION_BYTES] = {};
 static char g_debugUiBreakpointLogs[GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS][GX_DEVELOPMENT_DEBUG_MAX_LOG_TEMPLATE_BYTES] = {};
@@ -1288,6 +1317,17 @@ static void drawIntegratedDebugPanel(gx_app_context* ctx);
 static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControllerBreakpoints = false);
 static bool debugUiCurrentAbiAvailable();
+static const gx_development_debug_breakpoint* debugUiBreakpointAt(uint32_t index);
+static bool debugSelectEditorBreakpoint(const char* sourcePath, uint32_t line, uint32_t column);
+static bool debugSelectManagerBreakpoint(uint32_t index);
+static bool debugSelectControllerBreakpoint(uint32_t index);
+static bool beginEditorBreakpointConditionPrompt(gx_app_context* ctx);
+static bool beginBreakpointConditionPrompt(gx_app_context* ctx);
+static bool commitBreakpointCondition(gx_app_context* ctx, const char* condition,
+                                     bool clearCondition);
+static void logBreakpointConditionUi(gx_app_context* ctx, const char* state,
+                                     uint64_t breakpointId, const char* text,
+                                     const char* detail);
 static bool debugUiSyncControllerCallStack();
 static void debugUiMirrorCallStackToController();
 static void debugUiResetDebugSnapshotMetadata(gx_development_debug_snapshot* snapshot);
@@ -8365,6 +8405,10 @@ static void debuggerWorkspaceReportStatus(gx_app_context* ctx, const char* actio
 
 static void debuggerWorkspaceReset(bool resetRuntime = true) {
     DebuggerWorkspaceInit(&g_debuggerWorkspace);
+    g_debugSelectedBreakpointIdentity = {};
+    g_debugEditingBreakpointIdentity = {};
+    g_debugEditingBreakpointId = 0;
+    g_debugConditionEditorOpenMarkerPending = false;
     if (resetRuntime) debugUiResetRuntimeState(false);
     g_debuggerWorkspaceStatus[0] = '\0';
 }
@@ -8481,6 +8525,164 @@ static bool debuggerWorkspaceUpdateBreakpointPolicy(gx_app_context* ctx, const c
     return true;
 }
 
+static const DebugBreakpoint* debuggerControllerBreakpointAtSource(
+        const char* sourcePath, uint32_t line) {
+    if (!sourcePath || line == 0) return nullptr;
+    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
+        const DebugBreakpoint& breakpoint = g_debugController.breakpoints[i];
+        if (breakpoint.location.line == line &&
+            PathsEqual(breakpoint.location.relativePath, sourcePath) &&
+            PathsEqual(breakpoint.projectId, g_controller.model.project.projectId))
+            return &breakpoint;
+    }
+    return nullptr;
+}
+
+static bool debugSelectEditorBreakpoint(const char* sourcePath, uint32_t line,
+                                        uint32_t column) {
+    if (!sourcePath || line == 0 || !g_controller.model.hasProject) return false;
+    uint32_t workspaceIndex = 0;
+    if (!DebuggerWorkspaceResolveBreakpoint(&g_debuggerWorkspace, sourcePath, line,
+            g_debuggerWorkspace.breakpointGeneration, &workspaceIndex)) return false;
+    const int editorIndex = DebugEditorModelFindBreakpoint(
+        &g_debugEditor, g_controller.model.project.projectId, sourcePath, line);
+    if (editorIndex < 0) return false;
+    const DebugEditorBreakpoint* editorRow = DebugEditorModelBreakpointAt(
+        &g_debugEditor, static_cast<uint32_t>(editorIndex));
+    if (!editorRow || !editorRow->used || !editorRow->configured) return false;
+
+    DebugBreakpointSelectionIdentity selection = {};
+    selection.valid = true;
+    selection.origin = DebugBreakpointSelectionOrigin::Editor;
+    selection.projectGeneration = g_controller.model.projectGeneration;
+    selection.workspaceGeneration = g_debuggerWorkspace.breakpointGeneration;
+    copyText(selection.projectId, sizeof(selection.projectId), g_controller.model.project.projectId);
+    copyText(selection.sourcePath, sizeof(selection.sourcePath), sourcePath);
+    selection.line = line;
+    selection.column = column ? column : g_debuggerWorkspace.breakpoints[workspaceIndex].column;
+    selection.editorRowIndex = static_cast<uint32_t>(editorIndex);
+    selection.editorBreakpointId = editorRow->id;
+    const DebugBreakpoint* live = debuggerControllerBreakpointAtSource(sourcePath, line);
+    if (live && DebugControllerIsActive(&g_debugController)) {
+        selection.logicalBreakpointId = live->id;
+        selection.sessionGeneration = live->sessionGeneration;
+    }
+    if (g_debugUiBreakpointSnapshotValid) {
+        for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount &&
+             i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+            const gx_development_debug_breakpoint& manager = g_debugUiBreakpointSnapshot.breakpoints[i];
+            if (manager.sourceLine == line && PathsEqual(manager.sourcePath, sourcePath)) {
+                selection.managerBreakpointId = manager.breakpointId;
+                break;
+            }
+        }
+    }
+    g_debugSelectedBreakpointIdentity = selection;
+    return true;
+}
+
+static bool debugSelectManagerBreakpoint(uint32_t index) {
+    if (!g_debugUiBreakpointSnapshotValid || !g_controller.model.hasProject) return false;
+    const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(index);
+    if (!managed || managed->breakpointId == 0 || !managed->sourcePath[0] ||
+        managed->sourceLine == 0) return false;
+    uint32_t workspaceIndex = 0;
+    if (!DebuggerWorkspaceResolveBreakpoint(&g_debuggerWorkspace, managed->sourcePath,
+            managed->sourceLine, g_debuggerWorkspace.breakpointGeneration, &workspaceIndex)) return false;
+
+    DebugBreakpointSelectionIdentity selection = {};
+    selection.valid = true;
+    selection.origin = DebugBreakpointSelectionOrigin::Manager;
+    selection.projectGeneration = g_controller.model.projectGeneration;
+    selection.workspaceGeneration = g_debuggerWorkspace.breakpointGeneration;
+    selection.managerBreakpointId = managed->breakpointId;
+    selection.line = managed->sourceLine;
+    selection.column = managed->sourceColumn;
+    copyText(selection.projectId, sizeof(selection.projectId), g_controller.model.project.projectId);
+    copyText(selection.sourcePath, sizeof(selection.sourcePath), managed->sourcePath);
+    const DebugBreakpoint* live = debuggerControllerBreakpointAtSource(
+        selection.sourcePath, selection.line);
+    if (live) {
+        selection.logicalBreakpointId = live->id;
+        selection.sessionGeneration = live->sessionGeneration;
+    }
+    const int editorIndex = DebugEditorModelFindBreakpoint(
+        &g_debugEditor, selection.projectId, selection.sourcePath, selection.line);
+    if (editorIndex >= 0) {
+        selection.editorRowIndex = static_cast<uint32_t>(editorIndex);
+        const DebugEditorBreakpoint* editorRow = DebugEditorModelBreakpointAt(
+            &g_debugEditor, static_cast<uint32_t>(editorIndex));
+        if (editorRow) selection.editorBreakpointId = editorRow->id;
+    }
+    g_debugSelectedBreakpointIdentity = selection;
+    return true;
+}
+
+static bool debugSelectControllerBreakpoint(uint32_t index) {
+    if (!g_controller.model.hasProject) return false;
+    const DebugBreakpoint* live = DebugControllerBreakpointAt(&g_debugController, index);
+    if (!live || !live->location.relativePath[0] || live->location.line == 0) return false;
+    uint32_t workspaceIndex = 0;
+    if (!DebuggerWorkspaceResolveBreakpoint(&g_debuggerWorkspace,
+            live->location.relativePath, live->location.line,
+            g_debuggerWorkspace.breakpointGeneration, &workspaceIndex)) return false;
+
+    DebugBreakpointSelectionIdentity selection = {};
+    selection.valid = true;
+    selection.origin = DebugBreakpointSelectionOrigin::Controller;
+    selection.projectGeneration = g_controller.model.projectGeneration;
+    selection.workspaceGeneration = g_debuggerWorkspace.breakpointGeneration;
+    selection.sessionGeneration = live->sessionGeneration;
+    selection.logicalBreakpointId = live->id;
+    selection.line = live->location.line;
+    selection.column = live->location.column;
+    copyText(selection.projectId, sizeof(selection.projectId), live->projectId);
+    copyText(selection.sourcePath, sizeof(selection.sourcePath), live->location.relativePath);
+    const int editorIndex = DebugEditorModelFindBreakpoint(
+        &g_debugEditor, selection.projectId, selection.sourcePath, selection.line);
+    if (editorIndex >= 0) {
+        selection.editorRowIndex = static_cast<uint32_t>(editorIndex);
+        const DebugEditorBreakpoint* editorRow = DebugEditorModelBreakpointAt(
+            &g_debugEditor, static_cast<uint32_t>(editorIndex));
+        if (editorRow) selection.editorBreakpointId = editorRow->id;
+    }
+    if (g_debugUiBreakpointSnapshotValid) {
+        for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount &&
+             i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+            const gx_development_debug_breakpoint& manager = g_debugUiBreakpointSnapshot.breakpoints[i];
+            if (manager.sourceLine == selection.line &&
+                PathsEqual(manager.sourcePath, selection.sourcePath)) {
+                selection.managerBreakpointId = manager.breakpointId;
+                break;
+            }
+        }
+    }
+    g_debugSelectedBreakpointIdentity = selection;
+    return true;
+}
+
+static bool debugBreakpointSelectionWorkspaceIndex(
+        const DebugBreakpointSelectionIdentity& selection, uint32_t* outIndex) {
+    if (outIndex) *outIndex = 0;
+    if (!selection.valid || !g_controller.model.hasProject ||
+        selection.projectGeneration != g_controller.model.projectGeneration ||
+        !PathsEqual(selection.projectId, g_controller.model.project.projectId)) return false;
+    return DebuggerWorkspaceResolveBreakpoint(&g_debuggerWorkspace, selection.sourcePath,
+        selection.line, selection.workspaceGeneration, outIndex);
+}
+
+static const DebugBreakpoint* debuggerControllerBreakpointForSelection(
+        const DebugBreakpointSelectionIdentity& selection) {
+    if (!selection.valid || selection.logicalBreakpointId == 0 ||
+        !DebugControllerIsActive(&g_debugController) ||
+        selection.sessionGeneration == 0 ||
+        selection.sessionGeneration != g_debugController.sessionGeneration) return nullptr;
+    const DebugBreakpoint* breakpoint = debuggerControllerBreakpointAtSource(
+        selection.sourcePath, selection.line);
+    return breakpoint && breakpoint->id == selection.logicalBreakpointId &&
+        breakpoint->sessionGeneration == selection.sessionGeneration ? breakpoint : nullptr;
+}
+
 static bool debuggerWorkspaceAddWatch(gx_app_context* ctx, const char* expression) {
     if (!DebuggerWorkspaceAddWatch(&g_debuggerWorkspace, expression)) {
         debuggerWorkspaceReportModelFailure(ctx, "watch add rejected");
@@ -8530,16 +8732,6 @@ static bool debuggerWorkspaceSyncLegacyBreakpoint(gx_app_context* ctx,
         ctx, breakpoint->location.relativePath, breakpoint->location.line,
         breakpoint->location.column, breakpoint->enabled, action, hitPolicy, hitThreshold,
         condition ? condition : "", logTemplate);
-}
-
-static bool debuggerWorkspaceSyncLegacyBreakpointById(gx_app_context* ctx, uint64_t breakpointId,
-                                                       const char* condition) {
-    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
-        const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, i);
-        if (breakpoint && breakpoint->id == breakpointId)
-            return debuggerWorkspaceSyncLegacyBreakpoint(ctx, breakpoint, condition);
-    }
-    return false;
 }
 
 static bool openCreatedProject(gx_app_context* ctx, const ProjectOperationResult& created) {
@@ -11674,6 +11866,21 @@ static void debugUiRememberBreakpointMetadata(const gx_development_debug_snapsho
             copyText(g_debugUiBreakpointLogs[i], sizeof(g_debugUiBreakpointLogs[i]), oldLogs[old]);
             break;
         }
+        const int configuredIndex = DebuggerWorkspaceFindBreakpoint(
+            &g_debuggerWorkspace, breakpoint.sourcePath, breakpoint.sourceLine);
+        if (configuredIndex >= 0) {
+            const DebuggerWorkspaceBreakpoint& configured =
+                g_debuggerWorkspace.breakpoints[configuredIndex];
+            copyText(g_debugUiBreakpointConditions[i], sizeof(g_debugUiBreakpointConditions[i]),
+                     configured.condition);
+            copyText(g_debugUiBreakpointLogs[i], sizeof(g_debugUiBreakpointLogs[i]),
+                     configured.logTemplate);
+            g_debugUiBreakpointActions[i] = configured.action == 1 ?
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG :
+                GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK;
+            g_debugUiBreakpointPolicies[i] = configured.hitPolicy;
+            g_debugUiBreakpointThresholds[i] = configured.hitThreshold;
+        }
     }
 }
 
@@ -11837,7 +12044,7 @@ static void debugUiResetRuntimeState(bool preserveWatches, bool preserveControll
         logMarker(g_fileSystemContext.app, "DEVELOPER_STUDIO_PHASE28V_EVENT_DEBUG_RUNTIME_RESET_SNAPSHOTS_DONE");
     g_debugUiCallStackValid = false;
     g_debugUiVariablesValid = false;
-    g_debugUiBreakpointValid = false;
+    g_debugUiBreakpointSnapshotValid = false;
     g_debugUiOutputValid = false;
     g_debugUiOutputHistoryDropped = 0;
     g_debugUiSelectedFrame = 0;
@@ -12083,7 +12290,7 @@ static bool debugUiManagerCommand(gx_app_context* ctx, uint32_t command,
 }
 
 static const gx_development_debug_breakpoint* debugUiBreakpointAt(uint32_t index) {
-    if (!g_debugUiBreakpointValid || index >= g_debugUiBreakpointSnapshot.breakpointCount ||
+    if (!g_debugUiBreakpointSnapshotValid || index >= g_debugUiBreakpointSnapshot.breakpointCount ||
         index >= GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS) return nullptr;
     return &g_debugUiBreakpointSnapshot.breakpoints[index];
 }
@@ -12140,7 +12347,7 @@ static void debugEditorRefreshBreakpoints() {
     const bool managerAuthoritative = debugUiCurrentAbiAvailable() &&
         DebugControllerIsActive(&g_debugController);
     if (managerAuthoritative) {
-        if (g_debugUiBreakpointValid) {
+        if (g_debugUiBreakpointSnapshotValid) {
             const uint32_t count = g_debugUiBreakpointSnapshot.breakpointCount >
                 GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
                 GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS :
@@ -12536,7 +12743,7 @@ static bool debuggerWorkspaceMergeLiveSnapshot(const gx_development_debug_snapsh
     }
     debugUiRememberBreakpointMetadata(snapshot);
     g_debugUiBreakpointSnapshot = snapshot;
-    g_debugUiBreakpointValid = true;
+    g_debugUiBreakpointSnapshotValid = true;
     debugEditorRefreshBreakpoints();
     return true;
 }
@@ -12694,8 +12901,8 @@ static bool debuggerWorkspaceMaterialize(gx_app_context* ctx) {
     if (g_phase28oDiagnostic) {
         uint64_t currentIds[guidexos::developer_studio::kDebuggerWorkspaceMaxBreakpoints] = {};
         uint32_t currentCount = 0;
-        bool zeroCounts = g_debugUiBreakpointValid;
-        if (g_debugUiBreakpointValid) {
+        bool zeroCounts = g_debugUiBreakpointSnapshotValid;
+        if (g_debugUiBreakpointSnapshotValid) {
             const uint32_t liveCount = g_debugUiBreakpointSnapshot.breakpointCount >
                 GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ?
                 GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS :
@@ -12904,7 +13111,7 @@ static void phase28oPump(gx_app_context* ctx) {
         }
         if (g_debuggerWorkspace.breakpointCount != 0 ||
             g_debuggerWorkspace.watchCount != 0 || DebugControllerIsActive(&g_debugController) ||
-            g_debugUiBreakpointValid) {
+            g_debugUiBreakpointSnapshotValid) {
             phase28oFail(ctx, "corrupt_load"); return;
         }
         // The persistence load is intentionally project-scoped and does not
@@ -13151,7 +13358,7 @@ static bool phase28mToggleLine(gx_app_context* ctx, const char* path, uint32_t o
 }
 
 static int phase28mBreakpointIndex(const char* path, uint32_t line) {
-    if (!g_debugUiBreakpointValid) return -1;
+    if (!g_debugUiBreakpointSnapshotValid) return -1;
     for (uint32_t index = 0; index < g_debugUiBreakpointSnapshot.breakpointCount; ++index) {
         const gx_development_debug_breakpoint& breakpoint = g_debugUiBreakpointSnapshot.breakpoints[index];
         if (breakpoint.sourceLine == line && phase28mTextEquals(breakpoint.sourcePath, path))
@@ -14096,7 +14303,7 @@ static void phase28mPump(gx_app_context* ctx) {
             logMarker(ctx, "DEVELOPER_STUDIO_PHASE28N_EDITOR_BREAKPOINT_REMOVE_PASS");
         }
         if (g_debugUiWatchCount > kDebugUiMaxWatches || g_debugUiCallStack.frameCount > GX_DEVELOPMENT_DEBUG_MAX_CALL_STACK_FRAMES ||
-            !g_debugUiBreakpointValid || g_debugUiBreakpointSnapshot.breakpointCount > GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ||
+            !g_debugUiBreakpointSnapshotValid || g_debugUiBreakpointSnapshot.breakpointCount > GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS ||
             !g_debugUiOutputValid || g_debugUiOutputSnapshot.outputCount > GX_DEVELOPMENT_DEBUG_MAX_OUTPUT_RECORDS ||
             g_debugEditor.breakpointCount > kDebugEditorMaxBreakpoints) {
             phase28mFail(ctx, "bounded_ui_state"); return;
@@ -14223,16 +14430,23 @@ static bool toggleBreakpointAtCaret(gx_app_context* ctx) {
             if (!managed || !PathsEqual(managed->sourcePath, relative) || managed->sourceLine != line) continue;
             if (!debugUiRemoveBreakpoint(ctx, i)) return false;
             g_debugUiSelectedBreakpoint = i;
+            g_debugSelectedBreakpointIdentity = {};
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
             return true;
         }
-        if (debugUiAddBreakpointAtCaret(ctx)) return true;
+        if (debugUiAddBreakpointAtCaret(ctx)) {
+            (void)debugSelectEditorBreakpoint(relative, line,
+                activeColumn(document->buffer, line - 1) + 1);
+            return true;
+        }
     }
     if (!debugUiAddBreakpointAtCaret(ctx)) {
         writeStudioOutput("Breakpoint change failed");
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint=FAIL", "workspace_mutation");
         return false;
     }
+    (void)debugSelectEditorBreakpoint(relative, line,
+        activeColumn(document->buffer, line - 1) + 1);
     phase29nHostedWorkspaceBreakpointTrace(ctx, relative, line,
         activeColumn(document->buffer, line - 1) + 1);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS");
@@ -14259,7 +14473,7 @@ static bool toggleBreakpointAtMouse(gx_app_context* ctx, int x, int y) {
 }
 
 static bool navigateSelectedBreakpoint(gx_app_context* ctx) {
-    if (debugUiCurrentAbiAvailable() && g_debugUiBreakpointValid) {
+    if (debugUiCurrentAbiAvailable() && g_debugUiBreakpointSnapshotValid) {
         const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(g_debugSelectedBreakpoint);
         if (!managed) return false;
         return navigateDebugSource(ctx, g_controller.model.project.projectId,
@@ -14358,22 +14572,148 @@ static void beginWatchPrompt(uint64_t watchId) {
     g_inputMode = InputMode::WatchExpression;
 }
 
-static void beginBreakpointConditionPrompt() {
-    if (debugUiCurrentAbiAvailable() && g_debugUiBreakpointValid) {
-        const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(g_debugSelectedBreakpoint);
-        if (!managed) return;
-        g_debugUiEditingBreakpointIndex = g_debugSelectedBreakpoint;
-        g_debugEditingBreakpointId = managed->breakpointId;
-        copyText(g_prompt, sizeof(g_prompt), g_debugUiBreakpointConditions[g_debugSelectedBreakpoint]);
-        g_inputMode = InputMode::BreakpointCondition;
-        return;
+static bool beginBreakpointConditionPrompt(gx_app_context* ctx) {
+    DebugBreakpointSelectionIdentity selection = {};
+    bool selected = false;
+
+    // An editor selection already names the persisted project breakpoint by
+    // project/path/line. Resolve it against the current workspace generation;
+    // this route intentionally does not consult Manager UI state.
+    uint32_t workspaceIndex = 0;
+    if (debugBreakpointSelectionWorkspaceIndex(g_debugSelectedBreakpointIdentity,
+                                                &workspaceIndex)) {
+        selection = g_debugSelectedBreakpointIdentity;
+        selected = true;
     }
-    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController,
-                                                                     g_debugSelectedBreakpoint);
-    if (!breakpoint) return;
-    g_debugEditingBreakpointId = breakpoint->id;
-    copyText(g_prompt, sizeof(g_prompt), breakpoint->condition ? breakpoint->condition : "");
+
+    // Manager selection is another view over the configured source identity.
+    // Capture its stable logical ID, then resolve condition text in the same
+    // project configuration used by editor selections.
+    if (!selected && debugUiCurrentAbiAvailable() && g_debugUiBreakpointSnapshotValid) {
+        const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(g_debugSelectedBreakpoint);
+        if (managed && managed->breakpointId != 0 && managed->sourcePath[0] && managed->sourceLine) {
+            const int index = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace,
+                managed->sourcePath, managed->sourceLine);
+            if (index >= 0) {
+                selection.valid = true;
+                selection.origin = DebugBreakpointSelectionOrigin::Manager;
+                selection.projectGeneration = g_controller.model.projectGeneration;
+                selection.workspaceGeneration = g_debuggerWorkspace.breakpointGeneration;
+                selection.managerBreakpointId = managed->breakpointId;
+                selection.line = managed->sourceLine;
+                selection.column = managed->sourceColumn;
+                copyText(selection.projectId, sizeof(selection.projectId), g_controller.model.project.projectId);
+                copyText(selection.sourcePath, sizeof(selection.sourcePath), managed->sourcePath);
+                const DebugBreakpoint* live = debuggerControllerBreakpointAtSource(
+                    selection.sourcePath, selection.line);
+                if (live) {
+                    selection.logicalBreakpointId = live->id;
+                    selection.sessionGeneration = live->sessionGeneration;
+                }
+                selected = true;
+            }
+        }
+    }
+
+    // Legacy/controller panel selection resolves through the controller row,
+    // then projects back to the same persisted source identity.
+    if (!selected) {
+        const DebugBreakpoint* live = DebugControllerBreakpointAt(&g_debugController,
+                                                                   g_debugSelectedBreakpoint);
+        if (live && live->location.relativePath[0] && live->location.line != 0) {
+            const int index = DebuggerWorkspaceFindBreakpoint(&g_debuggerWorkspace,
+                live->location.relativePath, live->location.line);
+            if (index >= 0) {
+                selection.valid = true;
+                selection.origin = DebugBreakpointSelectionOrigin::Controller;
+                selection.projectGeneration = g_controller.model.projectGeneration;
+                selection.workspaceGeneration = g_debuggerWorkspace.breakpointGeneration;
+                selection.sessionGeneration = live->sessionGeneration;
+                selection.logicalBreakpointId = live->id;
+                selection.line = live->location.line;
+                selection.column = live->location.column;
+                copyText(selection.projectId, sizeof(selection.projectId), live->projectId);
+                copyText(selection.sourcePath, sizeof(selection.sourcePath), live->location.relativePath);
+                selected = true;
+            }
+        }
+    }
+
+    if (!selected || !debugBreakpointSelectionWorkspaceIndex(selection, &workspaceIndex)) {
+        if (ctx) {
+            writeStudioOutput("Select a current source breakpoint before editing its condition");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=REJECT reason=stale_or_unresolved_selection");
+        }
+        return false;
+    }
+    const DebugBreakpoint* live = debuggerControllerBreakpointForSelection(selection);
+    if (!live) {
+        live = DebugControllerIsActive(&g_debugController) ?
+            debuggerControllerBreakpointAtSource(selection.sourcePath, selection.line) : nullptr;
+        selection.logicalBreakpointId = live ? live->id : 0;
+        selection.sessionGeneration = live ? live->sessionGeneration : 0;
+    }
+    if (selection.managerBreakpointId != 0) {
+        bool currentManagerRow = false;
+        if (g_debugUiBreakpointSnapshotValid) {
+            for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount &&
+                 i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+                const gx_development_debug_breakpoint& row = g_debugUiBreakpointSnapshot.breakpoints[i];
+                if (row.breakpointId == selection.managerBreakpointId &&
+                    row.sourceLine == selection.line &&
+                    PathsEqual(row.sourcePath, selection.sourcePath)) {
+                    currentManagerRow = true;
+                    break;
+                }
+            }
+        }
+        if (!currentManagerRow) selection.managerBreakpointId = 0;
+    }
+    const int editorIndex = DebugEditorModelFindBreakpoint(&g_debugEditor,
+        selection.projectId, selection.sourcePath, selection.line);
+    if (editorIndex >= 0) {
+        selection.editorRowIndex = static_cast<uint32_t>(editorIndex);
+        const DebugEditorBreakpoint* editorRow = DebugEditorModelBreakpointAt(
+            &g_debugEditor, static_cast<uint32_t>(editorIndex));
+        selection.editorBreakpointId = editorRow ? editorRow->id : 0;
+    } else if (selection.origin == DebugBreakpointSelectionOrigin::Editor) {
+        if (ctx) logMarker(ctx,
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=REJECT reason=editor_row_stale");
+        return false;
+    }
+
+    g_debugEditingBreakpointIdentity = selection;
+    g_debugEditingBreakpointId = selection.logicalBreakpointId;
+    g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
+    copyText(g_prompt, sizeof(g_prompt), g_debuggerWorkspace.breakpoints[workspaceIndex].condition);
     g_inputMode = InputMode::BreakpointCondition;
+    g_debugConditionEditorOpenMarkerPending = true;
+    return true;
+}
+
+static bool beginEditorBreakpointConditionPrompt(gx_app_context* ctx) {
+    if (!g_debugSelectedBreakpointIdentity.valid ||
+        g_debugSelectedBreakpointIdentity.origin != DebugBreakpointSelectionOrigin::Editor ||
+        !debugBreakpointSelectionWorkspaceIndex(g_debugSelectedBreakpointIdentity, nullptr)) {
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        if (!document || !g_controller.model.hasProject) {
+            if (ctx) writeStudioOutput("Select a source breakpoint before editing its condition");
+            return false;
+        }
+        char relative[kMaxProjectPathBytes] = {};
+        const uint32_t line = activeLine(document->buffer) + 1;
+        if (!DebugRelativeSourcePath(g_controller.model.project.rootPath, document->path,
+                                     relative, sizeof(relative)) ||
+            !debugSelectEditorBreakpoint(relative, line,
+                activeColumn(document->buffer, line - 1) + 1)) {
+            if (ctx) {
+                writeStudioOutput("The current source line has no current configured breakpoint");
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=REJECT reason=no_editor_breakpoint");
+            }
+            return false;
+        }
+    }
+    return beginBreakpointConditionPrompt(ctx);
 }
 
 // Hosted UI smokes use this bounded, append-only marker stream as the
@@ -14400,25 +14740,178 @@ static void logBreakpointConditionUi(gx_app_context* ctx, const char* state,
     logMarker(ctx, g_textScratch);
 }
 
-static void clearSelectedBreakpointCondition(gx_app_context* ctx) {
-    const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController,
-                                                                     g_debugSelectedBreakpoint);
-    if (!breakpoint) return;
-    DebugErrorCode error = DebugErrorCode::None;
-    if (DebugControllerClearBreakpointCondition(&g_debugController, breakpoint->id, &error)) {
-        if (!debuggerWorkspaceSyncLegacyBreakpoint(ctx, breakpoint, "")) {
-            writeStudioOutput("Breakpoint condition clear was not saved");
-            return;
+static bool debugApplyManagerBreakpointCondition(
+        gx_app_context* ctx, const DebugBreakpointSelectionIdentity& selection,
+        const DebuggerWorkspaceBreakpoint& configured, const char* condition) {
+    if (selection.managerBreakpointId == 0) return true;
+    if (!debugUiCurrentAbiAvailable() || !g_debugUiBreakpointSnapshotValid) {
+        writeStudioOutput("Breakpoint Manager selection is stale; refresh the Manager and select the row again");
+        return false;
+    }
+    bool found = false;
+    for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount &&
+         i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+        const gx_development_debug_breakpoint& row = g_debugUiBreakpointSnapshot.breakpoints[i];
+        if (row.breakpointId == selection.managerBreakpointId && row.sourceLine == selection.line &&
+            PathsEqual(row.sourcePath, selection.sourcePath)) {
+            found = true;
+            break;
         }
+    }
+    if (!found) {
+        writeStudioOutput("Breakpoint Manager selection is stale; select the current source row again");
+        return false;
+    }
+    const uint32_t managerAction = configured.action == 1 ?
+        GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG :
+        GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK;
+    if (!debugUiManagerCommand(ctx, GX_DEVELOPMENT_DEBUG_CONFIGURE_SOURCE_BREAKPOINT_POLICY,
+            selection.managerBreakpointId, nullptr, 0, 0,
+            condition && condition[0] ? condition : nullptr, managerAction,
+            configured.hitPolicy, configured.hitThreshold,
+            configured.logTemplate[0] ? configured.logTemplate : nullptr)) return false;
+
+    for (uint32_t i = 0; i < g_debugUiBreakpointSnapshot.breakpointCount &&
+         i < GX_DEVELOPMENT_DEBUG_MAX_SOURCE_BREAKPOINTS; ++i) {
+        const gx_development_debug_breakpoint& row = g_debugUiBreakpointSnapshot.breakpoints[i];
+        if (row.breakpointId != selection.managerBreakpointId) continue;
+        g_debugUiBreakpointActions[i] = managerAction;
+        g_debugUiBreakpointPolicies[i] = configured.hitPolicy;
+        g_debugUiBreakpointThresholds[i] = configured.hitThreshold;
+        copyText(g_debugUiBreakpointConditions[i], sizeof(g_debugUiBreakpointConditions[i]),
+                 condition ? condition : "");
+        copyText(g_debugUiBreakpointLogs[i], sizeof(g_debugUiBreakpointLogs[i]),
+                 configured.logTemplate);
+        return true;
+    }
+    return false;
+}
+
+static bool debugApplyControllerBreakpointCondition(
+        const DebugBreakpointSelectionIdentity& selection, const char* condition,
+        DebugErrorCode* outError) {
+    if (outError) *outError = DebugErrorCode::None;
+    if (selection.logicalBreakpointId == 0) return true;
+    const DebugBreakpoint* breakpoint = debuggerControllerBreakpointForSelection(selection);
+    if (!breakpoint) {
+        if (outError) *outError = DebugErrorCode::StaleSession;
+        return false;
+    }
+    if (!condition || !condition[0])
+        return DebugControllerClearBreakpointCondition(&g_debugController,
+            selection.logicalBreakpointId, outError);
+    return DebugControllerSetBreakpointCondition(&g_debugController,
+        selection.logicalBreakpointId, condition, outError);
+}
+
+static bool commitBreakpointCondition(gx_app_context* ctx, const char* condition,
+                                      bool clearCondition) {
+    DebugBreakpointSelectionIdentity selection = g_debugEditingBreakpointIdentity;
+    uint32_t workspaceIndex = 0;
+    if (!debugBreakpointSelectionWorkspaceIndex(selection, &workspaceIndex)) {
+        writeStudioOutput("Breakpoint condition edit rejected: the selected source breakpoint was removed or changed");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=REJECT reason=stale_or_deleted");
+        return false;
+    }
+    if (!clearCondition && (!condition || !condition[0])) clearCondition = true;
+    if (!clearCondition) {
+        DebugExpressionAst parsed = {};
+        if (!DebugExpressionParse(condition, &parsed) || !parsed.valid) {
+            copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition syntax is invalid");
+            if (parsed.diagnostic[0]) {
+                appendText(g_textScratch, sizeof(g_textScratch), ": ");
+                appendText(g_textScratch, sizeof(g_textScratch), parsed.diagnostic);
+            }
+            writeStudioOutput(g_textScratch);
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID");
+            logBreakpointConditionUi(ctx, "commit=INVALID", selection.logicalBreakpointId,
+                condition, "parse=INVALID state=UNCHANGED owner=workspace");
+            return false;
+        }
+    }
+
+    const DebugBreakpoint* live = nullptr;
+    if (selection.logicalBreakpointId != 0) {
+        live = debuggerControllerBreakpointForSelection(selection);
+        if (!live) {
+            writeStudioOutput("Breakpoint condition edit rejected: the runtime binding belongs to a stale debug session");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=REJECT reason=stale_runtime_identity");
+            return false;
+        }
+    } else if (DebugControllerIsActive(&g_debugController)) {
+        live = debuggerControllerBreakpointAtSource(selection.sourcePath, selection.line);
+        if (live) {
+            selection.logicalBreakpointId = live->id;
+            selection.sessionGeneration = live->sessionGeneration;
+        }
+    }
+
+    const DebuggerWorkspaceBreakpoint previous = g_debuggerWorkspace.breakpoints[workspaceIndex];
+    const char* committed = clearCondition ? "" : condition;
+    if (!debugApplyManagerBreakpointCondition(ctx, selection, previous, committed)) {
+        logBreakpointConditionUi(ctx, "commit=REJECT", selection.logicalBreakpointId,
+            committed, "owner=manager_rejected");
+        return false;
+    }
+    DebugErrorCode controllerError = DebugErrorCode::None;
+    if (!debugApplyControllerBreakpointCondition(selection, committed, &controllerError)) {
+        (void)debugApplyManagerBreakpointCondition(ctx, selection, previous, previous.condition);
+        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition update failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(controllerError));
+        writeStudioOutput(g_textScratch);
+        return false;
+    }
+
+    if (!DebuggerWorkspaceUpdateBreakpoint(&g_debuggerWorkspace, selection.sourcePath,
+            selection.line, previous.action, previous.hitPolicy, previous.hitThreshold,
+            committed, previous.logTemplate) || !debuggerWorkspaceSave(ctx)) {
+        (void)DebuggerWorkspaceUpdateBreakpoint(&g_debuggerWorkspace, selection.sourcePath,
+            selection.line, previous.action, previous.hitPolicy, previous.hitThreshold,
+            previous.condition, previous.logTemplate);
+        (void)debugApplyControllerBreakpointCondition(selection, previous.condition, nullptr);
+        (void)debugApplyManagerBreakpointCondition(ctx, selection, previous, previous.condition);
+        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition update was not saved: ");
+        appendText(g_textScratch, sizeof(g_textScratch), g_debuggerWorkspaceStatus);
+        writeStudioOutput(g_textScratch);
+        return false;
+    }
+
+    debugEditorRefreshBreakpoints();
+    selection.workspaceGeneration = g_debuggerWorkspace.breakpointGeneration;
+    selection.logicalBreakpointId = live ? live->id : selection.logicalBreakpointId;
+    selection.sessionGeneration = live ? live->sessionGeneration : selection.sessionGeneration;
+    g_debugSelectedBreakpointIdentity = selection;
+    g_debugEditingBreakpointIdentity = selection;
+    g_debugEditingBreakpointId = selection.logicalBreakpointId;
+    if (clearCondition) {
         writeStudioOutput("Breakpoint condition cleared");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
-        logBreakpointConditionUi(ctx, "clear=PASS", breakpoint->id, "",
-                                 "parse=EMPTY state=UNCONDITIONAL");
+        logBreakpointConditionUi(ctx, "clear=PASS", selection.logicalBreakpointId, "",
+            "parse=EMPTY state=UNCONDITIONAL owner=workspace");
     } else {
-        copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition clear failed: ");
-        appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
-        writeStudioOutput(g_textScratch);
+        writeStudioOutput("Breakpoint condition accepted");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS");
+        logBreakpointConditionUi(ctx, "commit=PASS", selection.logicalBreakpointId,
+            committed, "parse=VALID state=CONDITIONAL owner=workspace");
     }
+    copyText(g_textScratch, sizeof(g_textScratch),
+        "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_persist=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), selection.sourcePath);
+    appendText(g_textScratch, sizeof(g_textScratch), ":");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), selection.line);
+    appendText(g_textScratch, sizeof(g_textScratch), " workspace_generation=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debuggerWorkspace.breakpointGeneration);
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static void clearSelectedBreakpointCondition(gx_app_context* ctx) {
+    if (!debugSelectControllerBreakpoint(g_debugSelectedBreakpoint)) return;
+    g_debugEditingBreakpointIdentity = g_debugSelectedBreakpointIdentity;
+    g_debugEditingBreakpointId = g_debugEditingBreakpointIdentity.logicalBreakpointId;
+    (void)commitBreakpointCondition(ctx, "", true);
+    g_debugEditingBreakpointIdentity = {};
+    g_debugEditingBreakpointId = 0;
 }
 
 static bool handleDebugWatchKey(gx_app_context* ctx, int keyCode, int action) {
@@ -14634,12 +15127,26 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
         return true;
     }
     if (g_debugPanelTab != 0) return true;
+    // Hosted NativeAppDebugger sessions intentionally do not expose the
+    // NativeElf breakpoint-manager snapshot. Let the controller-backed panel
+    // path below handle its real session rows instead of consuming keys with
+    // an empty Manager selection.
+    if (!g_debugUiBreakpointSnapshotValid) return false;
+    if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
+        if (keyCode == GX_KEY_UP && g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
+        else if (keyCode == GX_KEY_DOWN &&
+                 g_debugSelectedBreakpoint + 1 < g_debugUiBreakpointSnapshot.breakpointCount)
+            ++g_debugSelectedBreakpoint;
+        (void)debugSelectManagerBreakpoint(g_debugSelectedBreakpoint);
+        return true;
+    }
     const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(g_debugSelectedBreakpoint);
-    if (keyCode == GX_KEY_UP && g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
-    else if (keyCode == GX_KEY_DOWN && g_debugSelectedBreakpoint + 1 < g_debugUiBreakpointSnapshot.breakpointCount) ++g_debugSelectedBreakpoint;
-    else if (keyCode == 32 && breakpoint) debugUiSetBreakpointEnabled(ctx, g_debugSelectedBreakpoint, breakpoint->enabled == 0);
+    if (keyCode == 32 && breakpoint) debugUiSetBreakpointEnabled(ctx, g_debugSelectedBreakpoint, breakpoint->enabled == 0);
     else if (keyCode == 46 && breakpoint) debugUiRemoveBreakpoint(ctx, g_debugSelectedBreakpoint);
-    else if ((keyCode == 67 || keyCode == 99) && breakpoint) beginBreakpointConditionPrompt();
+    else if ((keyCode == 67 || keyCode == 99) && breakpoint) {
+        if (debugSelectManagerBreakpoint(g_debugSelectedBreakpoint))
+            beginBreakpointConditionPrompt(ctx);
+    }
     else if ((keyCode == 76 || keyCode == 108) && breakpoint) {
         g_debugUiBreakpointActions[g_debugSelectedBreakpoint] = breakpoint->action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ?
             GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK : GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG;
@@ -14739,20 +15246,26 @@ static bool handleDebugPanelKey(gx_app_context* ctx, int keyCode, int action, in
         return true;
     }
     if (g_debugPanelTab != 0) return true;
+    if (keyCode == GX_KEY_UP && g_debugSelectedBreakpoint > 0) {
+        --g_debugSelectedBreakpoint;
+        (void)debugSelectControllerBreakpoint(g_debugSelectedBreakpoint);
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN && g_debugSelectedBreakpoint + 1 < g_debugController.breakpointCount) {
+        ++g_debugSelectedBreakpoint;
+        (void)debugSelectControllerBreakpoint(g_debugSelectedBreakpoint);
+        return true;
+    }
     if (keyCode == GX_KEY_UP) {
-        if (g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
         return true;
     }
     if (keyCode == GX_KEY_DOWN) {
-        if (g_debugSelectedBreakpoint + 1 < g_debugController.breakpointCount) ++g_debugSelectedBreakpoint;
         return true;
     }
     const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, g_debugSelectedBreakpoint);
     if ((keyCode == 67 || keyCode == 99) && breakpoint) {
-        beginBreakpointConditionPrompt();
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN");
-        logBreakpointConditionUi(ctx, "editor=OPEN", breakpoint->id,
-                                 breakpoint->condition ? breakpoint->condition : "");
+        (void)debugSelectControllerBreakpoint(g_debugSelectedBreakpoint);
+        beginBreakpointConditionPrompt(ctx);
         return true;
     }
     if ((keyCode == 88 || keyCode == 120) && breakpoint) {
@@ -14806,34 +15319,53 @@ static void drawIntegratedDebugPanel(gx_app_context* ctx) {
         g_debugPanelTab == 3 ? 456 : g_debugPanelTab == 4 ? 550 : g_debugPanelTab == 5 ? 670 : 770;
     drawPanel(ctx, { tabX, 116, 100, 2 }, 0xD6E4FFu);
     if (g_debugPanelTab == 0) {
-        drawText(ctx, 100, 144, "Server source-breakpoint manager");
-        if (!g_debugUiBreakpointValid) drawText(ctx, 100, 166, "Manager snapshot unavailable");
-        const uint32_t rows = g_debugUiBreakpointSnapshot.breakpointCount < kDebugPanelMaxRows ?
-            g_debugUiBreakpointSnapshot.breakpointCount : kDebugPanelMaxRows;
-        if (g_debugUiBreakpointValid && rows == 0) drawText(ctx, 100, 174, "No managed breakpoints. F9 toggles the current line.");
+        drawText(ctx, 100, 144, g_debugUiBreakpointSnapshotValid ?
+                 "Server source-breakpoint manager" : "Session breakpoints (controller view)");
+        if (!g_debugUiBreakpointSnapshotValid) drawText(ctx, 100, 166, "Manager snapshot unavailable");
+        const uint32_t availableRows = g_debugUiBreakpointSnapshotValid ?
+            g_debugUiBreakpointSnapshot.breakpointCount : g_debugController.breakpointCount;
+        const uint32_t rows = availableRows < kDebugPanelMaxRows ? availableRows : kDebugPanelMaxRows;
+        if (g_debugUiBreakpointSnapshotValid && rows == 0) drawText(ctx, 100, 174, "No managed breakpoints. F9 toggles the current line.");
         for (uint32_t row = 0; row < rows; ++row) {
-            const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(row);
-            if (!breakpoint) continue;
             const int y = 194 + static_cast<int>(row) * kDebugPanelRowHeight;
             if (row == g_debugSelectedBreakpoint) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
-            copyText(g_textScratch, sizeof(g_textScratch), breakpoint->enabled ? "[on] " : "[off] ");
-            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ? "LOG " : "BREAK ");
-            appendText(g_textScratch, sizeof(g_textScratch), breakpoint->sourcePath);
-            appendText(g_textScratch, sizeof(g_textScratch), ":");
-            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->sourceLine);
-            appendText(g_textScratch, sizeof(g_textScratch), " hits=");
-            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->rawHitCount);
-            appendText(g_textScratch, sizeof(g_textScratch), " ");
-            if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_EQUAL) appendText(g_textScratch, sizeof(g_textScratch), "hit==");
-            else if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_MULTIPLE) appendText(g_textScratch, sizeof(g_textScratch), "hit%=");
-            else if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST) appendText(g_textScratch, sizeof(g_textScratch), "hit>=");
-            if (breakpoint->hitCountPolicy != GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE)
-                appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->hitCountThreshold);
-            appendText(g_textScratch, sizeof(g_textScratch), " ");
-            if (breakpoint->conditionPresent) {
-                appendText(g_textScratch, sizeof(g_textScratch), "condition=");
-                appendText(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointConditions[row][0] ? g_debugUiBreakpointConditions[row] : "<configured>");
-            } else appendText(g_textScratch, sizeof(g_textScratch), "unconditional");
+            if (g_debugUiBreakpointSnapshotValid) {
+                const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(row);
+                if (!breakpoint) continue;
+                copyText(g_textScratch, sizeof(g_textScratch), breakpoint->enabled ? "[on] " : "[off] ");
+                appendText(g_textScratch, sizeof(g_textScratch), breakpoint->action == GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG ? "LOG " : "BREAK ");
+                appendText(g_textScratch, sizeof(g_textScratch), breakpoint->sourcePath);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->sourceLine);
+                appendText(g_textScratch, sizeof(g_textScratch), " hits=");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->rawHitCount);
+                appendText(g_textScratch, sizeof(g_textScratch), " ");
+                if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_EQUAL) appendText(g_textScratch, sizeof(g_textScratch), "hit==");
+                else if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_MULTIPLE) appendText(g_textScratch, sizeof(g_textScratch), "hit%=");
+                else if (breakpoint->hitCountPolicy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST) appendText(g_textScratch, sizeof(g_textScratch), "hit>=");
+                if (breakpoint->hitCountPolicy != GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE)
+                    appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->hitCountThreshold);
+                appendText(g_textScratch, sizeof(g_textScratch), " ");
+                if (breakpoint->conditionPresent) {
+                    appendText(g_textScratch, sizeof(g_textScratch), "condition=");
+                    appendText(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointConditions[row][0] ? g_debugUiBreakpointConditions[row] : "<configured>");
+                } else appendText(g_textScratch, sizeof(g_textScratch), "unconditional");
+            } else {
+                const DebugBreakpoint* breakpoint = DebugControllerBreakpointAt(&g_debugController, row);
+                if (!breakpoint) continue;
+                copyText(g_textScratch, sizeof(g_textScratch), breakpoint->enabled ? "[on] session " : "[off] session ");
+                appendText(g_textScratch, sizeof(g_textScratch), breakpoint->location.relativePath);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint->location.line);
+                appendText(g_textScratch, sizeof(g_textScratch), " ");
+                if (breakpoint->condition && breakpoint->condition[0]) {
+                    appendText(g_textScratch, sizeof(g_textScratch), "condition=");
+                    appendText(g_textScratch, sizeof(g_textScratch), breakpoint->condition);
+                    appendText(g_textScratch, sizeof(g_textScratch), " (");
+                    appendText(g_textScratch, sizeof(g_textScratch), DebugBreakpointConditionEvaluationName(breakpoint->conditionLastEvaluation));
+                    appendText(g_textScratch, sizeof(g_textScratch), ")");
+                } else appendText(g_textScratch, sizeof(g_textScratch), "unconditional");
+            }
             drawText(ctx, 100, y, g_textScratch);
         }
         drawText(ctx, 100, 628, "Up/Down Select  Space Enable  Delete Remove  L Break/Log  H Hit policy  C Condition  F9 Add");
@@ -14859,8 +15391,8 @@ static void drawIntegratedDebugPanel(gx_app_context* ctx) {
         drawText(ctx, 100, 328, "Call Stack:"); drawText(ctx, 220, 328, g_debugUiCallStackValid ? "server snapshot ready" : "unavailable while running");
         drawText(ctx, 100, 352, "Locals:"); drawText(ctx, 220, 352, g_debugUiVariablesValid ? "server snapshot ready" : "unavailable while running");
         drawText(ctx, 100, 376, "Breakpoints:");
-        copyText(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointValid ? "managed=" : "manager unavailable");
-        if (g_debugUiBreakpointValid) appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointSnapshot.breakpointCount);
+        copyText(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointSnapshotValid ? "managed=" : "manager unavailable");
+        if (g_debugUiBreakpointSnapshotValid) appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugUiBreakpointSnapshot.breakpointCount);
         drawText(ctx, 220, 376, g_textScratch);
         drawText(ctx, 100, 400, "Debug output:");
         copyText(g_textScratch, sizeof(g_textScratch), g_debugUiOutputValid ? "records=" : "unavailable");
@@ -15451,11 +15983,56 @@ static void drawModal(gx_app_context* ctx) {
         return;
     }
     if (g_inputMode == InputMode::BreakpointCondition) {
+        if (!debugBreakpointSelectionWorkspaceIndex(g_debugEditingBreakpointIdentity, nullptr)) {
+            g_debugConditionEditorOpenMarkerPending = false;
+            g_inputMode = InputMode::Normal;
+            g_debugEditingBreakpointId = 0;
+            g_debugEditingBreakpointIdentity = {};
+            writeStudioOutput("Breakpoint condition editor closed: selected breakpoint is stale");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=REJECT reason=stale_before_render");
+            return;
+        }
         drawText(ctx, 210, 220, "Breakpoint Condition");
         drawText(ctx, 210, 250, "Bounded expression; blank applies Clear Condition");
         drawPanel(ctx, { 210, 265, 540, 30 }, 0x111722u);
         drawText(ctx, 220, 285, g_prompt);
         drawText(ctx, 210, 325, "Enter: apply   Escape: cancel");
+        if (g_debugConditionEditorOpenMarkerPending) {
+            g_debugConditionEditorOpenMarkerPending = false;
+            copyText(g_textScratch, sizeof(g_textScratch),
+                "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id=");
+            if (g_debugEditingBreakpointIdentity.logicalBreakpointId)
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                    g_debugEditingBreakpointIdentity.logicalBreakpointId);
+            else appendText(g_textScratch, sizeof(g_textScratch), "pending");
+            appendText(g_textScratch, sizeof(g_textScratch), " source=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.sourcePath);
+            appendText(g_textScratch, sizeof(g_textScratch), ":");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.line);
+            appendText(g_textScratch, sizeof(g_textScratch), " origin=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.origin == DebugBreakpointSelectionOrigin::Editor ? "editor" :
+                (g_debugEditingBreakpointIdentity.origin == DebugBreakpointSelectionOrigin::Manager ? "manager" : "controller"));
+            appendText(g_textScratch, sizeof(g_textScratch), " editor_row=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.editorRowIndex);
+            appendText(g_textScratch, sizeof(g_textScratch), " editor_row_id=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.editorBreakpointId);
+            appendText(g_textScratch, sizeof(g_textScratch), " manager_id=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.managerBreakpointId);
+            appendText(g_textScratch, sizeof(g_textScratch), " manager_snapshot=");
+            appendText(g_textScratch, sizeof(g_textScratch),
+                g_debugUiBreakpointSnapshotValid ? "present" : "absent");
+            logMarker(ctx, g_textScratch);
+            logBreakpointConditionUi(ctx, "editor=OPEN",
+                g_debugEditingBreakpointIdentity.logicalBreakpointId, g_prompt,
+                g_debugEditingBreakpointIdentity.logicalBreakpointId ?
+                    "identity=runtime_bound" : "identity=workspace_configured");
+        }
         return;
     }
     if (g_inputMode == InputMode::ConfirmBuild) {
@@ -15554,7 +16131,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 312, 116, "Request Project Close");
     }
     if (g_debugMenuOpen) {
-        drawPanel(ctx, { 580, 42, 360, 312 }, 0x34496Au);
+        drawPanel(ctx, { 580, 42, 360, 334 }, 0x34496Au);
         drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
         drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
         drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
@@ -15569,6 +16146,7 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 592, 306, "Locals");
         drawText(ctx, 592, 328, "Arguments");
         drawText(ctx, 592, 350, "Watch");
+        drawText(ctx, 592, 372, "Edit Selected Breakpoint Condition (Ctrl+Shift+C)");
     }
     drawModal(ctx);
 }
@@ -15738,53 +16316,9 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
             logBreakpointConditionUi(ctx, "editor=CLOSED reason=CANCEL", g_debugEditingBreakpointId,
                                      g_prompt);
             g_debugEditingBreakpointId = 0;
+            g_debugEditingBreakpointIdentity = {};
             g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
-            g_inputMode = InputMode::Normal;
-            return;
-        }
-        if (debugUiCurrentAbiAvailable() && g_debugUiEditingBreakpointIndex != 0xFFFFFFFFu) {
-            const uint32_t index = g_debugUiEditingBreakpointIndex;
-            if (keyCode == 88 || keyCode == 120 || keyCode == 13) {
-                char oldCondition[GX_DEVELOPMENT_DEBUG_MAX_EXPRESSION_BYTES] = {};
-                copyText(oldCondition, sizeof(oldCondition), g_debugUiBreakpointConditions[index]);
-                if (keyCode == 88 || g_prompt[0] == '\0') g_debugUiBreakpointConditions[index][0] = '\0';
-                else copyText(g_debugUiBreakpointConditions[index], sizeof(g_debugUiBreakpointConditions[index]), g_prompt);
-                const bool accepted = debugUiConfigureBreakpoint(ctx, index);
-                if (!accepted) copyText(g_debugUiBreakpointConditions[index], sizeof(g_debugUiBreakpointConditions[index]), oldCondition);
-                else logMarker(ctx, g_prompt[0] == '\0' ?
-                    "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS" :
-                    "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS");
-                g_debugEditingBreakpointId = 0;
-                g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
-                g_inputMode = InputMode::Normal;
-                return;
-            }
-            if ((modifiers & GX_KEY_MOD_CTRL) && (keyCode == 65 || keyCode == 97)) { g_prompt[0] = '\0'; return; }
-            if (keyCode == 8) { promptBackspace(); return; }
-            promptAppend(keyCode, modifiers);
-            return;
-        }
-        if (keyCode == 88 || keyCode == 120) {
-            DebugErrorCode error = DebugErrorCode::None;
-            const bool controllerAccepted = g_debugEditingBreakpointId != 0 &&
-                DebugControllerClearBreakpointCondition(&g_debugController,
-                                                        g_debugEditingBreakpointId, &error);
-            if (controllerAccepted && debuggerWorkspaceSyncLegacyBreakpointById(
-                    ctx, g_debugEditingBreakpointId, "")) {
-                writeStudioOutput("Breakpoint condition cleared");
-                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
-                logBreakpointConditionUi(ctx, "clear=PASS", g_debugEditingBreakpointId, "",
-                                         "parse=EMPTY state=UNCONDITIONAL");
-            } else if (controllerAccepted) {
-                writeStudioOutput("Breakpoint condition clear was not saved");
-            } else if (error != DebugErrorCode::None) {
-                copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition clear failed: ");
-                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
-                writeStudioOutput(g_textScratch);
-            }
-            logBreakpointConditionUi(ctx, "editor=CLOSED reason=CLEAR", g_debugEditingBreakpointId,
-                                     g_prompt);
-            g_debugEditingBreakpointId = 0;
+            g_debugConditionEditorOpenMarkerPending = false;
             g_inputMode = InputMode::Normal;
             return;
         }
@@ -15793,63 +16327,25 @@ static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int mod
             logBreakpointConditionUi(ctx, "input", g_debugEditingBreakpointId, g_prompt);
             return;
         }
+        if (keyCode == 88 || keyCode == 120) {
+            (void)commitBreakpointCondition(ctx, "", true);
+            logBreakpointConditionUi(ctx, "editor=CLOSED reason=CLEAR",
+                g_debugEditingBreakpointId, g_prompt);
+            g_debugEditingBreakpointId = 0;
+            g_debugEditingBreakpointIdentity = {};
+            g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
+            g_debugConditionEditorOpenMarkerPending = false;
+            g_inputMode = InputMode::Normal;
+            return;
+        }
         if (keyCode == 13) {
-            DebugErrorCode error = DebugErrorCode::None;
-            bool accepted = false;
-            bool controllerAccepted = false;
-            if (g_debugEditingBreakpointId != 0 && g_prompt[0] == '\0') {
-                controllerAccepted = DebugControllerClearBreakpointCondition(
-                    &g_debugController, g_debugEditingBreakpointId, &error);
-                accepted = controllerAccepted && debuggerWorkspaceSyncLegacyBreakpointById(
-                    ctx, g_debugEditingBreakpointId, "");
-                if (accepted) {
-                    writeStudioOutput("Breakpoint condition cleared");
-                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS");
-                    logBreakpointConditionUi(ctx, "clear=PASS", g_debugEditingBreakpointId, "",
-                                             "parse=EMPTY state=UNCONDITIONAL");
-                }
-            } else if (g_debugEditingBreakpointId != 0) {
-                controllerAccepted = DebugControllerSetBreakpointCondition(&g_debugController,
-                                                                            g_debugEditingBreakpointId,
-                                                                            g_prompt, &error);
-                accepted = controllerAccepted && debuggerWorkspaceSyncLegacyBreakpointById(
-                    ctx, g_debugEditingBreakpointId, g_prompt);
-                if (accepted) {
-                    writeStudioOutput("Breakpoint condition accepted");
-                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS");
-                    logBreakpointConditionUi(ctx, "commit=PASS", g_debugEditingBreakpointId,
-                                             g_prompt, "parse=VALID state=CONDITIONAL");
-                } else if (!controllerAccepted) {
-                    const DebugBreakpoint* breakpoint = nullptr;
-                    for (uint32_t i = 0; i < g_debugController.breakpointCount; ++i) {
-                        const DebugBreakpoint* candidate = DebugControllerBreakpointAt(&g_debugController, i);
-                        if (candidate && candidate->id == g_debugEditingBreakpointId) {
-                            breakpoint = candidate;
-                            break;
-                        }
-                    }
-                    copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition invalid");
-                    if (breakpoint && breakpoint->conditionParseDiagnostic &&
-                        breakpoint->conditionParseDiagnostic[0]) {
-                        appendText(g_textScratch, sizeof(g_textScratch), ": ");
-                        appendText(g_textScratch, sizeof(g_textScratch), breakpoint->conditionParseDiagnostic);
-                    }
-                    writeStudioOutput(g_textScratch);
-                    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID");
-                    logBreakpointConditionUi(ctx, "commit=INVALID", g_debugEditingBreakpointId,
-                                             g_prompt, "parse=INVALID state=CONDITION_REPLACED");
-                }
-            }
-            if (!accepted && controllerAccepted) {
-                writeStudioOutput("Breakpoint condition update was not saved");
-            } else if (!accepted && error != DebugErrorCode::None && g_prompt[0] == '\0') {
-                copyText(g_textScratch, sizeof(g_textScratch), "Breakpoint condition update failed: ");
-                appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
-                writeStudioOutput(g_textScratch);
-            }
+            (void)commitBreakpointCondition(ctx, g_prompt, g_prompt[0] == '\0');
             logBreakpointConditionUi(ctx, "editor=CLOSED reason=COMMIT", g_debugEditingBreakpointId,
                                      g_prompt);
             g_debugEditingBreakpointId = 0;
+            g_debugEditingBreakpointIdentity = {};
+            g_debugUiEditingBreakpointIndex = 0xFFFFFFFFu;
+            g_debugConditionEditorOpenMarkerPending = false;
             g_inputMode = InputMode::Normal;
             return;
         }
@@ -16408,6 +16904,11 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         requestDebugPause(ctx);
         return;
     }
+    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) &&
+        (keyCode == 67 || keyCode == 99) && !g_debugPanelOpen) {
+        beginEditorBreakpointConditionPrompt(ctx);
+        return;
+    }
     if (g_debugPanelOpen && handleDebugPanelKey(ctx, keyCode, action, modifiers)) return;
     // F9 is unused by the existing editor shortcuts and follows the standard
     // debugger convention without changing the established F5 Run command.
@@ -16699,8 +17200,14 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_tab_mouse=PASS");
                 } else if (g_debugPanelTab == 0 && y >= 178 && y < 620) {
                     const uint32_t row = static_cast<uint32_t>((y - 178) / kDebugPanelRowHeight);
-                    if (row < g_debugUiBreakpointSnapshot.breakpointCount) {
+                    const uint32_t breakpointRows = g_debugUiBreakpointSnapshotValid ?
+                        g_debugUiBreakpointSnapshot.breakpointCount : g_debugController.breakpointCount;
+                    if (row < breakpointRows) {
                         g_debugSelectedBreakpoint = row;
+                        if (g_debugUiBreakpointSnapshotValid)
+                            (void)debugSelectManagerBreakpoint(row);
+                        else
+                            (void)debugSelectControllerBreakpoint(row);
                         if (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)
                             navigateSelectedBreakpoint(ctx);
                     }
@@ -16746,15 +17253,9 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 const uint32_t row = static_cast<uint32_t>((y - 130) / kDebugPanelRowHeight);
                 if (row < g_debugController.breakpointCount) {
                     g_debugSelectedBreakpoint = row;
+                    (void)debugSelectControllerBreakpoint(row);
                     if (action == GX_MOUSE_ACTION_DOWN && x >= 600) {
-                        beginBreakpointConditionPrompt();
-                        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN");
-                        const DebugBreakpoint* opened = DebugControllerBreakpointAt(&g_debugController,
-                                                                                     g_debugSelectedBreakpoint);
-                        if (opened) {
-                            logBreakpointConditionUi(ctx, "editor=OPEN", opened->id,
-                                                     opened->condition ? opened->condition : "");
-                        }
+                        beginBreakpointConditionPrompt(ctx);
                     } else if (action == GX_MOUSE_ACTION_DOUBLE_CLICK) navigateSelectedBreakpoint(ctx);
                 }
             } else if (g_debugPanelTab == 2 && y >= 160 && y < 580 && x >= 88 && x < 872) {
@@ -17295,7 +17796,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 480 && x < 560) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
-    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 374) {
+    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 376) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
@@ -17326,6 +17827,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         else if (row == 11) { g_debugPanelTab = 3; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 12) { g_debugPanelTab = 4; g_debugPanelOpen = true; g_editorFocused = false; }
         else if (row == 13) { g_debugPanelTab = 5; g_debugPanelOpen = true; g_editorFocused = false; }
+        else if (row == 14) beginEditorBreakpointConditionPrompt(ctx);
         if (row >= 8 && row <= 13) {
             copyText(g_textScratch, sizeof(g_textScratch),
                      "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_open=PASS tab=");

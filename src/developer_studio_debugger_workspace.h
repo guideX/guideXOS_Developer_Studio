@@ -39,6 +39,9 @@ enum class DebuggerWorkspaceErrorCode {
     FileError
 };
 
+// Canonical project-scoped source breakpoint configuration. Within a project,
+// sourcePath + line is its stable logical key; editor rows and manager/controller
+// IDs are projections or per-session bindings, not additional condition owners.
 struct DebuggerWorkspaceBreakpoint {
     char sourcePath[kMaxProjectPathBytes];
     uint32_t line;
@@ -54,6 +57,10 @@ struct DebuggerWorkspaceBreakpoint {
 struct DebuggerWorkspace {
     DebuggerWorkspaceBreakpoint breakpoints[kDebuggerWorkspaceMaxBreakpoints];
     uint32_t breakpointCount;
+    // In-memory generation used to reject edits from a source selection that
+    // became stale while a condition editor was open. It is not persisted;
+    // the project generation scopes it across workspace reloads.
+    uint64_t breakpointGeneration;
     char watches[kDebuggerWorkspaceMaxWatches][kDebugWatchMaxExpressionBytes + 1];
     uint32_t watchCount;
     DebuggerWorkspaceErrorCode lastError;
@@ -97,6 +104,9 @@ bool DebuggerWorkspaceEditWatch(DebuggerWorkspace* workspace, uint32_t index, co
 bool DebuggerWorkspaceRemoveWatch(DebuggerWorkspace* workspace, uint32_t index);
 int DebuggerWorkspaceFindBreakpoint(const DebuggerWorkspace* workspace, const char* sourcePath,
                                     uint32_t line);
+bool DebuggerWorkspaceResolveBreakpoint(const DebuggerWorkspace* workspace,
+                                        const char* sourcePath, uint32_t line,
+                                        uint64_t expectedGeneration, uint32_t* outIndex);
 
 bool SerializeDebuggerWorkspace(const DebuggerWorkspace& workspace, char* output, uint32_t outputSize,
                                 uint32_t* outBytes, DebuggerWorkspaceErrorCode* error);

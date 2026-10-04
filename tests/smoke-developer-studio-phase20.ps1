@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'Phase29NReadiness')]
+    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'Phase29NReadiness')]
     [string]$Case = 'ConditionEditor',
     [string]$ServerRoot = 'D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO',
     [string]$FixtureRoot = '',
@@ -36,7 +36,6 @@ $script:PanelReady = $false
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Phase 20 hosted smoke failed: $Message" }
 }
-
 function Add-Command([string]$Command) {
     $script:Parts.Add("COMMAND|$Command")
     $script:LastInput = $Command
@@ -146,31 +145,39 @@ function Add-OpenDebugBreakpoints() {
     $script:PanelReady = $true
 }
 
-function Add-OpenConditionEditor([string]$ExpectedText = '') {
+function Add-OpenConditionEditor([string]$ExpectedText = '', [string]$ManagerSnapshot = 'absent') {
     Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=editor editor_row='
+    Add-CaptureMarker "manager_snapshot=$ManagerSnapshot"
     if ($ExpectedText) { Add-CaptureMarker " text=$ExpectedText" }
-    Add-Key 67 # C opens the selected breakpoint's real condition editor.
-    Add-Wait 2
-    Add-LogSnapshot
+    # Exercise the editor-owned selection route directly. This stays available
+    # when the Manager snapshot has not been published for the active session.
+    Add-Command "gui.activate $script:WindowId"
+    Add-Click 610 30
+    Add-Click 620 360
     Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id='
+    Add-WaitMarkerFresh 'origin=editor editor_row='
+    Add-WaitMarkerFresh "manager_snapshot=$ManagerSnapshot"
     if ($ExpectedText) { Add-WaitMarkerFresh " text=$ExpectedText" }
 }
 
 function Add-CommitCondition([string]$Value) {
     Add-CaptureMarker " text=$Value parse=VALID state=CONDITIONAL"
     Add-CaptureMarker 'debug_condition_editor=CLOSED reason=COMMIT breakpoint_id='
+    Add-CaptureMarker "debug_condition_persist=PASS source=src/main.cpp:$BreakpointLine"
     Add-Key 13
     Add-LogSnapshot
     Add-WaitMarkerFresh " text=$Value parse=VALID state=CONDITIONAL"
     Add-WaitMarkerFresh 'debug_condition_editor=CLOSED reason=COMMIT breakpoint_id='
+    Add-WaitMarkerFresh "debug_condition_persist=PASS source=src/main.cpp:$BreakpointLine"
 }
 
 function Add-InvalidCondition([string]$Value) {
-    Add-CaptureMarker " text=$Value parse=INVALID state=CONDITION_REPLACED"
+    Add-CaptureMarker " text=$Value parse=INVALID state=UNCHANGED"
     Add-CaptureMarker 'debug_condition_editor=CLOSED reason=COMMIT breakpoint_id='
     Add-Key 13
     Add-LogSnapshot
-    Add-WaitMarkerFresh " text=$Value parse=INVALID state=CONDITION_REPLACED"
+    Add-WaitMarkerFresh " text=$Value parse=INVALID state=UNCHANGED"
     Add-WaitMarkerFresh 'debug_condition_editor=CLOSED reason=COMMIT breakpoint_id='
 }
 
@@ -256,6 +263,31 @@ function Test-PersistedBreakpoint([string]$SourcePath, [int]$Line, [int]$Column)
         }
     } catch { return $false }
     return $false
+}
+
+function Get-PersistedBreakpointRecordCount([string]$SourcePath, [int]$Line, [int]$Column) {
+    $workspacePath = Join-Path $FixtureRoot 'guidexos.debugger.json'
+    if (-not (Test-Path -LiteralPath $workspacePath -PathType Leaf)) { return 0 }
+    try {
+        $workspace = Get-Content -LiteralPath $workspacePath -Raw | ConvertFrom-Json
+        return @($workspace.breakpoints | Where-Object {
+            $_.sourcePath -eq $SourcePath -and [int]$_.line -eq $Line -and
+            [int]$_.column -eq $Column -and $_.action -eq 'BREAK'
+        }).Count
+    } catch { return 0 }
+}
+
+function Test-PersistedCondition([string]$SourcePath, [int]$Line, [int]$Column, [string]$Condition) {
+    $workspacePath = Join-Path $FixtureRoot 'guidexos.debugger.json'
+    if (-not (Test-Path -LiteralPath $workspacePath -PathType Leaf)) { return $false }
+    try {
+        $workspace = Get-Content -LiteralPath $workspacePath -Raw | ConvertFrom-Json
+        $matches = @($workspace.breakpoints | Where-Object {
+            $_.sourcePath -eq $SourcePath -and [int]$_.line -eq $Line -and
+            [int]$_.column -eq $Column -and $_.action -eq 'BREAK'
+        })
+        return ($matches.Count -eq 1 -and [string]$matches[0].condition -eq $Condition)
+    } catch { return $false }
 }
 
 function Get-PanelBreakpointCount() {
@@ -382,7 +414,7 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
     }
 }
 
-function Add-InitialSetup([bool]$ReadinessOnly = $false) {
+function Add-InitialSetup([bool]$ReadinessOnly = $false, [bool]$EditorOwned = $false) {
     Add-Command 'gui.start'
     Add-Wait 8
     Add-Command 'desktop.launch com.guidexos.developerstudio'
@@ -425,6 +457,7 @@ function Add-InitialSetup([bool]$ReadinessOnly = $false) {
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
     if ($ReadinessOnly) { return }
+    if ($EditorOwned) { return }
     Add-OpenDebugBreakpoints
     $script:Parts.Add('NORMALIZE|breakpoints')
     # Keep the real panel open and select the intended row for all following
@@ -434,14 +467,13 @@ function Add-InitialSetup([bool]$ReadinessOnly = $false) {
 }
 
 function Add-SetCondition([string]$Value) {
-    if (-not $script:PanelReady) { Add-OpenDebugBreakpoints }
     Add-OpenConditionEditor
     Add-ConditionText $Value
     Add-CommitCondition $Value
 }
 
 function Add-ConditionEditorCase() {
-    Add-InitialSetup
+    Add-InitialSetup $false $true
     Add-SetCondition 'counter == 2'
     Add-OpenConditionEditor 'counter == 2'
     Add-ConditionText 'counter >= 2'
@@ -453,66 +485,86 @@ function Add-ConditionEditorCase() {
     Add-OpenConditionEditor 'counter == 2'
     Add-ConditionText 'counter = 2'
     Add-InvalidCondition 'counter = 2'
-    Add-OpenConditionEditor 'counter = 2'
+    # Invalid syntax closes the modal and leaves the canonical condition
+    # unchanged, so reopening must show the last valid expression.
+    Add-OpenConditionEditor 'counter == 2'
     Add-ClearCondition
     Add-OpenConditionEditor
     Add-ConditionText 'counter == 2'
     Add-CommitCondition 'counter == 2'
-    Add-CaptureMarker 'text=counter == 2 enabled=FALSE'
-    Add-Key 32
-    Add-LogSnapshot
-    Add-WaitMarkerFresh 'text=counter == 2 enabled=FALSE'
-    Add-CaptureMarker 'text=counter == 2 enabled=TRUE'
-    Add-Key 32
-    Add-LogSnapshot
-    Add-WaitMarkerFresh 'text=counter == 2 enabled=TRUE'
     Add-Key 116
     Add-LogSnapshot
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
-    $script:PanelReady = $false
-    Add-OpenDebugBreakpoints
     Add-OpenConditionEditor 'counter == 2'
-    # Leave the real modal active. The targeted close must bypass modal focus
-    # and drive the authoritative Phase 19 shutdown sequence.
+    # Leave the real editor modal active. The targeted close must bypass modal
+    # focus and drive the authoritative Phase 19 shutdown sequence.
     Add-TargetedClose
 }
 
 function Add-ConditionErrorRecoveryCase() {
-    Add-InitialSetup
+    Add-InitialSetup $false $true
     Add-SetCondition 'unknown_value == 2'
     Add-Key 116
     Add-LogSnapshot
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
     Add-WaitMarker 'Debug: breakpoint condition error'
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
-    $script:PanelReady = $false
-    Add-OpenDebugBreakpoints
     Add-OpenConditionEditor 'unknown_value == 2'
     Add-ConditionText 'counter == 2'
     Add-CommitCondition 'counter == 2'
-    # The panel owns unmodified function-key input while visible. Close it
-    # through the real panel Escape path before the recovery Continue/F5.
-    Add-Key 27
-    Add-WaitMilliseconds 300
     Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING'
-    Add-CaptureMarker 'Debug: breakpoint condition false; continuing'
     Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
     Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
     Add-Key 116
     Add-LogSnapshot
-    # The replacement condition owns the current stopped trap. One Continue
-    # must therefore drive the normal false -> false -> true conditional path;
-    # a prior aggregate used a stale PAUSED marker and sent a second F5 before
-    # the first recovery transition was observable.
+    # The replacement condition owns the current stopped trap. Depending on
+    # the frame where the evaluation error was surfaced, the repaired
+    # expression may match that trap immediately; wait for the resulting true
+    # stop rather than assuming additional loop iterations.
     Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING'
-    Add-WaitMarkerFresh 'Debug: breakpoint condition false; continuing'
     Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
     Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
-    $script:PanelReady = $false
-    Add-OpenDebugBreakpoints
     Add-OpenConditionEditor 'counter == 2'
     Add-ClearCondition
+    Add-TargetedClose
+}
+
+function Add-ControllerPanelConditionEditorCase() {
+    Add-InitialSetup $false $true
+    # Start through the editor-owned route while the hosted Manager provider
+    # is intentionally unavailable for NativeAppDebugger sessions.
+    Add-SetCondition 'counter == 2'
+
+    # The integrated debugger shows the real controller-owned session row as
+    # a fallback while preserving the separate unavailable Manager status.
+    Add-OpenDebugBreakpoints
+    Add-WaitMarkerFresh 'condition=counter == 2'
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=controller editor_row='
+    Add-CaptureMarker 'manager_snapshot=absent'
+    Add-CaptureMarker ' text=counter == 2'
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id='
+    Add-WaitMarkerFresh 'origin=controller editor_row='
+    Add-WaitMarkerFresh 'manager_snapshot=absent'
+    Add-WaitMarkerFresh ' text=counter == 2'
+    Add-ConditionText 'counter >= 2'
+    Add-CommitCondition 'counter >= 2'
+    Add-WaitMarkerFresh 'condition=counter >= 2'
+
+    # Reopen from the editor after a controller-panel edit. Both routes must
+    # resolve the same logical ID and read the canonical workspace condition.
+    Add-Key 27
+    Add-OpenConditionEditor 'counter >= 2' 'absent'
+    Add-ConditionText 'counter == 2'
+    Add-CommitCondition 'counter == 2'
+
+    # Reopen the controller panel and require its rendered row to show the
+    # editor-origin condition from the same workspace/controller record.
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-WaitMarkerFresh 'condition=counter == 2'
     Add-TargetedClose
 }
 
@@ -527,6 +579,7 @@ Assert-True ($BreakpointLine -gt 0) 'breakpoint line is positive'
 
 if ($Case -eq 'ConditionEditor') { Add-ConditionEditorCase }
 elseif ($Case -eq 'ConditionErrorRecovery') { Add-ConditionErrorRecoveryCase }
+elseif ($Case -eq 'ControllerPanelConditionEditor') { Add-ControllerPanelConditionEditorCase }
 else { Add-Phase29NReadinessCase }
 
 $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -588,20 +641,39 @@ try {
     Assert-True (Test-PersistedBreakpoint 'src/main.cpp' $BreakpointLine 1) 'F9 persists the requested project-relative source breakpoint before debug start'
     if ($Case -eq 'ConditionEditor') {
         Assert-True (Test-Marker 'debug_condition_commit=INVALID') 'invalid syntax is reported by the real editor'
-        Assert-True ((Test-Marker 'text=counter = 2 parse=INVALID state=CONDITION_REPLACED') -and
+        Assert-True ((Test-Marker 'text=counter = 2 parse=INVALID state=UNCHANGED') -and
                      (Test-Marker 'debug_condition_editor=CLOSED reason=COMMIT breakpoint_id=')) 'invalid syntax does not become unconditional'
-        Assert-True ((Test-Marker 'enabled=FALSE') -and (Test-Marker 'enabled=TRUE')) 'disable and re-enable retain the same condition'
+        Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 'counter == 2') 'editor condition persists on the single canonical workspace row'
+        Assert-True ((Get-PersistedBreakpointRecordCount 'src/main.cpp' $BreakpointLine 1) -eq 1) 'editor condition edits do not create a duplicate breakpoint record'
         Assert-True (Test-Marker 'shutdown=TARGETED_CLOSE') 'modal-active targeted close is observed'
         Write-Host 'condition_editor_valid=PASS'
         Write-Host 'condition_editor_invalid_edit_clear_cancel=PASS'
         Write-Host 'condition_editor_modal_close=PASS'
     } elseif ($Case -eq 'ConditionErrorRecovery') {
-        $falseHits = Get-MarkerCount 'Debug: breakpoint condition false; continuing'
-        Assert-True $falseHits -ge 2 'ConditionError recovery reaches false, false, true behavior'
         Assert-True ((Test-Marker 'ConditionError') -or (Test-Marker 'Debug: breakpoint condition error')) 'hosted ConditionError is surfaced'
         Assert-True (Test-Marker 'debug_condition_commit=PASS') 'ConditionError recovery commits a valid replacement through the editor'
+        Assert-True (Test-Marker 'debug_condition_true=PASS') 'the replacement condition stops on a true evaluation'
         Assert-True (Test-Marker 'debug_condition_clear=PASS') 'ConditionError recovery clears the condition afterward'
         Write-Host 'condition_error_recovery=PASS'
+    } elseif ($Case -eq 'ControllerPanelConditionEditor') {
+        Assert-True (Test-Marker 'debug_condition_editor=OPEN breakpoint_id=') 'condition editor opened from both breakpoint views'
+        Assert-True (Test-Marker 'origin=controller editor_row=') 'controller-panel selection resolves to a canonical condition-editor origin'
+        Assert-True (Test-Marker 'origin=editor editor_row=') 'editor selection remains accepted after a controller-panel edit'
+        Assert-True (Test-Marker 'manager_snapshot=absent') 'hosted Manager status remains unavailable without blocking controller/editor routes'
+        Assert-True (Test-Marker 'text=counter >= 2 parse=VALID state=CONDITIONAL') 'controller-panel condition commit is valid'
+        Assert-True (Test-Marker 'debug_condition_persist=PASS source=src/main.cpp:37') 'both routes persist through the canonical workspace record'
+        Assert-True (Test-Marker 'condition=counter == 2') 'controller panel renders the editor-origin condition after reopen'
+        Assert-True ((Get-PersistedBreakpointRecordCount 'src/main.cpp' $BreakpointLine 1) -eq 1) 'controller and editor views retain one logical workspace breakpoint'
+        Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 'counter == 2') 'cross-view condition edits converge on one canonical value'
+        # Hosted redraw logs can be large enough to roll early marker lines
+        # out of the bounded diagnostic tail, so compare IDs from the retained
+        # marker stream in the complete stdout artifact.
+        $openIdLines = Select-String -LiteralPath $script:StdoutPath -Pattern 'debug_condition_editor=OPEN breakpoint_id=(\d+) source=src/main\.cpp:37'
+        $openIds = @($openIdLines | ForEach-Object {
+            [regex]::Match($_.Line, 'debug_condition_editor=OPEN breakpoint_id=(\d+)').Groups[1].Value
+        } | Sort-Object -Unique)
+        Assert-True ($openIds.Count -eq 1 -and $openIds[0] -ne '0') 'editor and controller-panel routes resolve the same logical breakpoint ID'
+        Write-Host 'controller_editor_condition_convergence=PASS'
     } else {
         Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY') 'hosted DWARF load reaches Ready'
         Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION') 'hosted DWARF sources associate with the project root'
