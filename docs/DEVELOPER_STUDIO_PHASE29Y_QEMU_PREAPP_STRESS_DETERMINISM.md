@@ -204,3 +204,136 @@ Phase 29I marker qualification before starting it.
     commit was performed.
 25. Formal 10/10: **not yet justified or started**; current-payload Phase 29I
     marker qualification is the next boundary.
+
+## Phase 29Y continuation — Phase 29I marker contract qualification
+
+### Exact Phase 29I harness contract
+
+The Phase 29L full-acceptance path requires these eight Phase 29I guest markers in `scripts/smoke-compiler-bootstrap.ps1`, in `Invoke-QemuProofBoot`'s `$requiredMarkers` list. They are required substring checks, not optional observations. The same eight checks are also used by the focused Phase 29I sentinel-only path. The source producer is `phase29iSentinelTrace` and its sentinel I/O callbacks in standalone `src/main.cpp`; the trace is part of `gx_main` startup.
+
+| Exact required marker pattern | Semantic fact claimed | Producer/current? | Historical introduction | Old B596 payload class |
+|---|---|---|---|
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_FS_READY readiness=ready boundary=loaded_application_image expected_mount=/` | The NativeElf app image was loaded from the initialized VFS root, establishing filesystem readiness before sentinel I/O. | Yes, `src/main.cpp`, `phase29iSentinelTrace` call in `gx_main`. | Standalone `aeffdc130557f5d19db6c74c052d20086fe989ad`; Server integration/harness `0df7686c2383551e4303462c9a9ba5bae90b495f`. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_MOUNT_READY mount=/ identity=containing_loaded_application_volume status=authoritative` | The containing loaded-app volume is the authoritative root mount for lookup. | Yes, same producer and call site. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_PATH_NORMALIZED result=valid path=/Apps/DeveloperStudio/.phase28q-diagnostic` | The canonical absolute sentinel path passed normalization. | Yes, same producer after reducer evaluation. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_STAT result=found gx_result=0 path=/Apps/DeveloperStudio/.phase28q-diagnostic` | Production VFS stat found the sentinel with `GX_OK`; the current producer adds size and type fields after this required substring. | Yes, `phase29iSentinelStat` in `src/main.cpp`. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_READ result=found gx_result=0 path=/Apps/DeveloperStudio/.phase28q-diagnostic` | Production VFS read succeeded; the current producer adds byte count after this required substring. | Yes, `phase29iSentinelRead` in `src/main.cpp`. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_FILE_FOUND result=found type=regular content=exact` | The reducer accepted a regular file with exact expected content. | Yes, same `gx_main` producer branch. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_ACCEPTED reason=SENTINEL_PRESENT` | Reducer state is `Present`; sentinel was accepted for this startup generation. | Yes, same producer branch. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+| `DEVELOPER_STUDIO_PHASE29I_SENTINEL_DIAGNOSTIC_MODE enabled=1 result=accepted` | The accepted sentinel latched Phase 28Q diagnostic mode. | Yes, same producer after Phase 29D decision resolution. | Same Phase 29I commits. | C — no runtime record in old B596 boot. |
+
+Each of the eight per-marker entries classifies the missing old B596 runtime event separately as C — current payload/package mismatch. The contract additionally requires `DEVELOPER_STUDIO_PHASE29D_STARTUP_SENTINEL_DECISION app=1 generation=1 fixture=present` and `DEVELOPER_STUDIO_PHASE29C_PROJECT_LOAD_REQUEST_ACCEPTED worker=sync state=load_started`; these are later-phase acceptance checkpoints, not Phase 29I marker expectations. The Phase 29D event confirms the sentinel decision was applied to the startup generation. Phase 29L's own ownership records remain independently required.
+
+### History and classification
+
+Phase 29I's original purpose was to distinguish filesystem/mount-not-ready from a ready mount with an absent sentinel, prove exact guest staging and lookup, and latch the sentinel result once for the startup generation. The source producer and its eight events remain in the current standalone source. Git history shows no later removal, rename, or replacement of these producer events. Phase 29J added boot-stage observability; Phase 29L added project-load ownership records. Those prove later independent states and do not replace the Phase 29I sentinel lookup contract. There is no current equivalent that justifies deleting or weakening these requirements.
+
+**Primary classification: C — current payload/package mismatch.** The previous retained ESP ELF (`B59653AE06A6953FFDE1151CB92E065076D7372FD6591AAE17CE474D5E679D04`, 1,030,236 bytes) had no statically discoverable `FS_READY`, `MOUNT_READY`, `PATH_NORMALIZED`, `FILE_FOUND`, or `DEVELOPER_STUDIO_PHASE29I_SENTINEL_` prefix. It did contain `DIAGNOSTIC_MODE`, but that fragment alone does not prove the Phase 29I lookup sequence. The protected Server package ELF (`106BD4D1C8827894AB6CE4850E5DC30E55E98A1BAA52BCA149027781B4081FE9`, 1,101,516 bytes) contains the Phase 29I marker strings. This explains why the default path could appear to satisfy the historical contract while silently replacing the retained ESP payload with the protected package.
+
+A clean build at standalone `main` HEAD `b101a7ba8dbfdfd2e3ecead4535c0953d97e0296` (product source unchanged from Phase 29X `3e7f5dbb15df8ffb59fb200aa6dccfc06c9a9260`), using the Server SDK headers from Server `79ca596586c53459526a93555a040b49d6643fcf`, reproduced the documented Phase 29X AMD64 package exactly: 1,117,692 bytes and SHA-256 `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE`. It contains all eight marker event names. Thus the source retains Phase 29I instrumentation and the qualified Phase 29X package contains it; the old B596 ESP artifact was not proven to be built from the current Phase 29X source contract. Its exact source commit cannot be recovered from the artifact alone.
+
+The old B596 payload was saved without alteration at `C:\Users\guideX\AppData\Local\Temp\phase29y-prequalification-esp-payload-a55fd599d5634584a365ad46e72d81df.elf`. The new candidate was built under an isolated temporary ServerRoot and then staged only into `ESP/Apps/DeveloperStudio/bin/amd64/developerstudio.elf`. Protected `Apps/DeveloperStudio/bin/amd64/developerstudio.elf`, `Apps/DeveloperStudio/app.json`, and the ESP sentinel remain at their required hashes. No source-level marker change was made.
+
+The `-Phase29YUseStagedDeveloperStudioPackage` default remains off, so normal behavior still copies the packaged Server app. When explicitly enabled, it now checks the staged ELF against the pinned qualified Phase 29X hash `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` before boot and prints the observed hash. The prior B596 payload therefore cannot pass this opt-in's identity check. The audited per-boot tree and host trace continue recording the staged payload hash and exact QEMU ESP directory.
+
+### Matcher and diagnostic validation
+
+The Phase 29L ownership matcher regression passed **7/7** after the identity guard. PowerShell parser validation and `git diff --check` passed. Directory-preparation diagnostics remain bounded to build-directory preparation, emit serial records only, and do not add VFS operations or mutate the filesystem. The qualifying run showed `/P28Q` length 5, root `stat=VFS_OK`, each missing build directory `mkdir=VFS_OK`, source object-cache lookup succeeding as a directory, no path truncation, and `COMPILE_ENTRY`. No `invalid_project_root` was observed.
+
+### One corrected current-payload qualification boot
+
+Command: `scripts/smoke-compiler-bootstrap.ps1 -Phase29LFullAcceptance -BootCount 1 -TimeoutSeconds 120 -Phase29YUseStagedDeveloperStudioPackage`.
+
+- Source intended for the package: standalone `main` HEAD `b101a7ba8dbfdfd2e3ecead4535c0953d97e0296` (product source unchanged from Phase 29X commit `3e7f5dbb15df8ffb59fb200aa6dccfc06c9a9260`); package identity `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE`.
+- Staging used the new opt-in, then copied the audited ESP to a unique directory-backed QEMU vvfat path. The audited tree hash and pre-spawn tree hash matched; host mutations after audit were zero. QEMU received that same exact ESP path.
+- Evidence root: `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-77ab40d1528c439d9448bde666fe6cff`, boot 1, stage `d205fa5464804264a014470afd3352b5`. The exact audited app path was `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-77ab40d1528c439d9448bde666fe6cff\esp-boot1-d205fa5464804264a014470afd3352b5\Apps\DeveloperStudio\bin\amd64\developerstudio.elf`.
+- All eight Phase 29I markers appeared in serial after app entry and before compile/Phase 28Q PASS. The observed event order was `FS_READY`, `MOUNT_READY`, `STAT`, `READ`, `PATH_NORMALIZED`, `FILE_FOUND`, `ACCEPTED`, the Phase 29D sentinel decision, then `DIAGNOSTIC_MODE`; path normalization is logged after the reducer performs its stat/read callbacks. The harness requires marker presence and does not impose a conflicting sequence. The Phase 29D sentinel decision was `fixture=present`; Phase 29C reached `/P28Q` ready; Phase 29L ownership checkpoints progressed through `CURRENT` and exactly-once transaction release (`TRANSACTION_NOT_ACTIVE`, releases=1).
+- Directory preparation succeeded, `COMPILE_ENTRY` appeared, and `DEVELOPER_STUDIO_PHASE28Q_PASS` appeared. Neither `DEVELOPER_STUDIO_PHASE28Q_FAILURE` nor `invalid_project_root` appeared.
+- The harness returned **exit 0** after its required marker was observed. QEMU itself was intentionally reaped by the harness at the acceptance marker (`exit_code=-1`, `harness_stop=required_marker_observed`); this is the runner's configured successful early-stop behavior, not a guest failure.
+
+This is one qualification boot only. The formal 10/10 readiness prerequisites are now satisfied, so that gate is justified to start after this checkpoint. The formal 10/10 gate is **not started**, as directed. The 25/25 ownership stress remains unstarted. The Server worktree has the staged ELF and the Phase 29Y opt-in hash guard modified; standalone `main` has this report modified. No commit, reset, stash, rebase, or cleanup was performed. The protected package/config/sentinel hashes remain unchanged.
+
+## Phase 29Y formal QEMU gates — final result (2026-10-10)
+
+### Outcome and isolation
+
+**Outcome B.** Formal full acceptance passed 10/10. Ownership stress stopped at boot 4 after a new pre-Developer-Studio-entry timeout; boots 5–25 were not launched. No retry or replacement boot was used.
+
+Before formal boot 1, PID 6400 was absent and no QEMU executable or Phase 29Y runner/wrapper was active. The same checks passed before stress boot 1. No unrelated emulator was terminated. Two orphaned QMP proxy listeners from a separate DiskManager GUI proof remained; neither had a QEMU connection. QEMU PID 6400 was never reused or terminated by this run.
+
+The Phase 29Y opt-in staged-payload hash guard remained enabled for every run. It accepted the staged 1,117,692-byte ELF only at SHA-256 `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE`. Each boot used its own temporary directory-backed ESP; the audit tree hash matched the pre-spawn tree hash and reported zero host mutations after audit. The historical wrong ELF remained preserved at `C:\Users\guideX\AppData\Local\Temp\phase29y-prequalification-esp-payload-a55fd599d5634584a365ad46e72d81df.elf`, size 1,030,236 bytes, SHA-256 `B59653AE06A6953FFDE1151CB92E065076D7372FD6591AAE17CE474D5E679D04`.
+
+The protected Server package, configuration, and sentinel remained unchanged after both gates:
+
+| Protected item | SHA-256 | Result |
+|---|---|---|
+| `Apps/DeveloperStudio/bin/amd64/developerstudio.elf` package baseline | `106BD4D1C8827894AB6CE4850E5DC30E55E98A1BAA52BCA149027781B4081FE9` | PASS |
+| `ESP/Apps/DeveloperStudio/app.json` | `5793567C54ABF22423A8FCDE2F9B32E5DEEB73981E070707BA11E7D23F390401` | PASS |
+| `ESP/Apps/DeveloperStudio/.phase28q-diagnostic` | `967D29A9A500A3108D7331BA47A5E2053A7C2203B81A345BE990084F3F43698A` | PASS |
+
+The earlier one-boot current-payload qualification remains valid; it was not repeated. Its eight Phase 29I markers, `/P28Q` readiness, Phase 29L ownership, compile entry, Phase 28Q pass, no `invalid_project_root`, and runner exit 0 were already recorded above.
+
+### Formal full-acceptance ledger — 10/10 PASS
+
+Every row is a distinct QEMU process and an independently staged/audited ESP. The authoritative Phase 29L/28Q harness validated the eight Phase 29I markers, `/P28Q` readiness, ownership evidence, compile progression, `COMPILE_ENTRY`, and `DEVELOPER_STUDIO_PHASE28Q_PASS`; no failure marker appeared. The harness stopped QEMU at the required marker and recorded `process_reaped=1` before the next boot.
+
+| Boot | Payload SHA-256 | Phase 29I | Project ready | Ownership | Compile entry | Phase 28Q | Result |
+|---:|---|---:|---|---|---|---|---|
+| 1 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 2 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 3 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 4 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 5 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 6 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 7 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 8 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 9 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+| 10 | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS | PASS | PASS |
+
+Formal result: **10/10 consecutive fresh full-acceptance boots PASS**, with no retries, payload mismatch, `DEVELOPER_STUDIO_PHASE28Q_FAILURE`, or `invalid_project_root`.
+
+Evidence directory: `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-e4d2374461c74c5dab8cd75e58fb6164`.
+
+### Ownership-stress ledger — stopped at boot 4
+
+Stress began at boot 1 after a second process/hash preflight. Boots 1–3 passed their Phase 29I, project-ready, and ownership checks. Each used the qualified hash and was reaped before the next launch. Boot 4 is the first failure; no boot 5 log exists and boots 5–25 were not attempted.
+
+| Boot | Boot token | Payload SHA-256 | Phase 29I | Project ready | Ownership | Result |
+|---:|---|---|---|---|---|---|
+| 1 | `8d2f67c904524a3586f52225a9256c6f` | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS |
+| 2 | `1221ad01f98e4969a0985feb32196428` | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS |
+| 3 | `56c9e4a571e64e15b941cb0dc6fcc202` | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | 8/8 | PASS | PASS | PASS |
+| 4 | `dd4e14074ebe467485e9f22332a4fed0` | `7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE` | Not reached | Not reached | Not reached | FAIL — pre-app timeout |
+
+Boot 4's exact boundary:
+
+- The final staged payload audit recorded `developer_studio_sha256=7605FE1BC4BDF82833032E9381D4678672641F906510290DB99B92D0E744A0DE`, `host_mutations_after_audit=0`, stage token `dd4e14074ebe467485e9f22332a4fed0`, and QEMU PID `26212`.
+- The generic loader marker was recorded as `uefi_loader_entry`; Phase 29J classified the trace `NATIVE_LOADER_REACHED`.
+- Serial showed `P28Z BOOT 05 gx_main_invoke` and `P28Z BOOT 08 gx_main_returned`, then `[KERNEL] Entering main loop (waiting for input)...`. It did not show `P28Z APP 00 gx_main_entry_raw` or `P28Z APP 01 gx_main_entered`.
+- The first missing harness marker was `P28Z APP 01 gx_main_entered`. Classification: `APPLICATION_LAUNCH_DISPATCH_TIMEOUT`; timeout owner `Invoke-QemuProofBoot`; timeout 120 seconds; `qemu_alive_at_timeout=1`; `harness_stop=timeout`; exit code `-1` after the harness stop.
+- The harness killed and reaped PID 26212 (`process_reaped=1`), drained both output tasks, and exited 1. No `DEVELOPER_STUDIO_PHASE28Q_FAILURE` or `invalid_project_root` appeared. Since Developer Studio entry was not reached, Phase 29I, project, ownership, compile, and Phase 28Q guest markers were absent downstream of this boundary.
+- The runner stopped at boot 4. Boot 5 was not launched. The serial, debugcon, QEMU debug, stdout/stderr, and host trace remain in `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-f0ccd701a9644cbcb0d345d0dc95e3ac`.
+
+The stress result is **3/25 PASS; boot 4 FAILED; gate stopped**. The required `25/25 PASS` result was not achieved.
+
+### Failure disposition and directory diagnostics
+
+The Phase 29Y stress run reproduced the broad historical pre-app failure class: generic loader reached, Developer Studio guest entry not reached. The exact mechanism relating boot 4 to the historical 22/25 and 5/25 failures remains unlocalized; no stronger root-cause claim is made. The historical 8/25 run remains attributed to the known matcher/transient-token defect. The corrected matcher regression passed 7/7, and no current failure was reported by the ownership matcher before boot 4 timed out.
+
+`invalid_project_root` did not occur on any of the ten full-acceptance boots or stress boots 1–4. Stress stopped before 25 boots, so this result does not claim the issue was absent from all 25 requested iterations. The bounded build-directory diagnostics remain in place. They are low-volume and do not add VFS operations or mutate the filesystem; no production filesystem repair is justified by this run.
+
+Hosted Manager-row qualification, condition retention across hosted remap/rebuild, and path-sensitive long-root `malformed_dwarf` remain separate open coverage and were not added to Phase 29Y.
+
+### Closeout validation
+
+- Phase 29L ownership matcher regression: **7/7 PASS**.
+- PowerShell parser: **PASS** for `scripts/smoke-compiler-bootstrap.ps1`, `scripts/test-phase29l-owner-matcher.ps1`, `scripts/Phase29L.OwnershipEvidence.psm1`, and `scripts/Phase29J.BootEvidence.psm1`.
+- `git diff --check`: **PASS** in standalone and Server worktrees.
+- Kernel and bootloader builds: **PASS** during both gate runner preflights; the runner built the kernel ELF and MSBuild completed the UEFI bootloader.
+- Staged-image audit: **PASS** on every attempted boot before spawn; all observed Developer Studio hashes matched the qualified hash and post-audit host mutations were zero.
+- Protected package/config/sentinel hashes: **PASS** after gate stop; historical wrong ELF hash retained.
+- Debug and Release CTest were not required for this change set: no C++ or CMake source changed. The changed Server files are the PowerShell gate and staged qualified ELF; the standalone change is this report.
+- Physical hardware: **not run**; this acceptance was QEMU-only.
+- Diagnostics retention: **retain** bounded diagnostics under the current project policy.
+
+The central closeout question is answered **No** overall: the exact hash-qualified payload passed 10 consecutive full-acceptance boots, but it did not complete 25 ownership-stress boots because a pre-app disappearance recurred at stress boot 4. The next boundary is the retained boot 4 trace; do not replace it with a later boot.
