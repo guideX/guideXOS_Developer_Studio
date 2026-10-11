@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'ManagerConditionEditor', 'ManagerRemapRetention', 'Phase29NReadiness')]
+    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'ManagerConditionEditor', 'ManagerOpenCloseMarker', 'ManagerRemapRetention', 'Phase29NReadiness')]
     [string]$Case = 'ConditionEditor',
     [string]$ServerRoot = 'D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO',
     [string]$FixtureRoot = '',
@@ -32,6 +32,9 @@ $script:CapturedText = ''
 $script:WindowId = 1000
 $script:MarkerBaselines = @{}
 $script:PanelReady = $false
+$script:MarkerGateRunToken = ''
+$script:CurrentMarkerGateCycle = 'setup'
+$script:FreshMarkerObservations = New-Object 'System.Collections.Generic.List[object]'
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Phase 20 hosted smoke failed: $Message" }
@@ -353,15 +356,32 @@ function Wait-Marker([string]$Marker, [int]$TimeoutSeconds = $DebugWaitSeconds) 
 
 function Wait-MarkerFresh([string]$Marker, [int]$TimeoutSeconds = $DebugWaitSeconds) {
     $script:ExpectedMarker = $Marker
-    $baseline = if ($script:MarkerBaselines.ContainsKey($Marker)) {
+    $hasCapturedBaseline = $script:MarkerBaselines.ContainsKey($Marker)
+    $baseline = if ($hasCapturedBaseline) {
         $script:MarkerBaselines[$Marker]
     } else {
         Get-MarkerCount $Marker
     }
     $script:MarkerBaselines.Remove($Marker)
+    $baselineSource = if ($hasCapturedBaseline) { 'captured-before-action' } else { 'sampled-at-wait' }
     $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
     while ((Get-Date) -lt $deadline) {
-        if ((Get-MarkerCount $Marker) -gt $baseline) { return }
+        $actualCount = Get-MarkerCount $Marker
+        if ($actualCount -gt $baseline) {
+            if ($Case -eq 'ManagerOpenCloseMarker') {
+                $script:FreshMarkerObservations.Add([pscustomobject]@{
+                    Cycle = $script:CurrentMarkerGateCycle
+                    Matcher = $Marker
+                    Baseline = $baseline
+                    Actual = $actualCount
+                    BaselineSource = $baselineSource
+                })
+            }
+            if ($Marker -match 'debug_condition_editor') {
+                Write-Host "fresh_marker=PASS baseline_source=$baselineSource baseline=$baseline actual=$actualCount matcher=$Marker"
+            }
+            return
+        }
         if ($script:Process.HasExited) {
             $content = Get-LiveText
             throw "Fresh marker was not observed before Server exit: $Marker`n$(Get-RecentDiagnostic $content)"
@@ -369,7 +389,7 @@ function Wait-MarkerFresh([string]$Marker, [int]$TimeoutSeconds = $DebugWaitSeco
         Start-Sleep -Milliseconds 500
     }
     $content = Get-LiveText
-    throw "Timed out waiting for fresh marker: $Marker baseline=$baseline actualCount=$(Get-MarkerCount $Marker) windowId=$script:WindowId lastInput=$script:LastInput`n$(Get-RecentDiagnostic $content)"
+    throw "Timed out waiting for fresh marker: $Marker baseline=$baseline baselineSource=$baselineSource actualCount=$(Get-MarkerCount $Marker) windowId=$script:WindowId lastInput=$script:LastInput`n$(Get-RecentDiagnostic $content)"
 }
 
 function Get-LastShutdownStage([string]$Content) {
@@ -417,8 +437,15 @@ function Wait-Shutdown([int]$TimeoutSeconds) {
 
 function Write-Phase20Trace([string]$Reason, [string]$Content) {
     try {
-        $directory = if ($TraceDirectory) { [IO.Path]::GetFullPath($TraceDirectory) } else { Join-Path $RepoRoot 'logs' }
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        if ($TraceDirectory) {
+            $directory = [IO.Path]::GetFullPath($TraceDirectory)
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+                throw "Phase 20 test-infrastructure failure: supplied trace directory is missing or moved: $directory"
+            }
+        } else {
+            $directory = Join-Path $RepoRoot 'logs'
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        }
         $suffix = if ($TraceRunIndex -gt 0) { "-$TraceRunIndex" } else { '' }
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
@@ -441,6 +468,9 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
         Set-Content -LiteralPath $artifact -Value $body -Encoding UTF8
         Write-Host "Phase 20 trace artifact: $artifact"
     } catch {
+        if ($TraceDirectory) {
+            throw "Phase 20 test-infrastructure failure: unable to write the trace under the supplied directory '$TraceDirectory': $($_.Exception.Message)"
+        }
         Write-Host "WARNING: unable to write Phase 20 trace: $($_.Exception.Message)"
     }
 }
@@ -609,7 +639,8 @@ function Add-ManagerConditionEditorCase() {
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=1'
 
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
-    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
     Add-CaptureMarker 'origin=manager editor_row='
     Add-CaptureMarker 'manager_snapshot=workspace'
     Add-Key 67
@@ -629,6 +660,7 @@ function Add-ManagerConditionEditorCase() {
     $script:PanelReady = $false
     Add-OpenDebugBreakpoints
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'condition=counter >= 2'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'condition=counter >= 2'
@@ -640,12 +672,15 @@ function Add-ManagerConditionEditorCase() {
     Add-Key 46
     Add-WaitMarkerFresh 'debug_ui_breakpoint_remove=PASS'
     Add-WaitMarkerFresh 'debug_manager_provider=PASS source=workspace rows=0'
+    Add-CaptureMarker 'debug_manager_provider=PASS source=workspace rows=1'
     Add-Key 120
     Add-WaitMarkerFresh 'debug_manager_provider=PASS source=workspace rows=1'
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'condition=<none>'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'condition=<none>'
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
     Add-Key 67
     Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
     Add-ConditionText 'counter == 2'
@@ -684,6 +719,61 @@ function Add-ManagerConditionEditorCase() {
     Add-TargetedClose
 }
 
+function Add-ManagerOpenCloseMarkerCase() {
+    $script:MarkerGateRunToken = [Guid]::NewGuid().ToString('N')
+    $managerOpenMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager editor_row=0 editor_row_id=0 manager_id=0 manager_row_id=com.example.debuggerphase15/src/main.cpp:37 manager_workspace_generation='
+    $managerEditorOpenMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id=0 text=counter == 2 identity=workspace_configured'
+    $managerEditorClosedMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=CLOSED reason=CANCEL breakpoint_id=0 text=counter == 2'
+    $managerRowMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_row_select=PASS row_id=com.example.debuggerphase15/src/main.cpp:37 source=src/main.cpp:37 workspace_generation='
+    $managerRowConditionMarker = 'condition=counter == 2 logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+
+    Add-InitialSetup $true $false $false
+    Add-OpenDebugBreakpoints
+    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=1'
+
+    # Establish one canonical condition before the measured open/close cycles.
+    Add-CaptureMarker $managerRowMarker
+    Add-Key 40
+    Add-WaitMarkerFresh $managerRowMarker
+    Add-CaptureMarker $managerOpenMarker
+    Add-Key 67
+    Add-WaitMarkerFresh $managerOpenMarker
+    Add-ConditionText 'counter == 2'
+    Add-CommitCondition 'counter == 2'
+    Add-CaptureMarker $managerRowMarker
+    Add-CaptureMarker $managerRowConditionMarker
+    Add-Key 40
+    Add-WaitMarkerFresh $managerRowMarker
+    Add-WaitMarkerFresh $managerRowConditionMarker
+
+    # Each baseline uses the exact matcher used by its waiter, before the
+    # input that can emit that event is sent.
+    for ($cycle = 1; $cycle -le 10; ++$cycle) {
+        $script:Parts.Add("MARKERCYCLEBEGIN|$cycle")
+        Add-CaptureMarker $managerOpenMarker
+        Add-CaptureMarker $managerEditorOpenMarker
+        Add-Key 67
+        Add-WaitMarkerFresh $managerOpenMarker
+        Add-WaitMarkerFresh $managerEditorOpenMarker
+
+        Add-CaptureMarker $managerEditorClosedMarker
+        Add-Key 27
+        Add-WaitMarkerFresh $managerEditorClosedMarker
+
+        # A fresh Manager selection after Escape proves input returned to the
+        # Manager and the next cycle cannot be satisfied by a stale modal.
+        Add-CaptureMarker $managerRowMarker
+        Add-CaptureMarker $managerRowConditionMarker
+        Add-Key 40
+        Add-WaitMarkerFresh $managerRowMarker
+        Add-WaitMarkerFresh $managerRowConditionMarker
+        $script:Parts.Add("MARKERCYCLE|$cycle")
+    }
+    Add-CaptureMarker 'clean_close=PASS'
+    Add-Command "gui.close $script:WindowId"
+    Add-WaitMarkerFresh 'clean_close=PASS'
+}
+
 function Add-ManagerRemapRetentionCase() {
     # Create one canonical workspace breakpoint, configure it through the real
     # Manager, and verify the editor sees that value before the first build.
@@ -691,10 +781,11 @@ function Add-ManagerRemapRetentionCase() {
     Add-OpenDebugBreakpoints
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=1'
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
-    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
     Add-CaptureMarker 'origin=manager editor_row='
     Add-Key 67
     Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
@@ -707,6 +798,8 @@ function Add-ManagerRemapRetentionCase() {
     $script:PanelReady = $false
     Add-OpenDebugBreakpoints
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'condition=counter == 2'
+    Add-CaptureMarker 'runtime_id='
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'condition=counter == 2'
@@ -738,6 +831,7 @@ function Add-ManagerRemapRetentionCase() {
     Add-OpenDebugBreakpoints
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
     Add-CaptureMarker 'runtime_id='
+    Add-CaptureMarker 'logical_count=1'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'runtime_id='
@@ -784,6 +878,7 @@ function Add-ManagerRemapRetentionCase() {
     $script:PanelReady = $false
     Add-OpenDebugBreakpoints
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'condition=counter == 2'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'condition=counter == 2'
@@ -819,6 +914,7 @@ function Add-ManagerRemapRetentionCase() {
     $script:PanelReady = $false
     Add-OpenDebugBreakpoints
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'condition=counter == 2'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'condition=counter == 2'
@@ -856,6 +952,7 @@ function Add-ManagerRemapRetentionCase() {
     $script:PanelReady = $false
     Add-OpenDebugBreakpoints
     Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'condition=<none>'
     Add-Key 40
     Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
     Add-WaitMarkerFresh 'condition=<none>'
@@ -872,11 +969,19 @@ function Add-Phase29NReadinessCase() {
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) 'experimental hosted Server exists'
 Assert-True (Test-Path -LiteralPath (Join-Path $FixtureRoot 'guidexos.project') -PathType Leaf) 'Phase 20 fixture project exists'
 Assert-True ($BreakpointLine -gt 0) 'breakpoint line is positive'
+if ($TraceDirectory) {
+    $TraceDirectory = [IO.Path]::GetFullPath($TraceDirectory)
+    if (-not (Test-Path -LiteralPath $TraceDirectory -PathType Container)) {
+        throw "Phase 20 test-infrastructure failure: supplied trace directory is missing or moved before launch: $TraceDirectory"
+    }
+    Write-Host "phase20_trace_directory=$TraceDirectory"
+}
 
 if ($Case -eq 'ConditionEditor') { Add-ConditionEditorCase }
 elseif ($Case -eq 'ConditionErrorRecovery') { Add-ConditionErrorRecoveryCase }
 elseif ($Case -eq 'ControllerPanelConditionEditor') { Add-ControllerPanelConditionEditorCase }
 elseif ($Case -eq 'ManagerConditionEditor') { Add-ManagerConditionEditorCase }
+elseif ($Case -eq 'ManagerOpenCloseMarker') { Add-ManagerOpenCloseMarkerCase }
 elseif ($Case -eq 'ManagerRemapRetention') { Add-ManagerRemapRetentionCase }
 else { Add-Phase29NReadinessCase }
 
@@ -911,6 +1016,8 @@ try {
         elseif ($kind -eq 'WAITMARK') { Wait-Marker $value }
         elseif ($kind -eq 'WAITMARKFRESH') { Wait-MarkerFresh $value }
         elseif ($kind -eq 'CAPTURE') { $script:MarkerBaselines[$value] = Get-MarkerCount $value }
+        elseif ($kind -eq 'MARKERCYCLEBEGIN') { $script:CurrentMarkerGateCycle = $value }
+        elseif ($kind -eq 'MARKERCYCLE') { Write-Host "phase30a_marker_cycle=$value PASS run_token=$script:MarkerGateRunToken" }
         elseif ($kind -eq 'MUTATESOURCE') { Invoke-FixtureSourceRemapVariation }
         elseif ($kind -eq 'ASSERTCONDITION') {
             Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 $value) "canonical workspace condition is still '$value' before post-remap debug start"
@@ -943,6 +1050,8 @@ try {
     if ($Case -eq 'ManagerRemapRetention') {
         Assert-True (Test-Marker 'clean_close=PASS') 'targeted app close completes after the debug targets are stopped'
         Assert-True ($script:CapturedText -match 'cleaned window count: 1; remaining owned window count: 0') 'Server cleanup releases the hosted app window'
+    } elseif ($Case -eq 'ManagerOpenCloseMarker') {
+        Assert-True (Test-Marker 'clean_close=PASS') 'the marker gate closes its hosted app after the repeated modal lifecycle'
     } else {
         Assert-True ((Test-Marker 'debug_shutdown_complete=PASS') -or (Test-Marker 'shutdownStage=complete')) 'targeted close reaches shutdown complete'
     }
@@ -1003,6 +1112,108 @@ try {
         Write-Host 'manager_condition_round_trip=PASS'
         Write-Host 'manager_remove_recreate=PASS'
         Write-Host 'manager_hosted_lifecycle=PASS'
+    } elseif ($Case -eq 'ManagerOpenCloseMarker') {
+        $managerOpenMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager editor_row=0 editor_row_id=0 manager_id=0 manager_row_id=com.example.debuggerphase15/src/main.cpp:37 manager_workspace_generation='
+        $managerEditorOpenMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id=0 text=counter == 2 identity=workspace_configured'
+        $managerEditorClosedMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=CLOSED reason=CANCEL breakpoint_id=0 text=counter == 2'
+        $managerCommitClosedMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=CLOSED reason=COMMIT breakpoint_id=0 text=counter == 2'
+        $managerRowConditionPattern = 'debug_manager_row_select=PASS row_id=com\.example\.debuggerphase15/src/main\.cpp:37 source=src/main\.cpp:37 workspace_generation=(\d+) condition=counter == 2 logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+
+        $openLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $managerOpenMarker)
+        $measuredOpenLines = @($openLines | Select-Object -Skip 1)
+        $editorOpenLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $managerEditorOpenMarker)
+        $cancelLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $managerEditorClosedMarker)
+        $commitLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $managerCommitClosedMarker)
+        $managerRowLines = @(Select-String -LiteralPath $script:StdoutPath -Pattern $managerRowConditionPattern)
+        $providerLines = @(Select-String -LiteralPath $script:StdoutPath -Pattern 'debug_manager_provider=PASS source=workspace rows=1 project_generation=(\d+) workspace_generation=(\d+)')
+
+        Assert-True ($openLines.Count -eq 11) 'one setup open and ten distinct Manager condition-editor opens were appended'
+        Assert-True ($editorOpenLines.Count -eq 10) 'each measured open rendered the configured canonical condition'
+        Assert-True ($cancelLines.Count -eq 10) 'each measured modal closed through Escape'
+        Assert-True ($commitLines.Count -eq 1) 'setup condition commit closed its editor once'
+        Assert-True ($managerRowLines.Count -ge 11) 'Manager selection remained current after every close'
+        Assert-True ($providerLines.Count -ge 1) 'Manager snapshot came from the workspace provider'
+        Assert-True ((Get-PersistedBreakpointRecordCount 'src/main.cpp' $BreakpointLine 1) -eq 1) 'marker stress retains exactly one canonical breakpoint'
+        Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 'counter == 2') 'marker stress leaves the canonical condition unchanged'
+
+        $openGenerations = @($measuredOpenLines | ForEach-Object {
+            [regex]::Match($_.Line, 'manager_workspace_generation=(\d+)').Groups[1].Value
+        } | Sort-Object -Unique)
+        $rowGenerations = @($managerRowLines | ForEach-Object {
+            [regex]::Match($_.Line, 'workspace_generation=(\d+)').Groups[1].Value
+        } | Sort-Object -Unique)
+        $providerMatch = [regex]::Match($providerLines[-1].Line,
+            'project_generation=(\d+) workspace_generation=(\d+)')
+        Assert-True ($openGenerations.Count -eq 1 -and $openGenerations[0]) 'all ten measured opens resolved the same current workspace generation'
+        Assert-True ($rowGenerations.Count -eq 1 -and $rowGenerations[0] -eq $openGenerations[0]) 'Manager row and condition editor share one workspace generation'
+        Assert-True ($providerMatch.Success -and $providerMatch.Groups[2].Value -eq $openGenerations[0]) 'the current Manager provider snapshot matches the opened breakpoint generation'
+        Assert-True (@($openLines | Where-Object { $_.Line -notmatch 'manager_snapshot=workspace' }).Count -eq 0) 'every opening reports the current hosted Manager snapshot'
+        Assert-True (@($script:FreshMarkerObservations | Where-Object { $_.BaselineSource -ne 'captured-before-action' }).Count -eq 0) 'every marker gate wait used a baseline captured before its action'
+        Assert-True (@($script:FreshMarkerObservations | Where-Object { $_.Cycle -ne 'setup' -and $_.Matcher -eq $managerOpenMarker }).Count -eq 10) 'all ten measured opens used a pre-action current-cycle marker baseline'
+
+        Assert-True ($openLines[0].LineNumber -lt $commitLines[0].LineNumber -and
+                     $commitLines[0].LineNumber -lt $openLines[1].LineNumber) 'setup open and commit precede measured cycles'
+        for ($cycleIndex = 0; $cycleIndex -lt 10; ++$cycleIndex) {
+            $openLine = $openLines[$cycleIndex + 1].LineNumber
+            $editorOpenLine = $editorOpenLines[$cycleIndex].LineNumber
+            $cancelLine = $cancelLines[$cycleIndex].LineNumber
+            $previousCloseLine = if ($cycleIndex -eq 0) {
+                $commitLines[0].LineNumber
+            } else {
+                $cancelLines[$cycleIndex - 1].LineNumber
+            }
+            $managerRowsAfterClose = @($managerRowLines | Where-Object {
+                $_.LineNumber -gt $previousCloseLine -and $_.LineNumber -lt $openLine
+            })
+            Assert-True ($managerRowsAfterClose.Count -ge 1) "cycle $($cycleIndex + 1) has a fresh Manager selection after the prior close"
+            $managerRow = $managerRowsAfterClose[0]
+            $managerRowLine = $managerRow.LineNumber
+            Assert-True ($previousCloseLine -lt $managerRowLine -and $managerRowLine -lt $openLine -and
+                         $openLine -lt $editorOpenLine -and $editorOpenLine -lt $cancelLine) "cycle $($cycleIndex + 1) close/select/open/render/close order is coherent"
+        }
+
+        if ($TraceDirectory) {
+            $traceRoot = [IO.Path]::GetFullPath($TraceDirectory)
+            if (-not (Test-Path -LiteralPath $traceRoot -PathType Container)) {
+                throw "Phase 30A test-infrastructure failure: marker evidence directory is missing or moved: $traceRoot"
+            }
+            $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { 'phase30a-marker-gate.log' }
+            $artifactPath = Join-Path $traceRoot $artifactName
+            $artifactLines = @(
+                'guideXOS Phase 30A repeated Manager condition-editor marker gate',
+                'result=10/10 PASS',
+                "run_token=$script:MarkerGateRunToken",
+                'producer=src/main.cpp drawModal / logBreakpointConditionUi',
+                "open_matcher=$managerOpenMarker",
+                "rendered_condition_matcher=$managerEditorOpenMarker",
+                "closed_matcher=$managerEditorClosedMarker",
+                'freshness=exact matcher count captured before input; post-action count had to increase',
+                "measured_workspace_generation=$($openGenerations[0])",
+                "manager_provider_generation=$($providerMatch.Groups[2].Value)",
+                'canonical_breakpoint=com.example.debuggerphase15/src/main.cpp:37',
+                'canonical_condition=counter == 2',
+                'logical_breakpoint_count=1',
+                '--- fresh marker observations ---'
+            )
+            foreach ($observation in $script:FreshMarkerObservations) {
+                $artifactLines += "cycle=$($observation.Cycle) baseline_source=$($observation.BaselineSource) baseline=$($observation.Baseline) actual=$($observation.Actual) matcher=$($observation.Matcher)"
+            }
+            $artifactLines += '--- emitted Manager open and close records ---'
+            foreach ($cycleIndex in 0..9) {
+                $openLineNumber = $openLines[$cycleIndex + 1].LineNumber
+                $previousCloseLine = if ($cycleIndex -eq 0) { $commitLines[0].LineNumber } else { $cancelLines[$cycleIndex - 1].LineNumber }
+                $cycleManagerRow = @($managerRowLines | Where-Object {
+                    $_.LineNumber -gt $previousCloseLine -and $_.LineNumber -lt $openLineNumber
+                })[0]
+                $artifactLines += "cycle=$($cycleIndex + 1) manager_row=$($cycleManagerRow.Line)"
+                $artifactLines += "cycle=$($cycleIndex + 1) open=$($openLines[$cycleIndex + 1].Line)"
+                $artifactLines += "cycle=$($cycleIndex + 1) rendered=$($editorOpenLines[$cycleIndex].Line)"
+                $artifactLines += "cycle=$($cycleIndex + 1) closed=$($cancelLines[$cycleIndex].Line)"
+            }
+            Set-Content -LiteralPath $artifactPath -Value $artifactLines -Encoding UTF8
+            Write-Host "phase30a_marker_gate_evidence=$artifactPath"
+        }
+        Write-Host 'phase30a_marker_gate=10/10 PASS'
     } elseif ($Case -eq 'ManagerRemapRetention') {
         Assert-True (Test-Marker 'debug_manager_provider=PASS source=workspace rows=1') 'persistent Manager row exists through the remap lifecycle'
         Assert-True (Test-Marker 'debug_manager_row_select=PASS row_id=com.example.debuggerphase15/src/main.cpp:37') 'Manager row keeps the same project/source/line identity'
