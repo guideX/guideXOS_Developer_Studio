@@ -67,6 +67,27 @@ struct DebuggerWorkspace {
     char lastErrorMessage[96];
 };
 
+// The hosted Breakpoint Manager is a view over the workspace configuration.
+// Its rows keep only a canonical source key and generation stamps; mutable
+// condition/policy data is always read from DebuggerWorkspaceBreakpoint.
+struct DebuggerWorkspaceBreakpointManagerRow {
+    char projectId[kMaxProjectIdBytes];
+    char sourcePath[kMaxProjectPathBytes];
+    uint32_t line;
+    uint32_t column;
+    uint32_t workspaceIndex;
+    uint64_t projectGeneration;
+    uint64_t workspaceGeneration;
+};
+
+struct DebuggerWorkspaceBreakpointProvider {
+    char projectId[kMaxProjectIdBytes];
+    uint64_t projectGeneration;
+    uint64_t workspaceGeneration;
+    uint32_t rowCount;
+    DebuggerWorkspaceBreakpointManagerRow rows[kDebuggerWorkspaceMaxBreakpoints];
+};
+
 // An ordered command plan, not a live breakpoint table. The application owns
 // all manager identities, mapping results and per-generation associations.
 struct DebuggerWorkspaceMaterializationEntry {
@@ -107,6 +128,14 @@ int DebuggerWorkspaceFindBreakpoint(const DebuggerWorkspace* workspace, const ch
 bool DebuggerWorkspaceResolveBreakpoint(const DebuggerWorkspace* workspace,
                                         const char* sourcePath, uint32_t line,
                                         uint64_t expectedGeneration, uint32_t* outIndex);
+bool DebuggerWorkspaceBreakpointProviderRefresh(
+    const DebuggerWorkspace* workspace, const char* projectId, uint64_t projectGeneration,
+    DebuggerWorkspaceBreakpointProvider* provider);
+bool DebuggerWorkspaceBreakpointProviderResolve(
+    const DebuggerWorkspaceBreakpointProvider* provider, const DebuggerWorkspace* workspace,
+    const char* projectId, uint64_t projectGeneration, uint32_t rowIndex,
+    const DebuggerWorkspaceBreakpointManagerRow** outRow,
+    const DebuggerWorkspaceBreakpoint** outBreakpoint);
 
 bool SerializeDebuggerWorkspace(const DebuggerWorkspace& workspace, char* output, uint32_t outputSize,
                                 uint32_t* outBytes, DebuggerWorkspaceErrorCode* error);

@@ -216,8 +216,63 @@ static void assertMaterializationPlan() {
                                                      kDebuggerWorkspaceMaxBreakpoints) == 0);
 }
 
+static void assertWorkspaceBreakpointProvider() {
+    DebuggerWorkspace workspace = {};
+    DebuggerWorkspaceInit(&workspace);
+    assert(DebuggerWorkspaceAddBreakpoint(&workspace, "src/main.cpp", 37, 1, true,
+                                          0, 0, 0, "counter == 2", ""));
+
+    DebuggerWorkspaceBreakpointProvider provider = {};
+    assert(DebuggerWorkspaceBreakpointProviderRefresh(&workspace, "project-a", 4, &provider));
+    assert(provider.rowCount == 1);
+    assert(provider.projectGeneration == 4);
+    assert(provider.workspaceGeneration == workspace.breakpointGeneration);
+
+    const DebuggerWorkspaceBreakpointManagerRow* row = nullptr;
+    const DebuggerWorkspaceBreakpoint* configured = nullptr;
+    assert(DebuggerWorkspaceBreakpointProviderResolve(&provider, &workspace, "project-a", 4,
+        0, &row, &configured));
+    assert(row && row->workspaceIndex == 0 && row->line == 37 && row->column == 1);
+    assert(std::strcmp(row->sourcePath, "src/main.cpp") == 0);
+    assert(configured == &workspace.breakpoints[0]);
+    assert(std::strcmp(configured->condition, "counter == 2") == 0);
+
+    // A Manager edit changes the canonical owner once and invalidates the old
+    // row generation. Refresh resolves the same source key to updated state.
+    assert(DebuggerWorkspaceUpdateBreakpoint(&workspace, "src/main.cpp", 37,
+        configured->action, configured->hitPolicy, configured->hitThreshold,
+        "counter >= 2", configured->logTemplate));
+    assert(!DebuggerWorkspaceBreakpointProviderResolve(&provider, &workspace, "project-a", 4,
+        0, &row, &configured));
+    assert(DebuggerWorkspaceBreakpointProviderRefresh(&workspace, "project-a", 4, &provider));
+    assert(DebuggerWorkspaceBreakpointProviderResolve(&provider, &workspace, "project-a", 4,
+        0, &row, &configured));
+    assert(std::strcmp(configured->condition, "counter >= 2") == 0);
+    assert(!DebuggerWorkspaceBreakpointProviderResolve(&provider, &workspace, "project-a", 5,
+        0, &row, &configured));
+
+    // Removal removes the projection. Recreating the same path/line creates a
+    // new workspace generation and cannot inherit the removed condition.
+    assert(DebuggerWorkspaceRemoveBreakpoint(&workspace, "src/main.cpp", 37));
+    assert(DebuggerWorkspaceBreakpointProviderRefresh(&workspace, "project-a", 4, &provider));
+    assert(provider.rowCount == 0);
+    assert(!DebuggerWorkspaceBreakpointProviderResolve(&provider, &workspace, "project-a", 4,
+        0, &row, &configured));
+    assert(DebuggerWorkspaceAddBreakpoint(&workspace, "src/main.cpp", 37, 1, true,
+                                          0, 0, 0, "", ""));
+    assert(DebuggerWorkspaceBreakpointProviderRefresh(&workspace, "project-a", 4, &provider));
+    assert(provider.rowCount == 1);
+    assert(DebuggerWorkspaceBreakpointProviderResolve(&provider, &workspace, "project-a", 4,
+        0, &row, &configured));
+    assert(configured->condition[0] == '\0');
+    static_assert(sizeof(DebuggerWorkspaceBreakpointManagerRow) <
+                  sizeof(DebuggerWorkspaceBreakpoint),
+                  "Manager rows remain keyed references, not copied configuration records");
+}
+
 int main() {
     assertMaterializationPlan();
+    assertWorkspaceBreakpointProvider();
     DebuggerWorkspace workspace = {};
     DebuggerWorkspaceInit(&workspace);
 

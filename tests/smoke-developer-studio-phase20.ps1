@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'Phase29NReadiness')]
+    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'ManagerConditionEditor', 'ManagerRemapRetention', 'Phase29NReadiness')]
     [string]$Case = 'ConditionEditor',
     [string]$ServerRoot = 'D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO',
     [string]$FixtureRoot = '',
@@ -210,6 +210,37 @@ function Add-TargetedClose() {
     Add-Command 'exit'
 }
 
+function Add-MutateFixtureSource() {
+    $script:Parts.Add('MUTATESOURCE|')
+}
+
+function Add-AssertFixtureCondition([string]$Condition) {
+    $script:Parts.Add("ASSERTCONDITION|$Condition")
+}
+
+function Invoke-FixtureSourceRemapVariation() {
+    $sourcePath = Join-Path $FixtureRoot 'src\main.cpp'
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw "Remap fixture source is missing: $sourcePath"
+    }
+    $source = [IO.File]::ReadAllText($sourcePath)
+    $needle = '    int total = 0;'
+    if (([regex]::Matches($source, [regex]::Escape($needle))).Count -ne 1) {
+        throw 'Remap fixture no longer has exactly one expected pre-loop source statement'
+    }
+    $beforeHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+    $updated = $source.Replace($needle, '    int total = 0; if (callerValue < 0) total += 0;')
+    if ($updated -eq $source) { throw 'Remap fixture source variation made no change' }
+    [IO.File]::WriteAllText($sourcePath, $updated, [Text.UTF8Encoding]::new($false))
+    $afterHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+    $lines = [IO.File]::ReadAllLines($sourcePath)
+    if ($lines.Length -lt 37 -or $lines[36] -notmatch 'volatile int sample = rect\.origin\.x') {
+        throw 'Remap fixture changed the logical breakpoint source identity at src/main.cpp:37'
+    }
+    if ($beforeHash -eq $afterHash) { throw 'Remap fixture source hash did not change' }
+    Write-Host "phase30a_remap_source_mutation=PASS source_hash_before=$beforeHash source_hash_after=$afterHash breakpoint=src/main.cpp:37"
+}
+
 function Get-LiveText() {
     # Developer Studio's compositor trace is intentionally verbose.  Read a
     # bounded tail for polling and failure diagnostics so the harness itself
@@ -414,7 +445,8 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
     }
 }
 
-function Add-InitialSetup([bool]$ReadinessOnly = $false, [bool]$EditorOwned = $false) {
+function Add-InitialSetup([bool]$ReadinessOnly = $false, [bool]$EditorOwned = $false,
+                         [bool]$StartTarget = $true) {
     Add-Command 'gui.start'
     Add-Wait 8
     Add-Command 'desktop.launch com.guidexos.developerstudio'
@@ -447,6 +479,7 @@ function Add-InitialSetup([bool]$ReadinessOnly = $false, [bool]$EditorOwned = $f
     Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint_toggle=PASS'
     $breakpointMarker = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=WORKSPACE_PERSISTED project_id=' + $script:FixtureProjectId + ' pgen=1 op=0 symgen=0 id=none src=src/main.cpp line=' + $BreakpointLine + ' col=1 enabled=1 state=NotStarted'
     Add-WaitMarker $breakpointMarker
+    if (-not $StartTarget) { return }
     # Before debug start F9 persists breakpoint intent in the workspace. The
     # runtime controller has no breakpoint ID or mapping state until the
     # debug build publishes symbols and beginDebugSession materializes it.
@@ -568,6 +601,269 @@ function Add-ControllerPanelConditionEditorCase() {
     Add-TargetedClose
 }
 
+function Add-ManagerConditionEditorCase() {
+    # Start with the persistent workspace row but no active target. The hosted
+    # Manager provider must project it before any runtime binding exists.
+    Add-InitialSetup $true $false $false
+    Add-OpenDebugBreakpoints
+    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=1'
+
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=manager editor_row='
+    Add-CaptureMarker 'manager_snapshot=workspace'
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
+    Add-WaitMarkerFresh 'manager_snapshot=workspace'
+    Add-ConditionText 'counter == 2'
+    Add-CommitCondition 'counter == 2'
+
+    # Reopen through the source editor and write a different condition. Then
+    # return to the Manager and require it to read that canonical value.
+    Add-Key 27
+    Add-OpenConditionEditor 'counter == 2' 'workspace'
+    Add-ConditionText 'counter >= 2'
+    Add-CommitCondition 'counter >= 2'
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'condition=counter >= 2'
+
+    # Delete and recreate through the persistent Manager. Product policy is a
+    # recreated breakpoint starts with empty condition configuration.
+    Add-CaptureMarker 'debug_ui_breakpoint_remove=PASS'
+    Add-CaptureMarker 'debug_manager_provider=PASS source=workspace rows=0'
+    Add-Key 46
+    Add-WaitMarkerFresh 'debug_ui_breakpoint_remove=PASS'
+    Add-WaitMarkerFresh 'debug_manager_provider=PASS source=workspace rows=0'
+    Add-Key 120
+    Add-WaitMarkerFresh 'debug_manager_provider=PASS source=workspace rows=1'
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'condition=<none>'
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
+    Add-ConditionText 'counter == 2'
+    Add-CommitCondition 'counter == 2'
+
+    # Launch from the supported hosted debug command. The rebuilt target must
+    # bind the condition from workspace state, then filter false hits and stop
+    # on the intended true value before shutdown tears the target down.
+    Add-Key 27
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_binding=id='
+    Add-CaptureMarker 'Debug: breakpoint condition false; continuing'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+    Add-Key 116 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_binding=id='
+    Add-WaitMarkerFresh 'Debug: breakpoint condition false; continuing'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'runtime_id='
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=manager editor_row='
+    Add-CaptureMarker 'condition=counter == 2'
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'runtime_id='
+    Add-CaptureMarker ' text=counter == 2'
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id='
+    Add-WaitMarkerFresh 'origin=manager editor_row='
+    Add-WaitMarkerFresh ' text=counter == 2'
+    Add-TargetedClose
+}
+
+function Add-ManagerRemapRetentionCase() {
+    # Create one canonical workspace breakpoint, configure it through the real
+    # Manager, and verify the editor sees that value before the first build.
+    Add-InitialSetup $true $false $false
+    Add-OpenDebugBreakpoints
+    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=1'
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=manager editor_row='
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
+    Add-WaitMarkerFresh 'origin=manager editor_row='
+    Add-ConditionText 'counter == 2'
+    Add-CommitCondition 'counter == 2'
+    Add-Key 27
+    Add-OpenConditionEditor 'counter == 2' 'workspace'
+    Add-Key 27
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'condition=counter == 2'
+
+    # First supported hosted debug build. Captures are established before the
+    # launch so a fast first stop cannot outrun the marker waiter.
+    Add-Key 27
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_ARTIFACT'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT_ADDRESS'
+    Add-CaptureMarker 'Debug: breakpoint condition false; continuing'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+    Add-Key 116 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_ARTIFACT'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT_ADDRESS'
+    Add-WaitMarkerFresh 'Debug: breakpoint condition false; continuing'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+
+    # Select the same source-key row after binding, then stop the target cleanly
+    # before changing source so the next build has a distinct artifact.
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'runtime_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'runtime_id='
+    Add-WaitMarkerFresh 'logical_count=1'
+    Add-CaptureMarker 'debug_stop=requested'
+    Add-CaptureMarker 'debugger_teardown=PASS'
+    Add-CaptureMarker 'debug_state=EXITED'
+    Add-Key 116 1
+    Add-WaitMarkerFresh 'debug_stop=requested'
+    Add-WaitMarkerFresh 'debugger_teardown=PASS'
+    Add-WaitMarkerFresh 'debug_state=EXITED'
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'runtime_id=0 runtime_session=0 binding_id=0'
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'runtime_id=0 runtime_session=0 binding_id=0'
+
+    # Change only a preceding statement. The source file, line 37 statement,
+    # project ID, and workspace breakpoint key remain identical.
+    Add-MutateFixtureSource
+    Add-AssertFixtureCondition 'counter == 2'
+
+    # Rebuild and launch from the same hosted Developer Studio process. This
+    # gives the new target a later session/build generation while retaining the
+    # canonical workspace condition and Manager provider row.
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_ARTIFACT'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND'
+    Add-CaptureMarker 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT_ADDRESS'
+    Add-CaptureMarker 'Debug: breakpoint condition false; continuing'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+    Add-Key 116 2
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_ARTIFACT'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND'
+    Add-WaitMarkerFresh 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT_ADDRESS'
+    Add-WaitMarkerFresh 'Debug: breakpoint condition false; continuing'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS'
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=PAUSED_BREAKPOINT'
+
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'condition=counter == 2'
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=manager editor_row='
+    Add-CaptureMarker ' text=counter == 2'
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id='
+    Add-WaitMarkerFresh 'origin=manager editor_row='
+    Add-WaitMarkerFresh ' text=counter == 2'
+
+    # Exercise the real post-remap stepping and inspection paths at the current
+    # conditional stop before explicitly stopping the target.
+    Add-Key 27
+    Add-CaptureMarker 'debug_step_complete=StepInto'
+    Add-CaptureMarker 'debug_inspection=refreshed'
+    Add-Key 122
+    Add-WaitMarkerFresh 'debug_step_complete=StepInto'
+    Add-WaitMarkerFresh 'debug_inspection=refreshed'
+    Add-CaptureMarker 'debug_step_complete=StepOver'
+    Add-CaptureMarker 'debug_inspection=refreshed'
+    Add-Key 121
+    Add-WaitMarkerFresh 'debug_step_complete=StepOver'
+    Add-WaitMarkerFresh 'debug_inspection=refreshed'
+    Add-CaptureMarker 'debug_step_complete=StepOut'
+    Add-CaptureMarker 'debug_inspection=refreshed'
+    Add-Key 122 1
+    Add-WaitMarkerFresh 'debug_step_complete=StepOut'
+    Add-WaitMarkerFresh 'debug_inspection=refreshed'
+
+    # The Editor is opened from the Manager one more time after the remap. Its
+    # runtime-bound identity must still write through to the same workspace row.
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'condition=counter == 2'
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id='
+    Add-CaptureMarker 'origin=manager editor_row='
+    Add-CaptureMarker ' text=counter == 2'
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id='
+    Add-WaitMarkerFresh 'origin=manager editor_row='
+    Add-WaitMarkerFresh ' text=counter == 2'
+    Add-Key 27
+
+    Add-CaptureMarker 'debug_stop=requested'
+    Add-CaptureMarker 'debugger_teardown=PASS'
+    Add-CaptureMarker 'debug_state=EXITED'
+    Add-Key 116 1
+    Add-WaitMarkerFresh 'debug_stop=requested'
+    Add-WaitMarkerFresh 'debugger_teardown=PASS'
+    Add-WaitMarkerFresh 'debug_state=EXITED'
+
+    # Removal clears every projection; F9 from the empty Manager recreates one
+    # canonical row with the product's documented empty-condition semantics.
+    Add-CaptureMarker 'debug_ui_breakpoint_remove=PASS'
+    Add-CaptureMarker 'debug_manager_provider=PASS source=workspace rows=0'
+    Add-Key 46
+    Add-WaitMarkerFresh 'debug_ui_breakpoint_remove=PASS'
+    Add-WaitMarkerFresh 'debug_manager_provider=PASS source=workspace rows=0'
+    # Step Out leaves the caret at line 48. Close the Manager panel and move
+    # back to line 37 before F9 recreates the empty-condition workspace row.
+    Add-Key 27
+    for ($i = 0; $i -lt 11; ++$i) { Add-Key 38 }
+    Add-CaptureMarker 'debug_breakpoint_key=PASS'
+    Add-Key 120
+    Add-WaitMarkerFresh 'debug_breakpoint_key=PASS'
+    $script:PanelReady = $false
+    Add-OpenDebugBreakpoints
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'condition=<none>'
+    Add-CaptureMarker 'clean_close=PASS'
+    Add-Command "gui.close $script:WindowId"
+    Add-WaitMarkerFresh 'clean_close=PASS'
+}
+
 function Add-Phase29NReadinessCase() {
     Add-InitialSetup $true
     Add-TargetedClose
@@ -580,6 +876,8 @@ Assert-True ($BreakpointLine -gt 0) 'breakpoint line is positive'
 if ($Case -eq 'ConditionEditor') { Add-ConditionEditorCase }
 elseif ($Case -eq 'ConditionErrorRecovery') { Add-ConditionErrorRecoveryCase }
 elseif ($Case -eq 'ControllerPanelConditionEditor') { Add-ControllerPanelConditionEditorCase }
+elseif ($Case -eq 'ManagerConditionEditor') { Add-ManagerConditionEditorCase }
+elseif ($Case -eq 'ManagerRemapRetention') { Add-ManagerRemapRetentionCase }
 else { Add-Phase29NReadinessCase }
 
 $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -613,6 +911,11 @@ try {
         elseif ($kind -eq 'WAITMARK') { Wait-Marker $value }
         elseif ($kind -eq 'WAITMARKFRESH') { Wait-MarkerFresh $value }
         elseif ($kind -eq 'CAPTURE') { $script:MarkerBaselines[$value] = Get-MarkerCount $value }
+        elseif ($kind -eq 'MUTATESOURCE') { Invoke-FixtureSourceRemapVariation }
+        elseif ($kind -eq 'ASSERTCONDITION') {
+            Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 $value) "canonical workspace condition is still '$value' before post-remap debug start"
+            Write-Host "phase30a_remap_condition_prelaunch=PASS source=src/main.cpp:$BreakpointLine condition=$value"
+        }
         elseif ($kind -eq 'WAITSHUTDOWN') { Wait-Shutdown ([int]$value) }
         elseif ($kind -eq 'COMMAND') {
             Send-Direct $value
@@ -637,7 +940,12 @@ try {
     Assert-True $script:Process.HasExited "Phase 20 hosted case exits within $MaxRuntimeSeconds seconds"
     $script:CapturedText = Get-LiveText
     Assert-True ($script:Process.ExitCode -eq 0) "Phase 20 hosted Server exits with code 0 (actual=$($script:Process.ExitCode))"
-    Assert-True ((Test-Marker 'debug_shutdown_complete=PASS') -or (Test-Marker 'shutdownStage=complete')) 'targeted close reaches shutdown complete'
+    if ($Case -eq 'ManagerRemapRetention') {
+        Assert-True (Test-Marker 'clean_close=PASS') 'targeted app close completes after the debug targets are stopped'
+        Assert-True ($script:CapturedText -match 'cleaned window count: 1; remaining owned window count: 0') 'Server cleanup releases the hosted app window'
+    } else {
+        Assert-True ((Test-Marker 'debug_shutdown_complete=PASS') -or (Test-Marker 'shutdownStage=complete')) 'targeted close reaches shutdown complete'
+    }
     Assert-True (Test-PersistedBreakpoint 'src/main.cpp' $BreakpointLine 1) 'F9 persists the requested project-relative source breakpoint before debug start'
     if ($Case -eq 'ConditionEditor') {
         Assert-True (Test-Marker 'debug_condition_commit=INVALID') 'invalid syntax is reported by the real editor'
@@ -674,6 +982,104 @@ try {
         } | Sort-Object -Unique)
         Assert-True ($openIds.Count -eq 1 -and $openIds[0] -ne '0') 'editor and controller-panel routes resolve the same logical breakpoint ID'
         Write-Host 'controller_editor_condition_convergence=PASS'
+    } elseif ($Case -eq 'ManagerConditionEditor') {
+        Assert-True (Test-Marker 'debug_manager_provider=PASS source=workspace rows=1') 'hosted production provider publishes the persistent workspace row'
+        Assert-True (Test-Marker 'debug_manager_row_select=PASS row_id=') 'production Manager selection resolves the source-key row'
+        Assert-True (Test-Marker 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0') 'prelaunch Manager row has one canonical owner and no runtime binding'
+        Assert-True (Test-Marker 'origin=manager editor_row=') 'Manager selection opens the real condition editor'
+        Assert-True (Test-Marker 'manager_snapshot=workspace') 'condition editor reports the hosted workspace provider'
+        Assert-True (Test-Marker 'text=counter >= 2 parse=VALID state=CONDITIONAL') 'editor-origin update persists after Manager-origin update'
+        Assert-True (Test-Marker 'condition=counter >= 2') 'Manager reflects the editor-origin canonical condition'
+        Assert-True (Test-Marker 'debug_ui_breakpoint_remove=PASS') 'Manager removal deletes the canonical workspace breakpoint'
+        Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 'counter == 2') 'recreated breakpoint receives a fresh condition through Manager'
+        Assert-True ((Get-PersistedBreakpointRecordCount 'src/main.cpp' $BreakpointLine 1) -eq 1) 'remove and recreate leave exactly one logical source breakpoint'
+        Assert-True (Test-Marker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_binding=id=') 'Manager-configured breakpoint receives a live hosted binding'
+        Assert-True (Test-Marker 'Debug: breakpoint condition false; continuing') 'false conditional hits continue without a visible stop'
+        Assert-True (Test-Marker 'debug_condition_true=PASS') 'true conditional hit stops at the source breakpoint'
+        Assert-True (Test-Marker 'debug_target_teardown=PASS') 'target teardown completes after the Manager route'
+        Assert-True (Test-Marker 'debug_session_teardown=PASS') 'debugger session teardown completes after the Manager route'
+        Assert-True ((Get-PersistedBreakpointRecordCount 'src/main.cpp' $BreakpointLine 1) -eq 1) 'persistent Manager row survives target teardown'
+        Write-Host 'manager_workspace_provider=PASS'
+        Write-Host 'manager_condition_round_trip=PASS'
+        Write-Host 'manager_remove_recreate=PASS'
+        Write-Host 'manager_hosted_lifecycle=PASS'
+    } elseif ($Case -eq 'ManagerRemapRetention') {
+        Assert-True (Test-Marker 'debug_manager_provider=PASS source=workspace rows=1') 'persistent Manager row exists through the remap lifecycle'
+        Assert-True (Test-Marker 'debug_manager_row_select=PASS row_id=com.example.debuggerphase15/src/main.cpp:37') 'Manager row keeps the same project/source/line identity'
+        Assert-True (Test-Marker 'condition=counter == 2') 'Manager reflects the canonical condition after remap'
+        Assert-True (Test-Marker 'origin=manager editor_row=') 'post-remap Manager selection opens the production condition editor'
+        Assert-True ((Get-MarkerCount 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_true=PASS') -ge 2) 'the retained condition reaches a true hit before and after remap'
+        Assert-True ((Get-MarkerCount 'Debug: breakpoint condition false; continuing') -ge 2) 'false condition evaluations continue before and after remap'
+        Assert-True (Test-Marker 'debug_step_complete=StepInto') 'post-remap Step Into completes'
+        Assert-True (Test-Marker 'debug_step_complete=StepOver') 'post-remap Step Over completes'
+        Assert-True (Test-Marker 'debug_step_complete=StepOut') 'post-remap Step Out completes'
+        Assert-True (Test-Marker 'debug_inspection=refreshed') 'post-remap stack/locals inspection refreshes at stepped stops'
+        Assert-True ((Get-MarkerCount 'debugger_teardown=PASS') -ge 2) 'pre-rebuild stop and post-remap target exit both complete debugger cleanup'
+        Assert-True ((Get-MarkerCount 'debug_state=EXITED') -ge 2) 'pre-rebuild stop and post-remap target both reach the exited state'
+        Assert-True (Test-Marker 'debug_ui_breakpoint_remove=PASS') 'post-remap removal clears the canonical breakpoint'
+        Assert-True ((Get-MarkerCount 'debug_manager_provider=PASS source=workspace rows=0') -ge 1) 'Manager projection disappears on removal'
+        Assert-True ((Get-MarkerCount 'debug_manager_provider=PASS source=workspace rows=1') -ge 2) 'Manager projection is recreated once after removal'
+        Assert-True ((Get-PersistedBreakpointRecordCount 'src/main.cpp' $BreakpointLine 1) -eq 1) 'remove/recreate leaves one logical breakpoint'
+        Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 '') 'recreated breakpoint does not inherit the removed condition'
+
+        $artifactLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern 'DEVELOPER_STUDIO_PHASE29N_HOST_ARTIFACT')
+        $artifactRecords = @()
+        foreach ($line in $artifactLines) {
+            $hash = [regex]::Match($line.Line, 'sha256=([0-9A-Fa-f]{64})').Groups[1].Value
+            $operation = [regex]::Match($line.Line, 'build_operation=(\d+)').Groups[1].Value
+            if ($hash -and $operation) {
+                $artifactRecords += [PSCustomObject]@{ Operation = $operation; Hash = $hash }
+            }
+        }
+        $uniqueArtifacts = @($artifactRecords | Sort-Object Operation,Hash -Unique)
+        Assert-True ($uniqueArtifacts.Count -ge 2) 'both hosted builds report artifact hashes and build generations'
+        Assert-True ($uniqueArtifacts[0].Hash -ne $uniqueArtifacts[-1].Hash) 'real source variation produces a different post-remap artifact hash'
+
+        $addressLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT_ADDRESS')
+        $addressOperations = @($addressLines | ForEach-Object {
+            [regex]::Match($_.Line, ' op=(\d+) ').Groups[1].Value
+        } | Where-Object { $_ } | Sort-Object { [int]$_ } -Unique)
+        Assert-True ($addressOperations.Count -ge 2) 'both symbol generations report every mapped line address'
+        $preOperation = [string]$addressOperations[0]
+        $postOperation = [string]$addressOperations[-1]
+        $preAddresses = @($addressLines | Where-Object { $_.Line -match (' op=' + [regex]::Escape($preOperation) + ' ') } | ForEach-Object {
+            [regex]::Match($_.Line, 'address=(0x[0-9A-Fa-f]+)').Groups[1].Value
+        } | Where-Object { $_ } | Sort-Object -Unique)
+        $postAddresses = @($addressLines | Where-Object { $_.Line -match (' op=' + [regex]::Escape($postOperation) + ' ') } | ForEach-Object {
+            [regex]::Match($_.Line, 'address=(0x[0-9A-Fa-f]+)').Groups[1].Value
+        } | Where-Object { $_ } | Sort-Object -Unique)
+        Assert-True ($preAddresses.Count -gt 0 -and $postAddresses.Count -gt 0) 'pre/post line mappings contain machine addresses'
+        Assert-True (($preAddresses -join ',') -ne ($postAddresses -join ',')) 'the real rebuild materially changes the complete source-line mapping'
+
+        $boundLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND')
+        $preBound = @($boundLines | Where-Object { $_.Line -match (' op=' + [regex]::Escape($preOperation) + ' ') } | Select-Object -First 1)
+        $postBound = @($boundLines | Where-Object { $_.Line -match (' op=' + [regex]::Escape($postOperation) + ' ') } | Select-Object -First 1)
+        Assert-True ($preBound.Count -eq 1 -and $postBound.Count -eq 1) 'each build creates a verified runtime breakpoint binding'
+        $prePrimary = [regex]::Match($preBound[0].Line, 'addr=(0x[0-9A-Fa-f]+)').Groups[1].Value
+        $postPrimary = [regex]::Match($postBound[0].Line, 'addr=(0x[0-9A-Fa-f]+)').Groups[1].Value
+        Assert-True ($prePrimary -and $postPrimary -and $prePrimary -ne $postPrimary) 'the primary runtime breakpoint address changes after remap'
+
+        $managerLines = @(Select-String -LiteralPath $script:StdoutPath -Pattern 'debug_manager_row_select=PASS row_id=.*runtime_id=(\d+) runtime_session=(\d+) binding_id=(\d+)')
+        $runtimeSessions = @($managerLines | ForEach-Object {
+            $session = [regex]::Match($_.Line, 'runtime_session=(\d+)').Groups[1].Value
+            if ($session -and $session -ne '0') { $session }
+        } | Sort-Object -Unique)
+        Assert-True ($runtimeSessions.Count -ge 2) 'pre/post remap rows carry fresh runtime session identities'
+        $stopLine = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern 'debug_stop=requested' | Select-Object -First 1)
+        $startLines = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_start=PASS')
+        $postStartLine = if ($startLines.Count -ge 2) { $startLines[1].LineNumber } else { [int]::MaxValue }
+        $unboundAfterStop = @($managerLines | Where-Object {
+            $_.LineNumber -gt $stopLine[0].LineNumber -and $_.LineNumber -lt $postStartLine -and
+            $_.Line -match 'runtime_id=0 runtime_session=0 binding_id=0'
+        })
+        Assert-True ($stopLine.Count -eq 1 -and $unboundAfterStop.Count -ge 1) 'the pre-rebuild runtime binding disappears before the new debug session'
+
+        Write-Host "remap_pre_artifact_sha256=$($uniqueArtifacts[0].Hash)"
+        Write-Host "remap_post_artifact_sha256=$($uniqueArtifacts[-1].Hash)"
+        Write-Host "remap_pre_operation=$preOperation addresses=$($preAddresses -join ',') primary=$prePrimary"
+        Write-Host "remap_post_operation=$postOperation addresses=$($postAddresses -join ',') primary=$postPrimary"
+        Write-Host "remap_runtime_sessions=$($runtimeSessions -join ',')"
+        Write-Host 'manager_remap_retention=PASS'
     } else {
         Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SYMBOL stage=DWARF_READY') 'hosted DWARF load reaches Ready'
         Assert-True (Test-Marker 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_ASSOCIATION') 'hosted DWARF sources associate with the project root'

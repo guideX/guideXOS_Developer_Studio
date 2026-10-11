@@ -393,6 +393,67 @@ bool DebuggerWorkspaceResolveBreakpoint(const DebuggerWorkspace* workspace,
     return true;
 }
 
+bool DebuggerWorkspaceBreakpointProviderRefresh(
+        const DebuggerWorkspace* workspace, const char* projectId,
+        uint64_t projectGeneration, DebuggerWorkspaceBreakpointProvider* provider) {
+    if (provider) __builtin_memset(provider, 0, sizeof(*provider));
+    if (!workspace || !projectId || !projectId[0] || projectGeneration == 0 || !provider ||
+        workspace->breakpointGeneration == 0 ||
+        workspace->breakpointCount > kDebuggerWorkspaceMaxBreakpoints ||
+        !copyBounded(provider->projectId, sizeof(provider->projectId), projectId)) {
+        if (provider) __builtin_memset(provider, 0, sizeof(*provider));
+        return false;
+    }
+    provider->projectGeneration = projectGeneration;
+    provider->workspaceGeneration = workspace->breakpointGeneration;
+    for (uint32_t index = 0; index < workspace->breakpointCount; ++index) {
+        const DebuggerWorkspaceBreakpoint& configured = workspace->breakpoints[index];
+        DebuggerWorkspaceBreakpointManagerRow& row = provider->rows[index];
+        if (!configured.sourcePath[0] || configured.line == 0 ||
+            !copyBounded(row.projectId, sizeof(row.projectId), projectId) ||
+            !copyBounded(row.sourcePath, sizeof(row.sourcePath), configured.sourcePath)) {
+            __builtin_memset(provider, 0, sizeof(*provider));
+            return false;
+        }
+        row.line = configured.line;
+        row.column = configured.column;
+        row.workspaceIndex = index;
+        row.projectGeneration = projectGeneration;
+        row.workspaceGeneration = workspace->breakpointGeneration;
+    }
+    provider->rowCount = workspace->breakpointCount;
+    return true;
+}
+
+bool DebuggerWorkspaceBreakpointProviderResolve(
+        const DebuggerWorkspaceBreakpointProvider* provider,
+        const DebuggerWorkspace* workspace, const char* projectId,
+        uint64_t projectGeneration, uint32_t rowIndex,
+        const DebuggerWorkspaceBreakpointManagerRow** outRow,
+        const DebuggerWorkspaceBreakpoint** outBreakpoint) {
+    if (outRow) *outRow = nullptr;
+    if (outBreakpoint) *outBreakpoint = nullptr;
+    if (!provider || !workspace || !projectId || !projectId[0] ||
+        provider->projectGeneration == 0 || provider->workspaceGeneration == 0 ||
+        provider->projectGeneration != projectGeneration ||
+        provider->workspaceGeneration != workspace->breakpointGeneration ||
+        __builtin_strcmp(provider->projectId, projectId) != 0 ||
+        rowIndex >= provider->rowCount || rowIndex >= kDebuggerWorkspaceMaxBreakpoints) return false;
+    const DebuggerWorkspaceBreakpointManagerRow& row = provider->rows[rowIndex];
+    if (row.projectGeneration != projectGeneration ||
+        row.workspaceGeneration != workspace->breakpointGeneration ||
+        __builtin_strcmp(row.projectId, projectId) != 0 ||
+        row.workspaceIndex >= workspace->breakpointCount) return false;
+    uint32_t resolvedIndex = 0;
+    if (!DebuggerWorkspaceResolveBreakpoint(workspace, row.sourcePath, row.line,
+            row.workspaceGeneration, &resolvedIndex) || resolvedIndex != row.workspaceIndex) return false;
+    const DebuggerWorkspaceBreakpoint& configured = workspace->breakpoints[resolvedIndex];
+    if (configured.column != row.column) return false;
+    if (outRow) *outRow = &row;
+    if (outBreakpoint) *outBreakpoint = &configured;
+    return true;
+}
+
 bool DebuggerWorkspaceAddBreakpoint(DebuggerWorkspace* workspace, const char* sourcePath, uint32_t line, uint32_t column, bool enabled, uint32_t action, uint32_t hitPolicy, uint32_t hitThreshold, const char* condition, const char* logTemplate) {
     if (!workspace || !sourcePath || !condition || !logTemplate) return false;
     char normalized[kMaxProjectPathBytes] = {};

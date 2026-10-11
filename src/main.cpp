@@ -218,6 +218,10 @@ using guidexos::developer_studio::DiagnosticSentinelReasonName;
 using guidexos::developer_studio::DiagnosticSentinelIoResultName;
 using guidexos::developer_studio::DebuggerWorkspace;
 using guidexos::developer_studio::DebuggerWorkspaceBreakpoint;
+using guidexos::developer_studio::DebuggerWorkspaceBreakpointManagerRow;
+using guidexos::developer_studio::DebuggerWorkspaceBreakpointProvider;
+using guidexos::developer_studio::DebuggerWorkspaceBreakpointProviderRefresh;
+using guidexos::developer_studio::DebuggerWorkspaceBreakpointProviderResolve;
 using guidexos::developer_studio::kDebugWatchMaxExpressionBytes;
 using guidexos::developer_studio::DebuggerWorkspaceMaterializationEntry;
 using guidexos::developer_studio::BuildDebuggerWorkspaceMaterializationPlan;
@@ -996,6 +1000,11 @@ static uint64_t g_debugTraceLastStepGeneration = 0;
 static uint64_t g_debugTraceLastStepCompletionGeneration = 0;
 static char g_debugTraceScratch[4][512] = {};
 static DebuggerWorkspace g_debuggerWorkspace = {};
+static DebuggerWorkspaceBreakpointProvider g_debuggerWorkspaceBreakpointProvider = {};
+static bool g_debuggerWorkspaceBreakpointProviderValid = false;
+static char g_debuggerWorkspaceBreakpointProviderPublishedProjectId[kMaxProjectIdBytes] = {};
+static uint64_t g_debuggerWorkspaceBreakpointProviderPublishedProjectGeneration = 0;
+static uint64_t g_debuggerWorkspaceBreakpointProviderPublishedWorkspaceGeneration = 0;
 static char g_debuggerWorkspaceStatus[96] = {};
 static uint64_t g_debuggerWorkspaceMaterializedGeneration = 0;
 static bool g_debuggerWorkspaceMaterializationFailed = false;
@@ -1320,6 +1329,11 @@ static bool debugUiCurrentAbiAvailable();
 static const gx_development_debug_breakpoint* debugUiBreakpointAt(uint32_t index);
 static bool debugSelectEditorBreakpoint(const char* sourcePath, uint32_t line, uint32_t column);
 static bool debugSelectManagerBreakpoint(uint32_t index);
+static bool debugUiManagerRowsAvailable();
+static uint32_t debugUiManagerRowCount();
+static bool debugUiResolveHostedManagerRow(uint32_t index,
+    const DebuggerWorkspaceBreakpointManagerRow** outRow,
+    const DebuggerWorkspaceBreakpoint** outBreakpoint);
 static bool debugSelectControllerBreakpoint(uint32_t index);
 static bool beginEditorBreakpointConditionPrompt(gx_app_context* ctx);
 static bool beginBreakpointConditionPrompt(gx_app_context* ctx);
@@ -6565,7 +6579,39 @@ static void phase29nHostedBreakpointTrace(gx_app_context* ctx, const char* stage
         else appendText(g_textScratch, sizeof(g_textScratch), "-");
         appendText(g_textScratch, sizeof(g_textScratch), " addrs=");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.mappedAddressCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " binding=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.backendBindingId);
         logMarker(ctx, g_textScratch);
+
+        for (uint32_t addressIndex = 0;
+             addressIndex < breakpoint.mappedAddressCount &&
+             addressIndex < guidexos::developer_studio::kDebugMaxMappedAddresses;
+             ++addressIndex) {
+            if (!breakpoint.mappedAddresses[addressIndex].valid) continue;
+            copyText(g_textScratch, sizeof(g_textScratch),
+                     "DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT_ADDRESS pgen=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), target->projectGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " op=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buildOperationId);
+            appendText(g_textScratch, sizeof(g_textScratch), " symgen=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), mapper->identity.mapperGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " id=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.id);
+            appendText(g_textScratch, sizeof(g_textScratch), " binding=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.backendBindingId);
+            appendText(g_textScratch, sizeof(g_textScratch), " src=");
+            appendText(g_textScratch, sizeof(g_textScratch), breakpoint.location.relativePath);
+            appendText(g_textScratch, sizeof(g_textScratch), " line=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.location.line);
+            appendText(g_textScratch, sizeof(g_textScratch), " index=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), addressIndex + 1u);
+            appendText(g_textScratch, sizeof(g_textScratch), "/");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch), breakpoint.mappedAddressCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " address=");
+            appendHexAddress(g_textScratch, sizeof(g_textScratch),
+                             breakpoint.mappedAddresses[addressIndex].value);
+            logMarker(ctx, g_textScratch);
+        }
     }
 }
 
@@ -8582,7 +8628,79 @@ static bool debugSelectEditorBreakpoint(const char* sourcePath, uint32_t line,
 }
 
 static bool debugSelectManagerBreakpoint(uint32_t index) {
-    if (!g_debugUiBreakpointSnapshotValid || !g_controller.model.hasProject) return false;
+    if (!g_controller.model.hasProject) return false;
+    if (!g_fileSystemContext.useBareMetalDebug) {
+        const DebuggerWorkspaceBreakpointManagerRow* row = nullptr;
+        const DebuggerWorkspaceBreakpoint* configured = nullptr;
+        if (!debugUiResolveHostedManagerRow(index, &row, &configured) || !row || !configured)
+            return false;
+        DebugBreakpointSelectionIdentity selection = {};
+        selection.valid = true;
+        selection.origin = DebugBreakpointSelectionOrigin::Manager;
+        selection.projectGeneration = row->projectGeneration;
+        selection.workspaceGeneration = row->workspaceGeneration;
+        selection.line = row->line;
+        selection.column = row->column;
+        copyText(selection.projectId, sizeof(selection.projectId), row->projectId);
+        copyText(selection.sourcePath, sizeof(selection.sourcePath), row->sourcePath);
+        const DebugBreakpoint* live = DebugControllerIsActive(&g_debugController) ?
+            debuggerControllerBreakpointAtSource(selection.sourcePath, selection.line) : nullptr;
+        if (live) {
+            if (live->sessionGeneration == g_debugController.sessionGeneration) {
+                selection.logicalBreakpointId = live->id;
+                selection.sessionGeneration = live->sessionGeneration;
+            } else {
+                live = nullptr;
+            }
+        }
+        const int editorIndex = DebugEditorModelFindBreakpoint(
+            &g_debugEditor, selection.projectId, selection.sourcePath, selection.line);
+        if (editorIndex >= 0) {
+            selection.editorRowIndex = static_cast<uint32_t>(editorIndex);
+            const DebugEditorBreakpoint* editorRow = DebugEditorModelBreakpointAt(
+                &g_debugEditor, static_cast<uint32_t>(editorIndex));
+            if (editorRow) selection.editorBreakpointId = editorRow->id;
+        }
+        g_debugSelectedBreakpointIdentity = selection;
+        copyText(g_textScratch, sizeof(g_textScratch),
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_row_select=PASS row_id=");
+        appendText(g_textScratch, sizeof(g_textScratch), row->projectId);
+        appendText(g_textScratch, sizeof(g_textScratch), "/");
+        appendText(g_textScratch, sizeof(g_textScratch), row->sourcePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), row->line);
+        appendText(g_textScratch, sizeof(g_textScratch), " source=");
+        appendText(g_textScratch, sizeof(g_textScratch), row->sourcePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), row->line);
+        appendText(g_textScratch, sizeof(g_textScratch), " workspace_generation=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), row->workspaceGeneration);
+        appendText(g_textScratch, sizeof(g_textScratch), " condition=");
+        appendText(g_textScratch, sizeof(g_textScratch),
+            configured->condition[0] ? configured->condition : "<none>");
+        appendText(g_textScratch, sizeof(g_textScratch), " logical_count=");
+        uint32_t logicalCount = 0;
+        for (uint32_t i = 0; i < g_debuggerWorkspace.breakpointCount; ++i) {
+            const DebuggerWorkspaceBreakpoint& item = g_debuggerWorkspace.breakpoints[i];
+            if (item.line == row->line && PathsEqual(item.sourcePath, row->sourcePath)) ++logicalCount;
+        }
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), logicalCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " runtime_id=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), live ? live->id : 0);
+        appendText(g_textScratch, sizeof(g_textScratch), " runtime_session=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), live ? live->sessionGeneration : 0);
+        appendText(g_textScratch, sizeof(g_textScratch), " binding_id=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), live ? live->backendBindingId : 0);
+        appendText(g_textScratch, sizeof(g_textScratch), " address=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch),
+            live && live->mappedAddressCount && live->mappedAddresses[0].valid ?
+                live->mappedAddresses[0].value : 0);
+        appendText(g_textScratch, sizeof(g_textScratch), " mapped_count=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), live ? live->mappedAddressCount : 0);
+        logMarker(g_fileSystemContext.app, g_textScratch);
+        return true;
+    }
+    if (!g_debugUiBreakpointSnapshotValid) return false;
     const gx_development_debug_breakpoint* managed = debugUiBreakpointAt(index);
     if (!managed || managed->breakpointId == 0 || !managed->sourcePath[0] ||
         managed->sourceLine == 0) return false;
@@ -11885,13 +12003,12 @@ static void debugUiRememberBreakpointMetadata(const gx_development_debug_snapsho
 }
 
 static bool debugUiRefreshBreakpoints() {
-    // Hosted NativeAppDebugger sessions use the controller's existing
-    // pre-launch source mapping/binding path. The persistent source-breakpoint
-    // manager is a NativeElf/bare-metal service; do not ask the hosted service
-    // for manager rows during an otherwise valid controller-owned session.
+    // Hosted NativeAppDebugger sessions publish canonical workspace row
+    // references. Runtime IDs and mappings are joined from the active session
+    // only when a row is selected or rendered.
     if (!g_fileSystemContext.useBareMetalDebug) {
         debugEditorRefreshBreakpoints();
-        return true;
+        return debugUiManagerRowsAvailable();
     }
     gx_development_debug_request request = debugUiRequest(GX_DEVELOPMENT_DEBUG_LIST_SOURCE_BREAKPOINTS);
     gx_development_debug_snapshot& snapshot = g_debugUiCommandSnapshot;
@@ -12295,6 +12412,34 @@ static const gx_development_debug_breakpoint* debugUiBreakpointAt(uint32_t index
     return &g_debugUiBreakpointSnapshot.breakpoints[index];
 }
 
+static bool debugUiManagerRowsAvailable() {
+    if (g_fileSystemContext.useBareMetalDebug) return g_debugUiBreakpointSnapshotValid;
+    return g_controller.model.hasProject && g_debuggerWorkspaceBreakpointProviderValid &&
+        g_debuggerWorkspaceBreakpointProvider.projectGeneration ==
+            g_controller.model.projectGeneration &&
+        g_debuggerWorkspaceBreakpointProvider.workspaceGeneration ==
+            g_debuggerWorkspace.breakpointGeneration;
+}
+
+static uint32_t debugUiManagerRowCount() {
+    if (g_fileSystemContext.useBareMetalDebug)
+        return g_debugUiBreakpointSnapshotValid ?
+            g_debugUiBreakpointSnapshot.breakpointCount : 0;
+    return debugUiManagerRowsAvailable() ? g_debuggerWorkspaceBreakpointProvider.rowCount : 0;
+}
+
+static bool debugUiResolveHostedManagerRow(uint32_t index,
+        const DebuggerWorkspaceBreakpointManagerRow** outRow,
+        const DebuggerWorkspaceBreakpoint** outBreakpoint) {
+    if (outRow) *outRow = nullptr;
+    if (outBreakpoint) *outBreakpoint = nullptr;
+    if (g_fileSystemContext.useBareMetalDebug || !debugUiManagerRowsAvailable()) return false;
+    return DebuggerWorkspaceBreakpointProviderResolve(
+        &g_debuggerWorkspaceBreakpointProvider, &g_debuggerWorkspace,
+        g_controller.model.project.projectId, g_controller.model.projectGeneration,
+        index, outRow, outBreakpoint);
+}
+
 static bool debugEditorBreakpointUnresolved(const DebugBreakpoint& breakpoint) {
     if (!breakpoint.enabled) return false;
     return breakpoint.state == DebugBreakpointState::Pending ||
@@ -12399,6 +12544,45 @@ static void debugEditorRefreshBreakpoints() {
         }
     }
     DebugEditorModelRefreshBreakpoints(&g_debugEditor, g_debugEditorRows, rowCount);
+    if (!g_fileSystemContext.useBareMetalDebug && g_controller.model.hasProject) {
+        g_debuggerWorkspaceBreakpointProviderValid =
+            DebuggerWorkspaceBreakpointProviderRefresh(&g_debuggerWorkspace,
+                g_controller.model.project.projectId, g_controller.model.projectGeneration,
+                &g_debuggerWorkspaceBreakpointProvider);
+        if (g_debuggerWorkspaceBreakpointProviderValid &&
+            (!PathsEqual(g_debuggerWorkspaceBreakpointProviderPublishedProjectId,
+                         g_debuggerWorkspaceBreakpointProvider.projectId) ||
+             g_debuggerWorkspaceBreakpointProviderPublishedProjectGeneration !=
+                 g_debuggerWorkspaceBreakpointProvider.projectGeneration ||
+             g_debuggerWorkspaceBreakpointProviderPublishedWorkspaceGeneration !=
+                 g_debuggerWorkspaceBreakpointProvider.workspaceGeneration)) {
+            copyText(g_textScratch, sizeof(g_textScratch),
+                "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debuggerWorkspaceBreakpointProvider.rowCount);
+            appendText(g_textScratch, sizeof(g_textScratch), " project_generation=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debuggerWorkspaceBreakpointProvider.projectGeneration);
+            appendText(g_textScratch, sizeof(g_textScratch), " workspace_generation=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debuggerWorkspaceBreakpointProvider.workspaceGeneration);
+            logMarker(g_fileSystemContext.app, g_textScratch);
+            g_debuggerWorkspaceBreakpointProviderPublishedProjectGeneration =
+                g_debuggerWorkspaceBreakpointProvider.projectGeneration;
+            g_debuggerWorkspaceBreakpointProviderPublishedWorkspaceGeneration =
+                g_debuggerWorkspaceBreakpointProvider.workspaceGeneration;
+            copyText(g_debuggerWorkspaceBreakpointProviderPublishedProjectId,
+                sizeof(g_debuggerWorkspaceBreakpointProviderPublishedProjectId),
+                g_debuggerWorkspaceBreakpointProvider.projectId);
+        }
+    } else {
+        g_debuggerWorkspaceBreakpointProviderValid = false;
+        __builtin_memset(&g_debuggerWorkspaceBreakpointProvider, 0,
+                         sizeof(g_debuggerWorkspaceBreakpointProvider));
+        g_debuggerWorkspaceBreakpointProviderPublishedProjectId[0] = '\0';
+        g_debuggerWorkspaceBreakpointProviderPublishedProjectGeneration = 0;
+        g_debuggerWorkspaceBreakpointProviderPublishedWorkspaceGeneration = 0;
+    }
 }
 
 static bool debugUiAddWatch(gx_app_context* ctx, const char* expression) {
@@ -12437,6 +12621,28 @@ static bool debugUiRemoveWatch(gx_app_context* ctx, uint32_t index) {
 }
 
 static bool debugUiSetBreakpointEnabled(gx_app_context* ctx, uint32_t index, bool enabled) {
+    if (!g_fileSystemContext.useBareMetalDebug) {
+        const DebuggerWorkspaceBreakpoint* configured = nullptr;
+        if (!debugUiResolveHostedManagerRow(index, nullptr, &configured) || !configured) return false;
+        char sourcePath[kMaxProjectPathBytes] = {};
+        copyText(sourcePath, sizeof(sourcePath), configured->sourcePath);
+        const uint32_t sourceLine = configured->line;
+        const uint32_t sourceColumn = configured->column;
+        if (configured->enabled == enabled) return true;
+        const DebugBreakpoint* live = debuggerControllerBreakpointAtSource(sourcePath, sourceLine);
+        if (live && DebugControllerIsActive(&g_debugController)) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (!DebugControllerSetBreakpointEnabled(&g_debugController, live->id, enabled, &error))
+                return false;
+            if (enabled && !DebugControllerMapBreakpoints(&g_debugController, &g_debugMapper, &error))
+                return false;
+        }
+        if (!debuggerWorkspaceSetBreakpointEnabled(ctx, sourcePath, sourceLine,
+                                                   sourceColumn, enabled)) return false;
+        logMarker(ctx, enabled ? "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_enable=PASS" :
+            "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_disable=PASS");
+        return true;
+    }
     const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(index);
     if (!breakpoint) return false;
     char sourcePath[kMaxProjectPathBytes] = {};
@@ -12454,6 +12660,26 @@ static bool debugUiSetBreakpointEnabled(gx_app_context* ctx, uint32_t index, boo
 }
 
 static bool debugUiRemoveBreakpoint(gx_app_context* ctx, uint32_t index) {
+    if (!g_fileSystemContext.useBareMetalDebug) {
+        const DebuggerWorkspaceBreakpoint* configured = nullptr;
+        if (!debugUiResolveHostedManagerRow(index, nullptr, &configured) || !configured) return false;
+        char sourcePath[kMaxProjectPathBytes] = {};
+        copyText(sourcePath, sizeof(sourcePath), configured->sourcePath);
+        const uint32_t sourceLine = configured->line;
+        const DebugBreakpoint* live = debuggerControllerBreakpointAtSource(sourcePath, sourceLine);
+        if (live && DebugControllerIsActive(&g_debugController) &&
+            live->backendBindingId != 0) {
+            writeStudioOutput("Stop the debug target before removing a bound workspace breakpoint");
+            return false;
+        }
+        if (live && DebugControllerIsActive(&g_debugController)) {
+            DebugErrorCode error = DebugErrorCode::None;
+            if (!DebugControllerDeleteBreakpoint(&g_debugController, live->id, &error)) return false;
+        }
+        if (!debuggerWorkspaceRemoveBreakpoint(ctx, sourcePath, sourceLine)) return false;
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_breakpoint_remove=PASS");
+        return true;
+    }
     const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(index);
     if (!breakpoint) return false;
     char sourcePath[kMaxProjectPathBytes] = {};
@@ -12467,6 +12693,15 @@ static bool debugUiRemoveBreakpoint(gx_app_context* ctx, uint32_t index) {
 }
 
 static bool debugUiConfigureBreakpoint(gx_app_context* ctx, uint32_t index) {
+    if (!g_fileSystemContext.useBareMetalDebug) {
+        const DebuggerWorkspaceBreakpoint* configured = nullptr;
+        if (!debugUiResolveHostedManagerRow(index, nullptr, &configured) || !configured) return false;
+        return debuggerWorkspaceUpdateBreakpointPolicy(ctx, configured->sourcePath,
+            configured->line, configured->column, configured->enabled,
+            g_debugUiBreakpointActions[index], g_debugUiBreakpointPolicies[index],
+            g_debugUiBreakpointThresholds[index], configured->condition,
+            configured->logTemplate);
+    }
     const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(index);
     if (!breakpoint) return false;
     char sourcePath[kMaxProjectPathBytes] = {};
@@ -12501,7 +12736,8 @@ static bool debugUiAddBreakpointAtCaret(gx_app_context* ctx) {
     // TextBuffer caret columns are zero-based; persisted debugger workspace
     // locations use one-based source columns, including a line-start caret.
     const uint32_t column = activeColumn(document->buffer, line - 1) + 1;
-    if (!debugUiCurrentAbiAvailable() || !DebugControllerIsActive(&g_debugController))
+    if (!g_fileSystemContext.useBareMetalDebug || !debugUiCurrentAbiAvailable() ||
+        !DebugControllerIsActive(&g_debugController))
         return debuggerWorkspaceAddOrToggleBreakpoint(ctx, relative, line, column, nullptr);
 
     // The manager owns the operation and duplicate decision.  Do not create
@@ -15127,17 +15363,56 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
         return true;
     }
     if (g_debugPanelTab != 0) return true;
-    // Hosted NativeAppDebugger sessions intentionally do not expose the
-    // NativeElf breakpoint-manager snapshot. Let the controller-backed panel
-    // path below handle its real session rows instead of consuming keys with
-    // an empty Manager selection.
-    if (!g_debugUiBreakpointSnapshotValid) return false;
+    if (!debugUiManagerRowsAvailable()) return false;
+    const uint32_t managerRows = debugUiManagerRowCount();
     if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
         if (keyCode == GX_KEY_UP && g_debugSelectedBreakpoint > 0) --g_debugSelectedBreakpoint;
         else if (keyCode == GX_KEY_DOWN &&
-                 g_debugSelectedBreakpoint + 1 < g_debugUiBreakpointSnapshot.breakpointCount)
+                 g_debugSelectedBreakpoint + 1 < managerRows)
             ++g_debugSelectedBreakpoint;
         (void)debugSelectManagerBreakpoint(g_debugSelectedBreakpoint);
+        return true;
+    }
+    if (!g_fileSystemContext.useBareMetalDebug) {
+        if (keyCode == 120) {
+            debugUiAddBreakpointAtCaret(ctx);
+            return true;
+        }
+        const DebuggerWorkspaceBreakpoint* configured = nullptr;
+        if (!debugUiResolveHostedManagerRow(g_debugSelectedBreakpoint, nullptr, &configured) ||
+            !configured) return true;
+        if (keyCode == 32) {
+            debugUiSetBreakpointEnabled(ctx, g_debugSelectedBreakpoint, !configured->enabled);
+        } else if (keyCode == 46) {
+            debugUiRemoveBreakpoint(ctx, g_debugSelectedBreakpoint);
+        } else if ((keyCode == 67 || keyCode == 99) &&
+                   debugSelectManagerBreakpoint(g_debugSelectedBreakpoint)) {
+            beginBreakpointConditionPrompt(ctx);
+        } else if (keyCode == 76 || keyCode == 108) {
+            g_debugUiBreakpointActions[g_debugSelectedBreakpoint] =
+                configured->action == 1 ? GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK :
+                    GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG;
+            g_debugUiBreakpointPolicies[g_debugSelectedBreakpoint] = configured->hitPolicy;
+            g_debugUiBreakpointThresholds[g_debugSelectedBreakpoint] = configured->hitThreshold;
+            g_debugUiBreakpointLogs[g_debugSelectedBreakpoint][0] = '\0';
+            debugUiConfigureBreakpoint(ctx, g_debugSelectedBreakpoint);
+        } else if (keyCode == 72 || keyCode == 104) {
+            uint32_t policy = configured->hitPolicy + 1;
+            if (policy > GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_AT_LEAST)
+                policy = GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE;
+            g_debugUiBreakpointActions[g_debugSelectedBreakpoint] =
+                configured->action == 1 ? GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_LOG :
+                    GX_DEVELOPMENT_DEBUG_BREAKPOINT_ACTION_BREAK;
+            g_debugUiBreakpointPolicies[g_debugSelectedBreakpoint] = policy;
+            g_debugUiBreakpointThresholds[g_debugSelectedBreakpoint] =
+                policy == GX_DEVELOPMENT_DEBUG_HIT_COUNT_POLICY_NONE ? 0 : 2;
+            copyText(g_debugUiBreakpointLogs[g_debugSelectedBreakpoint],
+                sizeof(g_debugUiBreakpointLogs[g_debugSelectedBreakpoint]), configured->logTemplate);
+            debugUiConfigureBreakpoint(ctx, g_debugSelectedBreakpoint);
+        } else if (keyCode == 13) {
+            if (debugSelectManagerBreakpoint(g_debugSelectedBreakpoint))
+                navigateSelectedBreakpoint(ctx);
+        }
         return true;
     }
     const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(g_debugSelectedBreakpoint);
@@ -15319,17 +15594,52 @@ static void drawIntegratedDebugPanel(gx_app_context* ctx) {
         g_debugPanelTab == 3 ? 456 : g_debugPanelTab == 4 ? 550 : g_debugPanelTab == 5 ? 670 : 770;
     drawPanel(ctx, { tabX, 116, 100, 2 }, 0xD6E4FFu);
     if (g_debugPanelTab == 0) {
-        drawText(ctx, 100, 144, g_debugUiBreakpointSnapshotValid ?
-                 "Server source-breakpoint manager" : "Session breakpoints (controller view)");
-        if (!g_debugUiBreakpointSnapshotValid) drawText(ctx, 100, 166, "Manager snapshot unavailable");
-        const uint32_t availableRows = g_debugUiBreakpointSnapshotValid ?
-            g_debugUiBreakpointSnapshot.breakpointCount : g_debugController.breakpointCount;
+        const bool managerRowsAvailable = debugUiManagerRowsAvailable();
+        const bool hostedWorkspaceRows = managerRowsAvailable &&
+            !g_fileSystemContext.useBareMetalDebug;
+        drawText(ctx, 100, 144, hostedWorkspaceRows ? "Project breakpoints (workspace)" :
+            (managerRowsAvailable ? "Server source-breakpoint manager" :
+                "Session breakpoints (controller view)"));
+        if (!managerRowsAvailable && !g_fileSystemContext.useBareMetalDebug)
+            drawText(ctx, 100, 166, "Workspace breakpoint provider unavailable");
+        else if (!managerRowsAvailable) drawText(ctx, 100, 166, "Manager snapshot unavailable");
+        const uint32_t availableRows = managerRowsAvailable ? debugUiManagerRowCount() :
+            g_debugController.breakpointCount;
         const uint32_t rows = availableRows < kDebugPanelMaxRows ? availableRows : kDebugPanelMaxRows;
-        if (g_debugUiBreakpointSnapshotValid && rows == 0) drawText(ctx, 100, 174, "No managed breakpoints. F9 toggles the current line.");
+        if (managerRowsAvailable && rows == 0)
+            drawText(ctx, 100, 174, "No configured breakpoints. F9 toggles the current line.");
         for (uint32_t row = 0; row < rows; ++row) {
             const int y = 194 + static_cast<int>(row) * kDebugPanelRowHeight;
             if (row == g_debugSelectedBreakpoint) drawPanel(ctx, { 88, y - 15, 784, 20 }, 0x34496Au);
-            if (g_debugUiBreakpointSnapshotValid) {
+            if (hostedWorkspaceRows) {
+                const DebuggerWorkspaceBreakpointManagerRow* identity = nullptr;
+                const DebuggerWorkspaceBreakpoint* configured = nullptr;
+                if (!debugUiResolveHostedManagerRow(row, &identity, &configured) ||
+                    !identity || !configured) continue;
+                const DebugBreakpoint* live = DebugControllerIsActive(&g_debugController) ?
+                    debuggerControllerBreakpointAtSource(identity->sourcePath, identity->line) : nullptr;
+                copyText(g_textScratch, sizeof(g_textScratch), configured->enabled ? "[on] " : "[off] ");
+                appendText(g_textScratch, sizeof(g_textScratch), configured->action == 1 ? "LOG " : "BREAK ");
+                appendText(g_textScratch, sizeof(g_textScratch), identity->sourcePath);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch), identity->line);
+                appendText(g_textScratch, sizeof(g_textScratch), " condition=");
+                appendText(g_textScratch, sizeof(g_textScratch),
+                    configured->condition[0] ? configured->condition : "<none>");
+                appendText(g_textScratch, sizeof(g_textScratch), " runtime=");
+                if (live && live->sessionGeneration == g_debugController.sessionGeneration) {
+                    appendText(g_textScratch, sizeof(g_textScratch), "bound id=");
+                    appendUnsigned(g_textScratch, sizeof(g_textScratch), live->id);
+                    appendText(g_textScratch, sizeof(g_textScratch), " binding=");
+                    appendUnsigned(g_textScratch, sizeof(g_textScratch), live->backendBindingId);
+                    appendText(g_textScratch, sizeof(g_textScratch), " address=");
+                    appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                        live->mappedAddressCount && live->mappedAddresses[0].valid ?
+                            live->mappedAddresses[0].value : 0);
+                } else {
+                    appendText(g_textScratch, sizeof(g_textScratch), "unbound");
+                }
+            } else if (g_debugUiBreakpointSnapshotValid) {
                 const gx_development_debug_breakpoint* breakpoint = debugUiBreakpointAt(row);
                 if (!breakpoint) continue;
                 copyText(g_textScratch, sizeof(g_textScratch), breakpoint->enabled ? "[on] " : "[off] ");
@@ -16024,9 +16334,26 @@ static void drawModal(gx_app_context* ctx) {
             appendText(g_textScratch, sizeof(g_textScratch), " manager_id=");
             appendUnsigned(g_textScratch, sizeof(g_textScratch),
                 g_debugEditingBreakpointIdentity.managerBreakpointId);
+            appendText(g_textScratch, sizeof(g_textScratch), " manager_row_id=");
+            if (g_debugEditingBreakpointIdentity.origin == DebugBreakpointSelectionOrigin::Manager) {
+                appendText(g_textScratch, sizeof(g_textScratch),
+                    g_debugEditingBreakpointIdentity.projectId);
+                appendText(g_textScratch, sizeof(g_textScratch), "/");
+                appendText(g_textScratch, sizeof(g_textScratch),
+                    g_debugEditingBreakpointIdentity.sourcePath);
+                appendText(g_textScratch, sizeof(g_textScratch), ":");
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                    g_debugEditingBreakpointIdentity.line);
+            } else {
+                appendText(g_textScratch, sizeof(g_textScratch), "none");
+            }
+            appendText(g_textScratch, sizeof(g_textScratch), " manager_workspace_generation=");
+            appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                g_debugEditingBreakpointIdentity.workspaceGeneration);
             appendText(g_textScratch, sizeof(g_textScratch), " manager_snapshot=");
-            appendText(g_textScratch, sizeof(g_textScratch),
-                g_debugUiBreakpointSnapshotValid ? "present" : "absent");
+            appendText(g_textScratch, sizeof(g_textScratch), g_fileSystemContext.useBareMetalDebug ?
+                (g_debugUiBreakpointSnapshotValid ? "present" : "absent") :
+                (debugUiManagerRowsAvailable() ? "workspace" : "absent"));
             logMarker(ctx, g_textScratch);
             logBreakpointConditionUi(ctx, "editor=OPEN",
                 g_debugEditingBreakpointIdentity.logicalBreakpointId, g_prompt,
@@ -17200,11 +17527,12 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_tab_mouse=PASS");
                 } else if (g_debugPanelTab == 0 && y >= 178 && y < 620) {
                     const uint32_t row = static_cast<uint32_t>((y - 178) / kDebugPanelRowHeight);
-                    const uint32_t breakpointRows = g_debugUiBreakpointSnapshotValid ?
-                        g_debugUiBreakpointSnapshot.breakpointCount : g_debugController.breakpointCount;
+                    const bool managerRows = debugUiManagerRowsAvailable();
+                    const uint32_t breakpointRows = managerRows ? debugUiManagerRowCount() :
+                        g_debugController.breakpointCount;
                     if (row < breakpointRows) {
                         g_debugSelectedBreakpoint = row;
-                        if (g_debugUiBreakpointSnapshotValid)
+                        if (managerRows)
                             (void)debugSelectManagerBreakpoint(row);
                         else
                             (void)debugSelectControllerBreakpoint(row);
@@ -17836,7 +18164,9 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             if (g_debugPanelTab == 0) {
                 copyText(g_textScratch, sizeof(g_textScratch),
                          "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_panel_open=PASS tab=0 count=");
-                appendUnsigned(g_textScratch, sizeof(g_textScratch), g_debugController.breakpointCount);
+                appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                    debugUiManagerRowsAvailable() ? debugUiManagerRowCount() :
+                        g_debugController.breakpointCount);
                 logMarker(ctx, g_textScratch);
             }
         }
