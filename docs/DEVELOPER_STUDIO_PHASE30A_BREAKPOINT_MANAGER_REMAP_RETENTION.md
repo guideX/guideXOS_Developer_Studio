@@ -82,7 +82,7 @@ The Server integration package also received the generated app manifest and the 
 
 ### Continuation starting state
 
-Live continuation heads were Standalone `main` at `73f44689cc121dc333ee9dcb05768d260fbcd94b` and Server `v0.5_DEVELOPER_STUDIO` at `c237db2e8c484c1adcafa786ee8e8773bd386346`. Both worktrees were clean, each 1 ahead / 0 behind, and neither branch nor remote configuration was changed. At the end of this continuation, only Standalone harness and documentation files were changed; there is no Server package change.
+Live continuation heads were Standalone `main` at `73f44689cc121dc333ee9dcb05768d260fbcd94b` and Server `v0.5_DEVELOPER_STUDIO` at `c237db2e8c484c1adcafa786ee8e8773bd386346`; both worktrees were clean. The prior Phase 30A closeout supplied with the continuation prompt recorded 1 ahead / 0 behind in both repositories. The local tracking refs read during this continuation showed 0 / 0 at those same heads. This discrepancy was observed only; neither branch nor remote configuration was changed. At the end of this continuation, only Standalone harness and documentation files were committed; there is no Server package change.
 
 The accepted Manager 5/5 and fresh Remap 5/5 results were preserved. The earlier remap attempt whose evidence directory was externally moved remains an invalidated infrastructure run, not a product failure. No regression suite or package was rebuilt for this harness-only continuation.
 
@@ -152,6 +152,10 @@ Production UI/model code did not change. The harness changes are limited to exac
 No Debug/Release CTest, GXSM, DWARF, package build, or QEMU run was repeated because the source product and Server package did not change. The previously audited package hashes remain AMD64 `BAE1D5CF382D66EEC2DEB9AF840E543086EE5DC93D74590E289E3CEDAB7BFAF3` and ARM64 `AB0F3BDF55F8660F6542392DE4D9740FC1ADF91327892FFAC5B00847967A804F`. QEMU was not required for these harness-only changes. The failed run's evidence directory remained present throughout and its manifest records the failure rather than falling back to another path.
 
 The remaining boundary is the hosted condition-text input event path in the remap-retention case, followed by completion of a new, fully passing 25/25 combined run after that boundary is resolved. The failed cycle 15 must remain recorded; it is not replaced or counted as a pass. The historical long-root `malformed_dwarf` report remains a separate preserved observation.
+
+### Git closeout
+
+Standalone continuation commits are `5e420df37bfe3e70b0113d28ab2133a1903fb4b1` (`Qualify Phase 30A hosted marker freshness`) and a documentation-only Git closeout commit. Both ordinary push attempts returned `Permission denied (publickey)`; no authentication or remote setting was changed. The Server worktree stayed on `v0.5_DEVELOPER_STUDIO` at `c237db2e8c484c1adcafa786ee8e8773bd386346`, with no new Server commit. Final heads and ahead/behind counts are recorded in the continuation report.
 
 ## Outcome and remaining boundary
 
