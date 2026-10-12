@@ -1,7 +1,7 @@
 # guideXOS Developer Studio — Phase 30A
 ## Persistent Breakpoint Manager Row and Condition Remap Retention
 
-**Current result: Outcome B.** The hosted persistent Manager provider and focused rebuild/remap gates remain qualified at 5/5 each. The historical combined run stopped at 13/25 on cycle 14 because its marker baseline was sampled after a valid OPEN event. That harness freshness defect was corrected and the repeated open/close marker gate passed 10/10. A completely fresh combined run then passed cycles 1–14 and stopped on cycle 15/25 while entering the initial condition in the scheduled remap-retention case. The required 25/25 combined stress remains incomplete.
+**Previous checkpoint result: Outcome B (14/25).** That historical combined run stopped on cycle 15 while entering the initial condition in the scheduled remap-retention case. The later hosted condition-input continuation and its fresh combined result are recorded below; this earlier failure remains part of the audit history.
 
 ## Phase gate and starting state
 
@@ -157,6 +157,87 @@ The remaining boundary is the hosted condition-text input event path in the rema
 
 Standalone continuation commits are `5e420df37bfe3e70b0113d28ab2133a1903fb4b1` (`Qualify Phase 30A hosted marker freshness`) and a documentation-only Git closeout commit. Both ordinary push attempts returned `Permission denied (publickey)`; no authentication or remote setting was changed. The Server worktree stayed on `v0.5_DEVELOPER_STUDIO` at `c237db2e8c484c1adcafa786ee8e8773bd386346`, with no new Server commit. Final heads and ahead/behind counts are recorded in the continuation report.
 
-## Outcome and remaining boundary
+## Hosted condition-input continuation
+
+This continuation starts from the live repository baselines recorded in the prompt: Standalone `main` at `9890a2dfb382eb113e3fb39fb8358e1d3ba42967` and Server `v0.5_DEVELOPER_STUDIO` at `c237db2e8c484c1adcafa786ee8e8773bd386346`. Both were clean at turn start. The accepted Manager 5/5, remap 5/5, and marker freshness 10/10 qualifications remain in force.
+
+### Cycle 15 input boundary
+
+The preserved formal trace is `D:\dev\g30a-stress-4c87c1f2\traces-15\phase30a-stress-15.log`; its fixture is `D:\dev\g30a-stress-4c87c1f2\fixture-15`. The run stopped at 14/25 on `ManagerRemapRetention`, before build or remap. The row was the single canonical `com.example.debuggerphase15/src/main.cpp:37` workspace breakpoint, with `manager_snapshot=workspace`, workspace generation 2, one logical row, and no runtime binding. The Manager condition editor opened from that row and initially showed an empty condition.
+
+The last retained condition-input marker was `text=counter =`; the expected `text=counter == 2` marker was absent. The saved `last_input=gui.keyto 1000 50 down 0` is the last harness command, not proof that the compositor or application received that key. `1000` is the hosted compositor window ID used by `gui.keyto`; it is not a child textbox ID or a Windows HWND. `50` is the virtual-key code for `2`; `down` is the key action and `0` is the modifier mask. The interface carries virtual-key codes, not scan codes.
+
+The prior `Add-ConditionText` implementation in `tests/smoke-developer-studio-phase20.ps1` sent Ctrl+A, waited 120 ms, then sent each character as a key-down with another fixed 120 ms wait. It sent no key-up events. Its translation for `counter == 2` was 12 text keys, preceded by Ctrl+A:
+
+| Seq | Character / action | Virtual key | Modifiers | Action |
+|---:|---|---:|---:|---|
+| 1 | Ctrl+A | 65 | 2 (Ctrl) | down |
+| 2–9 | `counter ` | 67, 79, 85, 78, 84, 69, 82, 32 | 0 | down |
+| 10 | `=` | 187 (`VK_OEM_PLUS`) | 0 | down |
+| 11 | `=` | 187 (`VK_OEM_PLUS`) | 0 | down |
+| 12 | space | 32 | 0 | down |
+| 13 | `2` | 50 | 0 | down |
+
+`src/main.cpp` maps key 187 without Shift to `=` and maps 32 to space. `handleModalKey` ignores key-up actions, and `promptAppend` handles each key-down independently; the condition editor does not wait for a release between equal signs. The historical first unobserved text transition is therefore sequence 11, the second `=`. The old trace does not include per-event IDs or layer acknowledgments, so it cannot prove whether sequence 11 was lost at the host queue, compositor, runtime, or modal handler. The old Server printed `Key queued` without returning the actual `ProcessTable::send` result, so even that line did not prove compositor-mailbox acceptance.
+
+Cycle 10 was a passing `ManagerRemapRetention` case under the same 4+1 cadence and used the same helper and intended text. Its success qualifies the case outcome, but the runner deleted successful-case stdout and the cycle-10 trace directory is empty. Thus cycle 10's exact row marker, workspace generation, focused-window trace, and per-key delivery counts are not independently retained. The shared test setup identifies the same source-key row and the helper generates the 13-event sequence above; no cycle-10 per-character trace is inferred from that source.
+
+| Field | Passing cycle 10 | Failed cycle 15 |
+|---|---|---|
+| Case | `ManagerRemapRetention` | `ManagerRemapRetention` |
+| Canonical row | Test setup: `com.example.debuggerphase15/src/main.cpp:37`; raw row line not retained | `com.example.debuggerphase15/src/main.cpp:37`, one logical row |
+| Workspace generation | Successful stdout was deleted; not directly retained | 2 |
+| Modal | Case completed, but modal trace was deleted | Manager-origin modal opened and rendered with empty condition |
+| Target / focus | Test helper targets window 1000; no compositor focus trace retained | `gui.keyto` target 1000; compositor focus was not instrumented in this run |
+| Intended text / generated keys | `counter == 2`; same 13 key-down events from the shared helper | `counter == 2`; same helper sequence; all 13 commands were issued |
+| Key-up count | 0 by helper implementation; no per-cycle event trace retained | 0 by helper implementation; no per-cycle event trace retained |
+| Text progress | Successful case confirms the helper completed, but intermediate text markers were deleted | Progress reached `counter =`; no later text marker was retained |
+| First unobserved text transition | Not applicable to passing case | Sequence 11, the second key 187; lower delivery layer is not recoverable from this run |
+
+### Bounded diagnostics and harness correction
+
+The diagnostic sequence is preserved under unique roots beneath `D:\dev\g30a-input-diag-*`; each root has a manifest. Early diagnostic attempts exposed and corrected harness/evidence issues: one copied the checked-in breakpoint JSON and toggled line 37 off, one setup loop lost a line-navigation arrow while using a fixed 150 ms delay, one no-session case used debugger-shutdown validation, and plain `Key queued` output could interleave with compositor logging. These attempts remain marked failed in their own manifests and are not counted as gate cycles.
+
+The final one-case diagnostic passed at `D:\dev\g30a-input-diag-enqueue-ac89abc20980408db9a3c65af3c8c840`, token `5effe1f1650e4e1eb43cd6cbd85035da`. It retained `traces-1/phase20-condition-input-1.log`. For every sequence 1–13 it records the harness-generated event, the command sent, Server enqueue acceptance, compositor receipt, app-mailbox acceptance, runtime dequeue, application event return, and a fresh condition-text marker acknowledgment. The compositor reported target/focus window 1000, owner PID 11, and no compositor modal window; the Developer Studio runtime was ID 1 for `com.guidexos.developerstudio`. The application’s logical `InputMode::BreakpointCondition` modal was current, as confirmed by the Manager-origin OPEN marker, the exact per-key `debug_condition_input` markers, and the CANCEL marker.
+
+The two equal-sign events are distinct ordered key-downs with no key-up between them. Both Server enqueue results and compositor/app mailbox records are accepted; both application event callbacks return; the modal markers progress from `counter =` to `counter ==`. This directly disproves a repeat-key suppression or focus-routing defect on the current production path. The diagnostic preserved the empty canonical condition after cancel and closed the app cleanly.
+
+The Server continuation changes are diagnostic only: `gui.keyto` now returns and logs the real send acceptance for sequence-tagged input; the compositor logs its receipt, focus/window state, and app-mailbox result; the NativeApp runtime logs dequeue and event return. Queue rejection is logged if the priority input lane is full. The lane has a 256-event cap; the new gate observed no rejection. This adds bounded, per-sequence observability without changing key handling or retrying events. `mapKeyToChar`, `handleModalKey`, `promptAppend`, Manager ownership, and remap code in Standalone are unchanged.
+
+The accepted correction in `Add-ConditionText` captures each exact text marker before its key and waits for a fresh occurrence before scheduling the next key. It also records separate generated, sent, and acknowledged sequence lines. The line-37 setup now waits for a fresh document-line marker after each navigation arrow instead of relying on a fixed delay. This is completion-driven synchronization; it does not paste, repeat, or directly mutate the condition model.
+
+### Focused input and restarted combined gates
+
+`tests/smoke-developer-studio-phase30a-input-gate.ps1` owns a unique root, writes its run token and manifest before cycle 1, makes a fresh fixture and Server process per cycle, preserves each compact trace, and stops without retry on the first failure. Each cycle enters `counter == 2` through the production Manager/editor/input path, validates all 13 sequenced events at every delivery stage, requires all 13 fresh text acknowledgments and the exact final value, cancels without changing the empty persisted condition, and closes cleanly.
+
+The focused input gate completed **20/20 PASS** at `D:\dev\g30a-input-gate-0652fee8b6014d32aa826cf8df2d8691`, token `8ff1866174c840548340da2a475954fe`. Its pre-run manifest records 20 unique cycles and 260 sequenced input events. Each trace contains 13 generated/sent events, five accepted infrastructure delivery stages per event, 13 fresh text acknowledgments, exact `counter == 2`, CANCEL with the empty condition still persisted, and clean app close. No retry occurred.
+
+The first combined 25-cycle continuation used root `D:\dev\g30a-stress-81b4e51f`, token `26c83bd3d3f04078b4039df7f7823106`, and the original four `ManagerConditionEditor` cases followed by one `ManagerRemapRetention` case, repeated five times. Cycles 1–24 passed; cycle 25 stopped before its remap assertions while waiting for `Document: main.cpp` line 3, column 1. The retained status was line 3, column 2, after the Down key. The run manifest records `state=failed`, `completedCycles=24`, and `failedCycle=25`; that cycle was not retried in place. The harness setup defect and a new complete run are documented in the final outcome below.
+
+## Previous checkpoint outcome before hosted input continuation
 
 The hosted persistent Manager provider passed its 5/5 gate and the fresh formal remap gate passed 5/5. Historical cycle 14 was classified as a harness baseline race; its exact matcher key was corrected, and the focused repeated marker gate passed 10/10. A fresh combined gate then passed cycles 1–14 and stopped on cycle 15 while the condition text remained incomplete. Outcome **B** applies. The full combined gate remains unqualified at **14/25 PASS**; the earlier run's **13/25 PASS** remains a separate historical failure. No cycle was retried or carried forward.
+
+## Phase 30A final outcome — Outcome C
+
+### Final cycle-25 setup diagnosis
+
+The first condition-input combined continuation stopped at cycle 25 after 24 passing cycles. The retained trace at `D:\dev\g30a-stress-81b4e51f\traces-25\phase30a-stress-25.log` records the expected literal marker `Document: main.cpp` line 3, column 1 with baseline 0 and actual count 0. The last input was `gui.keyto 1000 40 down 0`; the rendered status reached `Document: main.cpp Modified  Line 3, Column 2`. The Down key therefore changed the visible caret position, but the harness did not observe the exact status it expected.
+
+The setup had accepted a non-fresh line-1 marker before navigation, so it had not proved that the click left the caret at column 1. It also matched a literal status string that did not allow the `Modified` label. This was a harness navigation/marker mismatch before remap qualification, not a condition-input delivery failure or a Studio product failure. The gate stopped with `failedCycle=25`; it did not retry that cycle.
+
+The harness now captures the line-1 status baseline, sends Home, and waits for a fresh line-1/column-1 status before moving Down. Per-line markers accept the optional `Modified` label while still requiring the exact line and column. Each arrow is followed by a fresh status-marker wait. The PowerShell parser and status-regex checks passed before the new gate started.
+
+### Complete fresh combined gate
+
+After that correction, a completely new combined run started at cycle 1 with a new fixture and Server process for every cycle. The final manifest is `D:\dev\g30a-stress-822afdef\phase30a-stress-run.json`, token `81e3ad34ecdd4871b95ec16ee108401c`; it records `state=complete`, `plannedCycles=25`, `completedCycles=25`, and no failed cycle. It ran from `2026-10-12T03:38:14Z` through `2026-10-12T05:30:00Z`.
+
+The cadence remained four `ManagerConditionEditor` cycles followed by one `ManagerRemapRetention` cycle, repeated five times. All 25 cycles passed. Manager condition-input traces are retained under `D:\dev\g30a-stress-822afdef\traces-1` through `traces-25`; remap-retention passed at cycles 5, 10, 15, 20, and 25. Each remap preserved the single logical `com.example.debuggerphase15/src/main.cpp:37` row and `counter == 2`, changed the five mapped addresses from the `0x200016AC` set to the `0x200016BD` set, created runtime sessions 1 and 2, and passed hosted condition input and retention checks. Cycle 25's pre/post artifact SHA-256 values are `01b23f2032ae85288243891184d9e26c87283c01d1962a7baf43cd47a3947d8e` and `d4228bf700780d859414bd038bae036ce20a7460c6c53aa37ec6569be8d3486e`.
+
+The focused input gate remains **20/20 PASS** at `D:\dev\g30a-input-gate-0652fee8b6014d32aa826cf8df2d8691`, token `8ff1866174c840548340da2a475954fe`, covering 260 sequenced text events across 20 fresh fixtures. The previously accepted Manager 5/5, Remap 5/5, and marker freshness 10/10 baselines remain unchanged. The stopped cycle-25 attempt remains separately recorded as 24/25; no result was carried from it into the new run.
+
+### Scope, repositories, and closeout
+
+No Developer Studio product source or canonical breakpoint/model logic changed. Standalone changes are limited to the Phase 20 hosted harness, the new 20-cycle Phase 30A input gate, and this report. The Server changes add sequenced hosted-input diagnostics at enqueue, compositor receipt, app-mailbox enqueue, runtime dequeue, and application event return; they do not alter input handling or retry events. Server instrumentation is committed as `84cc3c781d59bf837a2d0fd92ef3b5615de6a648` (`Add hosted input delivery diagnostics`). The Server experimental binary was built successfully for the gates. No QEMU, package, CTest, GXSM, or DWARF suite was rerun because the changes were hosted harness/diagnostics only. The existing AMD64 and ARM64 package hashes remain `BAE1D5CF382D66EEC2DEB9AF840E543086EE5DC93D74590E289E3CEDAB7BFAF3` and `AB0F3BDF55F8660F6542392DE4D9740FC1ADF91327892FFAC5B00847967A804F`.
+
+Final disposition is **Outcome C**: the historical cycle-15 text failure was isolated to an evidence gap in the old harness, the current hosted input path passed the focused 20/20 gate, and a fresh combined run passed all 25 cycles including all five remaps. The initial 24/25 harness-marker failure remains documented and was resolved before the final fresh run.

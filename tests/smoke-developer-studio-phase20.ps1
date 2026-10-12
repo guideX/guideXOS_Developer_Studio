@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'ManagerConditionEditor', 'ManagerOpenCloseMarker', 'ManagerRemapRetention', 'Phase29NReadiness')]
+    [ValidateSet('ConditionEditor', 'ConditionErrorRecovery', 'ControllerPanelConditionEditor', 'ManagerConditionEditor', 'ManagerOpenCloseMarker', 'ManagerConditionInputOnly', 'ManagerRemapRetention', 'Phase29NReadiness')]
     [string]$Case = 'ConditionEditor',
     [string]$ServerRoot = 'D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO',
     [string]$FixtureRoot = '',
@@ -35,6 +35,10 @@ $script:PanelReady = $false
 $script:MarkerGateRunToken = ''
 $script:CurrentMarkerGateCycle = 'setup'
 $script:FreshMarkerObservations = New-Object 'System.Collections.Generic.List[object]'
+$script:ConditionInputSequence = [uint64]0
+$script:ConditionTextSequence = [uint64]0
+$script:ConditionInputEvidence = New-Object 'System.Collections.Generic.List[string]'
+$script:ConditionInputExpectedText = @{}
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Phase 20 hosted smoke failed: $Message" }
@@ -71,8 +75,18 @@ function Add-CaptureMarker([string]$Marker) {
     $script:Parts.Add("CAPTURE|$Marker")
 }
 
-function Add-Key([int]$KeyCode, [int]$Modifiers = 0) {
-    Add-Command "gui.keyto $script:WindowId $KeyCode down $Modifiers"
+function Add-Key([int]$KeyCode, [int]$Modifiers = 0, [uint64]$InputSequence = 0) {
+    $command = "gui.keyto $script:WindowId $KeyCode down $Modifiers"
+    if ($InputSequence -ne 0) { $command += " $InputSequence" }
+    Add-Command $command
+}
+
+function Add-ConditionInputKey([int]$KeyCode, [int]$Modifiers = 0, [string]$ExpectedText = $null) {
+    $script:ConditionInputSequence += 1
+    $sequence = $script:ConditionInputSequence
+    if ($null -ne $ExpectedText) { $script:ConditionInputExpectedText[$sequence] = $ExpectedText }
+    Add-Key $KeyCode $Modifiers $sequence
+    return $sequence
 }
 
 function Add-Click([int]$X, [int]$Y) {
@@ -114,12 +128,23 @@ function Add-Text([string]$Value) {
 
 function Add-ConditionText([string]$Value) {
     Add-CaptureMarker " text=$Value"
-    Add-Key 65 2 # Ctrl+A targets the active condition editor buffer.
-    Add-WaitMilliseconds 120
-    Add-Text $Value
-    # This marker is emitted by the real modal input handler after every
-    # character. Waiting for the complete value proves ordered delivery and
-    # removes the old per-character timing chain.
+    $prefix = ''
+    $emptyMarker = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_input breakpoint_id=0 text='
+    Add-CaptureMarker $emptyMarker
+    $sequence = Add-ConditionInputKey 65 2 '' # Ctrl+A targets the active condition editor buffer.
+    Add-WaitMarkerFresh $emptyMarker
+    $script:Parts.Add("INPUTACK|$sequence|")
+    foreach ($character in $Value.ToCharArray()) {
+        $key = Get-Key $character
+        $prefix += [string]$character
+        $progressMarker = "GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_input breakpoint_id=0 text=$prefix"
+        Add-CaptureMarker $progressMarker
+        $sequence = Add-ConditionInputKey $key.Key $key.Modifiers $prefix
+        Add-WaitMarkerFresh $progressMarker
+        $script:Parts.Add("INPUTACK|$sequence|$prefix")
+    }
+    # The complete-value baseline was captured before input. Per-character
+    # fresh markers above acknowledge each event before the next is sent.
     Add-WaitMarkerFresh " text=$Value"
 }
 
@@ -275,11 +300,17 @@ function Get-MarkerCount([string]$Marker) {
     # Search the redirected stream without materializing compositor output.
     # Marker lines are sparse, so this remains bounded in memory even when the
     # native renderer emits a large amount of draw diagnostics.
+    if ($Marker.StartsWith('regex:', [StringComparison]::Ordinal)) {
+        return [int](@(Select-String -LiteralPath $script:StdoutPath -Pattern $Marker.Substring(6) -ErrorAction SilentlyContinue).Count)
+    }
     return [int](@(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $Marker -ErrorAction SilentlyContinue).Count)
 }
 
 function Test-Marker([string]$Marker) {
     if (-not (Test-Path -LiteralPath $script:StdoutPath) -or -not $Marker) { return $false }
+    if ($Marker.StartsWith('regex:', [StringComparison]::Ordinal)) {
+        return [bool](Select-String -LiteralPath $script:StdoutPath -Pattern $Marker.Substring(6) -Quiet -ErrorAction SilentlyContinue)
+    }
     return [bool](Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $Marker -Quiet -ErrorAction SilentlyContinue)
 }
 
@@ -450,7 +481,7 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
         $artifactName = if ($TraceArtifactName) { $TraceArtifactName } else { "developer-studio-debugger-shutdown-trace$suffix.log" }
         $artifact = Join-Path $directory $artifactName
         $lines = @($Content -split "`r?`n")
-        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_condition|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:' } | Select-Object -Last 96)
+        $lifecycle = @($lines | Where-Object { $_ -match 'debug_session|debug_state|debug_stop|debug_step|debug_binding|debug_transition|debug_condition|Hosted input trace|debug_shutdown|debug_target|debug_window|shutdownStage=|Native app processes:' } | Select-Object -Last 192)
         $recent = @($lines | Select-Object -Last 80)
         $header = @(
             'guideXOS Developer Studio Phase 20 hosted trace',
@@ -475,6 +506,31 @@ function Write-Phase20Trace([string]$Reason, [string]$Content) {
     }
 }
 
+function Write-Phase20InputEvidence() {
+    if (-not $TraceDirectory -or $script:ConditionInputEvidence.Count -eq 0) { return }
+    $directory = [IO.Path]::GetFullPath($TraceDirectory)
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw "Phase 20 test-infrastructure failure: input evidence directory is missing or moved: $directory"
+    }
+    $suffix = if ($TraceRunIndex -gt 0) { "-$TraceRunIndex" } else { '' }
+    $artifact = Join-Path $directory "phase20-condition-input$suffix.log"
+    $hostedLines = @()
+    if (Test-Path -LiteralPath $script:StdoutPath -PathType Leaf) {
+        $hostedLines = @(Select-String -LiteralPath $script:StdoutPath -Pattern 'Hosted input trace input_seq=|Key (queued|rejected).*input_seq=|debug_condition_input|debug_condition_editor=|debug_manager_row_select=PASS' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line })
+    }
+    $header = @(
+        'Phase 20 bounded condition-entry input evidence',
+        "case=$Case",
+        "window_id=$script:WindowId",
+        "server_pid=$(if ($script:Process) { $script:Process.Id } else { 'not-started' })",
+        "last_input=$script:LastInput",
+        '--- harness-generated condition events ---'
+    )
+    $body = ($header + @($script:ConditionInputEvidence) + @('--- hosted delivery, modal, and text markers ---') + $hostedLines) -join "`r`n"
+    Set-Content -LiteralPath $artifact -Value $body -Encoding UTF8
+    Write-Host "Phase 20 condition input evidence: $artifact"
+}
+
 function Add-InitialSetup([bool]$ReadinessOnly = $false, [bool]$EditorOwned = $false,
                          [bool]$StartTarget = $true) {
     Add-Command 'gui.start'
@@ -497,9 +553,20 @@ function Add-InitialSetup([bool]$ReadinessOnly = $false, [bool]$EditorOwned = $f
     Add-Wait 1
     Add-Key 83 3
     Add-Wait 1
-    for ($index = 1; $index -lt $BreakpointLine; ++$index) {
+    # The click can place the caret at a different horizontal column, and the
+    # old non-fresh line-1 marker could match output from before that click.
+    # Normalize to the line start and require a new status render before using
+    # Down to reach the breakpoint line. The optional Modified label varies
+    # across Manager/remap cases, so match the document status as a regex.
+    $firstLineMarker = 'regex:Document: main\.cpp(?: Modified)?\s+Line 1, Column 1'
+    Add-CaptureMarker $firstLineMarker
+    Add-Key 36
+    Add-WaitMarkerFresh $firstLineMarker
+    for ($line = 2; $line -le $BreakpointLine; ++$line) {
+        $lineMarker = 'regex:Document: main\.cpp(?: Modified)?\s+Line ' + $line + ', Column 1'
+        Add-CaptureMarker $lineMarker
         Add-Key 40
-        Add-WaitMilliseconds 150
+        Add-WaitMarkerFresh $lineMarker
     }
     $caretMarker = 'text="Document: main.cpp  Line ' + $BreakpointLine + ', Column 1"'
     Add-WaitMarker $caretMarker
@@ -769,6 +836,31 @@ function Add-ManagerOpenCloseMarkerCase() {
         Add-WaitMarkerFresh $managerRowConditionMarker
         $script:Parts.Add("MARKERCYCLE|$cycle")
     }
+    Add-TargetedClose
+}
+
+function Add-ManagerConditionInputOnlyCase() {
+    Add-InitialSetup $true $false $false
+    Add-OpenDebugBreakpoints
+    Add-WaitMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_manager_provider=PASS source=workspace rows=1'
+    Add-CaptureMarker 'debug_manager_row_select=PASS row_id='
+    Add-CaptureMarker 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+    Add-Key 40
+    Add-WaitMarkerFresh 'debug_manager_row_select=PASS row_id='
+    Add-WaitMarkerFresh 'logical_count=1 runtime_id=0 runtime_session=0 binding_id=0'
+
+    Add-CaptureMarker 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
+    Add-CaptureMarker 'origin=manager editor_row='
+    Add-Key 67
+    Add-WaitMarkerFresh 'debug_condition_editor=OPEN breakpoint_id=pending source=src/main.cpp:37 origin=manager'
+    Add-WaitMarkerFresh 'origin=manager editor_row='
+    Add-ConditionText 'counter == 2'
+
+    Add-CaptureMarker 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=CLOSED reason=CANCEL breakpoint_id=0 text=counter == 2'
+    Add-Key 27
+    Add-WaitMarkerFresh 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=CLOSED reason=CANCEL breakpoint_id=0 text=counter == 2'
+    $script:Parts.Add('ASSERTCONDITION|')
+
     Add-CaptureMarker 'clean_close=PASS'
     Add-Command "gui.close $script:WindowId"
     Add-WaitMarkerFresh 'clean_close=PASS'
@@ -982,6 +1074,7 @@ elseif ($Case -eq 'ConditionErrorRecovery') { Add-ConditionErrorRecoveryCase }
 elseif ($Case -eq 'ControllerPanelConditionEditor') { Add-ControllerPanelConditionEditorCase }
 elseif ($Case -eq 'ManagerConditionEditor') { Add-ManagerConditionEditorCase }
 elseif ($Case -eq 'ManagerOpenCloseMarker') { Add-ManagerOpenCloseMarkerCase }
+elseif ($Case -eq 'ManagerConditionInputOnly') { Add-ManagerConditionInputOnlyCase }
 elseif ($Case -eq 'ManagerRemapRetention') { Add-ManagerRemapRetentionCase }
 else { Add-Phase29NReadinessCase }
 
@@ -1005,6 +1098,10 @@ try {
         $script:LastInput = $Command
         $script:Process.StandardInput.WriteLine($Command)
         $script:Process.StandardInput.Flush()
+        if ($Command -match '^gui\.keyto\s+(\d+)\s+(\d+)\s+(down|up)\s+(\d+)\s+(\d+)$') {
+            $script:ConditionInputEvidence.Add("input_seq=$($Matches[5]) stage=harness_generated target=condition_editor key=$($Matches[2]) action=$($Matches[3]) modifiers=$($Matches[4])")
+            $script:ConditionInputEvidence.Add("input_seq=$($Matches[5]) stage=harness_sent target_window=$($Matches[1]) key=$($Matches[2]) action=$($Matches[3]) modifiers=$($Matches[4])")
+        }
     }
     foreach ($part in $script:Parts) {
         if ($script:Process.HasExited) { throw "Server exited before command stream completed: $script:LastInput" }
@@ -1015,13 +1112,24 @@ try {
         elseif ($kind -eq 'WAITMS') { Start-Sleep -Milliseconds ([Math]::Max(50, [int]$value)) }
         elseif ($kind -eq 'WAITMARK') { Wait-Marker $value }
         elseif ($kind -eq 'WAITMARKFRESH') { Wait-MarkerFresh $value }
+        elseif ($kind -eq 'INPUTACK') {
+            $ack = $value -split '\|', 2
+            $sequence = [uint64]$ack[0]
+            $text = if ($ack.Count -gt 1) { $ack[1] } else { '' }
+            $script:ConditionTextSequence += 1
+            $script:ConditionInputEvidence.Add("condition_text_seq=$script:ConditionTextSequence input_seq=$sequence stage=marker_ack text_length=$($text.Length) text=$text")
+        }
         elseif ($kind -eq 'CAPTURE') { $script:MarkerBaselines[$value] = Get-MarkerCount $value }
         elseif ($kind -eq 'MARKERCYCLEBEGIN') { $script:CurrentMarkerGateCycle = $value }
         elseif ($kind -eq 'MARKERCYCLE') { Write-Host "phase30a_marker_cycle=$value PASS run_token=$script:MarkerGateRunToken" }
         elseif ($kind -eq 'MUTATESOURCE') { Invoke-FixtureSourceRemapVariation }
         elseif ($kind -eq 'ASSERTCONDITION') {
             Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 $value) "canonical workspace condition is still '$value' before post-remap debug start"
-            Write-Host "phase30a_remap_condition_prelaunch=PASS source=src/main.cpp:$BreakpointLine condition=$value"
+            if ($Case -eq 'ManagerConditionInputOnly') {
+                Write-Host "phase30a_condition_cancel_persist=PASS source=src/main.cpp:$BreakpointLine condition=$value"
+            } else {
+                Write-Host "phase30a_remap_condition_prelaunch=PASS source=src/main.cpp:$BreakpointLine condition=$value"
+            }
         }
         elseif ($kind -eq 'WAITSHUTDOWN') { Wait-Shutdown ([int]$value) }
         elseif ($kind -eq 'COMMAND') {
@@ -1050,7 +1158,7 @@ try {
     if ($Case -eq 'ManagerRemapRetention') {
         Assert-True (Test-Marker 'clean_close=PASS') 'targeted app close completes after the debug targets are stopped'
         Assert-True ($script:CapturedText -match 'cleaned window count: 1; remaining owned window count: 0') 'Server cleanup releases the hosted app window'
-    } elseif ($Case -eq 'ManagerOpenCloseMarker') {
+    } elseif ($Case -eq 'ManagerOpenCloseMarker' -or $Case -eq 'ManagerConditionInputOnly') {
         Assert-True (Test-Marker 'clean_close=PASS') 'the marker gate closes its hosted app after the repeated modal lifecycle'
     } else {
         Assert-True ((Test-Marker 'debug_shutdown_complete=PASS') -or (Test-Marker 'shutdownStage=complete')) 'targeted close reaches shutdown complete'
@@ -1214,6 +1322,25 @@ try {
             Write-Host "phase30a_marker_gate_evidence=$artifactPath"
         }
         Write-Host 'phase30a_marker_gate=10/10 PASS'
+    } elseif ($Case -eq 'ManagerConditionInputOnly') {
+        Assert-True ($script:ConditionInputSequence -eq 13) 'condition input case generated Ctrl+A plus the 12 key events for counter == 2'
+        Assert-True ($script:ConditionTextSequence -eq 13) 'every condition input event received a fresh text-marker acknowledgment'
+        Assert-True (Test-Marker 'debug_manager_provider=PASS source=workspace rows=1') 'condition input case used the hosted workspace Manager'
+        Assert-True (Test-Marker 'debug_condition_editor=OPEN breakpoint_id=0 text= identity=workspace_configured') 'condition input case opened the selected Manager row editor'
+        Assert-True (Test-Marker 'debug_condition_editor=CLOSED reason=CANCEL breakpoint_id=0 text=counter == 2') 'condition input case canceled the editor with the complete expression visible'
+        Assert-True (Test-PersistedCondition 'src/main.cpp' $BreakpointLine 1 '') 'cancel leaves the canonical workspace condition empty'
+        foreach ($sequence in 1..$script:ConditionInputSequence) {
+            foreach ($stage in @('server_enqueue result=accepted', 'compositor_received', 'app_mailbox_enqueue result=accepted', 'runtime_dequeued', 'application_event_return')) {
+                $needle = "Hosted input trace input_seq=$sequence stage=$stage"
+                $count = @(Select-String -LiteralPath $script:StdoutPath -SimpleMatch -Pattern $needle -ErrorAction SilentlyContinue).Count
+                Assert-True ($count -eq 1) "sequenced input $sequence has exactly one $stage delivery record (actual=$count)"
+            }
+            $expectedText = [string]$script:ConditionInputExpectedText[[uint64]$sequence]
+            $textPattern = 'debug_condition_input breakpoint_id=0 text=' + [regex]::Escape($expectedText) + '$'
+            $textCount = @(Select-String -LiteralPath $script:StdoutPath -Pattern $textPattern -ErrorAction SilentlyContinue).Count
+            Assert-True ($textCount -eq 1) "sequenced input $sequence reached the condition modal and rendered its exact text prefix (actual=$textCount)"
+        }
+        Write-Host 'manager_condition_input=PASS sequenced_events=13 delivery_stages=5 fresh_text_markers=13 cancel_preserves_empty_condition=PASS'
     } elseif ($Case -eq 'ManagerRemapRetention') {
         Assert-True (Test-Marker 'debug_manager_provider=PASS source=workspace rows=1') 'persistent Manager row exists through the remap lifecycle'
         Assert-True (Test-Marker 'debug_manager_row_select=PASS row_id=com.example.debuggerphase15/src/main.cpp:37') 'Manager row keeps the same project/source/line identity'
@@ -1309,6 +1436,7 @@ try {
         & taskkill.exe /PID $script:Process.Id /T /F | Out-Null
         $script:Process.WaitForExit()
     }
+    Write-Phase20InputEvidence
     if (-not $KeepArtifacts) {
         Remove-Item -LiteralPath $script:StdoutPath,$script:StderrPath -Force -ErrorAction SilentlyContinue
     } else {
