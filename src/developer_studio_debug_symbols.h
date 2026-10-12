@@ -59,6 +59,10 @@ static const uint32_t kDebugDwarfMaxVariables = 128u;
 static const uint32_t kDebugDwarfMaxFunctions = 512;
 static const uint32_t kDebugDwarfMaxVariables = 2048;
 #endif
+// DW_AT_name also carries compilation-unit source paths. Keep that bounded by
+// the parser's supported source-path size rather than the shorter identifier
+// size used for locals and members.
+static const uint32_t kDebugDwarfMaxDieNameBytes = kDebugMapperMaxPathBytes;
 static const uint32_t kDebugDwarfMaxDisplayedVariables = 32;
 static const uint32_t kDebugDwarfMaxExpressionBytes = 128;
 static const uint32_t kDebugDwarfMaxTypeDepth = 32;
@@ -263,7 +267,7 @@ struct DebugDwarfDieInfo {
     bool hasName;
     bool nameIsStringIndex;
     uint64_t nameStringIndex;
-    char name[kDebugDwarfMaxVariableNameBytes];
+    char name[kDebugDwarfMaxDieNameBytes];
     bool hasType;
     uint64_t typeReference;
     bool hasLowPc;

@@ -183,7 +183,7 @@ function Add-OpenEditorCondition([System.Collections.Generic.List[string]]$Parts
     Add-Click $Parts 620 360
     Add-ObservableMarkerWait $Parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id='
     Add-ObservableMarkerWait $Parts 'origin=editor editor_row='
-    Add-ObservableMarkerWait $Parts 'manager_snapshot=absent'
+    Add-ObservableMarkerWait $Parts 'manager_snapshot=workspace'
 }
 
 Assert-True (Test-Path -LiteralPath $Executable -PathType Leaf) "rebuilt experimental hosted Server exists"
@@ -281,7 +281,7 @@ if (-not $UiOnly -and -not $TreeOnly -and -not $WatchOnly) {
     Add-Click $parts 620 360
     Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_editor=OPEN breakpoint_id='
     Add-ObservableMarkerWait $parts 'origin=editor editor_row='
-    Add-ObservableMarkerWait $parts 'manager_snapshot=absent'
+    Add-ObservableMarkerWait $parts 'manager_snapshot=workspace'
     Add-ConditionModalCommit $parts $Condition
     Add-ObservableMarkerWait $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=PASS'
     if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $FrameOnly) {
@@ -664,7 +664,7 @@ try {
     if (-not $ExpectConditionError -and -not $RuntimeOnly -and -not $UiOnly -and -not $TreeOnly -and -not $FrameOnly -and -not $WatchOnly) {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_commit=INVALID')) "invalid condition remains visibly invalid"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_clear=PASS')) "condition clear is reportable"
-        Assert-True ($text.Contains('origin=editor editor_row=') -and $text.Contains('manager_snapshot=absent')) "editor route opens without a Manager snapshot"
+        Assert-True ($text.Contains('origin=editor editor_row=') -and $text.Contains('manager_snapshot=workspace')) "editor route reports the current hosted Manager workspace snapshot"
         $persistCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_persist=PASS')).Count
         Assert-True ($persistCount -ge 2) "valid edits and clear persist to the canonical workspace breakpoint"
     }
@@ -729,7 +729,7 @@ try {
         Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_DWARF .*truncated=0 result=Ready') "conditional-runtime DWARF is not truncated"
         $mappedLine37 = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=MAPPED .*id=(\d+) src=src/main\.cpp line=37 col=1 enabled=1 state=Mapped err=none addr=0x00000000200016AC addrs=5'
         Assert-True ($text -match $mappedLine37) "line 37 maps to five addresses with the expected primary address"
-        Assert-True ($text.Contains('origin=editor editor_row=') -and $text.Contains('manager_snapshot=absent')) "runtime conditional editing uses the editor selection without Manager state"
+        Assert-True ($text.Contains('origin=editor editor_row=') -and $text.Contains('manager_snapshot=workspace')) "runtime conditional editing retains the current hosted Manager workspace snapshot"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_condition_persist=PASS source=src/main.cpp:37')) "runtime condition persists to the canonical workspace row"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=0')) "true condition stop continues to a normal target exit"
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS') -and

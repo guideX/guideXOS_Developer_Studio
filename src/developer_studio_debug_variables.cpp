@@ -153,7 +153,8 @@ struct FormValue {
     bool addressIndex;
     uint64_t addressIndexValue;
     bool directString;
-    char stringValue[kDebugDwarfMaxVariableNameBytes];
+    bool stringTooSmall;
+    char stringValue[kDebugDwarfMaxDieNameBytes];
     bool block;
     bool list;
     uint32_t blockLength;
@@ -267,23 +268,30 @@ static bool readSLEB(Cursor& cursor, int64_t* value) {
     return false;
 }
 
-static bool readCString(Cursor& cursor, char* output, uint32_t outputSize) {
+static bool readCString(Cursor& cursor, char* output, uint32_t outputSize,
+                        bool* outputTooSmall = nullptr) {
+    if (outputTooSmall) *outputTooSmall = false;
     if (!output || outputSize == 0) return false;
     uint32_t length = 0;
     while (cursor.position < cursor.end) {
         const char value = static_cast<char>(cursor.bytes[cursor.position++]);
         if (value == '\0') { output[length] = '\0'; return true; }
-        if (length + 1 >= outputSize) return false;
+        if (length + 1 >= outputSize) {
+            if (outputTooSmall) *outputTooSmall = true;
+            return false;
+        }
         output[length++] = value;
     }
     return false;
 }
 
 static bool readSectionString(const SectionView& section, uint64_t offset,
-                              char* output, uint32_t outputSize) {
+                              char* output, uint32_t outputSize,
+                              bool* outputTooSmall = nullptr) {
+    if (outputTooSmall) *outputTooSmall = false;
     if (!section.data || offset >= section.size || !output || outputSize == 0) return false;
     Cursor cursor = { section.data, offset, section.size };
-    return readCString(cursor, output, outputSize);
+    return readCString(cursor, output, outputSize, outputTooSmall);
 }
 
 static bool addSigned(uint64_t base, int64_t offset, uint64_t* result) {
@@ -472,7 +480,9 @@ static bool readForm(Cursor& cursor, uint16_t form, bool hasImplicitConst,
     case kFormFlagPresent:
         value->number = true; value->unsignedValue = 1; return true;
     case kFormString:
-        value->directString = readCString(cursor, value->stringValue, sizeof(value->stringValue));
+        value->directString = readCString(cursor, value->stringValue,
+                                          sizeof(value->stringValue),
+                                          &value->stringTooSmall);
         return value->directString;
     case kFormStrp:
     case kFormLineStrp:
@@ -571,11 +581,13 @@ static int findDie(const DebugDwarfMapper* mapper, uint64_t offset) {
 }
 
 static bool resolveString(const SectionView& stringOffsets, const SectionView& strings,
-                          uint32_t base, uint64_t index, char* output, uint32_t outputSize) {
+                          uint32_t base, uint64_t index, char* output, uint32_t outputSize,
+                          bool* outputTooSmall = nullptr) {
+    if (outputTooSmall) *outputTooSmall = false;
     if (!output || outputSize == 0 || !stringOffsets.data || !strings.data ||
         index > (UINT64_MAX - base) / 4u || base + index * 4u > stringOffsets.size - 4u) return false;
     const uint32_t offset = readU32(stringOffsets.data, base + index * 4u);
-    return readSectionString(strings, offset, output, outputSize);
+    return readSectionString(strings, offset, output, outputSize, outputTooSmall);
 }
 
 static bool resolveAddress(const SectionView& addresses, uint32_t base, uint64_t index,
@@ -698,8 +710,25 @@ static bool resolveDieReferences(DebugDwarfMapper* mapper, const SectionView& st
         const uint32_t last = first + compilationUnit.dieCount;
         for (uint32_t i = first; i < last; ++i) {
             DebugDwarfDieInfo& die = mapper->dies[i];
-            if (die.nameIsStringIndex && !resolveString(stringOffsets, strings, compilationUnit.strOffsetsBase,
-                                                        die.nameStringIndex, die.name, sizeof(die.name))) { copyText(mapper->statusText, sizeof(mapper->statusText), "debug variable string reference failed"); return false; }
+            bool nameTooSmall = false;
+            if (die.nameIsStringIndex && !resolveString(stringOffsets, strings,
+                    compilationUnit.strOffsetsBase, die.nameStringIndex, die.name,
+                    sizeof(die.name), &nameTooSmall)) {
+                copyText(mapper->statusText, sizeof(mapper->statusText),
+                         "debug variable string reference failed");
+                if (nameTooSmall) {
+                    mapper->truncated = true;
+                    mapper->error = DebugDwarfError::LimitExceeded;
+                    mapper->parseFailureOffset = mapper->debugInfoSectionOffset + die.offset;
+                    copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage),
+                             die.tag == kTagCompileUnit ? "dwarf_source_path_capacity" :
+                                                          "dwarf_die_name_capacity");
+                    copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason),
+                             die.tag == kTagCompileUnit ? "compilation_unit_name_exceeded" :
+                                                          "die_name_string_exceeded");
+                }
+                return false;
+            }
             if (die.lowPcIsAddressIndex && !resolveAddress(addresses, compilationUnit.addrBase,
                                                             die.lowPcIndex, compilationUnit.addressSize, &die.lowPc)) { copyText(mapper->statusText, sizeof(mapper->statusText), "debug variable address reference failed"); return false; }
             if (die.hasHighPc && !die.highPcIsAddress) {
@@ -865,7 +894,20 @@ static bool parseCompilationUnit(DebugDwarfMapper* mapper, const SectionView& in
             const AbbrevAttribute& pair = declaration.attributes[attribute];
             FormValue value;
             if (!readForm(cursor, pair.form, pair.hasImplicitConst, pair.implicitConst,
-                          addressSize, &value)) return false;
+                          addressSize, &value)) {
+                if (value.stringTooSmall) {
+                    mapper->truncated = true;
+                    mapper->error = DebugDwarfError::LimitExceeded;
+                    mapper->parseFailureOffset = mapper->debugInfoSectionOffset + dieOffset;
+                    copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage),
+                             pair.attribute == kAttributeName ?
+                                 "dwarf_source_path_capacity" : "dwarf_die_string_capacity");
+                    copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason),
+                             pair.attribute == kAttributeName ?
+                                 "die_name_string_exceeded" : "die_string_exceeded");
+                }
+                return false;
+            }
             applyAttribute(&die, pair.attribute, value, pair.form);
         }
         const uint32_t index = mapper->debugInfoDieCount++;
@@ -964,9 +1006,11 @@ static bool parseDebugInfo(DebugDwarfMapper* mapper, const SectionView& info,
         cursor.position = unitEnd;
     }
     if (!resolveDieReferences(mapper, stringOffsets, strings, addresses)) {
-        mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
-        copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_reference_resolution");
-        copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "die_reference_or_string_invalid");
+        if (mapper->parseFailureStage[0] == '\0') {
+            mapper->parseFailureOffset = mapper->debugInfoSectionOffset;
+            copyText(mapper->parseFailureStage, sizeof(mapper->parseFailureStage), "dwarf_reference_resolution");
+            copyText(mapper->parseFailureReason, sizeof(mapper->parseFailureReason), "die_reference_or_string_invalid");
+        }
         return false;
     }
     if (!buildIndexes(mapper)) {

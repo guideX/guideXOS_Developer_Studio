@@ -58,11 +58,17 @@ static void sleb(std::vector<unsigned char>& bytes, int32_t value) {
     }
 }
 
-static std::vector<unsigned char> fixtureElf() {
-    const char lineStrings[] = "\0D:/fixture\0src\0main.cpp\0";
-    const uint32_t rootOffset = 1;
-    const uint32_t srcOffset = rootOffset + 11;
-    const uint32_t fileOffset = srcOffset + 4;
+static std::vector<unsigned char> fixtureElf(
+        const std::string& currentDirectory = "D:/fixture",
+        const std::string& fileName = "src/main.cpp",
+        uint32_t directoryIndex = 0) {
+    std::vector<unsigned char> lineStrings(1, 0);
+    const uint32_t rootOffset = static_cast<uint32_t>(lineStrings.size());
+    lineStrings.insert(lineStrings.end(), currentDirectory.begin(), currentDirectory.end());
+    lineStrings.push_back(0);
+    const uint32_t fileOffset = static_cast<uint32_t>(lineStrings.size());
+    lineStrings.insert(lineStrings.end(), fileName.begin(), fileName.end());
+    lineStrings.push_back(0);
     const char sectionStrings[] = "\0.debug_line\0.debug_line_str\0.shstrtab\0";
     const uint32_t lineName = 1;
     const uint32_t lineStringName = 13;
@@ -81,15 +87,14 @@ static std::vector<unsigned char> fixtureElf() {
     for (uint32_t i = 1; i < 13; ++i) line.push_back(i == 2 || i == 3 || i == 4 || i == 5 || i == 9 || i == 12 ? 1 : 0);
     line.push_back(1); // one directory format
     line.push_back(1); line.push_back(0x1f);
-    line.push_back(2); // two directories
+    line.push_back(1); // current compilation directory is directory index zero in DWARF 5
     u32(line, rootOffset);
-    u32(line, srcOffset);
     line.push_back(3); // file format count
     line.push_back(1); line.push_back(0x1f);
     line.push_back(2); line.push_back(0x0f);
     line.push_back(6); line.push_back(0x1e);
     line.push_back(1); // one file
-    u32(line, fileOffset); line.push_back(2);
+    u32(line, fileOffset); line.push_back(static_cast<unsigned char>(directoryIndex));
     for (uint32_t i = 0; i < 16; ++i) line.push_back(0);
     const uint32_t programOffset = static_cast<uint32_t>(line.size());
     patchU32(line, headerLengthOffset, programOffset - (headerLengthOffset + 4));
@@ -114,7 +119,7 @@ static std::vector<unsigned char> fixtureElf() {
     const uint32_t lineOffset = static_cast<uint32_t>(bytes.size());
     bytes.insert(bytes.end(), line.begin(), line.end());
     const uint32_t lineStringOffset = static_cast<uint32_t>(bytes.size());
-    bytes.insert(bytes.end(), lineStrings, lineStrings + sizeof(lineStrings));
+    bytes.insert(bytes.end(), lineStrings.begin(), lineStrings.end());
     const uint32_t shStringOffset = static_cast<uint32_t>(bytes.size());
     bytes.insert(bytes.end(), sectionStrings, sectionStrings + sizeof(sectionStrings));
     const uint32_t sectionOffset = static_cast<uint32_t>(bytes.size());
@@ -129,7 +134,7 @@ static std::vector<unsigned char> fixtureElf() {
         for (uint32_t i = 0; i < 8; ++i) bytes[at + 32 + i] = static_cast<unsigned char>(size >> (i * 8));
     };
     putSection(1, lineName, 1, lineOffset, line.size());
-    putSection(2, lineStringName, 3, lineStringOffset, sizeof(lineStrings));
+    putSection(2, lineStringName, 3, lineStringOffset, lineStrings.size());
     putSection(3, shStringName, 3, shStringOffset, sizeof(sectionStrings));
     for (uint32_t i = 0; i < 8; ++i) bytes[40 + i] = static_cast<unsigned char>(static_cast<uint64_t>(sectionOffset) >> (i * 8));
     bytes[32] = 64; // e_phoff
@@ -245,19 +250,21 @@ int main() {
            resetProbe.parseFailureStage[0] == '\0' && resetProbe.parseFailureReason[0] == '\0');
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
+    const char* identitySha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const bool loaded = DebugDwarfMapperLoad(&mapper, "D:/fixture", "fixture", "target", "amd64",
                                 "build/bin/fixture.elf", fixture.size(),
-                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                identitySha,
                                 7, &fixture[0], fixture.size(), 1, &error);
     assert(loaded);
     assert(mapper.state == DebugDwarfMapperState::Ready);
     assert(mapper.dwarfVersion == 5 && mapper.sourceFileCount == 1 && mapper.lineRowCount >= 4);
     assert(mapper.diagnosticSourceAssociationAttempted &&
            mapper.diagnosticSourceAssociationSucceeded);
-    assert(std::strcmp(mapper.diagnosticSourceDirectory, "src") == 0);
-    assert(std::strcmp(mapper.diagnosticSourceCandidate, "src/main.cpp") == 0);
+    assert(std::strcmp(mapper.diagnosticSourceDirectory, "D:/fixture") == 0);
+    assert(std::strcmp(mapper.diagnosticSourceCandidate, "D:/fixture/src/main.cpp") == 0);
     assert(std::strcmp(mapper.diagnosticSourceNormalized, "src/main.cpp") == 0);
-    assert(std::strcmp(mapper.sourceFiles[0].compilationPath, "src/main.cpp") == 0);
+    assert(std::strcmp(mapper.sourceFiles[0].compilationPath,
+                       "D:/fixture/src/main.cpp") == 0);
     assert(std::strcmp(mapper.sourceFiles[0].relativePath, "src/main.cpp") == 0);
     uint64_t addresses[8] = {};
     uint32_t count = 0; uint64_t primary = 0;
@@ -275,8 +282,89 @@ int main() {
     assert(mapper.elfHeaderValid && mapper.elfType == 2 && mapper.elfMachine == 62 &&
            mapper.elfProgramHeaderCount == 1 && mapper.debugLineSectionOffset != 0);
 
+    static DebugDwarfMapper relocatedMapper = {};
+    assert(DebugDwarfMapperLoad(&relocatedMapper, "D:/relocated", "fixture", "target", "amd64",
+        "build/bin/fixture.elf", fixture.size(), identitySha, 8, &fixture[0], fixture.size(),
+        1, &error));
+    assert(relocatedMapper.state == DebugDwarfMapperState::Ready &&
+           relocatedMapper.error == DebugDwarfError::None && !relocatedMapper.truncated);
+    assert(relocatedMapper.lineRowCount == mapper.lineRowCount &&
+           relocatedMapper.sequenceCount == mapper.sequenceCount &&
+           relocatedMapper.sourceFileCount == mapper.sourceFileCount);
+    assert(std::strcmp(relocatedMapper.diagnosticSourceCandidate,
+                       "D:/fixture/src/main.cpp") == 0 &&
+           std::strcmp(relocatedMapper.diagnosticSourceNormalized, "src/main.cpp") == 0 &&
+           std::strcmp(relocatedMapper.sourceFiles[0].compilationPath,
+                       "D:/fixture/src/main.cpp") == 0);
+    uint64_t relocatedAddresses[8] = {};
+    uint32_t relocatedAddressCount = 0;
+    uint64_t relocatedPrimary = 0;
+    assert(DebugDwarfMapperMapSourceToAddresses(&relocatedMapper, "src/main.cpp", 42,
+        relocatedAddresses, 8, &relocatedAddressCount, &relocatedPrimary, &error));
+    assert(relocatedAddressCount == count && relocatedPrimary == primary);
+    for (uint32_t i = 0; i < relocatedAddressCount; ++i)
+        assert(relocatedAddresses[i] == addresses[i]);
+
+    static DebugDwarfMapper pathLimitMappers[3] = {};
+    const uint32_t testedPathLengths[] = {
+        kDebugMapperMaxPathBytes - 1u,
+        kDebugMapperMaxPathBytes,
+        kDebugMapperMaxPathBytes + 1u
+    };
+    for (uint32_t i = 0; i < 3; ++i) {
+        const std::string root = "D:/path-origin";
+        const std::string filePrefix = root + "/";
+        assert(testedPathLengths[i] > filePrefix.size());
+        const std::string longSourcePath = filePrefix +
+            std::string(testedPathLengths[i] - filePrefix.size(), 'p');
+        std::vector<unsigned char> pathFixture = fixtureElf(root, longSourcePath, 0);
+        const bool pathLoaded = DebugDwarfMapperLoad(&pathLimitMappers[i], root.c_str(),
+            "fixture", "target", "amd64", "fixture.elf", pathFixture.size(), identitySha,
+            7, &pathFixture[0], pathFixture.size(), 1, &error);
+        if (i == 0) {
+            assert(pathLoaded && error == DebugDwarfError::None &&
+                   pathLimitMappers[i].state == DebugDwarfMapperState::Ready &&
+                   !pathLimitMappers[i].truncated &&
+                   std::strlen(pathLimitMappers[i].sourceFiles[0].compilationPath) ==
+                       testedPathLengths[i]);
+        } else {
+            assert(!pathLoaded && error == DebugDwarfError::LimitExceeded &&
+                   pathLimitMappers[i].truncated &&
+                   std::strcmp(pathLimitMappers[i].parseFailureStage,
+                                "dwarf_source_path_capacity") == 0 &&
+                   std::strcmp(pathLimitMappers[i].parseFailureReason,
+                                "line_table_file_path_exceeded") == 0);
+        }
+    }
+
+    static DebugDwarfMapper artifactPathLimitMappers[3] = {};
+    const std::string absoluteArtifactPrefix = "D:/fixture/";
+    for (uint32_t i = 0; i < 3; ++i) {
+        const uint32_t artifactPathLength = testedPathLengths[i];
+        assert(artifactPathLength > absoluteArtifactPrefix.size());
+        const std::string absoluteArtifactPath = absoluteArtifactPrefix +
+            std::string(artifactPathLength - absoluteArtifactPrefix.size(), 'e');
+        const bool artifactPathLoaded = DebugDwarfMapperLoad(
+            &artifactPathLimitMappers[i], "D:/fixture", "fixture", "target", "amd64",
+            absoluteArtifactPath.c_str(), fixture.size(), identitySha, 7, &fixture[0],
+            fixture.size(), 1, &error);
+        if (i == 0) {
+            assert(artifactPathLoaded && error == DebugDwarfError::None &&
+                   artifactPathLimitMappers[i].state == DebugDwarfMapperState::Ready &&
+                   std::strcmp(artifactPathLimitMappers[i].identity.executablePath,
+                               absoluteArtifactPath.substr(absoluteArtifactPrefix.size()).c_str()) == 0);
+        } else {
+            assert(!artifactPathLoaded && error == DebugDwarfError::LimitExceeded &&
+                   artifactPathLimitMappers[i].state == DebugDwarfMapperState::Failed &&
+                   artifactPathLimitMappers[i].truncated &&
+                   std::strcmp(artifactPathLimitMappers[i].parseFailureStage,
+                               "artifact_identity_path_capacity") == 0 &&
+                   std::strcmp(artifactPathLimitMappers[i].parseFailureReason,
+                               "executable_path_exceeded") == 0);
+        }
+    }
+
     static DebugDwarfMapper identityMapper = {};
-    const char* identitySha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     assert(DebugDwarfMapperLoad(&identityMapper, "D:/fixture", "fixture", "target", "amd64",
         "build\\bin\\.\\fixture.elf", fixture.size(), identitySha, 7,
         &fixture[0], fixture.size(), 91, &error, 41));

@@ -7,8 +7,11 @@
 #include <string>
 #include <vector>
 
-static bool readFile(const char* path, std::vector<unsigned char>* bytes) {
+static bool readFile(const char* path, std::vector<unsigned char>* bytes,
+                     uint64_t* expectedBytes, uint64_t* actualBytes) {
     if (!path || !bytes) return false;
+    if (expectedBytes) *expectedBytes = 0;
+    if (actualBytes) *actualBytes = 0;
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     input.seekg(0, std::ios::end);
@@ -17,7 +20,10 @@ static bool readFile(const char* path, std::vector<unsigned char>* bytes) {
     input.seekg(0, std::ios::beg);
     bytes->resize(static_cast<size_t>(size));
     input.read(reinterpret_cast<char*>(&(*bytes)[0]), size);
-    return input.good() || input.eof();
+    const std::streamsize readCount = input.gcount();
+    if (expectedBytes) *expectedBytes = static_cast<uint64_t>(size);
+    if (actualBytes && readCount > 0) *actualBytes = static_cast<uint64_t>(readCount);
+    return !input.bad() && readCount == size;
 }
 
 static uint16_t readU16At(const std::vector<unsigned char>& bytes, uint32_t offset) {
@@ -94,7 +100,8 @@ static bool copySection(const std::vector<unsigned char>& elf, const char* wante
 
 static std::vector<unsigned char> syntheticDieFixture(const std::vector<unsigned char>& baseElf,
                                                        uint32_t dieCount,
-                                                       bool malformedRoot = false) {
+                                                       bool malformedRoot = false,
+                                                       const std::string& compileUnitName = "") {
     if (dieCount == 0 || baseElf.size() < 120) return std::vector<unsigned char>();
     std::vector<unsigned char> line, lineStrings;
     if (!copySection(baseElf, ".debug_line", &line) ||
@@ -107,18 +114,30 @@ static std::vector<unsigned char> syntheticDieFixture(const std::vector<unsigned
     info.push_back(8); // address size
     info.push_back(0); info.push_back(0); info.push_back(0); info.push_back(0); // abbrev offset
     info.push_back(malformedRoot ? 3 : 1); // compile-unit abbreviation
+    if (!compileUnitName.empty()) info.push_back(0); // DW_FORM_strx1: .debug_str_offsets[0]
     for (uint32_t i = 1; i < dieCount; ++i) info.push_back(2); // leaf lexical-block DIEs
     info.push_back(0); // close the root's child list
     const uint32_t infoLength = static_cast<uint32_t>(info.size() - 4);
     for (uint32_t i = 0; i < 4; ++i) info[i] = static_cast<unsigned char>(infoLength >> (i * 8));
 
-    std::vector<unsigned char> abbrev = {
-        1, 0x11, 1, 0, 0, // code 1: DW_TAG_compile_unit, with children, no attributes
-        2, 0x0b, 0, 0, 0, // code 2: DW_TAG_lexical_block, no children or attributes
-        0
-    };
+    std::vector<unsigned char> abbrev = compileUnitName.empty() ?
+        std::vector<unsigned char>{
+            1, 0x11, 1, 0, 0, // code 1: DW_TAG_compile_unit, with children, no attributes
+            2, 0x0b, 0, 0, 0, // code 2: DW_TAG_lexical_block, no children or attributes
+            0
+        } :
+        std::vector<unsigned char>{
+            1, 0x11, 1, 0x03, 0x25, 0, 0, // CU name using DW_FORM_strx1
+            2, 0x0b, 0, 0, 0, // code 2: DW_TAG_lexical_block, no children or attributes
+            0
+        };
     std::vector<unsigned char> debugStrings(1, 0);
-    std::vector<unsigned char> stringOffsets(4, 0);
+    if (!compileUnitName.empty()) {
+        debugStrings.insert(debugStrings.end(), compileUnitName.begin(), compileUnitName.end());
+        debugStrings.push_back(0);
+    }
+    std::vector<unsigned char> stringOffsets = compileUnitName.empty() ?
+        std::vector<unsigned char>(4, 0) : std::vector<unsigned char>{1, 0, 0, 0};
     std::vector<unsigned char> addresses;
     std::vector<unsigned char> shStrings(1, 0);
     auto appendName = [&shStrings](const char* name) -> uint32_t {
@@ -208,10 +227,16 @@ int main(int argc, char** argv) {
     }
 
     std::vector<unsigned char> elf;
-    if (!readFile(argv[1], &elf)) {
+    uint64_t expectedFileBytes = 0;
+    uint64_t actualFileBytes = 0;
+    if (!readFile(argv[1], &elf, &expectedFileBytes, &actualFileBytes)) {
         std::cerr << "unable to read fixture: " << argv[1] << "\n";
+        std::cerr << "artifact_file_read=FAIL bytes_read=" << actualFileBytes
+                  << " expected_bytes=" << expectedFileBytes << "\n";
         return 2;
     }
+    std::cerr << "artifact_file_read=complete bytes_read=" << actualFileBytes
+              << " expected_bytes=" << expectedFileBytes << "\n";
 
     char sha256[65] = {};
     if (!guidexos::developer_studio::DebugDwarfComputeSha256(
@@ -234,6 +259,30 @@ int main(int argc, char** argv) {
         projectRoot,
         "debugger-fixture", "native", "amd64", argv[1], elf.size(), sha256,
         1, &elf[0], elf.size(), 1, &error);
+    if (!loaded || mapper.state != guidexos::developer_studio::DebugDwarfMapperState::Ready) {
+        std::cerr << "bare DWARF parse failed: loaded=" << (loaded ? 1 : 0)
+                  << " state=" << guidexos::developer_studio::DebugDwarfMapperStateName(mapper.state)
+                  << " error=" << guidexos::developer_studio::DebugDwarfErrorName(error)
+                  << " truncated=" << (mapper.truncated ? 1 : 0)
+                  << " stage=" << (mapper.parseFailureStage[0] ? mapper.parseFailureStage : "none")
+                  << " reason=" << (mapper.parseFailureReason[0] ? mapper.parseFailureReason : "none")
+                  << " offset=" << mapper.parseFailureOffset
+                  << " dies=" << mapper.debugInfoDieCount
+                  << " CUs=" << mapper.debugInfoCompilationUnitCount
+                  << " functions=" << mapper.debugInfoFunctionCount
+                  << " variables=" << mapper.debugInfoVariableCount
+                  << " sources=" << mapper.sourceFileCount
+                  << " external_sources=" << mapper.externalSourceCount
+                  << " line_rows=" << mapper.lineRowCount
+                  << " line_keys=" << mapper.lineKeyCount
+                  << " sequences=" << mapper.sequenceCount
+                  << " debug_info_bytes=" << mapper.debugInfoSectionBytes
+                  << " debug_abbrev_bytes=" << mapper.debugAbbrevSectionBytes
+                  << " debug_line_bytes=" << mapper.lineSectionBytes
+                  << " dwarf=" << mapper.dwarfVersion
+                  << " sha256=" << sha256 << "\n";
+        return 1;
+    }
     static uint64_t mappedAddresses[guidexos::developer_studio::kDebugMapperMaxLineRows] = {};
     uint32_t maximumLineAddressCount = 0;
     uint16_t maximumLineSourceIndex = 0;
@@ -423,11 +472,54 @@ int main(int argc, char** argv) {
                   << " truncated=" << (malformedMapper.truncated ? 1 : 0) << "\n";
         return 1;
     }
+    static guidexos::developer_studio::DebugDwarfMapper cuNamePathMappers[3] = {};
+    const uint32_t cuNamePathLengths[] = {
+        guidexos::developer_studio::kDebugDwarfMaxDieNameBytes - 1u,
+        guidexos::developer_studio::kDebugDwarfMaxDieNameBytes,
+        guidexos::developer_studio::kDebugDwarfMaxDieNameBytes + 1u
+    };
+    const std::string cuNamePrefix = "D:/unit-origin/";
+    for (uint32_t i = 0; i < 3; ++i) {
+        if (cuNamePathLengths[i] <= cuNamePrefix.size()) return 1;
+        const std::string cuName = cuNamePrefix +
+            std::string(cuNamePathLengths[i] - cuNamePrefix.size(), 'u');
+        std::vector<unsigned char> cuNameElf = syntheticDieFixture(elf, 2, false, cuName);
+        const bool cuNameLoaded = loadSynthetic(cuNameElf, projectRoot, argv[1],
+                                                 &cuNamePathMappers[i], &error);
+        if (i == 0) {
+            if (!cuNameLoaded || error != guidexos::developer_studio::DebugDwarfError::None ||
+                cuNamePathMappers[i].state != guidexos::developer_studio::DebugDwarfMapperState::Ready ||
+                cuNamePathMappers[i].truncated ||
+                std::strlen(cuNamePathMappers[i].dies[0].name) != cuNamePathLengths[i]) {
+                std::cerr << "synthetic CU-name path below capacity failed: loaded="
+                          << (cuNameLoaded ? 1 : 0)
+                          << " error=" << guidexos::developer_studio::DebugDwarfErrorName(error)
+                          << " path_bytes=" << cuNamePathLengths[i]
+                          << " stage=" << cuNamePathMappers[i].parseFailureStage << "\n";
+                return 1;
+            }
+        } else if (cuNameLoaded || error != guidexos::developer_studio::DebugDwarfError::LimitExceeded ||
+                   !cuNamePathMappers[i].truncated ||
+                   std::strcmp(cuNamePathMappers[i].parseFailureStage,
+                                "dwarf_source_path_capacity") != 0 ||
+                   std::strcmp(cuNamePathMappers[i].parseFailureReason,
+                                "compilation_unit_name_exceeded") != 0) {
+            std::cerr << "synthetic CU-name path capacity classification failed: loaded="
+                      << (cuNameLoaded ? 1 : 0)
+                      << " error=" << guidexos::developer_studio::DebugDwarfErrorName(error)
+                      << " path_bytes=" << cuNamePathLengths[i]
+                      << " stage=" << cuNamePathMappers[i].parseFailureStage
+                      << " reason=" << cuNamePathMappers[i].parseFailureReason << "\n";
+            return 1;
+        }
+    }
     std::cerr << "synthetic DIE boundary: valid_below="
               << belowLimitMapper.debugInfoDieCount << " valid="
               << dieLimitMapper.debugInfoDieCount << " capacity="
               << guidexos::developer_studio::kDebugDwarfMaxDies
               << " next_error=limit_exceeded malformed_error=malformed_dwarf\n";
+    std::cerr << "synthetic CU-name source-path boundary: 159=PASS 160=limit_exceeded 161=limit_exceeded capacity="
+              << guidexos::developer_studio::kDebugDwarfMaxDieNameBytes << "\n";
     if (!loaded || mapper.debugInfoDieCount <= 256u || mapper.truncated ||
         maximumLineAddressCount < minimumLineAddresses || !queryCapacityTruncationPreserved ||
         !requiredBreakpointMapped || !requiredBreakpointReverseMapped) {

@@ -29,6 +29,9 @@ static const uint16_t kDwarfVersion4 = 4;
 static const uint16_t kDwarfVersion5 = 5;
 static const uint16_t kNoSourceFile = 0xffffu;
 
+static void setMapperFailureDetails(DebugDwarfMapper* mapper, const char* stage,
+                                    uint64_t offset, const char* reason);
+
 struct Sha256State {
     uint32_t hash[8];
     uint64_t byteCount;
@@ -275,13 +278,18 @@ static bool readSLEB(Cursor& cursor, int64_t* value) {
     return false;
 }
 
-static bool readCString(Cursor& cursor, char* output, uint32_t outputSize) {
+static bool readCString(Cursor& cursor, char* output, uint32_t outputSize,
+                        bool* outputTooSmall = nullptr) {
+    if (outputTooSmall) *outputTooSmall = false;
     if (!output || outputSize == 0) return false;
     uint32_t length = 0;
     while (cursor.position < cursor.end) {
         const char value = static_cast<char>(cursor.bytes[cursor.position++]);
         if (value == '\0') { output[length] = '\0'; return true; }
-        if (length + 1 >= outputSize || length + 1 >= kDebugMapperMaxStringBytes) return false;
+        if (length + 1 >= outputSize || length + 1 >= kDebugMapperMaxStringBytes) {
+            if (outputTooSmall) *outputTooSmall = true;
+            return false;
+        }
         output[length++] = value;
     }
     return false;
@@ -401,6 +409,10 @@ static bool normalizeArtifactIdentityPath(const char* projectRoot, const char* e
     return path[0] != '\0' && copyText(output, outputSize, path);
 }
 
+static bool textExceedsCapacity(const char* value, uint32_t capacity) {
+    return value && capacity != 0 && textLength(value, capacity) >= capacity;
+}
+
 static bool isAbsolutePath(const char* value) {
     return value && (isSlash(value[0]) || (value[0] != '\0' && value[1] == ':'));
 }
@@ -429,13 +441,18 @@ static bool normalizeForProject(const char* projectRoot, const char* rawPath,
 }
 
 static bool readSectionString(const unsigned char* section, uint64_t sectionSize,
-                              uint64_t offset, char* output, uint32_t outputSize) {
+                              uint64_t offset, char* output, uint32_t outputSize,
+                              bool* outputTooSmall = nullptr) {
+    if (outputTooSmall) *outputTooSmall = false;
     if (!section || offset >= sectionSize || !output || outputSize == 0) return false;
     uint32_t length = 0;
     while (offset < sectionSize) {
         const char value = static_cast<char>(section[offset++]);
         if (value == '\0') { output[length] = '\0'; return true; }
-        if (length + 1 >= outputSize || length + 1 >= kDebugMapperMaxStringBytes) return false;
+        if (length + 1 >= outputSize || length + 1 >= kDebugMapperMaxStringBytes) {
+            if (outputTooSmall) *outputTooSmall = true;
+            return false;
+        }
         output[length++] = value;
     }
     return false;
@@ -448,12 +465,21 @@ struct SectionView {
 
 static bool addSourceFile(DebugDwarfMapper* mapper, const char* projectRoot,
                           const char* directory, const char* fileName,
-                          uint16_t* outIndex) {
+                          const char* compilationDirectory, uint16_t* outIndex) {
     if (!mapper || !projectRoot || !fileName || !outIndex) return false;
     char combined[kDebugMapperMaxPathBytes] = {};
+    bool combinedOk = false;
     if (isAbsolutePath(fileName) || !directory || directory[0] == '\0' || equalText(directory, ".", false))
-        copyText(combined, sizeof(combined), fileName);
-    else if (!appendPath(combined, sizeof(combined), directory, fileName)) return false;
+        combinedOk = copyText(combined, sizeof(combined), fileName);
+    else
+        combinedOk = appendPath(combined, sizeof(combined), directory, fileName);
+    if (!combinedOk) {
+        mapper->truncated = true;
+        mapper->error = DebugDwarfError::LimitExceeded;
+        setMapperFailureDetails(mapper, "dwarf_source_path_capacity", 0,
+                                "combined_source_path_exceeded");
+        return false;
+    }
     char relative[kDebugMapperMaxPathBytes] = {};
     bool external = false;
     if (!mapper->diagnosticSourceAssociationAttempted) {
@@ -463,7 +489,32 @@ static bool addSourceFile(DebugDwarfMapper* mapper, const char* projectRoot,
                  sizeof(mapper->diagnosticSourceCandidate), combined);
         mapper->diagnosticSourceAssociationAttempted = true;
     }
-    if (!normalizeForProject(projectRoot, combined, relative, sizeof(relative), &external)) {
+    bool normalized = normalizeForProject(projectRoot, combined, relative, sizeof(relative), &external);
+    if (!normalized && compilationDirectory && compilationDirectory[0] != '\0' &&
+        isAbsolutePath(combined)) {
+        char originalRoot[kDebugMapperMaxPathBytes] = {};
+        char originalPath[kDebugMapperMaxPathBytes] = {};
+        char rebased[kDebugMapperMaxPathBytes] = {};
+        bool originalRootAbsolute = false;
+        bool originalPathAbsolute = false;
+        if (normalizeGeneric(compilationDirectory, originalRoot, sizeof(originalRoot), true,
+                             &originalRootAbsolute) && originalRootAbsolute &&
+            normalizeGeneric(combined, originalPath, sizeof(originalPath), true,
+                             &originalPathAbsolute) && originalPathAbsolute &&
+            pathContained(originalRoot, originalPath, rebased, sizeof(rebased))) {
+            external = false;
+            normalized = normalizeForProject(projectRoot, rebased, relative, sizeof(relative),
+                                             &external);
+        }
+    }
+    if (!normalized) {
+        if (!external) {
+            mapper->truncated = true;
+            mapper->error = DebugDwarfError::LimitExceeded;
+            setMapperFailureDetails(mapper, "dwarf_source_path_capacity", 0,
+                                    "source_path_normalization_exceeded_capacity");
+            return false;
+        }
         copyText(mapper->diagnosticSourceDirectory,
                  sizeof(mapper->diagnosticSourceDirectory), directory ? directory : "");
         copyText(mapper->diagnosticSourceCandidate,
@@ -590,20 +641,23 @@ static bool addDirectory(DebugDwarfMapper* mapper, const char* value) {
 
 static bool readLineForm(Cursor& cursor, uint64_t form, SectionView lineStrings,
                          SectionView debugStrings, char* stringValue, uint32_t stringSize,
-                         uint64_t* numberValue) {
+                         uint64_t* numberValue, bool* outputTooSmall = nullptr) {
+    if (outputTooSmall) *outputTooSmall = false;
     if (stringValue && stringSize > 0) stringValue[0] = '\0';
     if (numberValue) *numberValue = 0;
     uint64_t value = 0;
     switch (form) {
     case 0x08: // DW_FORM_string
-        return stringValue && readCString(cursor, stringValue, stringSize);
+        return stringValue && readCString(cursor, stringValue, stringSize, outputTooSmall);
     case 0x1f: // DW_FORM_line_strp
         { uint32_t offset = 0; if (!readU32Cursor(cursor, &offset) ||
-            !readSectionString(lineStrings.data, lineStrings.size, offset, stringValue, stringSize)) return false; }
+            !readSectionString(lineStrings.data, lineStrings.size, offset, stringValue, stringSize,
+                               outputTooSmall)) return false; }
         return true;
     case 0x0e: // DW_FORM_strp
         { uint32_t offset = 0; if (!readU32Cursor(cursor, &offset) ||
-            !readSectionString(debugStrings.data, debugStrings.size, offset, stringValue, stringSize)) return false; }
+            !readSectionString(debugStrings.data, debugStrings.size, offset, stringValue, stringSize,
+                               outputTooSmall)) return false; }
         return true;
     case 0x0f: // DW_FORM_udata
         if (!readULEB(cursor, &value)) return false;
@@ -638,12 +692,24 @@ static bool readLineForm(Cursor& cursor, uint64_t form, SectionView lineStrings,
 
 static bool resolveFileTableEntry(DebugDwarfMapper* mapper, const char* projectRoot,
                                   uint32_t fileIndex, const char* fileName,
-                                  uint32_t directoryIndex) {
+                                  uint32_t directoryIndex, bool dwarf5DirectoryIndex = false,
+                                  const char* compilationDirectory = nullptr) {
     if (fileIndex == 0 || fileIndex > kDebugMapperMaxFiles) return false;
-    const char* directory = directoryIndex > 0 && directoryIndex <= mapper->directoryCount ?
-        mapper->directories[directoryIndex - 1] : "";
+    const char* directory = "";
+    if (dwarf5DirectoryIndex) {
+        if (directoryIndex >= mapper->directoryCount) {
+            mapper->error = DebugDwarfError::MalformedDwarf;
+            setMapperFailureDetails(mapper, "dwarf_line_tables", 0,
+                                    "directory_index_out_of_range");
+            return false;
+        }
+        directory = mapper->directories[directoryIndex];
+    } else if (directoryIndex > 0 && directoryIndex <= mapper->directoryCount) {
+        directory = mapper->directories[directoryIndex - 1];
+    }
     uint16_t sourceIndex = kNoSourceFile;
-    if (!addSourceFile(mapper, projectRoot, directory, fileName, &sourceIndex)) return false;
+    if (!addSourceFile(mapper, projectRoot, directory, fileName, compilationDirectory,
+                       &sourceIndex)) return false;
     mapper->currentFileSources[fileIndex] = sourceIndex;
     if (fileIndex == 1) mapper->currentFileSources[0] = sourceIndex;
     if (fileIndex > mapper->currentFileCount) mapper->currentFileCount = fileIndex;
@@ -672,7 +738,17 @@ static bool parseDwarf5Tables(DebugDwarfMapper* mapper, Cursor& cursor, uint64_t
         for (uint32_t i = 0; i < formatCount; ++i) {
             char value[kDebugMapperMaxPathBytes] = {};
             uint64_t number = 0;
-            if (!readLineForm(cursor, directoryForms[i], lineStrings, debugStrings, value, sizeof(value), &number)) return false;
+            bool pathTooSmall = false;
+            if (!readLineForm(cursor, directoryForms[i], lineStrings, debugStrings, value,
+                              sizeof(value), &number, &pathTooSmall)) {
+                if (pathTooSmall) {
+                    mapper->truncated = true;
+                    mapper->error = DebugDwarfError::LimitExceeded;
+                    setMapperFailureDetails(mapper, "dwarf_source_path_capacity",
+                                            cursor.position, "line_table_directory_path_exceeded");
+                }
+                return false;
+            }
             if (directoryContents[i] == 0x1) { copyText(path, sizeof(path), value); havePath = true; }
         }
         if (!havePath || !addDirectory(mapper, path)) return false;
@@ -693,12 +769,24 @@ static bool parseDwarf5Tables(DebugDwarfMapper* mapper, Cursor& cursor, uint64_t
         for (uint32_t i = 0; i < formatFileCount; ++i) {
             char value[kDebugMapperMaxPathBytes] = {};
             uint64_t number = 0;
-            if (!readLineForm(cursor, fileForms[i], lineStrings, debugStrings, value, sizeof(value), &number)) return false;
+            bool pathTooSmall = false;
+            if (!readLineForm(cursor, fileForms[i], lineStrings, debugStrings, value,
+                              sizeof(value), &number, &pathTooSmall)) {
+                if (pathTooSmall) {
+                    mapper->truncated = true;
+                    mapper->error = DebugDwarfError::LimitExceeded;
+                    setMapperFailureDetails(mapper, "dwarf_source_path_capacity",
+                                            cursor.position, "line_table_file_path_exceeded");
+                }
+                return false;
+            }
             if (fileContents[i] == 0x1) { copyText(path, sizeof(path), value); havePath = true; }
             else if (fileContents[i] == 0x2) directoryIndex = number;
         }
         if (!havePath || !resolveFileTableEntry(mapper, projectRoot, entry + 1, path,
-                                                static_cast<uint32_t>(directoryIndex))) return false;
+                                                static_cast<uint32_t>(directoryIndex), true,
+                                                mapper->directoryCount ? mapper->directories[0] : nullptr))
+            return false;
     }
     if (cursor.position > headerEnd) return false;
     return true;
@@ -1128,7 +1216,7 @@ static bool parseBootstrapSourceMap(DebugDwarfMapper* mapper, const char* projec
         char path[kBootstrapSourcePathBytes] = {};
         for (uint32_t j = 0; j < kBootstrapSourcePathBytes; ++j)
             path[j] = static_cast<char>(bytes[offset + j]);
-        if (!addSourceFile(mapper, projectRoot, "", path, &sourceIndices[i]) ||
+        if (!addSourceFile(mapper, projectRoot, "", path, nullptr, &sourceIndices[i]) ||
             sourceIndices[i] == kNoSourceFile) {
             setMapperFailureDetails(mapper, "source_association", offset, "source_not_under_project_root");
             copyText(mapper->diagnosticSourcePath, sizeof(mapper->diagnosticSourcePath), path);
@@ -1514,8 +1602,11 @@ static bool parseElf(DebugDwarfMapper* mapper, const char* projectRoot,
             parseDwarf5Tables(mapper, headerCursor, headerStart + headerLength, projectRoot, lineStrings, debugStrings) :
             parseDwarf4Tables(mapper, headerCursor, projectRoot);
         if (!tablesOk || headerCursor.position > headerStart + headerLength) {
-            setMapperFailureDetails(mapper, "dwarf_line_tables", mapper->debugLineSectionOffset + headerCursor.position, "directory_or_file_table_invalid");
-            mapper->error = DebugDwarfError::UnsupportedForm; return false;
+            if (mapper->error == DebugDwarfError::None) {
+                setMapperFailureDetails(mapper, "dwarf_line_tables", mapper->debugLineSectionOffset + headerCursor.position, "directory_or_file_table_invalid");
+                mapper->error = DebugDwarfError::UnsupportedForm;
+            }
+            return false;
         }
         (void)tableStart;
         units.position = headerStart + headerLength;
@@ -1678,10 +1769,22 @@ bool DebugDwarfMapperLoad(DebugDwarfMapper* mapper, const char* projectRoot,
     reportMapperProgress(0);
     DebugDwarfMapperReset(mapper);
     reportMapperProgress(1);
+    const bool projectRootTooLong = textExceedsCapacity(projectRoot, kDebugMapperMaxPathBytes);
+    const bool executablePathTooLong = textExceedsCapacity(executablePath, kDebugMapperMaxPathBytes);
     if (!normalizeArtifactIdentityPath(projectRoot, executablePath,
                                        mapper->identity.executablePath,
                                        sizeof(mapper->identity.executablePath))) {
-        mapper->error = DebugDwarfError::ArtifactChanged;
+        if (projectRootTooLong || executablePathTooLong) {
+            mapper->error = DebugDwarfError::LimitExceeded;
+            mapper->truncated = true;
+            setMapperFailureDetails(mapper, "artifact_identity_path_capacity",
+                                    projectRootTooLong ? kDebugMapperMaxPathBytes :
+                                                         kDebugMapperMaxPathBytes,
+                                    projectRootTooLong ? "project_root_exceeded" :
+                                                         "executable_path_exceeded");
+        } else {
+            mapper->error = DebugDwarfError::ArtifactChanged;
+        }
         mapper->state = DebugDwarfMapperState::Failed;
         if (error) *error = mapper->error;
         return false;
