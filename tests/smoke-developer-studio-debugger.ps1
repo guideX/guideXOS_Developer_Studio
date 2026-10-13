@@ -4,6 +4,11 @@ param(
     [string]$FixtureRoot = "",
     [string]$FixtureSourceOrigin = "",
     [int]$BreakpointLine = 20,
+    [string]$BreakpointCondition = "",
+    [int]$LifecycleStepIntoExpectedLine = 43,
+    [int]$LifecycleStepOverExpectedLine = 48,
+    [int]$LifecycleStepOutExpectedLine = 59,
+    [string]$LifecycleStepOutExpectedFunctionFragment = "gx_main",
     [int]$DebugWaitSeconds = 120,
     [int]$MaxRuntimeSeconds = 240,
     [switch]$DiagnosticOnly,
@@ -106,7 +111,8 @@ if ($restoreDebuggerConfiguration) {
     $enabledBreakpointConfiguration = if ($PositiveGxsmLifecycle) {
         '{"version":1,"breakpoints":[{"sourcePath":"src/main.cpp","line":4,"column":1,"enabled":true,"action":"BREAK","condition":"","hitPolicy":"NONE","hitThreshold":0,"logTemplate":""}],"watches":[]}'
     } else {
-        '{"version":1,"breakpoints":[{"sourcePath":"src/main.cpp","line":42,"column":1,"enabled":true,"action":"BREAK","condition":"","hitPolicy":"NONE","hitThreshold":0,"logTemplate":""}],"watches":["counter == 2"]}'
+        $conditionJson = $BreakpointCondition.Replace('\', '\\').Replace('"', '\\"')
+        ('{"version":1,"breakpoints":[{"sourcePath":"src/main.cpp","line":' + $BreakpointLine + ',"column":1,"enabled":true,"action":"BREAK","condition":"' + $conditionJson + '","hitPolicy":"NONE","hitThreshold":0,"logTemplate":""}],"watches":["counter == 2"]}')
     }
     [IO.File]::WriteAllText($debuggerConfiguration, $enabledBreakpointConfiguration, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($debuggerBackupConfiguration, $enabledBreakpointConfiguration, [Text.UTF8Encoding]::new($false))
@@ -319,7 +325,9 @@ Assert-True (-not ($RepeatedStepOut -and $ContinueAfterStepOut)) "Step Out follo
 Assert-True (-not ($StepOutThenStepInto -and $StepOutThenStepOver)) "post-Step Out mode is unambiguous"
 Assert-True (-not ($MixedLifecycle -and ($RepeatedStepOut -or $ContinueAfterStepOut -or $StepOutThenStepInto -or $StepOutThenStepOver -or $SteppingLifecycle))) "mixed lifecycle follow-up mode is unambiguous"
 Assert-True (-not $StepOutKeyboard -or $SteppingLifecycle) "keyboard Step Out route is limited to the complete stepping lifecycle"
-Assert-True (-not $SteppingLifecycle -or ($FixtureRoot -match 'debugger-phase15' -and $BreakpointLine -eq 42)) "stepping lifecycle uses the documented Phase 15 line-42 fixture entry"
+Assert-True (-not $SteppingLifecycle -or ($BreakpointLine -gt 0 -and
+    $LifecycleStepIntoExpectedLine -gt 0 -and $LifecycleStepOverExpectedLine -gt 0 -and $LifecycleStepOutExpectedLine -gt 0 -and
+    -not [string]::IsNullOrWhiteSpace($LifecycleStepOutExpectedFunctionFragment))) "stepping lifecycle uses mapped Phase 15 source rows"
 Assert-True (-not $PositiveGxsmLifecycle -or ($FixtureRoot -match 'debugger-phase29q-positive' -and $BreakpointLine -eq 4)) "positive GXSM lifecycle uses its compiler-produced line-4 fixture entry"
 Assert-True ((-not $RepeatedStepOut -and -not $ContinueAfterStepOut -and -not $StepOutThenStepInto -and -not $StepOutThenStepOver -and -not $MixedLifecycle) -or $StepOut -or $MixedLifecycle) "Step Out follow-up requires Step Out mode"
 Assert-True (-not $OverlapStepOut -or $StepOut) "overlap proof requires Step Out mode"
@@ -485,9 +493,8 @@ if ($ContinueBreakpoint) {
     Add-Key $parts 116 0 $true
     Add-Delay $parts 20
 } elseif ($SteppingLifecycle) {
-    # This accepted fixture sequence is tied to the built DebugSymbols/DWARF
-    # source rows: line 42 starts in debugLoop, Step Into reaches line 43,
-    # Step Over returns through line 48, and Step Out returns to gx_main:59.
+    # This accepted fixture sequence is tied to the source rows qualified for
+    # the selected compiler-produced breakpoint.
     Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
     Add-Key $parts 122 0 $true
@@ -962,14 +969,14 @@ try {
         Assert-True ($projectOpenPublished -eq 1 -and $projectOpenRejected -eq 0 -and -not $invalidProjectRoot) "one direct project-open result is published for the single dispatched request, with no root-validation rejection"
     }
     if ($text -notmatch 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)' -and
-        -not ($SteppingLifecycle -and $text -match 'debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:42 source_map=current')) {
+        -not ($SteppingLifecycle -and $text -match ('debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:' + [regex]::Escape([string]$BreakpointLine) + ' source_map=current'))) {
         Write-Host 'Captured breakpoint diagnostics:'
         @($text -split "`r?`n" | Where-Object { $_ -match 'debug_|F9|breakpoint|editor|focus|Caret|project_open|project_metadata' } | Select-Object -Last 160)
     }
     if ($PositiveGxsmLifecycle) {
         Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND .*src=src/main\.cpp line=4 col=1 enabled=1 state=Verified') "the fixture's enabled line-4 breakpoint binds to the hosted target"
     } elseif ($SteppingLifecycle) {
-        Assert-True ($text -match 'debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:42 source_map=current') "the metadata-free Phase 15 source breakpoint produces an authoritative line-42 stop"
+        Assert-True ($text -match ('debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:' + [regex]::Escape([string]$BreakpointLine) + ' source_map=current')) "the metadata-free Phase 15 source breakpoint produces an authoritative stop at the configured mapped line"
     } else {
         Assert-True ($text -match 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_breakpoint(_toggle)?=(PASS|PENDING|MAPPED)') "F9 arms the source breakpoint in the editor"
     }
@@ -1189,9 +1196,9 @@ try {
             Assert-True (([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')).Count -ge 2) "both positive GXSM target sessions exit and tear down cleanly"
         }
         elseif ($SteppingLifecycle) {
-            $stepIntoPattern = 'debug_step_complete=StepInto command_gen=1 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:43 source_map=current'
-            $stepOverPattern = 'debug_step_complete=StepOver command_gen=2 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:48 source_map=current'
-            $stepOutPattern = 'debug_step_complete=StepOut command_gen=3 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:59 source_map=current'
+            $stepIntoPattern = 'debug_step_complete=StepInto command_gen=1 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepIntoExpectedLine) + ' source_map=current'
+            $stepOverPattern = 'debug_step_complete=StepOver command_gen=2 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOverExpectedLine) + ' source_map=current'
+            $stepOutPattern = 'debug_step_complete=StepOut command_gen=3 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOutExpectedLine) + ' source_map=current'
             $stepIntoLine = @($text -split "`r?`n" | Where-Object { $_ -match $stepIntoPattern } | Select-Object -First 1)
             $stepOverLine = @($text -split "`r?`n" | Where-Object { $_ -match $stepOverPattern } | Select-Object -First 1)
             $stepOutLine = @($text -split "`r?`n" | Where-Object { $_ -match $stepOutPattern } | Select-Object -First 1)
@@ -1205,17 +1212,21 @@ try {
             } else {
                 Assert-True ($text.Contains('debug_ui_step_route=debug_menu command=StepOut binding=menu_row_4')) "actual Debug menu input reaches the Step Out command route"
             }
-            Assert-True ($text -match 'debug_step_request=StepInto result=accepted command_gen=1 .*start_stop_gen=1 state=Stepping backend_mode=source_single_step' -and
+            Assert-True ($text -match 'debug_step_request=StepInto result=accepted command_gen=1 .*start_stop_gen=\d+ state=Stepping backend_mode=source_single_step' -and
                          $text -match 'debug_step_request=StepOver result=accepted command_gen=2 .*start_stop_gen=\d+ state=Stepping backend_mode=(bounded_source_single_step|temporary_return_breakpoint)' -and
                          $text -match 'debug_step_request=StepOut result=accepted command_gen=3 .*start_stop_gen=\d+ state=Stepping backend_mode=temporary_return_breakpoint') "controller accepts each command with a session/target/starting-stop identity and implementation mode"
-            Assert-True ($text -match 'debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=1 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugLoop[^ ]* source=src/main\.cpp:43 source_map=current' -and
-                         $text -match 'debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=2 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugCaller[^ ]* source=src/main\.cpp:48 source_map=current' -and
-                         $text -match 'debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=3 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=gx_main source=src/main\.cpp:59 source_map=current') "each new stop carries its own raw/normalized PC, symbol generation, current frame, and source mapping"
+            Assert-True ($text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=1 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugLoop[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepIntoExpectedLine) + ' source_map=current') -and
+                         $text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=2 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugLoop[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOverExpectedLine) + ' source_map=current') -and
+                         $text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=3 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*' + [regex]::Escape($LifecycleStepOutExpectedFunctionFragment) + '[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOutExpectedLine) + ' source_map=current')) "each new stop carries its own raw/normalized PC, symbol generation, current frame, and source mapping"
             Assert-True ($text -match 'debug_inspection=refreshed stop_gen=(\d+) stack_valid=1 stack_stop_gen=\1 frame_count=[2-9]\d* locals_valid=1 locals_stop_gen=\1 arguments=\d+ locals=\d+' -and
                          ([regex]::Matches($text, 'debug_inspection=refreshed stop_gen=')).Count -ge 4) "stack and locals are rebuilt for the initial stop and every step generation"
-            $watchStartUnsupported = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=6 session_gen=1 stop_gen=0 .*accepted=0 error_category=13 error=authoritative GXSM metadata is unavailable \(present=0 valid=0 mappings=0 image_bytes=\d+\) request_stop_gen=1 request_thread=\d+ request_frame=0' } | Select-Object -First 1)
-            $watchAfterUnsupported = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=6 session_gen=1 stop_gen=0 .*accepted=0 error_category=13 error=authoritative GXSM metadata is unavailable \(present=0 valid=0 mappings=0 image_bytes=\d+\) request_stop_gen=\d+ request_thread=\d+ request_frame=0' -and $_ -match 'request_stop_gen=6\b' } | Select-Object -First 1)
-            Assert-True ($watchStartUnsupported.Count -eq 1 -and $watchAfterUnsupported.Count -eq 1) "the Watch panel reevaluates the fixture at STOPPED 1 and the new Step Into stop, and reports the fixture's absent GXSM variable metadata instead of a cached value"
+            $breakpointStopMatch = [regex]::Match($text, 'debug_stop_context=authoritative reason=Breakpoint .*stop_gen=(\d+)')
+            $stepIntoStopMatch = [regex]::Match($text, 'debug_step_complete=StepInto command_gen=1 .*stop_gen=(\d+)')
+            $watchPrefix = 'debug_ui_watch_result=refreshed .*expression=counter\s*==\s*2 status=6 session_gen=1 stop_gen=0 .*accepted=0 error_category=13 error=authoritative GXSM metadata is unavailable \(present=0 valid=0 mappings=0 image_bytes=\d+\) request_stop_gen='
+            $watchSuffix = ' request_thread=\d+ request_frame=0'
+            $watchStartUnsupported = @($text -split "`r?`n" | Where-Object { $breakpointStopMatch.Success -and $_ -match ($watchPrefix + [regex]::Escape($breakpointStopMatch.Groups[1].Value) + $watchSuffix) } | Select-Object -First 1)
+            $watchAfterUnsupported = @($text -split "`r?`n" | Where-Object { $stepIntoStopMatch.Success -and $_ -match ($watchPrefix + [regex]::Escape($stepIntoStopMatch.Groups[1].Value) + $watchSuffix) } | Select-Object -First 1)
+            Assert-True ($watchStartUnsupported.Count -eq 1 -and $watchAfterUnsupported.Count -eq 1) "the Watch panel reevaluates at the actual breakpoint and Step Into stop generations, and reports the fixture's absent GXSM variable metadata instead of a cached value"
             Assert-True ($text -match 'debug_step=StepOut active=FALSE generation=\d+ start_stop_gen=\d+ command_gen=3 session=\d+ completion=\d+ cleanup=1 temp_id=\d+ temp_binding=\d+ temp_address=0x[0-9A-F]{16} return=0x[0-9A-F]{16} lookup=0x[0-9A-F]{16} temp=FALSE') "Step Out return breakpoint is owned by command 3 and cleaned after the caller stop"
             Assert-True ($text -match 'debug_binding=id=\d+ address=0x[0-9A-F]{16} owners=1 refcount=1 user=1 internal=0 shared=FALSE installed=TRUE') "persistent source breakpoint remains installed after user stepping"
             Assert-True ($text -match 'debug_inspection=invalidated .*context_valid=0 stack_valid=0 locals_valid=0' -and

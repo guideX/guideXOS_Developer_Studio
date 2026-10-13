@@ -452,7 +452,8 @@ int main() {
     assert(std::strcmp(path, "src/main.cpp") == 0 && line == 42);
     assert(DebugDwarfMapperMapAddressToSource(&mapper, 0x401004, path, sizeof(path), &line, &column, &error));
     assert(line == 42);
-    assert(!DebugDwarfMapperMapSourceToAddresses(&mapper, "src/main.cpp", 99, addresses, 8, &count, &primary, &error));
+    assert(!DebugDwarfMapperMapSourceToAddresses(&mapper, "src/main.cpp", 7,
+        addresses, 8, &count, &primary, &error));
     assert(error == DebugDwarfError::LineNotMapped);
     assert(!DebugDwarfMapperMatchesArtifact(&mapper, "D:/fixture", "fixture", "target", "amd64",
                                             "build/bin/fixture.elf", fixture.size(),
