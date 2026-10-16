@@ -6,6 +6,7 @@ param(
     [int]$BreakpointLine = 20,
     [string]$BreakpointCondition = "",
     [int]$LifecycleStepIntoExpectedLine = 43,
+    [string]$LifecycleStepOverExpectedFunctionFragment = "debugCall",
     [int]$LifecycleStepOverExpectedLine = 48,
     [int]$LifecycleStepOutExpectedLine = 59,
     [string]$LifecycleStepOutExpectedFunctionFragment = "gx_main",
@@ -35,6 +36,18 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+function Get-SmokeValidationSha256([string]$LiteralPath) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [pscustomobject]@{
+            Path = $LiteralPath
+            Algorithm = 'SHA256'
+            Hash = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($LiteralPath))).Replace('-', [string]::Empty)
+        }
+    } finally {
+        $sha.Dispose()
+    }
+}
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $StepOutProof = $StepOut -or $RepeatedStepOut -or $ContinueAfterStepOut -or $SteppingLifecycle -or $PositiveGxsmLifecycle -or
                 $StepOutThenStepInto -or $StepOutThenStepOver -or $OverlapStepOut
@@ -83,7 +96,7 @@ if ($PositiveGxsmLifecycle) {
         $FixtureRoot, $projectMetadata.projectId, $applicationManifest.id, $projectMetadata.displayName, $FixtureSourceOrigin, $preexistingGenerated.Count)
     foreach ($requiredPath in @($projectMetadataPath, $applicationManifestPath, $sourcePath, $buildRecipePath)) {
         $file = Get-Item -LiteralPath $requiredPath
-        Write-Host ("FIXTURE_FILE path={0} bytes={1} sha256={2}" -f $file.FullName, $file.Length, (Get-FileHash -LiteralPath $requiredPath -Algorithm SHA256).Hash)
+        Write-Host ("FIXTURE_FILE path={0} bytes={1} sha256={2}" -f $file.FullName, $file.Length, (Get-SmokeValidationSha256 -LiteralPath $requiredPath).Hash)
     }
     if ($preexistingGenerated.Count -gt 0) {
         throw ("Fresh fixture contains prior generated files: " + (($preexistingGenerated | Select-Object -ExpandProperty FullName) -join '; '))
@@ -1216,7 +1229,7 @@ try {
                          $text -match 'debug_step_request=StepOver result=accepted command_gen=2 .*start_stop_gen=\d+ state=Stepping backend_mode=(bounded_source_single_step|temporary_return_breakpoint)' -and
                          $text -match 'debug_step_request=StepOut result=accepted command_gen=3 .*start_stop_gen=\d+ state=Stepping backend_mode=temporary_return_breakpoint') "controller accepts each command with a session/target/starting-stop identity and implementation mode"
             Assert-True ($text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=1 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugLoop[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepIntoExpectedLine) + ' source_map=current') -and
-                         $text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=2 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*debugLoop[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOverExpectedLine) + ' source_map=current') -and
+                         $text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=2 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*' + [regex]::Escape($LifecycleStepOverExpectedFunctionFragment) + '[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOverExpectedLine) + ' source_map=current') -and
                          $text -match ('debug_stop_context=authoritative reason=Step .*stop_gen=\d+ command_gen=3 raw_pc=0x[0-9A-F]{16} normalized_pc=0x[0-9A-F]{16} module_gen=\d+ symbol_gen=\d+ selected_frame=0 function=[^ ]*' + [regex]::Escape($LifecycleStepOutExpectedFunctionFragment) + '[^ ]* source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepOutExpectedLine) + ' source_map=current')) "each new stop carries its own raw/normalized PC, symbol generation, current frame, and source mapping"
             Assert-True ($text -match 'debug_inspection=refreshed stop_gen=(\d+) stack_valid=1 stack_stop_gen=\1 frame_count=[2-9]\d* locals_valid=1 locals_stop_gen=\1 arguments=\d+ locals=\d+' -and
                          ([regex]::Matches($text, 'debug_inspection=refreshed stop_gen=')).Count -ge 4) "stack and locals are rebuilt for the initial stop and every step generation"

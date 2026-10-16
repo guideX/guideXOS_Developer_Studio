@@ -81,7 +81,7 @@ $requiredLifecycleMarkers = @(
     'debug_watch_runtime=invalidated'
 )
 $missingLifecycleMarkers = @($requiredLifecycleMarkers | Where-Object { -not $developerStudioElfText.Contains($_) })
-$developerStudioElfHash = (Get-FileHash -LiteralPath $developerStudioElfPath -Algorithm SHA256).Hash
+$developerStudioElfHash = (Get-GxValidationSha256 -LiteralPath $developerStudioElfPath).Hash
 if ($missingLifecycleMarkers.Count -gt 0) {
     throw ("Developer Studio package is stale for the hosted terminal gate: path={0} sha256={1} missing_markers={2}. " -f `
         $developerStudioElfPath, $developerStudioElfHash, ($missingLifecycleMarkers -join ',')) +
@@ -123,8 +123,8 @@ for ($offset = 0; $offset -lt $Iterations; ++$offset) {
         [IO.Directory]::CreateDirectory((Split-Path -Parent $destinationPath)) | Out-Null
         $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
         [IO.File]::WriteAllBytes($destinationPath, $sourceBytes)
-        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
-        $destinationHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash
+        $sourceHash = (Get-GxValidationSha256 -LiteralPath $sourcePath).Hash
+        $destinationHash = (Get-GxValidationSha256 -LiteralPath $destinationPath).Hash
         if ($sourceHash -ne $destinationHash) { throw "Fresh fixture copy hash mismatch: $relativePath" }
         $copied.Add([pscustomobject]@{ RelativePath = $relativePath; SourceHash = $sourceHash; DestinationHash = $destinationHash; Bytes = $sourceBytes.Length })
     }

@@ -3,6 +3,18 @@
 
 Set-StrictMode -Version Latest
 
+function Get-GxValidationSha256 {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($LiteralPath))).Replace('-', [string]::Empty)
+        return [pscustomobject]@{ Path = $LiteralPath; Algorithm = 'SHA256'; Hash = $digest }
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function New-ValidationArgumentList {
     param(
         [Parameter(Mandatory = $true)]

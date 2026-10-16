@@ -1,6 +1,6 @@
 # Developer Studio Phase 30B — Long-Root DWARF Parsing and Artifact Path Determinism
 
-**Outcome B.** The historical long-root issue is localized to a bounded DWARF name/path-capacity defect and explicit artifact-path-capacity classification was added. Parser, path, package, debugger, GXSM, and one-boot QEMU checks passed where run. The required hosted acceptance gate stopped on its first short-root cycle: symbols reached Ready, then a stale fixture breakpoint at line 7 failed remapping. The long-root 5/5 gate and 25-cycle stress were not started. Phase 30B is not accepted and Phase 30C must not start.
+**Current status as of 2026-10-16: Outcome B.** The hosted Server access violation was captured and localized to a detached native-app worker polling a process-global IPC map during static destruction. Server shutdown now closes and waits for native-app workers before destroying shared host resources. The fresh positive GXSM gate passed 5/5, and an ordinary debugger lifecycle passed. The mixed shutdown stress passed 18 cycles, then cycle 19 failed to reach terminal smoke PASS; its Server handle reported 0x40010004 without a captured access violation or process-exit debug event. No retry was made. The required fresh QEMU guest debugger 5/5 remains pending because an unrelated QEMU run was active. Phase 30B remains open; do not begin Phase 30C.
 
 ## Prompt and baseline gate
 
@@ -204,3 +204,105 @@ The 25-cycle schedule was written before cycle 1 and was not changed; SHA-256 `1
 After the hosted gates completed, a section-extraction command accidentally invoked GNU `objcopy --dump-section` without a separate output ELF, which rewrote some formal artifact files. This was an evidence-tooling error after successful sessions, not a hosted/product failure. The altered short-run artifacts were rebuilt with the recorded Clang 22.1.8 recipe, staged v0.5 SDK, and exact compilation-directory casing until their SHA-256 values matched the original hosted manifests; the restored files and replacement hashes were reverified. The short-02 and long-01 restores are in `post-audit-artifact-restoration.json`; short-03 through short-06 restores are in `short03-06-artifact-restoration.json`. No hosted session was repeated, no trace/console was replaced, and section hashes above were then computed by a read-only ELF reader.
 
 **Final continuation outcome: B.** The stale fixture was repaired, both hosted 5/5 gates and the 25/25 hosted stress passed, and Debug/Release CTest passed 33/33. The positive GXSM lifecycle's final hosted Server shutdown check failed with `0xC0000005`, so Phase 30B remains open and Phase 30C must not begin. The original 413-DIE artifact remains unavailable; the prior one-boot QEMU evidence was reused under the explicit unchanged-package exception.
+
+## Phase 30B shutdown lifetime continuation — 2026-10-16
+
+This continuation supersedes the previous shutdown blocker description above while preserving every earlier parser, fixture, hosted gate, stress, CTest, package, and QEMU record.
+
+### Stale prompt gate and starting repositories
+
+No authoritative .phase marker exists in either repository. The latest accepted state in this report was Phase 30B Outcome B, with the failed GXSM host-shutdown check as its blocker. Phase 30C was not underway.
+
+| Repository | Branch / starting HEAD | Starting worktree |
+|---|---|---|
+| Standalone Developer Studio | main / 34f1e7422712fa35328bcf9da9cbf5ad54237843 | clean |
+| Server integration | v0.5_DEVELOPER_STUDIO / 84cc3c781d59bf837a2d0fd92ef3b5615de6a648 | clean |
+
+No branch switching, creation, reset, merge, rebase, cherry-pick, stash, cleanup, remote, or credential changes were made. The only standalone edits for this continuation are the smoke/test helpers and this report. The Server edits are the hosted shutdown lifetime fix and its focused test harnesses.
+
+### Original failed GXSM smoke identity and boundary
+
+The original retained failure is under C:\Users\guideX\AppData\Local\Temp\phase30b-continuation-20261013-01\gxsm-positive-run.
+
+- Fixture root: C:\Users\guideX\AppData\Local\Temp\phase30b-debugger-phase29q-positive-run-20261013. It came from the checked-in debugger-phase29q-positive fixture; the generated fixture identity and files are in console.log and manifest.json.
+- Server executable: C:\Users\guideX\AppData\Local\Temp\phase30b-repair-20261012-6f19c2\server-stage\guideXOSServer.experimental.exe, SHA-256 862A1005BDD847D144B007B5A94485CD8183AD94522A7F0737627F6AB6225C90.
+- Server PID 26616; wrapper PID 792. The smoke recorded SERVER_PROCESS_CLEANUP with wrapper exit -1073741819, no forced termination, and the Server process reaped. The original run did not retain an independent Server process handle or native exception record.
+- The original runner did not retain its complete top-level argv. The exact one-iteration positive-exit gate invocation is preserved by session-command.json for the separate native-capture reproduction. It was: powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\dev\guideXOS_Developer_Studio\tests\smoke-developer-studio-debugger-positive-exit-gate.ps1 -ServerRoot C:\Users\guideX\AppData\Local\Temp\phase30b-repair-20261012-6f19c2\server-stage -FixtureRoot D:\dev\guideXOS_Developer_Studio\tests\fixtures\debugger-phase29q-positive -Iterations 1 -StartIteration 1 -ExpectedTargetExitCode 0 -MaxRuntimeSeconds 240 -DebugWaitSeconds 120 -TraceDirectory C:\Users\guideX\AppData\Local\Temp\phase30b-gxsm-shutdown-5of5-20261013-01\session-001\trace. This is the captured reproduction command, not a claim that the first run's argv was separately preserved.
+- In the original console, genuine GXSM v2 metadata was accepted; live counter=2 and expression counter == 2 evaluated true; watch invalidation and relaunch were observed. Target process 12/runtime 2/session generation 1 and process 13/runtime 3/session generation 2 each emitted TARGET_EXIT_NORMAL code=0 and debugger_teardown=PASS. The final debugger stop was session generation 2, process 13/runtime 3, thread 31428.
+- The last normal host marker was “guideXOSServer server exiting.” The first missing completion proof was a clean Server process exit with code 0. The console records -1073741819 (0xC0000005), without forced termination. The retained hosted shutdown trace says lastShutdownStage=none and serverExitCode=unknown because those direct host fields were not available to that original trace writer.
+- The original console is the retained stdout/test transcript; no separate original Server stderr file was retained. The original failure directory has no dump or first-chance exception record.
+
+The target process exits are distinct from host Server exit. The original wrapper-owned PID 26616 is the process that returned the AV status; the later native-debug capture independently confirms that the faulting process was the Server executable, not Developer Studio, the target ELF, or the gate runner.
+
+### Native exception capture and faulting resource
+
+The bounded, separately identified reproduction is GXSMSHUTDOWNGATE-20261013-01, under C:\Users\guideX\AppData\Local\Temp\phase30b-gxsm-shutdown-5of5-20261013-01\session-001. It used the same pre-fix Server SHA-256 862A1005BDD847D144B007B5A94485CD8183AD94522A7F0737627F6AB6225C90. The native monitor opened the Server process directly as PID 4892; its parent wrapper was PID 32400. This reproduction captured server-access-violation.dmp (635,535,639 bytes), plus native-debug-monitor.log and gate.stdout.log. The original GXSM failure remains recorded as failed; this reproduction is separate evidence and does not reclassify it.
+
+- Fault thread: Windows thread ID 22440, a detached ProcessTable worker executing the still-running Developer Studio native-app runtime (runtimeId 1, internal process 11). It was not either already-exited debugger target worker.
+- Exception: 0xC0000005, first chance then second chance, read access (ExceptionInformation[0]=0), exception record memory address 0xFFFFFFFFFFFFFFFF (ExceptionInformation[1]), instruction pointer 0x7FF752C40BAE, Server module RVA 0x390BAE. Server image base in that run was 0x7FF7528B0000. The faulting module was guideXOSServer.experimental.exe.
+- The captured x64 context has RIP 0x7FF752C40BAE, RSP 0x3D64DF91D0, RBP 0x3D64DF98C0, and RBX 0xFEEEFEEEFEEEFEEE. Disassembly at the instruction pointer is a compare loading [RBX+0x10] inside libstdc++ unordered-map find specialized for string keys and shared_ptr<gxos::ipc::Channel>. The exception record reports 0xFFFFFFFFFFFFFFFF while the saved RBX poison pattern gives a different effective address for that load; both values are recorded rather than silently reconciled.
+- Raw captured native stack for TID 22440 begins at Server RVA 0x390BAE in std::_Hashtable<...shared_ptr<gxos::ipc::Channel>...>::find. Reliable symbol-address frames include Server RVA 0x136E61 in Bus::ensure and RVA 0x137034 in Bus::get, with libwinpthread frames. Unwind entries at RVA 0x4C2460 land in .bss, not executable code, so part of the native unwind is corrupt and is not presented as a callable stack frame. Source inspection shows the hostPollEvent caller polls gui.output through Bus::pop -> Bus::get -> Bus::ensure; that caller chain is established from source/function identity rather than a complete raw unwind. Other captured Server threads were in ntdll wait states. The unmodified complete raw stack is retained in native-debug-monitor.log.
+- The relevant object is the static Bus::g unordered_map in ipc_bus.cpp, whose values are shared_ptr<Channel>. The remaining worker was executing the app event loop and called hostPollEvent -> Bus::pop -> Bus::get -> Bus::ensure, which queries that map. Windows heap fill RBX=FEEEFEEE is consistent with a freed node/reference. The event record, instruction, map source, worker identity, and static teardown timing together establish a worker-after-owner lifetime fault. The register/effective-address mismatch above limits claiming the exact effective operand address from the context alone; the exception record's reported invalid address remains 0xFFFFFFFFFFFFFFFF.
+- No evidence links this fault to GXSM metadata, debugger frames, watch evaluation, the target session, the vectored exception handler, or a callback firing after debugger teardown. The watch and target teardown had completed before host shutdown.
+
+### Phase 29R/29S comparison
+
+Phase 29R recorded the same visible ordering and status: code-0 target exits, debugger teardown, normal Server shutdown output, then host status 0xC0000005. It had no first-chance record, fault IP, access type/address, stack, or dump. Phase 29S reported non-reproduction in later clean runs and explicitly left detached ProcessTable workers and the once-registered vectored handler as unproven source-level lifetime candidates; its GDB attempts that intercepted normal target SIGTRAP were excluded.
+
+This Phase 30B capture establishes the cause for the captured Phase 30B Server failure. It supports the detached-worker concern raised in 29S, but it does not retroactively prove that the separate Phase 29R event had this exact thread, object, or instruction. The process-wide exception handler was not changed.
+
+### Actual pre-fix shutdown sequence
+
+The checked-out Server code at starting HEAD 84cc3c781d59bf837a2d0fd92ef3b5615de6a648 performed this order:
+
+1. The debugger target runtimes exited normally and their debugger sessions tore down. The Developer Studio UI native-app runtime remained open and continued its event-poll worker.
+2. Server command processing called DevelopmentRunService::Shutdown, then Lifecycle::shutdown.
+3. Lifecycle set ShuttingDown, sent a polite stop request to the compositor, waited up to 2 seconds, then called ProcessTable::terminate on its entry. The console path only logged that stop was shadowed and cleared its PID; it did not stop the console worker.
+4. Scheduler::shutdown stopped its owned scheduler threads. Lifecycle set allocatorReady false and phase Stopped.
+5. main logged “guideXOSServer server exiting.” and returned. A ShutdownGuard also invoked the shutdown functions during function exit.
+6. ProcessTable::spawn had detached the per-process std::thread. No lifecycle step requested close to every running native app or waited for the Developer Studio worker thread.
+7. Process-wide static/global objects, including Bus::g, were then destroyed while that app worker could still enter Bus::get/pop from hostPollEvent. The native capture faulted in the map lookup during this boundary.
+
+The debugger target's successful exit and teardown did not mean that the hosting Developer Studio native-app process had exited. That distinction explains why the GUI/IDE event worker, rather than the debugger target, was still active.
+
+### Repair and focused regression
+
+The Server repair is restricted to hosted process/lifecycle ownership:
+
+- ProcessTable now exposes waitForThreadExit alongside process-entry completion. The Windows/MinGW path stores a duplicated native Windows thread handle obtained through pthread_gethandle; ProcessTable::waitForThreadExit waits on that handle. The detached worker's “finished” flag alone is not treated as proof that its native thread has terminated.
+- Lifecycle::shutdown first enumerates Running/Closing native apps, queries their process-table ownership, sends MT_Close to each owned window, waits for the process entry to finish, then waits for its native worker thread to exit. It only then erases/reaps the process-table entry.
+- It next sends the console exit message and waits/reaps the console, stops and waits for the compositor, and shuts down the scheduler last. Bus/static destruction follows main return only after these workers complete.
+- A 10-second wait is logged as the bounded shutdown budget. If it expires, the code retains shared resources and waits for completion before destruction; it returns failure status after safe completion rather than bypassing cleanup.
+- server.cpp returns 0 only when Lifecycle::shutdown reports success. No sleep, AV suppression, exception-handler removal, early process termination, or weakened teardown assertion was introduced.
+
+The focused host-thread regression uses the same MinGW pthread native-handle conversion as production. It holds a detached worker behind an event, asserts the duplicated Windows thread handle is not signaled before release, then releases it and requires the handle to signal. Result: PROCESS_THREAD_HANDLE_TEST=PASS backend=mingw_pthread native_handle=windows_handle detached_worker_exit=observed. Server native debugger runtime host test also passed. The exact test executable and build outputs are retained under phase30b-shutdown-repair-20261013-01\server-tests and native-thread-handle-regression.
+
+The ordinary metadata-free Phase 15 regression passed after the repair: Server PID 30652, direct handle exit 0, no AV, no remaining Server; real breakpoint, variables, Step Into, Step Over, Step Out, Continue, target exit, debugger teardown, and close all passed. Evidence: C:\Users\guideX\AppData\Local\Temp\phase30b-shutdown-repair-20261013-01\ordinary-phase15-regression-02.
+
+A separate dedicated invocation of run-native-app-shutdown-lifecycle-regression.ps1 used token NATIVEAPPSHUTDOWN-20261016-01 and evidence root C:\Users\guideX\AppData\Local\Temp\phase30b-nativeapp-shutdown-regression-20261016-01. It started repaired Server PID 9140 and the monitor recorded direct exit 0, no AV, monitor PASS, and no Server remaining. The smoke itself failed before project open because the Desktop launch success marker/window ownership was not observed; it emitted no target-exit or debugger-teardown evidence. An unrelated QEMU acceptance process (PID 10488, in D:\dev\guideXOSServer_DiskManagerImprovements) was active during this hosted attempt. This run therefore provides only clean host-exit evidence; whether the concurrent GUI load contributed to the missing launch marker is unknown. The attempt is retained as failed and was not retried. The separate successful ordinary regression and the five-session GXSM gate below remain distinct evidence.
+
+### Fresh GXSM gate and mixed shutdown stress
+
+The repaired Server image is C:\Users\guideX\AppData\Local\Temp\phase30b-shutdown-repair-20261013-01\server-stage\guideXOSServer.experimental.exe, SHA-256 DAC0D5A2E3752F7E691A4864D26F3A3003D878C1735F20EFE55CCB962F14E7E6.
+
+The fresh positive GXSM gate token GXSMSHUTDOWNGATE-20261013-REPAIR02 passed 5/5 under C:\Users\guideX\AppData\Local\Temp\phase30b-gxsm-shutdown-5of5-repair-20261013-02. The five direct Server PIDs were 27876, 34584, 18848, 30164, and 35360. Each Server handle reported exit_code=0x0, the monitor reported PASS with zero access-violation events, each matching Server process was reaped, and each gate child exited 0. Every session used a fresh fixture and independently proved valid GXSM v2 metadata, live counter=2, true counter == 2 evaluation, Step Over/Out, watch invalidation, two clean target exits, and debugger teardown. The original failed smoke is not counted or relabeled.
+
+Because this repair changes shared host process/worker shutdown, the predetermined mixed hosted stress schedule alternated ordinary Phase 15 and positive GXSM sessions. Its run token is HOSTSHUTDOWNSTRESS-20261013-03; evidence root is C:\Users\guideX\AppData\Local\Temp\phase30b-host-shutdown-stress-25-20261013-03. Cycles 1–18 were adjudicated PASS: 9 ordinary and 9 GXSM, with unique Server PIDs, fresh per-cycle evidence, direct Server exit 0, zero AVs, monitor completion, and no matching Server left running. Cycle 1's original summary had false-negative checks; its retained independent reanalysis verifies smoke terminal PASS, direct handle exit 0, completed monitor/no AV, and no process remaining. Cycles 2–18 each have their own passing cycle result.
+
+Cycle 19 was the first current failure. It was an ordinary Phase 15 session, token HOSTSHUTDOWNSTRESS-20261013-03-019, Server PID 26260, wrapper PID 11176. Its smoke output stopped after the Step Into marker and contains no terminal PASS or complete Server cleanup assertion. The native monitor recorded handle exit_code=0x40010004, event_code=<no-exit-event>, access_violation_captured=false, and monitor return code 0; the monitor did not capture an AV or an EXIT_PROCESS debug event. The stress runner stopped before writing a cycle-result entry; stress-progress.json therefore remains at completed=18/status=IN_PROGRESS. The existing logs are preserved. The termination source is not established, so this cycle is a gate failure, not evidence that the historical 0xC0000005 recurred. No retry was made and cycles 20–25 were not run. The required mixed stress result is 18/25 PASS, gate incomplete/failed at cycle 19.
+
+### Preserved Phase 30B results, QEMU, and packages
+
+- The earlier short-root hosted gate remains 5/5 PASS.
+- The earlier long-root hosted gate remains 5/5 PASS.
+- The earlier hosted path/artifact stress remains 25/25 PASS. These gates were not rerun because the Server lifecycle repair did not change parser, path, fixture, or source-map code.
+- Debug CTest remains 33/33 PASS and Release CTest remains 33/33 PASS, including developer_studio_symbol_test. No standalone production parser source changed in this continuation; no parser capacity or malformed-input result was reopened.
+- Protected DWARF results remain unchanged: 421-DIE recovered B2AB Ready; line 37 has five mapped addresses; 511/512 accepted and 513 limit_exceeded; 159-character path accepted and 160/161 limit_exceeded; malformed DWARF remains malformed_dwarf; line 7 remains line_not_mapped. The historical 413-DIE artifact remains unavailable for fresh recheck.
+- The earlier QEMU debugger evidence was one fresh guest boot, not five. A new required five-boot guest debugger regression was not started because QEMU PID 10488 was actively running an unrelated acceptance task in D:\dev\guideXOSServer_DiskManagerImprovements. No QEMU instance was stopped or overlapped. This guest gate remains outstanding and must be reconciled by a later safe continuation.
+- No Developer Studio production parser/package code changed. The retained package hashes are AMD64 C5433205239735622C027A6EEE880E3B2F81340DFAC9304EE0A0A205D0ED78F4 and ARM64 EAA477DE53171F49638EB9A6012E88326CA006B3F196E70A4F0D3B87A5711048. No Server package artifact was changed.
+
+### Continuation disposition
+
+The Phase 30B access-violation root cause for the captured Server failure is classification A + F: the detached native-app worker outlived the Server's shared IPC map, and static/global destruction occurred while it was still polling the map. The Server production fix establishes close, completion, and worker-thread-exit ordering before host-resource teardown. The current mixed stress did not complete its required 25/25 gate, and the dedicated guest regression remains pending. The current outcome is therefore **B**; Phase 30B remains open and Phase 30C must not start.
+
+The original failure mechanism is established for the native-captured Phase 30B reproduction. Phase 29R's historical event has the same external symptom but no retained native record proving that it had this exact cause. Remaining limitations are the uncompleted cycle 19 stress record/termination attribution, the pending fresh QEMU 5/5 guest gate, and the separate UI-start failure in the one-off focused lifecycle wrapper.
