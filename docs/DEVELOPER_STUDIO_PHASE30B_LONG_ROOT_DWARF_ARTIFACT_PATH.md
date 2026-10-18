@@ -1,6 +1,6 @@
 # Developer Studio Phase 30B — Long-Root DWARF Parsing and Artifact Path Determinism
 
-**Current status as of 2026-10-16: Outcome B.** The hosted Server access violation was captured and localized to a detached native-app worker polling a process-global IPC map during static destruction. Server shutdown now closes and waits for native-app workers before destroying shared host resources. The fresh positive GXSM gate passed 5/5, and an ordinary debugger lifecycle passed. The mixed shutdown stress passed 18 cycles, then cycle 19 failed to reach terminal smoke PASS; its Server handle reported 0x40010004 without a captured access violation or process-exit debug event. No retry was made. The required fresh QEMU guest debugger 5/5 remains pending because an unrelated QEMU run was active. Phase 30B remains open; do not begin Phase 30C.
+**Current status as of 2026-10-17: Outcome B.** The captured Server access violation was localized to a native-app worker polling the process-global IPC map during static destruction, and the shutdown repair now waits for worker termination. The repaired host passed GXSM shutdown 5/5 and mixed debugger shutdown stress 25/25 (13 ordinary debugger sessions and 12 GXSM sessions; all Server exits were 0). Short-root and long-root hosted debugger gates remain 5/5 each, hosted path/artifact stress remains 25/25, and Debug and Release CTest remain 33/33 each. Attempt 08 passed the PowerShell/package preflight and waited for the isolated QEMU lane, but its first launched guest boot was stopped when the in-gate process snapshot caught a foreign QEMU `-version` process from the C176 support runner. The guard stopped only the Phase 30B QEMU and child. Guest acceptance is 0/5; the failed launched boot is preserved and no replacement boot was started. Phase 30B remains open; do not begin Phase 30C. The historical `0x40010004` termination owner remains unproven.
 
 ## Prompt and baseline gate
 
@@ -366,3 +366,98 @@ Attempt `QEMUGUEST30B-20261017-08` is separately identified. Its preflight passe
 At 2026-10-17 18:05 Pacific time, attempt 08 remained `READY`, `started=false`, with no guest boot and no credit. The captured lane snapshot is `lane-snapshot-20261018T010529Z.json`, SHA-256 `1E24D6D786A7460BD015F0269AB2F6F895DCDD6CB12DA05CA9BD893F7F4214D9`. It showed unrelated visualizer and S19 QEMU instances plus an active C176 acceptance runner. No unrelated process was stopped. The waiter continues to hold the gate until an exclusive lane is available; this status is not a QEMU gate result.
 
 The required guest debugger regression remains outstanding. The already-passed repaired-host GXSM 5/5 gate, mixed hosted shutdown 25/25, prior short-root and long-root hosted 5/5, hosted artifact/path stress 25/25, Debug/Release CTest 33/33, parser/DWARF qualification, and package hashes remain as recorded above. Phase 30B remains **Outcome B** until the fresh guest 5/5 gate is accepted; do not begin Phase 30C.
+
+## Attempt 08 resolution and current Phase 30B disposition — 2026-10-17
+
+This section supersedes the time-specific statement above that attempt 08 was still waiting. The earlier pending status and all prior failed/aborted attempt records remain part of the history.
+
+### Stale-prompt gate and repository baseline
+
+- Current phase at inspection: Phase 30B, still open. No Phase 30C work began.
+- No authoritative `.phase` marker was present in either repository.
+- Standalone Developer Studio: branch `main`, starting and ending HEAD `4e62295cd4e54cb5cc48d005118a5bc3e38993ec`; it was clean before this documentation update. It remains one commit ahead and zero behind `origin/main`.
+- Server integration: branch `v0.5_DEVELOPER_STUDIO`, starting and ending HEAD `88f0a276923c97a0efd8b52e9b956f4f65ea2dc8`; it remains clean and matches its tracking branch.
+- No branch, worktree, merge, rebase, reset, clean, stash, history rewrite, remote, or authentication change was made. No production source or guest package was changed.
+
+### Attempt 08 waiter and QEMU-lane result
+
+On the first live check, attempt `QEMUGUEST30B-20261017-08` was `READY`, `started=false`, with no boot credit. The existing waiter was PID 7280, created at 18:02:51 Pacific, and its command line matched this attempt's `wait-and-run-qemu-gate.ps1`. Its manifest specified a 12-hour maximum wait and 120 continuously quiet seconds. The earlier waiter PID 33892 was already recorded as superseded; no new waiter or runner was started during this continuation.
+
+The same waiter observed the lane quiet for 120 seconds and launched the guarded gate after a total lane wait of 3,385.9 seconds. The gate began at 18:59:18 Pacific with runner PID 24696 and bootstrap child PID 35552. QEMU PID 19744 was launched for boot 1 at 18:59:35 Pacific. At 18:59:48, the in-gate process snapshot recorded foreign QEMU PID 7924, parent PID 31324, command line `qemu-system-x86_64.exe -version`. The parent process command line identified the C175/C176 support runner, with `C176ManagedNotesNavigation`; the same parent later launched QEMU PID 34724 from that C176 evidence tree. This identifies the observed overlap as foreign acceptance activity that began after attempt 08's quiet-lane admission. The guard recorded the foreign and owned QEMU identities, left the foreign process untouched, and stopped only owned QEMU PID 19744 and bootstrap child PID 35552. No boot 2 was launched.
+
+At the final process check, attempt 08's waiter, gate runner, bootstrap child, and QEMU PID 19744 were absent. The C176-owned QEMU PID 34724 was still active and was left alone. There was no residual Phase 30B process or Phase 30B QEMU. The foreign QEMU `-version` process was transient and absent; its C176 parent and subsequent QEMU process provided the ownership evidence above.
+
+### Boot 1 evidence and failure classification
+
+The source and staged Developer Studio package both had size 1,128,092 bytes and SHA-256 `C5433205239735622C027A6EEE880E3B2F81340DFAC9304EE0A0A205D0ED78F4`. The staged application was at `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-bbbf1fa99c12473c8125df654ea77a89\esp-boot1-8760e76edf8941229ef3ca15efef95f9\Apps\DeveloperStudio\bin\amd64\developerstudio.elf`. Its stage ID was `8760e76edf8941229ef3ca15efef95f9`, staged image-tree SHA-256 was `92151942E1F7FB038A3A0340A1E2D99EF8DECD940709D54CA9BD893F7F4214D9`, kernel SHA-256 was `D513CED93B2DA0F0EDC1EBDB6828D2F499066DD520A31D651497CE0F749D4CCF`, and loader SHA-256 was `1A7A30345C692FCB1BAB8ED138B7E1F4E8CF24FA93304BD1A411899A7E00BBC6`. The staged project and config hashes were `26478FC36C20D87F8D057D69ECB38A44A34303240259DA4BED0DBD557FE7E331` and `5E66BF31978C1EAA78985B50D3EB71966D3AE7EA56BFD553340CE5798D5BEFF5`. The pre-spawn image audit and package hash matched; the exact AMD64 package was not rebuilt or replaced.
+
+| Boot | Package SHA verified | DWARF Ready | Breakpoint binding/stop | Continue and cleanup | QEMU exit/reap | Result |
+|---|---|---|---|---|---|---|
+| 1 | PASS | Not reached | Not reached | Not reached | Guard stopped PID 19744; no clean exit code captured; PID later absent | FAIL — foreign QEMU overlap |
+| 2 | — | — | — | — | — | Not run after boot 1 failure |
+| 3 | — | — | — | — | — | Not run after boot 1 failure |
+| 4 | — | — | — | — | — | Not run after boot 1 failure |
+| 5 | — | — | — | — | — | Not run after boot 1 failure |
+
+The host trace reached `P29J HOST 08 guest_loader_marker boot=1 marker=uefi_loader_entry`. Serial output reached the UEFI loader and kernel-loading messages but did not reach the first required guest marker, `P28Z BOOT 01 native_loader_entered`. The first failure domain was QEMU isolation; Developer Studio startup, DWARF parsing, source mapping, breakpoint handling, Continue, and application cleanup were not reached. The serial log is `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-bbbf1fa99c12473c8125df654ea77a89\boot1.serial.log`; the host trace is `C:\Users\guideX\AppData\Local\Temp\guidexos-phase28g-bbbf1fa99c12473c8125df654ea77a89\boot1.host-trace.log`. Both, bootstrap stdout/stderr, guarded-gate stdout/stderr, overlap events, manifest, failed attempt result, and waiter log remain in their original evidence roots. This QEMU command did not configure debugcon or a QEMU debug-output file, so neither artifact exists for this boot.
+
+The runner's `attempt-result.json` has an empty `boots` array and the manifest's `boot_count=0` describes zero completed boot records; raw `qemu_spawned` evidence proves one formal guest boot was launched. To preserve this distinction without rewriting the original runner artifacts, `attempt-08-boot-01-reconciliation.json` was added under the attempt 08 evidence root. It records the launched failed boot, process IDs, package and staged-image identities, foreign overlap, first missing marker, unavailable QEMU exit code, and hashes of the retained evidence files.
+
+The Windows PowerShell 5.1.26100.9711 preflight passed in the native runner environment using the .NET `System.Security.Cryptography.SHA256` helper. The actual staged package was independently rehashed with the same expected value. The in-gate 100 ms process-snapshot guard recorded the foreign process identities and did not kill the foreign process. The wrapper/gate process reported exit code 0 even though it printed FAIL; the waiter correctly required the explicit result artifact, recorded `gate_artifact_status=FAIL`, left the final manifest at FAIL with `formal_credit=none`, and did not create a PASS `gate-result.json`. Thus attempt 08 is **0/5 accepted**, with **one launched failed guest attempt**. No retry or replacement boot was made after that failure.
+
+### Full guest attempt history and preserved acceptance results
+
+| Attempt | Observed disposition |
+|---|---|
+| 01 | Preboot setup stopped on an incomplete isolated MbedTLS subtree; no guest boot. |
+| 02 | Two fresh guest boots passed their per-boot checks; a later unrelated QEMU overlap aborted the run before a five-boot gate result. No 5/5 credit. |
+| 03 | `Register-WmiEvent` was denied before guest launch; zero guest boots. The contradictory wrapper status was corrected to FAIL_SETUP. |
+| 04 | `Get-FileHash` was unavailable in the launched PowerShell bootstrap before guest launch; zero guest boots. |
+| 05 | The inner bootstrap again failed on `Get-FileHash` after staging and before QEMU launch; zero guest boots. |
+| 06 | `Get-FileHash` remained unavailable despite explicit module imports; no serial/host trace proving launch and zero accepted boots. |
+| 07 | An unrelated QEMU appeared during boot-1 setup; the guard stopped the attempt. Its records contain no foreign identity and no serial/host trace proving a guest launch. No accepted boots. |
+| 08 | The waiter completed its quiet-lane admission, then a guest QEMU launched. The guard detected C176's foreign QEMU `-version` process, stopped only Phase 30B-owned processes, and failed boot 1. One launched attempt; zero accepted boots; boots 2–5 were not run. |
+
+The earlier passing evidence remains valid and was not rerun: short-root hosted 5/5; long-root hosted 5/5; hosted path/artifact stress 25/25; positive GXSM shutdown 5/5; ordinary debugger shutdown PASS; mixed shutdown stress 25/25 (13 ordinary debugger and 12 GXSM sessions); Debug CTest 33/33; Release CTest 33/33. The mixed stress used Server image SHA-256 `DAC0D5A2E3752F7E691A4864D26F3A3003D878C1735F20EFE55CCB962F14E7E6`. Package identities remain AMD64 `C5433205239735622C027A6EEE880E3B2F81340DFAC9304EE0A0A205D0ED78F4` and ARM64 `EAA477DE53171F49638EB9A6012E88326CA006B3F196E70A4F0D3B87A5711048`.
+
+The older 18/25 mixed-stress failure and cycle-19 `0x40010004` event remain in the history. The fresh 25/25 stress supersedes that run for the current mixed-shutdown acceptance result, but neither it nor this guest attempt establishes who caused the historical `0x40010004` termination. The original `0xC0000005` worker-lifetime repair remains qualified; no contradictory new Server evidence appeared.
+
+### Final disposition
+
+Phase 30B is **Outcome B — remains open** because the required fresh QEMU guest debugger 5/5 gate did not pass. The only launched boot in attempt 08 failed the isolation invariant before Developer Studio startup; this result does not establish a new Developer Studio or Server production defect. The guest acceptance answer is **no, not yet**: the exact package was verified, but five consecutive isolated debugger boots were not completed. The mandatory stop-on-first-failure rule was followed, with no replacement boot. Hosted accepted gates remain retained. Phase 30C was not started.
+
+At the end of the attempt-08 continuation, the standalone worktree contained only its requested documentation update; its branch/HEAD were unchanged and it was one commit ahead of `origin/main`. The Server worktree was clean and even with `origin/v0.5_DEVELOPER_STUDIO`. No commit or push had been made at that point; the coordination follow-up below records the subsequent evidence-only update.
+
+## Cross-project QEMU coordination investigation — 2026-10-17
+
+This follow-up completed the stale-prompt gate and read-only launcher investigation. Phase 30B remains Outcome B, no Phase 30C work or authoritative `.phase` marker exists, and attempt 08 is terminal (`FAIL`, `formal_credit=none`). No Phase 30B waiter or runner was active in the process census. The only matching process in one census was the inspection shell itself. The attempt-08 reconciliation remains unchanged: one launched boot, zero accepted boots, and no captured QEMU exit code or clean reap record.
+
+### Live competing work and process ownership
+
+At the 19:58:01 Pacific process snapshot, two independently owned guest QEMU processes were active:
+
+| QEMU | Verified parent and workload | Evidence |
+|---|---|---|
+| PID 30464 | Parent PID 24956, PowerShell child of C176 orchestrator PID 26780. Its arguments point to `D:\dev\guideXOSServerV1.1_DOTNET_SUPPORT\out\dotnet\c176-managed-notes-navigation\c167\settings-ui-proof-runs\20261018-025442-0fedcc9f\boot2\serial.log`; this was a live guest boot in the C176 acceptance run. | Process creation time, parent chain, command line, and C176 evidence path were captured together. The same C176 process tree earlier had boot-1 QEMU PID 35272 active, then advanced to PID 30464 for boot 2. |
+| PID 32012 | Parent PID 16660, Python process running `C:\gxR2\out\taskmanager-memorydetails-qualification-r2\run_matrix.py` for Task Manager qualification scenario F. QEMU arguments reference that run's scenario-F evidence directory and guest media. | Process creation time, parent command line, QEMU arguments, and evidence path were captured together. |
+
+An earlier census also saw Task Manager scenario E QEMU PID 22772 and C176 boot-1 QEMU PID 35272; those processes had ended by the 19:58:01 snapshot. These changing live workloads show that a quiet census is temporary. No unrelated process was stopped, suspended, or queried through QMP.
+
+### Launcher semantics and coordination
+
+The C176 runner is `scripts/dotnet/run-c166-file-associations.ps1` in the Server V1.1 support checkout. Its `& $qemu -version` call populates a version string during capability preflight. That invocation has no guest machine, firmware, or drive configuration and exits after the version probe; it does not enter guest execution. The same runner later calls `Invoke-ProofQemuBoot` to launch actual guest boots. Thus attempt 08's foreign PID 7924 was a version probe associated with the C176 runner, not a C176 guest boot. It still remains a strict isolation conflict because the Phase 30B contract counts every foreign QEMU process.
+
+The inspected launchers do not share a QEMU ownership coordinator, global lock, or scheduler/queue:
+
+- C176 uses a process census scoped to QEMU command lines containing its own checkout path. It checks that project-scoped view before each guest boot and records/cleans up its own processes. This is process detection, not a global reservation, and it does not hold lane ownership across the full acceptance run.
+- The Task Manager `run_matrix.py` launches QEMU with `subprocess.Popen` for its scenario and uses its own QMP/guest lifecycle. The inspected runner contains no shared-lane lock or cross-project reservation.
+- Phase 30B attempt 08 waited until it saw no QEMU/C175/C176/Task Manager runners and required 120 quiet seconds, then used a 100 ms all-QEMU process snapshot while running. This detected overlap and stopped only its own guest, but it created no reservation honored by other launchers. The 120-second wait could not prevent a new launcher from starting immediately afterward.
+- Other repository launch scripts use direct QEMU launches or project-local process checks; no common queue or cooperative QEMU lane lock was found in the inspected Developer Studio, Server V0.5, Server V1.1, or Task Manager launch paths.
+
+A census establishes observed process state at one instant. It cannot establish ownership of the next instant. The existing project-scoped check and the Phase 30B private polling guard therefore do not satisfy the requirement for atomic, identifiable ownership held across all five boots and released at completion.
+
+### External coordination blocker and disposition
+
+The live C176 and Task Manager guest runs could launch QEMU independently, and neither participates in a shared atomic lane reservation. Exclusive ownership for the complete five-boot Phase 30B gate could not be established. The required result is **`EXTERNAL_QEMU_COORDINATION_BLOCKER`**. No new Phase 30B attempt, run token, boot, or package preflight was created; no acceptance requirement was weakened. Attempt 08 remains preserved as one launched failed boot and 0/5 accepted. Its version-probe overlap remains a guard failure under the unchanged strict policy, while the probe itself is not evidence of guest execution or a Developer Studio defect.
+
+The next formal run requires a cooperative coordinator honored by every relevant QEMU launcher, with atomic acquisition, visible ownership, reservation retained through all five boots, safe stale-owner recovery, launch census and overlap monitoring, and recorded release. Until that shared contract exists, Phase 30B remains open. Hosted accepted baselines, including mixed Server shutdown 25/25, GXSM shutdown 5/5, short-root and long-root debugger 5/5, hosted artifact stress 25/25, and Debug/Release CTest 33/33, remain retained. Phase 30C was not started.
