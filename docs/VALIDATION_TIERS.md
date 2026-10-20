@@ -23,6 +23,10 @@ The Developer Studio and Server checkouts must be paired explicitly with
 Windows host, the experimental Server executable, the paired SDK/toolchain,
 and the hosted fixture. QEMU/target-image validation is outside these tiers.
 
+The separate focused QEMU acceptance launchers for Phase 28Q and Phase 28O
+support QAC exclusive admission. See [QAC acceptance integration](QAC_ACCEPTANCE_INTEGRATION.md)
+for coordinator setup, invocation, timeout/cancellation behavior, and evidence.
+
 ## Tier 1: fast validation
 
 Run ordinary native/PR validation with:

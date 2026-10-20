@@ -9,7 +9,9 @@ param(
     [switch]$ContinueAfterFailure,
     [int]$MaxFailures = 1,
     [switch]$Phase28OOnly,
-    [switch]$Phase28QOnly
+    [switch]$Phase28QOnly,
+    [string]$QacCliPath = '',
+    [int]$QacAdmissionTimeoutSeconds = 1800
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +70,9 @@ if ($Phase28QOnly) {
         Phase28QOnly = $true
         BootCount = 3
         TimeoutSeconds = $MaxRuntimeSeconds
+        QacDeveloperStudioAcceptance = $true
+        QacCliPath = $QacCliPath
+        QacAdmissionTimeoutSeconds = $QacAdmissionTimeoutSeconds
     }
     $result = Invoke-ValidationPowerShell -Name 'Phase 28Q debugger pause/continue' `
         -ScriptPath $bootstrap -ScriptArguments $arguments -MaxOutputLines 1200
@@ -154,6 +159,9 @@ if ($Phase28OOnly) {
         Phase28OOnly = $true
         BootCount = 1
         TimeoutSeconds = $MaxRuntimeSeconds
+        QacDeveloperStudioAcceptance = $true
+        QacCliPath = $QacCliPath
+        QacAdmissionTimeoutSeconds = $QacAdmissionTimeoutSeconds
     }
     $result = Invoke-ValidationPowerShell -Name 'Phase 28O debugger workspace persistence' `
         -ScriptPath $bootstrap -ScriptArguments $arguments -MaxOutputLines 800
