@@ -37,11 +37,13 @@ static Project validProject() {
 struct FakeBuild {
     uint64_t handle = 0;
     uint32_t polls = 0;
+    uint32_t startCalls = 0;
     bool released = false;
 };
 
 static bool startBuild(void* userData, const BuildRequest&, uint64_t* handle, BuildErrorCode*) {
     FakeBuild* fake = static_cast<FakeBuild*>(userData);
+    ++fake->startCalls;
     fake->handle = 42;
     *handle = fake->handle;
     return true;
@@ -117,8 +119,10 @@ int main() {
     workspace.model.documents[0].used = true;
     std::strcpy(workspace.model.documents[0].path, "D:/work/hello/src/main.cpp");
     workspace.model.documents[0].buffer.dirty = true;
+    const uint32_t startsBeforeCancel = fake.startCalls;
     assert(!BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::Cancel, &error));
     assert(error == BuildErrorCode::UserCancelled && controller.state == BuildState::Cancelled);
+    assert(fake.startCalls == startsBeforeCancel);
     std::cout << "Developer Studio build controller PASS\n";
     return 0;
 }

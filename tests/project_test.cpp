@@ -545,6 +545,7 @@ int main(int argc, char** argv) {
     if (fs::exists(testRoot)) { std::cerr << "test fixture already exists: " << testRoot << "\n"; return 2; }
     fs::create_directories(testRoot / "parent-one", ec);
     fs::create_directories(testRoot / "parent-two", ec);
+    fs::create_directories(testRoot / "parent-three", ec);
     TestContext context;
     ProjectFileSystem fileSystem = { &context, statFile, listFiles, readFile, writeFile, createDirectory, removePath };
     ProjectCreateRequest request = {};
@@ -828,6 +829,38 @@ int main(int argc, char** argv) {
     const fs::path repeatedRoot = testRoot / "parent-two" / "hello";
     const char* generatedFiles[] = { "guidexos.project", "CMakeLists.txt", "build.ps1", "README.md", "app/app.json", "src/main.cpp", "src/freestanding_memory.cpp" };
     for (const char* file : generatedFiles) TEST_CHECK(readAll(generatedRoot / file) == readAll(repeatedRoot / file));
+
+    ProjectCreateRequest bareMetalRequest = request;
+    std::strcpy(bareMetalRequest.parentPath, (testRoot / "parent-three").string().c_str());
+    std::strcpy(bareMetalRequest.folderName, "comp1-native");
+    std::strcpy(bareMetalRequest.projectId, "com.example.comp1");
+    std::strcpy(bareMetalRequest.displayName, "COMP1 Native Application");
+    std::strcpy(bareMetalRequest.targetProfileId, BareMetalTargetProfile().id);
+    ProjectOperationResult bareMetalCreated;
+    TEST_CHECK(CreateNativeGuiProject(fileSystem, bareMetalRequest, &bareMetalCreated));
+    const fs::path bareMetalRoot = testRoot / "parent-three" / "comp1-native";
+    TEST_CHECK(bareMetalCreated.project.valid);
+    TEST_CHECK(std::strcmp(bareMetalCreated.project.projectId, "com.example.comp1") == 0);
+    TEST_CHECK(std::strcmp(bareMetalCreated.project.targetProfileId, BareMetalTargetProfile().id) == 0);
+    TEST_CHECK(std::strcmp(bareMetalCreated.project.sourceEntry, "main.cpp") == 0);
+    TEST_CHECK(std::strcmp(bareMetalCreated.project.outputName, "comp1-native-guidexos") == 0);
+    const std::string bareMetadata = readAll(bareMetalRoot / "guidexos.project");
+    TEST_CHECK(bareMetadata.find("\"defaultTargetProfile\": \"guidexos.amd64.baremetal.bootstrap.native\"") != std::string::npos);
+    TEST_CHECK(bareMetadata.find("\"sourceEntry\": \"main.cpp\"") != std::string::npos);
+    TEST_CHECK(bareMetadata.find("\"outputName\": \"comp1-native-guidexos\"") != std::string::npos);
+    const std::string bareManifest = readAll(bareMetalRoot / "app" / "app.json");
+    TEST_CHECK(bareManifest.find("\"id\": \"com.example.comp1\"") != std::string::npos);
+    TEST_CHECK(bareManifest.find("\"entryPoint\": \"gx_main\"") != std::string::npos);
+    TEST_CHECK(bareManifest.find("\"abi\": \"guidexos-c-abi-v1\"") != std::string::npos);
+    TEST_CHECK(bareManifest.find("\"architecture\": \"amd64\"") != std::string::npos);
+    TEST_CHECK(bareManifest.find("\"path\": \"bin/amd64/comp1-native-guidexos.elf\"") != std::string::npos);
+    const std::string bareMain = readAll(bareMetalRoot / "src" / "main.cpp");
+    TEST_CHECK(bareMain == "// Bare-metal bootstrap compiler source.\nint gx_main(void* ctx) {\n    return 42;\n}\n");
+    ProjectOperationResult bareLoaded;
+    TEST_CHECK(LoadProject(fileSystem, bareMetalRoot.string().c_str(), &bareLoaded));
+    TEST_CHECK(std::strcmp(bareLoaded.project.projectId, bareMetalRequest.projectId) == 0);
+    TEST_CHECK(std::strcmp(bareLoaded.project.targetProfileId, BareMetalTargetProfile().id) == 0);
+    TEST_CHECK(std::strcmp(bareLoaded.project.sourceEntry, "main.cpp") == 0);
 
     fs::create_directories(testRoot / "parent-one" / "occupied", ec);
     std::ofstream(testRoot / "parent-one" / "occupied" / "existing.txt") << "keep";

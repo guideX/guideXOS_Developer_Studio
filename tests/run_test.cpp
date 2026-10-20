@@ -101,6 +101,11 @@ int main() {
     missingArtifact.artifactValid = false;
     assert(!RunRequestFromBuild(project, missingArtifact, &request, &error));
     assert(error == RunErrorCode::ArtifactInvalid);
+    BuildResult failedBuildWithStaleArtifact = build;
+    failedBuildWithStaleArtifact.state = BuildState::Failed;
+    assert(!RunRequestFromBuild(project, failedBuildWithStaleArtifact, &request, &error));
+    assert(error == RunErrorCode::BuildRequired);
+    assert(request.artifactPath[0] == '\0' && request.artifactSha256[0] == '\0');
 
     FakeRun fake;
     fake.emitOutput = true;
