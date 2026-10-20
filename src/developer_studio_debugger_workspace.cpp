@@ -363,7 +363,11 @@ uint32_t BuildDebuggerWorkspaceMaterializationPlan(const DebuggerWorkspace& work
         entry = DebuggerWorkspaceMaterializationEntry();
         copyBounded(entry.sourcePath, sizeof(entry.sourcePath), source.sourcePath);
         entry.line = source.line;
-        entry.column = source.column;
+        // Workspace breakpoints are keyed by source line. The stored column
+        // is an editor anchor (often column 1 from the gutter), not an exact
+        // executable column in the final ELF source map. Zero asks the
+        // backend to select an executable mapping anywhere on this line.
+        entry.column = 0;
         entry.action = source.action;
         entry.hitPolicy = source.hitPolicy;
         entry.hitThreshold = source.hitThreshold;

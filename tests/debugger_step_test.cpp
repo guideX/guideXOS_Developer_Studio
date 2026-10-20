@@ -1,4 +1,5 @@
 #include "developer_studio_debugger.h"
+#include "developer_studio_debugger_hosted.h"
 #include "developer_studio_debug_symbols.h"
 
 #include <cassert>
@@ -48,6 +49,55 @@ struct StepOutFake {
     uint64_t temporaryId = 0;
     uint64_t commandGeneration = 0;
 };
+
+struct HostedContinueFake {
+    HostedDebugCommand command = HostedDebugCommand::Poll;
+    uint64_t breakpointId = 0;
+    uint64_t targetAddress = 0;
+};
+
+static bool hostedDebugCommand(void* userData, HostedDebugCommand command, uint64_t,
+                               uint64_t, uint64_t, uint64_t, uint64_t breakpointId,
+                               uint64_t targetAddress, const char*, uint64_t, uint64_t,
+                               bool, uint64_t, uint32_t, uint64_t,
+                               HostedDebugResult* result) {
+    HostedContinueFake* fake = static_cast<HostedContinueFake*>(userData);
+    fake->command = command;
+    fake->breakpointId = breakpointId;
+    fake->targetAddress = targetAddress;
+    result->status = 6;
+    result->singleStepKind = 2;
+    return true;
+}
+
+static void testHostedContinueUsesBackendBindingIdentity() {
+    HostedContinueFake fake;
+    HostedDevelopmentRunService service = {};
+    service.userData = &fake;
+    service.debugCommand = hostedDebugCommand;
+    HostedDebugBackend hosted = {};
+    HostedDebugBackendInit(&hosted, service);
+    hosted.runController.result.handle = 42;
+    DebugBackend backend = HostedDebugBackendCreate(&hosted);
+    DebugRegisterContext context = {};
+    context.valid = true;
+    context.processId = 0;
+    context.nativeRuntimeId = 9;
+    context.threadId = 1;
+    context.stopGeneration = 3;
+    const uint64_t logicalBreakpointId = 1;
+    const uint64_t backendBindingId = 0x0000000900000001ULL;
+    const uint64_t address = 0x401010;
+    assert(backend.continueExecution(backend.userData, 9, context, logicalBreakpointId,
+                                    backendBindingId, address, true));
+    assert(fake.command == HostedDebugCommand::ContinueBreakpoint);
+    assert(fake.breakpointId == backendBindingId && fake.breakpointId != logicalBreakpointId);
+    assert(fake.targetAddress == address);
+    assert(backend.stepInstruction(backend.userData, 9, context, logicalBreakpointId,
+                                   backendBindingId, address, true));
+    assert(fake.command == HostedDebugCommand::StepInstruction);
+    assert(fake.breakpointId == backendBindingId && fake.targetAddress == address);
+}
 
 static bool stepOutPoll(void* userData, uint64_t generation, DebugBackendSnapshot* snapshot) {
     StepOutFake* fake = static_cast<StepOutFake*>(userData);
@@ -449,6 +499,7 @@ static void preparePausedController(DebugController* controller, bool canStep) {
 } // namespace
 
 int main() {
+    testHostedContinueUsesBackendBindingIdentity();
     {
         DebugAmd64Instruction decoded = {};
         const uint8_t direct[] = { 0xE8, 0, 0, 0, 0 };

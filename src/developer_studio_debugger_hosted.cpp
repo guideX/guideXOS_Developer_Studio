@@ -464,7 +464,6 @@ static bool pause(void* userData, uint64_t sessionGeneration) {
 static bool continueExecution(void* userData, uint64_t sessionGeneration,
                               const DebugRegisterContext& context, uint64_t breakpointId,
                               uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint) {
-    (void)bindingId;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     DebugControllerTrace("HOSTED_CONTINUE_COMMAND_ENTRY");
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
@@ -472,7 +471,8 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
     __builtin_memset(&result, 0, sizeof(result));
     if (!backend->runService.debugCommand(backend->runService.userData, HostedDebugCommand::ContinueBreakpoint,
                                           backend->runController.result.handle, sessionGeneration,
-                                          context.processId, context.nativeRuntimeId, breakpointId, targetAddress,
+                                          context.processId, context.nativeRuntimeId,
+                                          bindingId != 0 ? bindingId : breakpointId, targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
                                           context.stopGeneration, reinstallBreakpoint, 0, 0, 0, &result)) {
         DebugControllerTrace("HOSTED_CONTINUE_COMMAND_FAILED");
@@ -491,7 +491,6 @@ static bool continueExecution(void* userData, uint64_t sessionGeneration,
 static bool stepInstruction(void* userData, uint64_t sessionGeneration,
                             const DebugRegisterContext& context, uint64_t breakpointId,
                             uint64_t bindingId, uint64_t targetAddress, bool reinstallBreakpoint) {
-    (void)bindingId;
     HostedDebugBackend* backend = static_cast<HostedDebugBackend*>(userData);
     if (!backend || !backend->runService.debugCommand || !context.valid) return false;
     HostedDebugResult& result = backend->commandResult;
@@ -501,7 +500,8 @@ static bool stepInstruction(void* userData, uint64_t sessionGeneration,
     if (!backend->runService.debugCommand(backend->runService.userData, command,
                                           backend->runController.result.handle, sessionGeneration,
                                           context.processId, context.nativeRuntimeId,
-                                          backend->internalTrapStopPending ? 0 : breakpointId,
+                                          backend->internalTrapStopPending ? 0 :
+                                              (bindingId != 0 ? bindingId : breakpointId),
                                           backend->internalTrapStopPending ? 0 : targetAddress,
                                           backend->runController.request.artifactSha256, context.threadId,
                                           context.stopGeneration, backend->internalTrapStopPending ? false : reinstallBreakpoint,

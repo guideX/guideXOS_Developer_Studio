@@ -2771,8 +2771,10 @@ bool DebugControllerAddBreakpoint(DebugController* controller, const char* proje
         }
     }
     const uint64_t id = controller->nextBreakpointId == 0 ? 1 : controller->nextBreakpointId++;
-    initializeBreakpoint(&controller->breakpoints[controller->breakpointCount++], id, projectId, relative,
+    DebugBreakpoint& breakpoint = controller->breakpoints[controller->breakpointCount++];
+    initializeBreakpoint(&breakpoint, id, projectId, relative,
                          projectGeneration, line, column, sourceGeneration);
+    if (controller->active) breakpoint.sessionGeneration = controller->sessionGeneration;
     if (outBreakpointId) *outBreakpointId = id;
     return true;
 }

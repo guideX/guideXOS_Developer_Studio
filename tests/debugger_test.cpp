@@ -588,6 +588,11 @@ int main() {
     assert(hit.currentThreadId == 44 && hit.lastBreakpointId == hitBreakpointId);
     assert(hit.breakpoints[0].lastHit && hit.breakpoints[0].state == DebugBreakpointState::Verified);
     assert(DebugRegisterContextIsValid(hit.stoppedContext));
+    uint64_t liveBreakpointId = 0;
+    assert(DebugControllerAddBreakpoint(&hit, project.projectId, project.rootPath, 9,
+                                        "src/main.cpp", 71, 0, 3, &liveBreakpointId, &error));
+    assert(liveBreakpointId != 0 && hit.breakpoints[hit.breakpointCount - 1].id == liveBreakpointId &&
+           hit.breakpoints[hit.breakpointCount - 1].sessionGeneration == hit.sessionGeneration);
     assert(DebugControllerCanContinue(&hit));
     assert(DebugControllerContinue(&hit, hitBackend, &error));
     assert(hit.state == DebugSessionState::Paused);

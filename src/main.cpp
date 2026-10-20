@@ -7821,6 +7821,12 @@ static void debugEditorClearRuntime(gx_app_context* ctx) {
     }
 }
 
+static bool continueDebugTargetFromUi(gx_app_context* ctx, DebugErrorCode* error) {
+    const bool accepted = DebugControllerContinue(&g_debugController, g_debugBackend, error);
+    if (accepted) debugEditorClearRuntime(ctx);
+    return accepted;
+}
+
 static bool debugEditorUpdateExecution(gx_app_context* ctx, bool force) {
     if (!DebugControllerIsActive(&g_debugController) ||
         g_debugController.state != DebugSessionState::Paused ||
@@ -13223,6 +13229,10 @@ static void phase28oFail(gx_app_context* ctx, const char* reason) {
     g_phase28oFinished = true;
     copyText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), "DEVELOPER_STUDIO_PHASE28O_FAIL reason=");
     appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), reason ? reason : "unknown");
+    if (g_phase28oDiagnostic && g_debuggerWorkspaceStatus[0]) {
+        appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), " workspace_status=");
+        appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker), g_debuggerWorkspaceStatus);
+    }
     logMarker(ctx, g_phase28oDiagnosticMarker);
     logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_FAILURE");
     g_phase28mFinished = true;
@@ -13391,7 +13401,17 @@ static void phase28oPump(gx_app_context* ctx) {
         if (!phase28oCapacityAndIsolation()) { phase28oFail(ctx, "bounds_isolation"); return; }
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_CAPACITY_PASS");
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_ISOLATION_PASS");
-        if (!debuggerWorkspaceSave(ctx)) { phase28oFail(ctx, "save"); return; }
+        if (!debuggerWorkspaceSave(ctx)) {
+            if (g_phase28oDiagnostic) {
+                copyText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker),
+                         "DEVELOPER_STUDIO_PHASE28O_SAVE_STATUS=");
+                appendText(g_phase28oDiagnosticMarker, sizeof(g_phase28oDiagnosticMarker),
+                           g_debuggerWorkspaceStatus[0] ? g_debuggerWorkspaceStatus : "unknown");
+                logMarker(ctx, g_phase28oDiagnosticMarker);
+            }
+            phase28oFail(ctx, "save");
+            return;
+        }
         logMarker(ctx, "DEVELOPER_STUDIO_PHASE28O_SAVE_PASS");
         g_phase28oRequestClose = true;
         g_phase28oRelaunchRequested = true;
@@ -15241,7 +15261,7 @@ static bool handleIntegratedDebugPanelKey(gx_app_context* ctx, int keyCode, int 
         if (canContinue) {
             if (g_phase28qDiagnostic) logMarker(ctx, "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTROLLER_CONTINUE_ENTRY");
             DebugErrorCode error = DebugErrorCode::None;
-            const bool accepted = DebugControllerContinue(&g_debugController, g_debugBackend, &error);
+            const bool accepted = continueDebugTargetFromUi(ctx, &error);
             if (g_phase28qDiagnostic) logMarker(ctx, accepted ?
                 "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTROLLER_CONTINUE_RETURN_TRUE" :
                 "DEVELOPER_STUDIO_PHASE28V_EVENT_PHASE28Q_CONTROLLER_CONTINUE_RETURN_FALSE");
@@ -17213,7 +17233,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         phase29nHostedContinueTrace(ctx, "normal_key");
         if (DebugControllerCanContinue(&g_debugController)) {
             DebugErrorCode error = DebugErrorCode::None;
-            if (!DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {
+            if (!continueDebugTargetFromUi(ctx, &error)) {
                 copyText(g_textScratch, sizeof(g_textScratch), "Debug continue failed: ");
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
                 reportDebugMessage(ctx, g_textScratch);
@@ -18131,7 +18151,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             phase29nHostedContinueTrace(ctx, "debug_menu");
             DebugErrorCode error = DebugErrorCode::None;
             if (!DebugControllerCanContinue(&g_debugController) ||
-                !DebugControllerContinue(&g_debugController, g_debugBackend, &error)) {
+                !continueDebugTargetFromUi(ctx, &error)) {
                 copyText(g_textScratch, sizeof(g_textScratch), "Continue unavailable: ");
                 appendText(g_textScratch, sizeof(g_textScratch), DebugErrorName(error));
                 writeStudioOutput(g_textScratch);

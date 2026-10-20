@@ -171,17 +171,18 @@ static void assertMaterializationPlan() {
     assert(BuildDebuggerWorkspaceMaterializationPlan(workspace, plan,
                                                      kDebuggerWorkspaceMaxBreakpoints) == 3);
     assert(std::strcmp(plan[0].sourcePath, "src/z.cpp") == 0);
-    assert(plan[0].line == 13 && plan[0].column == 2);
+    assert(plan[0].line == 13 && plan[0].column == 0);
     assert(plan[0].action == 1 && plan[0].hitPolicy == 2 && plan[0].hitThreshold == 3);
     assert(std::strcmp(plan[0].condition, "value > 0") == 0);
     assert(std::strcmp(plan[0].logTemplate, "value={value}") == 0);
     assert(std::strcmp(plan[1].sourcePath, "src/a.cpp") == 0);
-    assert(plan[1].line == 99 && plan[1].column == 3);
+    assert(plan[1].line == 99 && plan[1].column == 0);
     assert(plan[1].action == 0 && plan[1].hitPolicy == 1 && plan[1].hitThreshold == 5);
     assert(std::strcmp(plan[1].condition, "input == 2") == 0);
     assert(plan[1].logTemplate[0] == '\0');
     assert(std::strcmp(plan[2].sourcePath, "src/unconditional.cpp") == 0);
     assert(plan[2].line == 7 && plan[2].condition[0] == '\0');
+    assert(workspace.breakpoints[0].column == 2 && workspace.breakpoints[2].column == 3);
     assert(std::memcmp(&before, &workspace, sizeof(workspace)) == 0);
     // This exhaustive aggregate shape permits only the source-level fields.
     // Runtime data must never enlarge the plan's public value type.
