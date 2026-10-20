@@ -40,3 +40,13 @@ The focused Phase 28Q path was run on LEON2_RDT through the QAC-managed launcher
 A second Phase 28Q boot was interrupted with Ctrl+C and is also not a pass. Phase 28O was not exercised live. Deterministic QAC and PowerShell helper checks cover the admission and lifecycle paths, including the new rejection of timeout and incomplete release, but they do not replace a successful guest qualification. See the paired QAC repository's `docs/phase-validation.md` and Server integration doc for run IDs and retained evidence.
 
 Outcome B is recorded for this integration checkpoint. The Developer Studio phase progression and acceptance criteria remain unchanged.
+
+## QAC3A-R1 requalification follow-up — October 19, 2026 (Pacific)
+
+The Phase 28Q wrapper's required UI pause marker had a stale spelling, and its ordering check placed the Phase 29A stop-mapping marker before the first Continue even though the guest emits it at the second stop. Both checks now match the existing guest markers and lifecycle order; no guest code or acceptance marker was changed.
+
+The corrected Phase 28Q wrapper passed with exit 0 across three fresh QAC-managed boots. All 22 required markers were present in order; each `DEVELOPER_STUDIO_PHASE28Q_PASS` marker was observed live about 32.9–33.4 seconds after verified QEMU child start, inside the original 360-second limit. QMP shutdown, QEMU exit 0, and verified reservation release succeeded on each boot. Evidence: `%LOCALAPPDATA%\Temp\guidexos-phase28g-71a6ed320e8d440490c6e653971c490c`.
+
+The required single live Phase 28O workflow was then run through QAC. Its guest emitted `DEVELOPER_STUDIO_PHASE28O_TIMEOUT step=21`, with the debug controller still Running and no runtime breakpoints, followed by `DEVELOPER_STUDIO_PHASE28O_FAIL reason=timeout` and `DEVELOPER_STUDIO_PHASE28O_FAILURE`. Required materialization, breakpoint, Watch, terminal, cleanup, and final O PASS markers were missing; the wrapper exited 1. QMP shutdown and QAC release were safe. The run evidence is `%LOCALAPPDATA%\Temp\guidexos-phase28g-d96f5a768f96473b9493ccb5cbdbac41`.
+
+The Server harness now requires the exact `DEVELOPER_STUDIO_PHASE28O_PASS` marker for QAC shutdown eligibility instead of the generic kernel main-loop text. That selector fix was covered by deterministic helper tests after the live O attempt; the explicit guest failure remains the O blocker. QAC3A is still Outcome B, and Developer Studio's unrelated phase progression remains unchanged.
