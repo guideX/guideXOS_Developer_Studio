@@ -13,7 +13,7 @@ COMP1 has hosted regression coverage for the native project template and guest c
 - The COMP-AUDIT-1 findings document could not be located. Its accepted technical baseline from the task prompt was used; this report does not claim to have read a separate findings file.
 - The latest Phase 30B record inspected was `docs/DEVELOPER_STUDIO_PHASE30B_LONG_ROOT_DWARF_ARTIFACT_PATH.md`. It remains Outcome B, guest acceptance 0/5, and explicitly says Phase 30C must not start. Attempt 08 retains one failed launched guest boot; the unrelated hosted baselines in that report remain unchanged by COMP1.
 - At the initial gate, the only `.phase`-named item found in the Server checkout was `ESP/Apps/DeveloperStudio/.phase28q-diagnostic` containing `guideXOS-phase28q`. It is a diagnostic fixture marker, not an authoritative phase marker. No COMP1 or Phase 30C marker/report was found.
-- During this work, unrelated edits appeared in debugger/runtime files and in Server fixture, binary, and diagnostic-marker paths. They were reported before any overlapping edit. COMP1 did not edit those paths. The current marker changes are preserved as observed; they are not attributed to COMP1 or treated as Phase 30C evidence.
+- During this work, unrelated edits appeared in debugger/runtime files and in Server fixture, binary, and diagnostic-marker paths. They were reported before any overlapping edit. COMP1 did not edit those paths. Some transient ESP fixture/marker changes later disappeared from `git status`; their authorship and reversion are unknown, so they are not attributed to COMP1 or treated as Phase 30C evidence.
 - No other agent was active when checked. No branch, worktree, or phase marker was created or advanced by COMP1.
 
 ## Repository identities and worktrees
@@ -27,7 +27,7 @@ No branch topology was changed. The additional pre-existing detached Server work
 
 The standalone checkpoint HEAD above is the COMP1 test commit; subsequent commits on `main` contain this report and a whitespace-only report correction. Final checkout HEADs are reported in the task closeout.
 
-Initial dirty paths were `src/developer_studio_debugger_workspace.cpp` and `tests/debugger_workspace_test.cpp` in Studio, plus `Apps/DeveloperStudio/bin/amd64/developerstudio.elf` and `scripts/smoke-compiler-bootstrap.ps1` in Server. At closeout, the Studio checkout still has those two files dirty and also has an unrelated concurrent edit in `src/main.cpp`. The Server checkout has the original dirty paths plus concurrent changes in `kernel/core/native_elf/native_elf_run_service.cpp`, the staged and ESP Developer Studio binaries/manifest, ESP compiler diagnostic fixtures, and the `.phase28q-diagnostic` / `.phase28o-diagnostic` fixture markers. These files were preserved and excluded from COMP1 commits.
+Initial dirty paths were `src/developer_studio_debugger_workspace.cpp` and `tests/debugger_workspace_test.cpp` in Studio, plus `Apps/DeveloperStudio/bin/amd64/developerstudio.elf` and `scripts/smoke-compiler-bootstrap.ps1` in Server. At final audit, Studio still has those two files dirty and an unrelated concurrent edit in `src/main.cpp`. Server has the original dirty paths plus an edit in `kernel/core/native_elf/native_elf_run_service.cpp`. Mid-session status also showed changes to staged/ESP Developer Studio binaries and manifest, ESP compiler diagnostic fixtures, and `.phase28q-diagnostic` / `.phase28o-diagnostic`; these paths no longer appeared in the final status. All observed unrelated paths were excluded from COMP1 commits.
 
 ## Production path inspected
 
