@@ -18,12 +18,14 @@ COMP1 has hosted regression coverage for the native project template and guest c
 
 ## Repository identities and worktrees
 
-| Checkout | Starting branch / HEAD | Ending branch / HEAD | Remote tracking at closeout |
+| Checkout | Starting branch / HEAD | COMP1 test checkpoint branch / HEAD | Remote tracking before push |
 |---|---|---|---|
 | `D:\dev\guideXOS_Developer_Studio` | `main` / `6b6059edaebef3473451ea85179a61085b5fcff8` | `main` / `a49868b95215d3010dcdc692ba22392728b1503c` | `origin/main` `6b6059edaebef3473451ea85179a61085b5fcff8`; ahead 1 |
 | `D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO` | `v0.5_DEVELOPER_STUDIO` / `b3d817ac2ea1255fb12874561f7f33180ea31bbd` | `v0.5_DEVELOPER_STUDIO` / `99dffc21c01598ae8ef847f66b35eca2ab884533` | `origin/v0.5_DEVELOPER_STUDIO` `88f0a276923c97a0efd8b52e9b956f4f65ea2dc8`; ahead 4 |
 
 No branch topology was changed. The additional pre-existing detached Server worktree at `C:\Users\guideX\AppData\Local\Temp\guidexos-phase29w-server-stage-40eb15cbcbc84c4f8c9bdcd31c96fb49` remains at `bf78d517b513b624f61bee4ae6d144377f6c8000`; it has 3,794 tracked paths deleted and was not modified by this task.
+
+The standalone checkpoint HEAD above is the COMP1 test commit; subsequent commits on `main` contain this report and a whitespace-only report correction. Final checkout HEADs are reported in the task closeout.
 
 Initial dirty paths were `src/developer_studio_debugger_workspace.cpp` and `tests/debugger_workspace_test.cpp` in Studio, plus `Apps/DeveloperStudio/bin/amd64/developerstudio.elf` and `scripts/smoke-compiler-bootstrap.ps1` in Server. At closeout, the Studio checkout still has those two files dirty and also has an unrelated concurrent edit in `src/main.cpp`. The Server checkout has the original dirty paths plus concurrent changes in `kernel/core/native_elf/native_elf_run_service.cpp`, the staged and ESP Developer Studio binaries/manifest, ESP compiler diagnostic fixtures, and the `.phase28q-diagnostic` / `.phase28o-diagnostic` fixture markers. These files were preserved and excluded from COMP1 commits.
 
