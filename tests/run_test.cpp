@@ -84,14 +84,37 @@ int main() {
     build.state = BuildState::Succeeded;
     build.artifactValid = true;
     build.artifactEntryPoint = true;
-    std::strcpy(build.artifactPath, "build/bin/amd64/run.elf");
+    BuildRequest currentBuildRequest = {};
+    BuildErrorCode buildRequestError = BuildErrorCode::None;
+    assert(BuildRequestFromProject(project, &currentBuildRequest, &buildRequestError));
+    build.sourceMembershipHash = BuildRequestSourceMembershipHash(currentBuildRequest);
+    std::strcpy(build.configuration, currentBuildRequest.configuration);
+    std::strcpy(build.projectId, project.projectId);
+    std::strcpy(build.projectRoot, project.rootPath);
+    std::strcpy(build.targetProfile, project.targetProfileId);
+    std::strcpy(build.artifactPath, currentBuildRequest.expectedArtifact);
+    std::strcpy(build.artifactArchitecture, "amd64");
     std::strcpy(build.artifactSha256, "0123456789012345678901234567890123456789012345678901234567890123");
 
     RunRequest request = {};
     RunErrorCode error = RunErrorCode::None;
     assert(RunRequestFromBuild(project, build, &request, &error));
     assert(std::strcmp(request.manifestPath, "app/app.json") == 0);
-    assert(std::strcmp(request.artifactPath, "build/bin/amd64/run.elf") == 0);
+    assert(std::strcmp(request.artifactPath, currentBuildRequest.expectedArtifact) == 0);
+
+    Project otherProject = project;
+    std::strcpy(otherProject.projectId, "com.example.other");
+    assert(!RunRequestFromBuild(otherProject, build, &request, &error));
+    assert(error == RunErrorCode::BuildRequired);
+    assert(request.artifactPath[0] == '\0' && request.artifactSha256[0] == '\0');
+
+    Project changedMembership = project;
+    changedMembership.hasSourceFiles = true;
+    changedMembership.sourceFileCount = 2;
+    std::strcpy(changedMembership.sourceFiles[0], "main.cpp");
+    std::strcpy(changedMembership.sourceFiles[1], "helper.cpp");
+    assert(!RunRequestFromBuild(changedMembership, build, &request, &error));
+    assert(error == RunErrorCode::BuildRequired);
 
     Project invalidArchitecture = project;
     std::strcpy(invalidArchitecture.architecture, "i386");
@@ -106,6 +129,7 @@ int main() {
     assert(!RunRequestFromBuild(project, failedBuildWithStaleArtifact, &request, &error));
     assert(error == RunErrorCode::BuildRequired);
     assert(request.artifactPath[0] == '\0' && request.artifactSha256[0] == '\0');
+    assert(RunRequestFromBuild(project, build, &request, &error));
 
     FakeRun fake;
     fake.emitOutput = true;

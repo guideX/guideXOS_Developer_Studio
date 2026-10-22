@@ -319,7 +319,8 @@ static bool extractCodeAndMessage(const char* text, uint32_t start, uint32_t end
 static bool parseLinkerDiagnostic(const char* text, uint32_t length, OutputRecord* record) {
     uint32_t cursor = 0;
     while (cursor < length && (text[cursor] == ' ' || text[cursor] == '\t')) ++cursor;
-    if (!startsWithInsensitive(text + cursor, "link") && !startsWithInsensitive(text + cursor, "ld.lld")) return false;
+    if (!startsWithInsensitive(text + cursor, "link") && !startsWithInsensitive(text + cursor, "ld.lld") &&
+        !startsWithInsensitive(text + cursor, "lld-link")) return false;
     int colon = findChar(text, ':', cursor, length);
     if (colon < 0) return false;
     int secondColon = findChar(text, ':', static_cast<uint32_t>(colon + 1), length);

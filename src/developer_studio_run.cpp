@@ -20,6 +20,13 @@ static bool copyText(char* output, uint32_t outputSize, const char* input) {
     return true;
 }
 
+static bool sameText(const char* left, const char* right) {
+    if (!left || !right) return false;
+    uint32_t i = 0;
+    while (left[i] && right[i] && left[i] == right[i]) ++i;
+    return left[i] == right[i];
+}
+
 static void appendUnsigned(char* output, uint32_t outputSize, int32_t value) {
     if (value < 0) { copyText(output, outputSize, "-"); value = -(value + 1) + 1; }
     char digits[16] = {};
@@ -126,6 +133,25 @@ bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRe
     }
     if (!ValidateProjectMetadata(project, &projectError)) {
         if (error) *error = RunErrorCode::InvalidRequest;
+        return false;
+    }
+    BuildRequest currentRequest = {};
+    BuildErrorCode buildError = BuildErrorCode::None;
+    const bool bareMetal = PathsEqual(project.targetProfileId, BareMetalTargetProfile().id) ||
+        PathsEqual(project.targetProfileId, BareMetalMultiTargetProfile().id);
+    if (!BuildRequestFromProject(project, &currentRequest, &buildError,
+                                 bareMetal ? BuildBackendKind::BareMetal : BuildBackendKind::Hosted)) {
+        if (error) *error = RunErrorCode::InvalidRequest;
+        return false;
+    }
+    if (!sameText(build.projectId, project.projectId) ||
+        !PathsEqual(build.projectRoot, project.rootPath) ||
+        !sameText(build.targetProfile, project.targetProfileId) ||
+        !sameText(build.artifactArchitecture, project.architecture) ||
+        !PathsEqual(build.artifactPath, currentRequest.expectedArtifact) ||
+        build.sourceMembershipHash != BuildRequestSourceMembershipHash(currentRequest) ||
+        (!sameText(build.configuration, "Debug") && !sameText(build.configuration, "DebugSymbols"))) {
+        if (error) *error = RunErrorCode::BuildRequired;
         return false;
     }
     if (!build.artifactValid || !build.artifactEntryPoint || build.artifactSha256[0] == '\0') {

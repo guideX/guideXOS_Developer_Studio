@@ -21,7 +21,9 @@ enum class BuildState {
     ValidatingArtifact,
     Succeeded,
     Failed,
-    Cancelled
+    Cancelled,
+    // Internal stage only. The shared gx_build_state ABI remains unchanged.
+    Saving = 8
 };
 
 enum class BuildErrorCode {
@@ -50,7 +52,15 @@ enum class BuildErrorCode {
     EntryPointMissing,
     ManifestArtifactMismatch,
     OutputTruncated,
-    ServiceError
+    ServiceError,
+    CompilerFailed,
+    ProjectValidationFailed,
+    SourceReadFailed,
+    ObjectGenerationFailed,
+    LinkerFailed,
+    ElfWriterFailed,
+    ArtifactValidationFailed,
+    ArtifactPublicationFailed
 };
 
 enum class BuildDirtyDecision {
@@ -114,6 +124,13 @@ struct BuildResult {
     char siblingArtifactSha256[kMaxBuildArtifactSha256Bytes];
     char siblingArtifactArchitecture[32];
     char packagePath[kMaxProjectPathBytes];
+    // IDE-owned request identity; these fields are not part of gx_build_snapshot.
+    char projectId[kMaxProjectIdBytes];
+    char projectRoot[kMaxPathBytes];
+    char targetProfile[kMaxNameBytes];
+    bool serviceReleaseFailed;
+    uint64_t sourceMembershipHash;
+    char configuration[kMaxBuildConfigurationBytes];
 };
 
 struct HostedBuildService {
@@ -148,6 +165,9 @@ bool BuildControllerInit(BuildController* controller);
 bool BuildControllerStart(BuildController* controller, WorkspaceController* workspace, const HostedBuildService& service, BuildDirtyDecision dirtyDecision, BuildErrorCode* error, OutputService* output = nullptr, bool debugInfo = false);
 bool BuildControllerPoll(BuildController* controller, const HostedBuildService& service);
 bool BuildControllerIsActive(const BuildController* controller);
+BuildErrorCode ClassifyBuildFailureDetail(const char* detail);
+BuildErrorCode ClassifyBuildDiagnosticLine(const char* line);
+uint64_t BuildRequestSourceMembershipHash(const BuildRequest& request);
 bool WorkspaceControllerHasDirtyProjectDocuments(const WorkspaceController* controller);
 bool WorkspaceControllerSaveAllProjectDocuments(WorkspaceController* controller);
 

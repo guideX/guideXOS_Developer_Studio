@@ -4598,7 +4598,7 @@ static bool fsRemovePath(void* userData, const char* path) {
         (host->file_remove ? host->file_remove(context->app, path) : GX_ERROR_UNSUPPORTED)) == GX_OK;
 }
 
-static BuildErrorCode mapBuildError(uint32_t error) {
+static BuildErrorCode mapBuildError(uint32_t error, const char* detail) {
     switch (error) {
     case GX_BUILD_ERROR_NONE: return BuildErrorCode::None;
     case GX_BUILD_ERROR_SDK_NOT_FOUND: return BuildErrorCode::SdkNotFound;
@@ -4615,7 +4615,7 @@ static BuildErrorCode mapBuildError(uint32_t error) {
     case GX_BUILD_ERROR_ENTRY_POINT_MISSING: return BuildErrorCode::EntryPointMissing;
     case GX_BUILD_ERROR_MANIFEST_ARTIFACT_MISMATCH: return BuildErrorCode::ManifestArtifactMismatch;
     case GX_BUILD_ERROR_OUTPUT_TRUNCATED: return BuildErrorCode::OutputTruncated;
-    case GX_BUILD_ERROR_COMPILER_FAILED: return BuildErrorCode::ProcessFailed;
+    case GX_BUILD_ERROR_COMPILER_FAILED: return ClassifyBuildFailureDetail(detail);
     case GX_BUILD_ERROR_SOURCE_SELECTION: return BuildErrorCode::InvalidRequest;
     case GX_BUILD_ERROR_UNSUPPORTED_PROJECT: return BuildErrorCode::UnsupportedTarget;
     case GX_BUILD_ERROR_BUSY: return BuildErrorCode::AlreadyRunning;
@@ -4669,7 +4669,7 @@ static bool hostBuildPoll(void* userData, uint64_t handle, BuildResult* result, 
     *result = BuildResult();
     result->state = snapshot.state <= GX_BUILD_CANCELLED ? static_cast<BuildState>(snapshot.state) : BuildState::Failed;
     result->exitCode = snapshot.processExitCode;
-    result->error = mapBuildError(snapshot.errorCode);
+    result->error = mapBuildError(snapshot.errorCode, snapshot.errorMessage);
     result->elapsedMilliseconds = snapshot.elapsedMilliseconds;
     result->warningCount = snapshot.warningCount;
     result->errorCount = snapshot.errorCount;
@@ -4689,6 +4689,15 @@ static bool hostBuildPoll(void* userData, uint64_t handle, BuildResult* result, 
     for (uint32_t i = 0; i < result->outputCount; ++i) {
         result->output[i].standardError = snapshot.output[i].stream == 2;
         copyText(result->output[i].text, sizeof(result->output[i].text), snapshot.output[i].text);
+    }
+    if (snapshot.errorCode == GX_BUILD_ERROR_PROCESS_FAILED) {
+        for (uint32_t i = 0; i < result->outputCount; ++i) {
+            const BuildErrorCode diagnosticError = ClassifyBuildDiagnosticLine(result->output[i].text);
+            if (diagnosticError == BuildErrorCode::None) continue;
+            result->error = diagnosticError;
+            copyText(result->errorMessage, sizeof(result->errorMessage), result->output[i].text);
+            break;
+        }
     }
     *completed = result->state == BuildState::Succeeded || result->state == BuildState::Failed || result->state == BuildState::Cancelled;
     return true;
@@ -4754,7 +4763,7 @@ static bool bareMetalBuildPoll(void* userData, uint64_t handle, BuildResult* res
     *result = BuildResult();
     result->state = snapshot.state <= GX_BUILD_CANCELLED ? static_cast<BuildState>(snapshot.state) : BuildState::Failed;
     result->exitCode = snapshot.processExitCode;
-    result->error = mapBuildError(snapshot.errorCode);
+    result->error = mapBuildError(snapshot.errorCode, snapshot.errorMessage);
     result->elapsedMilliseconds = snapshot.elapsedMilliseconds;
     result->warningCount = snapshot.warningCount;
     result->errorCount = snapshot.errorCount;
@@ -4762,6 +4771,10 @@ static bool bareMetalBuildPoll(void* userData, uint64_t handle, BuildResult* res
     result->artifactSize = snapshot.artifactSize;
     result->artifactValid = snapshot.artifactValid != 0;
     result->artifactEntryPoint = snapshot.artifactEntryPoint != 0;
+    result->sourceFileCount = snapshot.sourceFileCount;
+    result->compiledModuleCount = snapshot.compiledModuleCount;
+    result->cachedModuleCount = snapshot.cachedModuleCount;
+    result->linkedModuleCount = snapshot.linkedModuleCount;
     copyText(result->artifactPath, sizeof(result->artifactPath), snapshot.artifactPath);
     copyText(result->artifactSha256, sizeof(result->artifactSha256), snapshot.artifactSha256);
     copyText(result->artifactArchitecture, sizeof(result->artifactArchitecture), snapshot.artifactArchitecture);

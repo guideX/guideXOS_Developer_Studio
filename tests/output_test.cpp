@@ -73,11 +73,31 @@ int main() {
                                         OutputStream::StandardError, "LINK : fatal error LNK1104: cannot open file", &error));
     assert(OutputServiceAppendBuildLine(&diagnostics, diagnosticOperation, "D:/work/project", "com.example.diag",
                                         OutputStream::StandardOutput, "ordinary sentence containing error words", &error));
-    assert(OutputServiceProblemCount(&diagnostics, "com.example.diag") == 3);
+    assert(OutputServiceAppendBuildLine(&diagnostics, diagnosticOperation, "D:/work/project", "com.example.diag",
+                                        OutputStream::StandardError, "src/helper.cpp:3:12: error: unknown identifier 'missing'", &error));
+    assert(OutputServiceAppendBuildLine(&diagnostics, diagnosticOperation, "D:/work/project", "com.example.diag",
+                                        OutputStream::StandardError, "src/helper.h:4:7: error: expected declaration", &error));
+    assert(OutputServiceAppendBuildLine(&diagnostics, diagnosticOperation, "D:/work/project", "com.example.diag",
+                                        OutputStream::StandardError, "linker: error: undefined external function 'helper'", &error));
+    assert(OutputServiceAppendBuildLine(&diagnostics, diagnosticOperation, "D:/work/project", "com.example.diag",
+                                        OutputStream::StandardError, "lld-link: error: unresolved external symbol 'helper'", &error));
+    assert(OutputServiceProblemCount(&diagnostics, "com.example.diag") == 7);
     const OutputRecord* compiler = OutputServiceProblemAt(&diagnostics, "com.example.diag", 0);
     assert(compiler && compiler->hasLocation && std::strcmp(compiler->relativeFilePath, "src/main.cpp") == 0 && compiler->line == 12 && compiler->column == 5);
     const OutputRecord* linker = OutputServiceProblemAt(&diagnostics, "com.example.diag", 2);
     assert(linker && linker->source == OutputSource::Linker && !linker->hasLocation && std::strcmp(linker->diagnosticCode, "LNK1104") == 0);
+    const OutputRecord* helper = OutputServiceProblemAt(&diagnostics, "com.example.diag", 3);
+    assert(helper && helper->hasLocation && std::strcmp(helper->relativeFilePath, "src/helper.cpp") == 0 &&
+           helper->line == 3 && helper->column == 12);
+    const OutputRecord* header = OutputServiceProblemAt(&diagnostics, "com.example.diag", 4);
+    assert(header && header->hasLocation && std::strcmp(header->relativeFilePath, "src/helper.h") == 0 &&
+           header->line == 4 && header->column == 7);
+    const OutputRecord* unresolved = OutputServiceProblemAt(&diagnostics, "com.example.diag", 5);
+    assert(unresolved && unresolved->source == OutputSource::Linker && !unresolved->hasLocation &&
+           std::strstr(unresolved->text, "undefined external function 'helper'") != nullptr);
+    const OutputRecord* unresolvedLld = OutputServiceProblemAt(&diagnostics, "com.example.diag", 6);
+    assert(unresolvedLld && unresolvedLld->source == OutputSource::Linker && !unresolvedLld->hasLocation &&
+           std::strstr(unresolvedLld->text, "unresolved external symbol 'helper'") != nullptr);
 
     OutputRecord parsed = {};
     assert(ParseBuildDiagnostic("D:/work/project", "com.example.diag", "\"src/file.cpp\":22: warning: old", OutputStream::StandardError, &parsed, &error));
@@ -93,7 +113,7 @@ int main() {
     assert(!ParseBuildDiagnostic("D:/work/project", "com.example.diag", "src/main.cpp:5: ^", OutputStream::StandardError, &parsed, &error));
     assert(!ParseBuildDiagnostic("D:/work/project", "com.example.diag", "the error count is zero", OutputStream::StandardOutput, &parsed, &error));
 
-    assert(OutputServiceClearProblemsForProject(&diagnostics, "com.example.diag") == 3);
+    assert(OutputServiceClearProblemsForProject(&diagnostics, "com.example.diag") == 7);
     assert(OutputServiceProblemCount(&diagnostics, "com.example.diag") == 0);
     std::cout << "Developer Studio output service and diagnostic parser PASS\n";
     return 0;

@@ -1,6 +1,7 @@
 #include "developer_studio_debugger.h"
 
 #include "test_check.h"
+#include <cassert>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -321,11 +322,21 @@ static Project validProject() {
 }
 
 static BuildResult validBuild() {
+    const Project project = validProject();
+    BuildRequest request = {};
+    BuildErrorCode error = BuildErrorCode::None;
+    assert(BuildRequestFromProject(project, &request, &error));
     BuildResult build = {};
     build.state = BuildState::Succeeded;
     build.artifactValid = true;
     build.artifactEntryPoint = true;
-    std::strcpy(build.artifactPath, "build/bin/amd64/debugger-fixture.elf");
+    build.sourceMembershipHash = BuildRequestSourceMembershipHash(request);
+    std::strcpy(build.projectId, project.projectId);
+    std::strcpy(build.projectRoot, project.rootPath);
+    std::strcpy(build.targetProfile, project.targetProfileId);
+    std::strcpy(build.configuration, request.configuration);
+    std::strcpy(build.artifactPath, request.expectedArtifact);
+    std::strcpy(build.artifactArchitecture, project.architecture);
     std::strcpy(build.artifactSha256, "0123456789012345678901234567890123456789012345678901234567890123");
     return build;
 }

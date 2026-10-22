@@ -39,11 +39,15 @@ struct FakeBuild {
     uint32_t polls = 0;
     uint32_t startCalls = 0;
     bool released = false;
+    bool fail = false;
+    bool failRelease = false;
 };
 
 static bool startBuild(void* userData, const BuildRequest&, uint64_t* handle, BuildErrorCode*) {
     FakeBuild* fake = static_cast<FakeBuild*>(userData);
     ++fake->startCalls;
+    fake->polls = 0;
+    fake->released = false;
     fake->handle = 42;
     *handle = fake->handle;
     return true;
@@ -52,20 +56,42 @@ static bool startBuild(void* userData, const BuildRequest&, uint64_t* handle, Bu
 static bool pollBuild(void* userData, uint64_t, BuildResult* result, bool* completed, BuildErrorCode*) {
     FakeBuild* fake = static_cast<FakeBuild*>(userData);
     *result = BuildResult();
-    result->state = fake->polls++ == 0 ? BuildState::Running : BuildState::Succeeded;
-    result->exitCode = 0;
+    const uint32_t pollIndex = fake->polls++;
+    result->state = pollIndex == 0 ? BuildState::Running :
+        (pollIndex == 1 && !fake->fail ? BuildState::ValidatingArtifact :
+            (fake->fail ? BuildState::Failed : BuildState::Succeeded));
+    result->error = fake->fail ? BuildErrorCode::LinkerFailed : BuildErrorCode::None;
+    result->exitCode = fake->fail ? 1 : 0;
     result->artifactValid = result->state == BuildState::Succeeded;
+    result->sourceFileCount = 3;
+    result->compiledModuleCount = fake->fail ? 1 : 2;
+    result->cachedModuleCount = fake->fail ? 1 : 1;
+    result->linkedModuleCount = fake->fail ? 0 : 3;
+    if (fake->fail) std::strcpy(result->errorMessage, "[linker] undefined external function 'missing'");
     std::strcpy(result->artifactPath, kArtifactPath);
-    *completed = result->state == BuildState::Succeeded;
+    *completed = result->state == BuildState::Succeeded || result->state == BuildState::Failed ||
+        result->state == BuildState::Cancelled;
     return true;
 }
 
 static bool releaseBuild(void* userData, uint64_t) {
-    static_cast<FakeBuild*>(userData)->released = true;
-    return true;
+    FakeBuild* fake = static_cast<FakeBuild*>(userData);
+    fake->released = true;
+    return !fake->failRelease;
 }
 
 int main() {
+    assert(ClassifyBuildFailureDetail("[compiler] unexpected token") == BuildErrorCode::CompilerFailed);
+    assert(ClassifyBuildFailureDetail("[project] invalid source selection") == BuildErrorCode::ProjectValidationFailed);
+    assert(ClassifyBuildFailureDetail("[source] source could not be read") == BuildErrorCode::SourceReadFailed);
+    assert(ClassifyBuildFailureDetail("[object] object serialization failed") == BuildErrorCode::ObjectGenerationFailed);
+    assert(ClassifyBuildFailureDetail("[linker] undefined external function 'missing'") == BuildErrorCode::LinkerFailed);
+    assert(ClassifyBuildFailureDetail("[ELF writer] ELF writer failed") == BuildErrorCode::ElfWriterFailed);
+    assert(ClassifyBuildFailureDetail("[artifact validation] AMD64 image is invalid") == BuildErrorCode::ArtifactValidationFailed);
+    assert(ClassifyBuildFailureDetail("[artifact publication] output readback failed") == BuildErrorCode::ArtifactPublicationFailed);
+    assert(ClassifyBuildDiagnosticLine("src/main.cpp:4:8: error: unknown name") == BuildErrorCode::CompilerFailed);
+    assert(ClassifyBuildDiagnosticLine("lld-link: error: unresolved external symbol 'missing'") == BuildErrorCode::LinkerFailed);
+    assert(ClassifyBuildDiagnosticLine("PowerShell completed the build script") == BuildErrorCode::None);
     Project project = validProject();
     BuildRequest request = {};
     BuildErrorCode error = BuildErrorCode::None;
@@ -119,12 +145,43 @@ int main() {
     assert(BuildControllerPoll(&controller, service));
     assert(BuildControllerIsActive(&controller));
     assert(BuildControllerPoll(&controller, service));
+    assert(BuildControllerIsActive(&controller) && controller.state == BuildState::ValidatingArtifact);
+    assert(BuildControllerPoll(&controller, service));
     assert(!BuildControllerIsActive(&controller));
     assert(controller.state == BuildState::Succeeded);
     assert(fake.released);
+    assert(std::strcmp(controller.result.projectId, workspace.model.project.projectId) == 0);
+    assert(std::strcmp(controller.result.projectRoot, workspace.model.project.rootPath) == 0);
+    assert(controller.result.sourceMembershipHash == BuildRequestSourceMembershipHash(controller.request));
+    assert(std::strcmp(controller.result.configuration, controller.request.configuration) == 0);
+    assert(controller.result.sourceFileCount == 3 && controller.result.compiledModuleCount == 2 &&
+           controller.result.cachedModuleCount == 1 && controller.result.linkedModuleCount == 3);
     uint32_t terminalCount = 0;
     for (uint32_t i = 0; i < OutputServiceRecordCount(&output); ++i) if (OutputServiceRecordAt(&output, i)->isTerminal) ++terminalCount;
     assert(terminalCount == 1);
+
+    fake.fail = true;
+    assert(BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::SaveAll, &error, &output));
+    assert(BuildControllerPoll(&controller, service) && BuildControllerIsActive(&controller));
+    assert(BuildControllerPoll(&controller, service) && !BuildControllerIsActive(&controller));
+    assert(controller.state == BuildState::Failed && controller.result.error == BuildErrorCode::LinkerFailed);
+    assert(std::strstr(controller.result.errorMessage, "undefined external") != nullptr);
+    fake.fail = false;
+    assert(BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::SaveAll, &error, &output));
+    assert(BuildControllerPoll(&controller, service));
+    assert(BuildControllerPoll(&controller, service));
+    assert(BuildControllerIsActive(&controller));
+    assert(BuildControllerPoll(&controller, service));
+    assert(controller.state == BuildState::Succeeded && fake.released);
+    fake.failRelease = true;
+    assert(BuildControllerStart(&controller, &workspace, service, BuildDirtyDecision::SaveAll, &error, &output));
+    assert(BuildControllerPoll(&controller, service));
+    assert(BuildControllerPoll(&controller, service));
+    assert(BuildControllerIsActive(&controller));
+    assert(BuildControllerPoll(&controller, service));
+    assert(controller.state == BuildState::Failed && controller.result.serviceReleaseFailed &&
+           !controller.result.artifactValid && controller.result.artifactPath[0] == '\0');
+    fake.failRelease = false;
 
     workspace.model.documents[0].used = true;
     std::strcpy(workspace.model.documents[0].path, "D:/work/hello/src/main.cpp");

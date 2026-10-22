@@ -1,4 +1,5 @@
 #include "developer_studio_workspace.h"
+#include "developer_studio_build.h"
 
 #include <cassert>
 #include <cstring>
@@ -100,6 +101,39 @@ static Project makeProject() {
     return project;
 }
 
+struct FakeBuild {
+    uint32_t starts;
+    uint32_t polls;
+    bool released;
+};
+
+static bool startBuild(void* userData, const BuildRequest&, uint64_t* handle, BuildErrorCode*) {
+    FakeBuild& fake = *static_cast<FakeBuild*>(userData);
+    ++fake.starts;
+    fake.polls = 0;
+    fake.released = false;
+    *handle = 1;
+    return true;
+}
+
+static bool pollBuild(void* userData, uint64_t, BuildResult* result, bool* completed, BuildErrorCode*) {
+    FakeBuild& fake = *static_cast<FakeBuild*>(userData);
+    *result = BuildResult();
+    result->state = BuildState::Succeeded;
+    result->artifactValid = true;
+    result->artifactEntryPoint = true;
+    std::strcpy(result->artifactPath, "build/bin/amd64/workflow-test.elf");
+    std::strcpy(result->artifactArchitecture, "amd64");
+    std::strcpy(result->artifactSha256, "0123456789012345678901234567890123456789012345678901234567890123");
+    *completed = ++fake.polls == 1;
+    return true;
+}
+
+static bool releaseBuild(void* userData, uint64_t) {
+    static_cast<FakeBuild*>(userData)->released = true;
+    return true;
+}
+
 int main() {
     MemoryFs memory;
     addDirectory(memory, "d:/work/app");
@@ -160,6 +194,17 @@ int main() {
     uint32_t headerIndex = kMaxOpenDocuments;
     assert(WorkspaceControllerCreateProjectFile(&controller, "helper.h", &headerIndex));
     assert(controller.model.project.sourceFileCount == 2);
+    const char initialHeaderText[] = "int calculate_value();\n// first header line\n// second header line\n// header diagnostic line\n";
+    TextBuffer& initialHeader = controller.model.documents[headerIndex].buffer;
+    std::memcpy(initialHeader.data, initialHeaderText, sizeof(initialHeaderText));
+    initialHeader.length = static_cast<uint32_t>(sizeof(initialHeaderText) - 1);
+    initialHeader.dirty = true;
+    diagnosticIndex = kMaxOpenDocuments;
+    assert(WorkspaceControllerOpenDocumentAtLocation(&controller, project.projectId,
+                                                       "src/helper.h", 4, 7,
+                                                       &diagnosticIndex, &navigationError));
+    assert(navigationError == OutputErrorCode::None && diagnosticIndex == headerIndex);
+    assert(controller.model.activeDocument == headerIndex);
     uint32_t textIndex = kMaxOpenDocuments;
     assert(WorkspaceControllerCreateProjectFile(&controller, "notes.txt", &textIndex));
     assert(controller.model.project.sourceFileCount == 2);
@@ -211,6 +256,53 @@ int main() {
     assert(std::string(controller.model.documents[reopened].buffer.data,
                        controller.model.documents[reopened].buffer.length) == helperText);
     assert(helperDocumentId != 0);
+
+    const char helperUpdated[] = "int calculate_value() { return 43; }\n";
+    TextBuffer& helperDirty = controller.model.documents[reopened].buffer;
+    std::memcpy(helperDirty.data, helperUpdated, sizeof(helperUpdated));
+    helperDirty.length = static_cast<uint32_t>(sizeof(helperUpdated) - 1);
+    helperDirty.dirty = true;
+    const char headerUpdated[] = "int calculate_value();\n";
+    TextBuffer& headerDirty = controller.model.documents[headerIndex].buffer;
+    std::memcpy(headerDirty.data, headerUpdated, sizeof(headerUpdated));
+    headerDirty.length = static_cast<uint32_t>(sizeof(headerUpdated) - 1);
+    headerDirty.dirty = true;
+    assert(WorkspaceControllerOpenDocument(&controller, "src/main.cpp"));
+    const int mainIndex = FindOpenDocument(&controller.model, "d:/work/app/src/main.cpp");
+    assert(mainIndex >= 0);
+    const char mainUpdated[] = "int gx_main() { return calculate_value(); }\n";
+    TextBuffer& mainDirty = controller.model.documents[mainIndex].buffer;
+    std::memcpy(mainDirty.data, mainUpdated, sizeof(mainUpdated));
+    mainDirty.length = static_cast<uint32_t>(sizeof(mainUpdated) - 1);
+    mainDirty.dirty = true;
+
+    FakeBuild fake = {};
+    HostedBuildService buildService = { &fake, startBuild, pollBuild, releaseBuild };
+    BuildController buildController = {};
+    assert(BuildControllerInit(&buildController));
+    static OutputService buildOutput;
+    OutputServiceInit(&buildOutput);
+    BuildErrorCode buildError = BuildErrorCode::None;
+    assert(!BuildControllerStart(&buildController, &controller, buildService,
+                                 BuildDirtyDecision::Cancel, &buildError, &buildOutput));
+    assert(buildError == BuildErrorCode::UserCancelled && fake.starts == 0);
+    assert(helperDirty.dirty && headerDirty.dirty && mainDirty.dirty);
+
+    memory.partialWritePath = "d:/work/app/src/helper.h";
+    assert(!BuildControllerStart(&buildController, &controller, buildService,
+                                 BuildDirtyDecision::SaveAll, &buildError, &buildOutput));
+    assert(buildError == BuildErrorCode::SaveFailed && fake.starts == 0);
+    assert(!helperDirty.dirty && headerDirty.dirty && mainDirty.dirty);
+    assert(memory.nodes["d:/work/app/src/helper_copy.cpp"].bytes == helperUpdated);
+
+    memory.partialWritePath.clear();
+    assert(BuildControllerStart(&buildController, &controller, buildService,
+                               BuildDirtyDecision::SaveAll, &buildError, &buildOutput));
+    assert(fake.starts == 1 && !headerDirty.dirty && !mainDirty.dirty);
+    assert(memory.nodes["d:/work/app/src/helper.h"].bytes == headerUpdated);
+    assert(memory.nodes["d:/work/app/src/main.cpp"].bytes == mainUpdated);
+    assert(BuildControllerPoll(&buildController, buildService));
+    assert(buildController.state == BuildState::Succeeded && fake.released);
 
     std::cout << "Developer Studio file workflow PASS\n";
     return 0;
