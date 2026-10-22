@@ -91,15 +91,15 @@ COMP2 connects the existing Studio file/editor workflow and the existing bounded
 
 37. **Documentation:** This file is the COMP2 workflow report. COMP1 and Phase 30B documentation remain separate and unchanged.
 
-38. **Local commits:** Studio implementation/tests are committed as 0e7ec08979a0d80ee2db121bd4142434b9812691. Server integration is committed as 3a4195ce3cfd1a428242d4f07d0b5c6723daa0b9. This report is committed separately after those implementation commits; its report-only commit SHA is included in the final task response.
+38. **Local commits:** Studio implementation/tests are committed as 0e7ec08da0b12f73e157d139a5e9bb97f341ce72. Server integration is committed as 3a4195ce9c57984d8b0818e1345abd962a3d35f3. This report is committed separately after those implementation commits; its report-only commit SHA is included in the final task response.
 
 39. **Push:** No push was attempted. The task requested local commits and did not require publication.
 
-40. **Ahead/behind:** Both branches track their established origin branches. After the report-only Studio commit, Studio is expected to be ahead 2 / behind 0; Server is ahead 1 / behind 0.
+40. **Ahead/behind:** Both branches track their established origin branches. After the report closeout and correction commits, Studio is ahead 3 / behind 0; Server is ahead 1 / behind 0.
 
 41. **Remaining blockers:** Guest source-list service integration, incremental .gxo rebuild behavior, real guest Run output/exit, live Problems navigation, and three clean guest qualification cycles remain unverified because the exclusive QEMU lane is not qualified. These are acceptance gaps, not a demonstrated hosted implementation failure.
 
-42. **Final worktree states:** Studio is clean after the report-only commit. Server has no tracked changes after its implementation commit and retains only the untracked, COMP2-generated out/comp2-validation host-test binaries; they are not staged. A local cleanup command was blocked by the execution policy, so the binaries were left as test evidence.
+42. **Final worktree states:** Studio is clean after the report closeout commits. Server has no tracked changes after its implementation commit and retains only the untracked, COMP2-generated out/comp2-validation host-test binaries; they are not staged. A local cleanup command was blocked by the execution policy, so the binaries were left as test evidence.
 
 43. **Recommended COMP3 scope:** Do not start COMP3 or Phase 30C from this checkpoint. First close the existing COMP1 and Phase 30B guest gates and qualify QAC3B ownership for the Server v0.5 launcher. Then run the three required fresh GUI-created COMP2 guest cycles, including helper/header edits, diagnostics navigation, failed-build Run blocking, recovery, updated Run output, and close/reopen persistence.
 
@@ -123,8 +123,8 @@ The generated CMake project now uses the selected cross target and invokes LLD d
 
 | Checkout | Branch | Starting HEAD | COMP2 implementation commit | Final worktree | Ahead / behind |
 |---|---|---|---|---|---|
-| D:\dev\guideXOS_Developer_Studio | main | 9b66725990b604d426ef6d2be02e7097a0f9a46e | 0e7ec08979a0d80ee2db121bd4142434b9812691 | Clean after report-only commit | 2 / 0 |
-| D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO | v0.5_DEVELOPER_STUDIO | b3753c5db1d9bac9fcb0d6a608c45b00078bf39b | 3a4195ce3cfd1a428242d4f07d0b5c6723daa0b9 | Only untracked out/comp2-validation/ binaries | 1 / 0 |
+| D:\dev\guideXOS_Developer_Studio | main | 9b66725990b604d426ef6d2be02e7097a0f9a46e | 0e7ec08da0b12f73e157d139a5e9bb97f341ce72 | Clean after report closeout | 3 / 0 |
+| D:\dev\guideXOSServerV0.5_DEVELOPER_STUDIO | v0.5_DEVELOPER_STUDIO | b3753c5db1d9bac9fcb0d6a608c45b00078bf39b | 3a4195ce9c57984d8b0818e1345abd962a3d35f3 | Only untracked out/comp2-validation/ binaries | 1 / 0 |
 
 Push was not attempted. No Phase 30B, COMP1, or COMP2 phase marker was created or advanced.
-The Studio report-only commit follows the implementation commit; its resulting final HEAD is reported in the task closeout response.
+The Studio report closeout and correction commits follow the implementation commit; the resulting final HEAD is reported in the task closeout response.
