@@ -84,6 +84,16 @@ int main() {
     assert(std::strcmp(request.buildSystem, "guidexos-native-baremetal-bootstrap-v1") == 0);
     assert(std::strcmp(request.buildScript, "") == 0);
     assert(std::strcmp(request.expectedArtifact, kArtifactPath) == 0);
+    bareProject.hasSourceFiles = true;
+    bareProject.sourceFileCount = 3;
+    std::strcpy(bareProject.sourceFiles[0], "main.cpp");
+    std::strcpy(bareProject.sourceFiles[1], "helper.cpp");
+    std::strcpy(bareProject.sourceFiles[2], "utility.c");
+    assert(BuildRequestFromProject(bareProject, &request, &error, BuildBackendKind::BareMetal));
+    assert(request.sourceCount == 3);
+    assert(std::strcmp(request.sourceFiles[0], "src/main.cpp") == 0);
+    assert(std::strcmp(request.sourceFiles[1], "src/helper.cpp") == 0);
+    assert(std::strcmp(request.sourceFiles[2], "src/utility.c") == 0);
     assert(!BuildRequestFromProject(bareProject, &request, &error, BuildBackendKind::Hosted) &&
            error == BuildErrorCode::UnsupportedTarget);
     project.kind = ProjectKind::ConsoleApplication;

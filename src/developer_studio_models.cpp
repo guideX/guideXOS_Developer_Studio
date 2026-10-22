@@ -491,6 +491,9 @@ const char* ModelErrorName(ModelErrorCode code) {
     case ModelErrorCode::BinaryFile: return "binary_file";
     case ModelErrorCode::FileTooLarge: return "file_too_large";
     case ModelErrorCode::TooManyDocuments: return "too_many_documents";
+    case ModelErrorCode::DestinationExists: return "destination_exists";
+    case ModelErrorCode::SourceLimitReached: return "source_limit_reached";
+    case ModelErrorCode::SourceRegistrationFailed: return "source_registration_failed";
     case ModelErrorCode::ReadFailed: return "read_failed";
     case ModelErrorCode::WriteFailed: return "write_failed";
     case ModelErrorCode::UnsavedChanges: return "unsaved_changes";

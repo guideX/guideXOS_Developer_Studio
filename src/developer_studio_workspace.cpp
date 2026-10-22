@@ -391,6 +391,109 @@ static bool sourceExtension(const char* name) {
         (name[length - 1] == 'p' || name[length - 1] == 'P');
 }
 
+static char foldAscii(char value) {
+    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
+}
+
+static bool equalTextFolded(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t i = 0;
+    while (left[i] && right[i] && foldAscii(left[i]) == foldAscii(right[i])) ++i;
+    return left[i] == right[i];
+}
+
+static bool isValidProjectFileName(const char* value) {
+    if (!value) return false;
+    uint32_t length = 0;
+    while (length < kMaxNameBytes && value[length]) ++length;
+    if (length == 0 || length >= kMaxNameBytes || value[0] == '.' ||
+        value[length - 1] == '.' || value[length - 1] == ' ') return false;
+    bool source = false;
+    bool header = false;
+    bool text = false;
+    for (uint32_t i = 0; i < length; ++i) {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ' ')) return false;
+    }
+    const char* dot = value + length;
+    while (dot > value && dot[-1] != '.') --dot;
+    if (dot > value) {
+        const char* extension = dot;
+        if (equalTextFolded(extension, "c") || equalTextFolded(extension, "cpp")) source = true;
+        else if (equalTextFolded(extension, "h")) header = true;
+        else if (equalTextFolded(extension, "txt")) text = true;
+    }
+    return source || header || text;
+}
+
+static bool isSourceFileName(const char* value) {
+    if (!value) return false;
+    uint32_t length = 0;
+    while (length < kMaxNameBytes && value[length]) ++length;
+    return (length >= 2 && value[length - 2] == '.' &&
+            (foldAscii(value[length - 1]) == 'c')) ||
+           (length >= 4 && value[length - 4] == '.' &&
+            foldAscii(value[length - 3]) == 'c' &&
+            foldAscii(value[length - 2]) == 'p' &&
+            foldAscii(value[length - 1]) == 'p');
+}
+
+static bool appendSourcePath(const Project& project, const char* relative,
+                             char* output, uint32_t outputSize) {
+    if (!relative || !relative[0] || !copyEntryName(output, outputSize, project.sourceRoot)) return false;
+    uint32_t length = 0;
+    while (output[length]) ++length;
+    if (length + 1 >= outputSize) return false;
+    output[length++] = '/';
+    output[length] = '\0';
+    return copyEntryName(output + length, outputSize - length, relative);
+}
+
+static bool projectDocumentSourcePath(const WorkspaceModel& model, const Document& document,
+                                      char* output, uint32_t outputSize) {
+    char sourceDirectory[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(model.project.rootPath, model.project.sourceRoot,
+                           sourceDirectory, sizeof(sourceDirectory))) return false;
+    uint32_t directoryLength = 0;
+    while (sourceDirectory[directoryLength]) ++directoryLength;
+    for (uint32_t i = 0; i < directoryLength; ++i)
+        if (foldAscii(sourceDirectory[i]) != foldAscii(document.path[i])) return false;
+    if (document.path[directoryLength] != '/') return false;
+    const char* remainder = document.path + directoryLength + 1;
+    if (!remainder[0] || PathContainsTraversal(remainder) || !isSourceFileName(remainder)) return false;
+    for (uint32_t i = 0; remainder[i]; ++i)
+        if (remainder[i] == '/' || remainder[i] == '\\' || remainder[i] == ':') return false;
+    return copyEntryName(output, outputSize, remainder);
+}
+
+static bool persistProjectSources(WorkspaceController* controller, Project* candidate) {
+    if (!controller || !candidate || !controller->fileSystem.read || !controller->fileSystem.write ||
+        !candidate->hasSourceFiles || candidate->sourceFileCount == 0 ||
+        candidate->sourceFileCount > kMaxProjectSources || controller->projectOpenInProgress) return false;
+    char metadataPath[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(candidate->rootPath, "guidexos.project", metadataPath, sizeof(metadataPath))) return false;
+    char* original = controller->projectLoadScratch.manifestBytes;
+    char* serialized = controller->projectLoadScratch.metadataBytes;
+    uint32_t originalBytes = 0;
+    if (!controller->fileSystem.read(controller->fileSystem.userData, metadataPath,
+                                     original, kMaxProjectFileBytes, &originalBytes) ||
+        originalBytes > kMaxProjectFileBytes) return false;
+    uint32_t serializedBytes = 0;
+    ProjectErrorCode projectError = ProjectErrorCode::None;
+    if (!SerializeProjectMetadata(*candidate, serialized, kMaxProjectFileBytes + 1,
+                                  &serializedBytes, &projectError)) return false;
+    uint32_t written = 0;
+    if (!controller->fileSystem.write(controller->fileSystem.userData, metadataPath,
+                                      serialized, serializedBytes, &written) || written != serializedBytes) {
+        uint32_t restored = 0;
+        controller->fileSystem.write(controller->fileSystem.userData, metadataPath,
+                                     original, originalBytes, &restored);
+        return false;
+    }
+    return true;
+}
+
 static bool pathBefore(const char* left, const char* right) {
     uint32_t i = 0;
     while (left && right && left[i] && right[i] && left[i] == right[i]) ++i;
@@ -907,6 +1010,27 @@ bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* contr
         !controller->model.open || !controller->model.hasProject ||
         !controller->fileSystem.stat || !controller->fileSystem.list) return false;
     const Project& project = controller->model.project;
+    if (project.hasSourceFiles) {
+        if (project.sourceFileCount == 0 || project.sourceFileCount > capacity ||
+            project.sourceFileCount > kMaxProjectSources) return false;
+        for (uint32_t i = 0; i < project.sourceFileCount; ++i) {
+            const char* source = project.sourceFiles[i];
+            if (!source[0] || PathContainsTraversal(source) || !sourceExtension(source)) return false;
+            for (uint32_t j = 0; j < i; ++j)
+                if (equalTextFolded(source, project.sourceFiles[j])) return false;
+            ProjectSourceFile& file = files[i];
+            file = {};
+            if (!appendSourcePath(project, source, file.relativePath, sizeof(file.relativePath))) return false;
+            char absolute[kMaxPathBytes] = {};
+            if (!JoinWorkspacePath(project.rootPath, file.relativePath, absolute, sizeof(absolute))) return false;
+            FileInfo info = {};
+            if (!controller->fileSystem.stat(controller->fileSystem.userData, absolute, &info) ||
+                info.kind != FileInfoKind::RegularFile) return false;
+            file.size = info.size;
+        }
+        *outCount = project.sourceFileCount;
+        return true;
+    }
     if (project.sourceEntry[0] != '\0') {
         if (PathContainsTraversal(project.sourceEntry)) return false;
         char relative[kMaxProjectPathBytes] = {};
@@ -1164,7 +1288,9 @@ bool WorkspaceControllerOpenDocumentAtLocation(WorkspaceController* controller, 
         if (error) *error = OutputErrorCode::DiagnosticPathOutsideProject;
         return false;
     }
-    if (!WorkspaceControllerOpenDocument(controller, relativePath)) {
+    // Diagnostics use project-root-relative paths even when the explorer is
+    // currently browsing src/ or another nested directory.
+    if (!WorkspaceControllerOpenDocument(controller, absolute)) {
         if (error) *error = OutputErrorCode::DiagnosticFileNotFound;
         return false;
     }
@@ -1190,6 +1316,234 @@ bool WorkspaceControllerSaveDocument(WorkspaceController* controller, uint32_t d
 #endif
     setControllerError(controller, ModelErrorCode::None);
     return true;
+}
+
+static bool sourceSuffixFromProjectPath(const Project& project, const char* path,
+                                        char* output, uint32_t outputSize) {
+    char prefix[kMaxProjectPathBytes + 2] = {};
+    if (!copyEntryName(prefix, sizeof(prefix), project.sourceRoot)) return false;
+    uint32_t length = 0;
+    while (prefix[length]) ++length;
+    if (length + 1 >= sizeof(prefix)) return false;
+    prefix[length++] = '/';
+    prefix[length] = '\0';
+    for (uint32_t i = 0; i < length; ++i)
+        if (!path[i] || foldAscii(prefix[i]) != foldAscii(path[i])) return false;
+    const char* remainder = path + length;
+    if (!remainder[0] || PathContainsTraversal(remainder) || !sourceExtension(remainder)) return false;
+    return copyEntryName(output, outputSize, remainder);
+}
+
+static bool seedProjectSourcesFromLegacy(WorkspaceController* controller, Project* candidate) {
+    if (!controller || !candidate) return false;
+    ProjectSourceFile legacy[kMaxProjectSourceFiles] = {};
+    uint32_t legacyCount = 0;
+    if (!WorkspaceControllerEnumerateProjectSources(controller, legacy,
+                                                     kMaxProjectSourceFiles, &legacyCount)) return false;
+    candidate->hasSourceFiles = true;
+    candidate->sourceFileCount = 0;
+    for (uint32_t i = 0; i < legacyCount; ++i) {
+        char relative[kMaxProjectPathBytes] = {};
+        if (!sourceSuffixFromProjectPath(*candidate, legacy[i].relativePath,
+                                         relative, sizeof(relative)) ||
+            !copyEntryName(candidate->sourceFiles[candidate->sourceFileCount],
+                           sizeof(candidate->sourceFiles[candidate->sourceFileCount]), relative)) return false;
+        ++candidate->sourceFileCount;
+    }
+    return true;
+}
+
+static bool freezeLegacyEnumeration(WorkspaceController* controller) {
+    if (!controller || !controller->model.hasProject) return false;
+    const Project& current = controller->model.project;
+    if (current.hasSourceFiles || current.sourceEntry[0] != '\0') return true;
+    Project candidate = current;
+    if (!seedProjectSourcesFromLegacy(controller, &candidate) ||
+        !ValidateProjectMetadata(candidate, nullptr) || !persistProjectSources(controller, &candidate)) return false;
+    controller->model.project = candidate;
+    return true;
+}
+
+static bool addProjectSourcePath(WorkspaceController* controller, const char* sourcePath) {
+    if (!controller || !controller->model.open || !controller->model.hasProject || !sourcePath ||
+        !sourcePath[0] || PathContainsTraversal(sourcePath) || !sourceExtension(sourcePath)) {
+        if (controller) setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    Project candidate = controller->model.project;
+    bool seededFromLegacy = false;
+    if (!candidate.hasSourceFiles) {
+        if (!seedProjectSourcesFromLegacy(controller, &candidate)) {
+            setControllerError(controller, ModelErrorCode::SourceRegistrationFailed);
+            return false;
+        }
+        seededFromLegacy = true;
+    }
+    for (uint32_t i = 0; i < candidate.sourceFileCount; ++i) {
+        if (equalTextFolded(candidate.sourceFiles[i], sourcePath)) {
+            if (seededFromLegacy && ValidateProjectMetadata(candidate, nullptr) &&
+                persistProjectSources(controller, &candidate)) {
+                controller->model.project = candidate;
+                setControllerError(controller, ModelErrorCode::None);
+                return true;
+            }
+            setControllerError(controller, ModelErrorCode::DestinationExists);
+            return false;
+        }
+    }
+    if (candidate.sourceFileCount >= kMaxProjectSources) {
+        setControllerError(controller, ModelErrorCode::SourceLimitReached);
+        return false;
+    }
+    if (!copyEntryName(candidate.sourceFiles[candidate.sourceFileCount],
+                       sizeof(candidate.sourceFiles[candidate.sourceFileCount]), sourcePath)) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    ++candidate.sourceFileCount;
+    ProjectErrorCode projectError = ProjectErrorCode::None;
+    if (!ValidateProjectMetadata(candidate, &projectError) || !persistProjectSources(controller, &candidate)) {
+        setControllerError(controller, ModelErrorCode::SourceRegistrationFailed);
+        return false;
+    }
+    controller->model.project = candidate;
+    setControllerError(controller, ModelErrorCode::None);
+    return true;
+}
+
+bool WorkspaceControllerCreateProjectFile(WorkspaceController* controller, const char* fileName,
+                                          uint32_t* outDocumentIndex) {
+    if (outDocumentIndex) *outDocumentIndex = kMaxOpenDocuments;
+    if (!controller || !controller->model.open || !controller->model.hasProject ||
+        !controller->fileSystem.stat || !controller->fileSystem.write || !isValidProjectFileName(fileName)) {
+        if (controller) setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    char relative[kMaxProjectPathBytes] = {};
+    char absolute[kMaxPathBytes] = {};
+    if (!appendSourcePath(controller->model.project, fileName, relative, sizeof(relative)) ||
+        !JoinWorkspacePath(controller->model.project.rootPath, relative, absolute, sizeof(absolute))) {
+        setControllerError(controller, ModelErrorCode::OutsideWorkspace);
+        return false;
+    }
+    FileInfo info = {};
+    if (controller->fileSystem.stat(controller->fileSystem.userData, absolute, &info)) {
+        setControllerError(controller, ModelErrorCode::DestinationExists);
+        return false;
+    }
+    if (FindOpenDocument(&controller->model, absolute) >= 0) {
+        setControllerError(controller, ModelErrorCode::DestinationExists);
+        return false;
+    }
+    static const char empty[] = "";
+    uint32_t written = 0;
+    if (!controller->fileSystem.write(controller->fileSystem.userData, absolute, empty, 0, &written) || written != 0) {
+        if (controller->fileSystem.removePath)
+            controller->fileSystem.removePath(controller->fileSystem.userData, absolute);
+        setControllerError(controller, ModelErrorCode::WriteFailed);
+        return false;
+    }
+    if (isSourceFileName(fileName) && !addProjectSourcePath(controller, fileName)) {
+        if (controller->fileSystem.removePath)
+            controller->fileSystem.removePath(controller->fileSystem.userData, absolute);
+        setControllerError(controller, controller->lastError == ModelErrorCode::None
+            ? ModelErrorCode::SourceRegistrationFailed : controller->lastError);
+        return false;
+    }
+    if (!WorkspaceModelSetBrowsePath(&controller->model, controller->model.project.sourceRoot) ||
+        !WorkspaceControllerRefresh(controller) || !WorkspaceControllerOpenDocument(controller, absolute)) {
+        setControllerError(controller, ModelErrorCode::ReadFailed);
+        return false;
+    }
+    const int index = FindOpenDocument(&controller->model, absolute);
+    if (index < 0) {
+        setControllerError(controller, ModelErrorCode::DocumentNotFound);
+        return false;
+    }
+    controller->model.activeDocument = static_cast<uint32_t>(index);
+    if (outDocumentIndex) *outDocumentIndex = static_cast<uint32_t>(index);
+    setControllerError(controller, ModelErrorCode::None);
+    return true;
+}
+
+bool WorkspaceControllerSaveAs(WorkspaceController* controller, uint32_t documentIndex,
+                               const char* fileName) {
+    if (!controller || !controller->model.open || !controller->model.hasProject ||
+        documentIndex >= kMaxOpenDocuments || !controller->model.documents[documentIndex].used ||
+        !controller->fileSystem.stat || !controller->fileSystem.write || !isValidProjectFileName(fileName)) {
+        if (controller) setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    Document& document = controller->model.documents[documentIndex];
+    char relative[kMaxProjectPathBytes] = {};
+    char destination[kMaxPathBytes] = {};
+    if (!appendSourcePath(controller->model.project, fileName, relative, sizeof(relative)) ||
+        !JoinWorkspacePath(controller->model.project.rootPath, relative, destination, sizeof(destination)) ||
+        !isWithinRoot(controller->model, destination)) {
+        setControllerError(controller, ModelErrorCode::OutsideWorkspace);
+        return false;
+    }
+    if (PathsEqual(document.path, destination)) return WorkspaceControllerSaveDocument(controller, documentIndex);
+    FileInfo info = {};
+    if (controller->fileSystem.stat(controller->fileSystem.userData, destination, &info) ||
+        FindOpenDocument(&controller->model, destination) >= 0) {
+        setControllerError(controller, ModelErrorCode::DestinationExists);
+        return false;
+    }
+    if (isSourceFileName(fileName) && !freezeLegacyEnumeration(controller)) {
+        setControllerError(controller, ModelErrorCode::SourceRegistrationFailed);
+        return false;
+    }
+    uint32_t written = 0;
+    const bool writeSucceeded = controller->fileSystem.write(controller->fileSystem.userData, destination,
+        document.buffer.data, document.buffer.length, &written) && written == document.buffer.length;
+    if (!writeSucceeded) {
+        // The destination was confirmed absent before this single-threaded
+        // workspace write. Remove any partial file so it cannot be mistaken
+        // for a successful Save As on the next attempt.
+        if (controller->fileSystem.removePath)
+            controller->fileSystem.removePath(controller->fileSystem.userData, destination);
+        setControllerError(controller, ModelErrorCode::WriteFailed);
+        return false;
+    }
+    ModelErrorCode savedError = ModelErrorCode::None;
+    if (!WorkspaceModelMarkSaved(&controller->model, documentIndex, true, &savedError) ||
+        !copyEntryName(document.path, sizeof(document.path), destination) ||
+        !copyEntryName(document.name, sizeof(document.name), fileName)) {
+        setControllerError(controller, ModelErrorCode::WriteFailed);
+        return false;
+    }
+#if !defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+    if (controller->symbolDatabase) WorkspaceControllerUpdateDocumentSymbols(controller, documentIndex);
+#endif
+    WorkspaceModelSetBrowsePath(&controller->model, controller->model.project.sourceRoot);
+    WorkspaceControllerRefresh(controller);
+    setControllerError(controller, ModelErrorCode::None);
+    return true;
+}
+
+bool WorkspaceControllerRegisterProjectSource(WorkspaceController* controller,
+                                               uint32_t documentIndex) {
+    if (!controller || documentIndex >= kMaxOpenDocuments ||
+        !controller->model.documents[documentIndex].used) {
+        if (controller) setControllerError(controller, ModelErrorCode::DocumentNotFound);
+        return false;
+    }
+    const Document& document = controller->model.documents[documentIndex];
+    char relative[kMaxProjectPathBytes] = {};
+    if (!projectDocumentSourcePath(controller->model, document, relative, sizeof(relative))) {
+        setControllerError(controller, ModelErrorCode::InvalidPath);
+        return false;
+    }
+    char absolute[kMaxPathBytes] = {};
+    FileInfo info = {};
+    if (!copyEntryName(absolute, sizeof(absolute), document.path) || !controller->fileSystem.stat ||
+        !controller->fileSystem.stat(controller->fileSystem.userData, absolute, &info) ||
+        info.kind != FileInfoKind::RegularFile) {
+        setControllerError(controller, ModelErrorCode::ReadFailed);
+        return false;
+    }
+    return addProjectSourcePath(controller, relative);
 }
 
 bool WorkspaceControllerSaveActive(WorkspaceController* controller) {

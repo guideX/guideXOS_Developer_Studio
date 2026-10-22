@@ -190,6 +190,9 @@ using guidexos::developer_studio::WorkspaceControllerRefresh;
 using guidexos::developer_studio::WorkspaceControllerSaveActive;
 using guidexos::developer_studio::WorkspaceControllerSaveAll;
 using guidexos::developer_studio::WorkspaceControllerSaveDocument;
+using guidexos::developer_studio::WorkspaceControllerCreateProjectFile;
+using guidexos::developer_studio::WorkspaceControllerSaveAs;
+using guidexos::developer_studio::WorkspaceControllerRegisterProjectSource;
 using guidexos::developer_studio::WorkspaceFileSystem;
 using guidexos::developer_studio::WorkspaceProjectOpenEvent;
 using guidexos::developer_studio::WorkspaceProjectOpenState;
@@ -739,6 +742,9 @@ enum class InputMode {
     WorkspacePath,
     ProjectPath,
     ProjectCreate,
+    NewProjectFile,
+    SaveAs,
+    ConfirmSourceRegistration,
     ConfirmDocument,
     ConfirmWorkspace,
     ConfirmApplication,
@@ -842,6 +848,8 @@ static gx_file_entry g_fsListEntries[kMaxWorkspaceEntries] = {};
 static NativeFileSystemContext g_fileSystemContext = {};
 static gx_handle g_window = 0;
 static InputMode g_inputMode = InputMode::Normal;
+static uint32_t g_saveAsDocumentIndex = kMaxOpenDocuments;
+static uint32_t g_sourceRegistrationDocumentIndex = kMaxOpenDocuments;
 static bool g_editorFocused = false;
 static bool g_fileMenuOpen = false;
 static bool g_buildMenuOpen = false;
@@ -8413,6 +8421,128 @@ static void showNewProjectPrompt(gx_app_context* ctx) {
     g_editorFocused = false;
     g_outputFocused = false;
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_create_request=PASS");
+}
+
+static bool isBuildSourceName(const char* name) {
+    if (!name) return false;
+    uint32_t length = lengthOf(name, kMaxNameBytes);
+    if (length >= 2 && name[length - 2] == '.') {
+        char extension = name[length - 1];
+        if (extension >= 'A' && extension <= 'Z') extension = static_cast<char>(extension + ('a' - 'A'));
+        if (extension == 'c') return true;
+    }
+    if (length >= 4 && name[length - 4] == '.') {
+        char a = name[length - 3], b = name[length - 2], c = name[length - 1];
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b + ('a' - 'A'));
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        return name[length - 4] == '.' && a == 'c' && b == 'p' && c == 'p';
+    }
+    return false;
+}
+
+static void showNewProjectFilePrompt(gx_app_context* ctx) {
+    if (BuildControllerIsActive(&g_buildController) || RunControllerIsActive(&g_runController) ||
+        DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+        writeOutput("File creation is unavailable while Build, Run, or Debug is active");
+        return;
+    }
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        writeOutput("Open a project before creating a file");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER file_create=FAIL", "no_active_project");
+        return;
+    }
+    g_inputMode = InputMode::NewProjectFile;
+    g_prompt[0] = '\0';
+    g_fileMenuOpen = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
+}
+
+static void showSaveAsPrompt(gx_app_context* ctx) {
+    if (BuildControllerIsActive(&g_buildController) || RunControllerIsActive(&g_runController) ||
+        DebugControllerIsActive(&g_debugController) || g_debugWaitingForBuild) {
+        writeOutput("Save As is unavailable while Build, Run, or Debug is active");
+        return;
+    }
+    if (!g_controller.model.open || !g_controller.model.hasProject ||
+        g_controller.model.activeDocument >= kMaxOpenDocuments ||
+        !g_controller.model.documents[g_controller.model.activeDocument].used) {
+        writeOutput("Open a project and document before using Save As");
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save_as=FAIL", "no_active_document");
+        return;
+    }
+    g_saveAsDocumentIndex = g_controller.model.activeDocument;
+    g_inputMode = InputMode::SaveAs;
+    g_prompt[0] = '\0';
+    g_fileMenuOpen = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
+}
+
+static void commitNewProjectFile(gx_app_context* ctx) {
+    uint32_t documentIndex = kMaxOpenDocuments;
+    if (!WorkspaceControllerCreateProjectFile(&g_controller, g_prompt, &documentIndex)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "New file failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), currentError());
+        writeOutput(g_textScratch);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER file_create=FAIL", currentError());
+        g_inputMode = InputMode::Normal;
+        return;
+    }
+    g_inputMode = InputMode::Normal;
+    g_editorFocused = true;
+    resetEditorView();
+    writeOutput("New project file created and opened");
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER file_create=PASS name=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_controller.model.documents[documentIndex].name);
+    logMarker(ctx, g_textScratch);
+    drawShell(ctx);
+}
+
+static void commitSaveAs(gx_app_context* ctx) {
+    if (g_saveAsDocumentIndex >= kMaxOpenDocuments ||
+        !WorkspaceControllerSaveAs(&g_controller, g_saveAsDocumentIndex, g_prompt)) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Save As failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), currentError());
+        writeOutput(g_textScratch);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save_as=FAIL", currentError());
+        g_inputMode = InputMode::Normal;
+        return;
+    }
+    Document& document = g_controller.model.documents[g_saveAsDocumentIndex];
+    g_controller.model.activeDocument = g_saveAsDocumentIndex;
+    copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_save_as=PASS name=");
+    appendText(g_textScratch, sizeof(g_textScratch), document.name);
+    logMarker(ctx, g_textScratch);
+    if (isBuildSourceName(document.name)) {
+        g_sourceRegistrationDocumentIndex = g_saveAsDocumentIndex;
+        g_inputMode = InputMode::ConfirmSourceRegistration;
+        writeOutput("Saved a copy. Choose whether to add it to project builds");
+    } else {
+        g_inputMode = InputMode::Normal;
+        writeOutput("Document saved as a new project file; the original remains");
+        drawShell(ctx);
+    }
+}
+
+static void finishSaveAsRegistration(gx_app_context* ctx, bool registerSource) {
+    if (registerSource && g_sourceRegistrationDocumentIndex < kMaxOpenDocuments &&
+        WorkspaceControllerRegisterProjectSource(&g_controller, g_sourceRegistrationDocumentIndex)) {
+        writeOutput("Saved source registered for project builds");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_source_registration=PASS");
+    } else if (registerSource) {
+        copyText(g_textScratch, sizeof(g_textScratch), "File was saved, but project registration failed: ");
+        appendText(g_textScratch, sizeof(g_textScratch), currentError());
+        writeOutput(g_textScratch);
+        markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_source_registration=FAIL", currentError());
+    } else {
+        writeOutput("Saved source remains outside the project build list");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_source_registration=SKIPPED");
+    }
+    g_sourceRegistrationDocumentIndex = kMaxOpenDocuments;
+    g_inputMode = InputMode::Normal;
+    drawShell(ctx);
 }
 
 static char* projectDialogField(uint32_t field, uint32_t* capacity) {
@@ -16288,6 +16418,23 @@ static void drawModal(gx_app_context* ctx) {
         drawText(ctx, 210, 325, "Enter: open   Escape: cancel");
         return;
     }
+    if (g_inputMode == InputMode::NewProjectFile || g_inputMode == InputMode::SaveAs) {
+        const bool saveAs = g_inputMode == InputMode::SaveAs;
+        drawText(ctx, 210, 220, saveAs ? "Save As" : "New File");
+        drawText(ctx, 210, 250, saveAs
+            ? "Enter a filename under the project src/ directory; the original stays in place:"
+            : "Enter a .c, .cpp, .h, or .txt filename under the project src/ directory:");
+        drawPanel(ctx, { 210, 265, 540, 30 }, 0x111722u);
+        drawText(ctx, 220, 285, g_prompt);
+        drawText(ctx, 210, 325, "Enter: save/create   Escape: cancel");
+        return;
+    }
+    if (g_inputMode == InputMode::ConfirmSourceRegistration) {
+        drawText(ctx, 210, 220, "Add Saved Source to Project?");
+        drawText(ctx, 210, 250, "Yes registers this file for the next Build. No keeps it editable only.");
+        drawText(ctx, 210, 290, "Y / Enter: add to build list   N / Escape: keep unregistered");
+        return;
+    }
     if (g_inputMode == InputMode::ProjectCreate) {
         drawPanel(ctx, { 150, 110, 660, 410 }, 0x2A3852u);
         drawText(ctx, 180, 142, "New Project");
@@ -16461,7 +16608,7 @@ static void drawShell(gx_app_context* ctx) {
     drawOwnershipPanel(ctx);
     drawIntegratedDebugPanel(ctx);
     if (g_fileMenuOpen) {
-        drawPanel(ctx, { 270, 42, 270, 202 }, 0x34496Au);
+        drawPanel(ctx, { 270, 42, 270, 250 }, 0x34496Au);
         drawText(ctx, 282, 64, "New Project");
         drawText(ctx, 282, 86, "Open Project");
         drawText(ctx, 282, 108, "Open Workspace");
@@ -16469,7 +16616,9 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 282, 152, "Close Workspace");
         drawText(ctx, 282, 174, "Switch Header / Source (Alt+O)");
         drawText(ctx, 282, 196, "File Ownership (Alt+Shift+O)");
-        drawText(ctx, 282, 218, "Exit");
+        drawText(ctx, 282, 218, "New File");
+        drawText(ctx, 282, 240, "Save As");
+        drawText(ctx, 282, 262, "Exit");
     }
     if (g_buildMenuOpen) {
         drawPanel(ctx, { 300, 42, 260, 92 }, 0x34496Au);
@@ -16608,6 +16757,28 @@ static void handleOutputKey(gx_app_context* ctx, int keyCode) {
 
 static void handleModalKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
     if (action != GX_KEY_ACTION_DOWN) return;
+    if (g_inputMode == InputMode::NewProjectFile || g_inputMode == InputMode::SaveAs) {
+        if (keyCode == 27) { g_inputMode = InputMode::Normal; g_saveAsDocumentIndex = kMaxOpenDocuments; return; }
+        if (keyCode == 13) {
+            if (g_inputMode == InputMode::NewProjectFile) commitNewProjectFile(ctx);
+            else commitSaveAs(ctx);
+            return;
+        }
+        if (keyCode == 8) { promptBackspace(); return; }
+        promptAppend(keyCode, modifiers);
+        return;
+    }
+    if (g_inputMode == InputMode::ConfirmSourceRegistration) {
+        if (keyCode == 27 || keyCode == 78 || keyCode == 110) {
+            finishSaveAsRegistration(ctx, false);
+            return;
+        }
+        if (keyCode == 13 || keyCode == 89 || keyCode == 121) {
+            finishSaveAsRegistration(ctx, true);
+            return;
+        }
+        return;
+    }
     if (g_inputMode == InputMode::ProjectCreate) {
         if (keyCode == 27) { g_inputMode = InputMode::Normal; writeOutput("Project creation canceled"); return; }
         if (keyCode == 9) {
@@ -18203,7 +18374,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (g_fileMenuOpen && x >= 270 && x < 540 && y >= 42 && y < 244) {
+    if (g_fileMenuOpen && x >= 270 && x < 540 && y >= 42 && y < 292) {
         if (y < 68) showNewProjectPrompt(ctx);
         else if (y < 92) showOpenProjectPrompt();
         else if (y < 116) showWorkspacePrompt();
@@ -18241,6 +18412,10 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             switchHeaderSource(ctx);
         } else if (y < 210) {
             openFileOwnership(ctx);
+        } else if (y < 234) {
+            showNewProjectFilePrompt(ctx);
+        } else if (y < 258) {
+            showSaveAsPrompt(ctx);
         } else {
             if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
             else if (RunControllerIsActive(&g_runController)) { g_inputMode = InputMode::ConfirmRunClose; writeOutput("Project application is running: Close it first or keep Studio open"); }

@@ -18,6 +18,11 @@ static bool fakeStat(void*, const char* path, FileInfo* outInfo) {
         outInfo->size = 11;
         return true;
     }
+    if (std::strcmp(path, "d:/work/hello/src/helpers.cpp") == 0) {
+        outInfo->kind = FileInfoKind::RegularFile;
+        outInfo->size = 12;
+        return true;
+    }
     return false;
 }
 
@@ -76,6 +81,19 @@ int main() {
     assert(count == 1);
     assert(std::strcmp(explicitFile.relativePath, "src/main.cpp") == 0);
     assert(explicitFile.size == 11);
+
+    controller.model.project.sourceEntry[0] = '\0';
+    controller.model.project.hasSourceFiles = true;
+    controller.model.project.sourceFileCount = 2;
+    std::strcpy(controller.model.project.sourceFiles[0], "main.cpp");
+    std::strcpy(controller.model.project.sourceFiles[1], "helpers.cpp");
+    ProjectSourceFile registered[2] = {};
+    count = 0;
+    assert(WorkspaceControllerEnumerateProjectSources(&controller, registered, 2, &count));
+    assert(count == 2);
+    assert(std::strcmp(registered[0].relativePath, "src/main.cpp") == 0);
+    assert(std::strcmp(registered[1].relativePath, "src/helpers.cpp") == 0);
+    assert(!WorkspaceControllerEnumerateProjectSources(&controller, registered, 1, &count));
 
     std::cout << "Developer Studio source enumeration PASS\n";
     return 0;

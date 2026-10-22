@@ -535,6 +535,30 @@ int main(int argc, char** argv) {
     TEST_CHECK(std::strcmp(parsed.targetProfileId, BareMetalTargetProfile().id) == 0);
     TEST_CHECK(std::strcmp(parsed.sourceEntry, "main.cpp") == 0);
 
+    bareProject.hasSourceFiles = true;
+    bareProject.sourceFileCount = 3;
+    std::strcpy(bareProject.sourceFiles[0], "main.cpp");
+    std::strcpy(bareProject.sourceFiles[1], "helper.cpp");
+    std::strcpy(bareProject.sourceFiles[2], "utility.c");
+    TEST_CHECK(SerializeProjectMetadata(bareProject, serialized, sizeof(serialized), &serializedBytes, &error));
+    TEST_CHECK(ParseProjectMetadata(serialized, serializedBytes, &parsed, &error));
+    TEST_CHECK(parsed.hasSourceFiles && parsed.sourceFileCount == 3);
+    TEST_CHECK(std::strcmp(parsed.sourceFiles[0], "main.cpp") == 0);
+    TEST_CHECK(std::strcmp(parsed.sourceFiles[1], "helper.cpp") == 0);
+    TEST_CHECK(std::strcmp(parsed.sourceFiles[2], "utility.c") == 0);
+    Project invalidSources = bareProject;
+    std::strcpy(invalidSources.sourceFiles[2], "HELPER.CPP");
+    TEST_CHECK(!ValidateProjectMetadata(invalidSources, &error) && error == ProjectErrorCode::DuplicateField);
+    invalidSources = bareProject;
+    std::strcpy(invalidSources.sourceFiles[1], "../outside.cpp");
+    TEST_CHECK(!ValidateProjectMetadata(invalidSources, &error) && error == ProjectErrorCode::InvalidRelativePath);
+    invalidSources = bareProject;
+    std::strcpy(invalidSources.sourceFiles[1], "helper.hpp");
+    TEST_CHECK(!ValidateProjectMetadata(invalidSources, &error) && error == ProjectErrorCode::InvalidRelativePath);
+    invalidSources = bareProject;
+    invalidSources.sourceFileCount = kMaxProjectSources + 1;
+    TEST_CHECK(!ValidateProjectMetadata(invalidSources, &error) && error == ProjectErrorCode::InvalidRelativePath);
+
     const fs::path testRoot = fs::absolute(fs::path("tmp") / "developer-studio-project-test-8");
     std::error_code ec;
     const bool preserve = argc > 1 && std::strcmp(argv[1], "--preserve") == 0;
@@ -561,6 +585,16 @@ int main(int argc, char** argv) {
     TEST_CHECK(fs::exists(generatedRoot / "guidexos.project"));
     TEST_CHECK(fs::exists(generatedRoot / "app" / "app.json"));
     TEST_CHECK(fs::exists(generatedRoot / "src" / "main.cpp"));
+    const std::string generatedMetadata = readAll(generatedRoot / "guidexos.project");
+    TEST_CHECK(generatedMetadata.find("\"sources\": [") != std::string::npos);
+    TEST_CHECK(generatedMetadata.find("\"main.cpp\"") != std::string::npos);
+    const std::string generatedCMake = readAll(generatedRoot / "CMakeLists.txt");
+    TEST_CHECK(generatedCMake.find("CMAKE_SYSTEM_NAME Generic") != std::string::npos);
+    TEST_CHECK(generatedCMake.find("string(JSON _source_count") != std::string::npos);
+    TEST_CHECK(generatedCMake.find("src/freestanding_memory.cpp") != std::string::npos);
+    const std::string generatedBuildScript = readAll(generatedRoot / "build.ps1");
+    TEST_CHECK(generatedBuildScript.find("$sourceProperty = $metadata.PSObject.Properties['sources']") != std::string::npos);
+    TEST_CHECK(generatedBuildScript.find("$objectPath = Join-Path $ObjectRoot") != std::string::npos);
     ProjectOperationResult loaded;
     TEST_CHECK(LoadProject(fileSystem, generatedRoot.string().c_str(), &loaded));
     TEST_CHECK(loaded.manifestDiagnostic.validationCount == 1);

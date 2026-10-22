@@ -86,6 +86,13 @@ target_link_libraries(developer_studio_source_enumeration_test PRIVATE developer
 set_target_properties(developer_studio_source_enumeration_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_source_enumeration_test COMMAND developer_studio_source_enumeration_test)
 
+add_executable(developer_studio_file_workflow_test
+    tests/workspace_file_workflow_test.cpp
+)
+target_link_libraries(developer_studio_file_workflow_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_file_workflow_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_file_workflow_test COMMAND developer_studio_file_workflow_test)
+
 add_executable(developer_studio_run_test
     tests/run_test.cpp
 )

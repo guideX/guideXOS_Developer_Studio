@@ -194,13 +194,39 @@ bool BuildRequestFromProject(const Project& project, BuildRequest* request, Buil
         if (error) *error = BuildErrorCode::InvalidRequest;
         return false;
     }
-    if (backend == BuildBackendKind::BareMetal && project.sourceEntry[0] != '\0') {
-        uint32_t length = 0;
+    if (project.hasSourceFiles) {
+        if (project.sourceFileCount == 0 || project.sourceFileCount > kMaxBuildSources) {
+            if (error) *error = BuildErrorCode::InvalidRequest;
+            return false;
+        }
+        for (uint32_t i = 0; i < project.sourceFileCount; ++i) {
+            char* destination = request->sourceFiles[i];
+            if (!copyText(destination, sizeof(request->sourceFiles[i]), project.sourceRoot)) {
+                if (error) *error = BuildErrorCode::InvalidRequest;
+                return false;
+            }
+            uint32_t length = 0;
+            while (destination[length]) ++length;
+            if (length + 1 >= sizeof(request->sourceFiles[i])) {
+                if (error) *error = BuildErrorCode::InvalidRequest;
+                return false;
+            }
+            destination[length++] = '/';
+            destination[length] = '\0';
+            if (!copyText(destination + length, sizeof(request->sourceFiles[i]) - length,
+                          project.sourceFiles[i])) {
+                if (error) *error = BuildErrorCode::InvalidRequest;
+                return false;
+            }
+        }
+        request->sourceCount = project.sourceFileCount;
+    } else if (project.sourceEntry[0] != '\0') {
         if (!copyText(request->sourceFiles[0], sizeof(request->sourceFiles[0]), project.sourceRoot)) {
             if (error) *error = BuildErrorCode::InvalidRequest;
             return false;
         }
-        while (request->sourceFiles[0][length] != '\0') ++length;
+        uint32_t length = 0;
+        while (request->sourceFiles[0][length]) ++length;
         if (length + 1 >= sizeof(request->sourceFiles[0])) {
             if (error) *error = BuildErrorCode::InvalidRequest;
             return false;

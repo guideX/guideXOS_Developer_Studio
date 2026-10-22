@@ -111,6 +111,8 @@ static const uint32_t kMaxProjectIdBytes = 96;
 static const uint32_t kMaxProjectDisplayNameBytes = 96;
 static const uint32_t kMaxProjectPathBytes = 160;
 static const uint32_t kMaxProjectOutputNameBytes = 96;
+// Matches the bounded guest compiler's existing translation-unit limit.
+static const uint32_t kMaxProjectSources = 16;
 
 struct Capability {
     const char* id;
@@ -151,6 +153,12 @@ struct Project {
     // Optional deterministic compiler entry. Empty preserves the original
     // project-file shape; when present it is relative to sourceRoot.
     char sourceEntry[kMaxProjectPathBytes];
+    // Optional version-1 extension. When present, this ordered list is the
+    // exact set of user compilation units; paths are relative to sourceRoot.
+    // Absence preserves legacy sourceEntry/enumeration behavior.
+    char sourceFiles[kMaxProjectSources][kMaxProjectPathBytes];
+    uint32_t sourceFileCount;
+    bool hasSourceFiles;
     ProjectLoadState loadState;
     ProjectValidationState validationState;
     ProjectErrorCode error;
@@ -173,6 +181,9 @@ enum class ModelErrorCode {
     BinaryFile,
     FileTooLarge,
     TooManyDocuments,
+    DestinationExists,
+    SourceLimitReached,
+    SourceRegistrationFailed,
     ReadFailed,
     WriteFailed,
     UnsavedChanges,

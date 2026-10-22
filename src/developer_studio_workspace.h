@@ -7,11 +7,7 @@
 namespace guidexos {
 namespace developer_studio {
 
-#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
-static const uint32_t kMaxProjectSourceFiles = 4;
-#else
-static const uint32_t kMaxProjectSourceFiles = 16;
-#endif
+static const uint32_t kMaxProjectSourceFiles = kMaxProjectSources;
 
 struct ProjectSourceFile {
     char relativePath[kMaxProjectPathBytes];
@@ -219,6 +215,12 @@ bool WorkspaceControllerOpenDocumentAtLocation(WorkspaceController* controller, 
 bool WorkspaceControllerSetCaretPosition(WorkspaceController* controller, uint32_t documentIndex, uint32_t line, uint32_t column,
                                           bool* outLocationClamped, OutputErrorCode* error);
 bool WorkspaceControllerSaveDocument(WorkspaceController* controller, uint32_t documentIndex);
+bool WorkspaceControllerCreateProjectFile(WorkspaceController* controller, const char* fileName,
+                                          uint32_t* outDocumentIndex);
+bool WorkspaceControllerSaveAs(WorkspaceController* controller, uint32_t documentIndex,
+                               const char* fileName);
+bool WorkspaceControllerRegisterProjectSource(WorkspaceController* controller,
+                                               uint32_t documentIndex);
 bool WorkspaceControllerSaveActive(WorkspaceController* controller);
 bool WorkspaceControllerSaveAll(WorkspaceController* controller);
 bool WorkspaceControllerHasDirtyProjectDocuments(const WorkspaceController* controller);

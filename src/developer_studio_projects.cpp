@@ -175,6 +175,18 @@ static bool isSafeOutputName(const char* value) {
     return true;
 }
 
+static bool isCompilationSourcePath(const char* value) {
+    if (!value) return false;
+    if (equalTextFolded(value, "freestanding_memory.cpp")) return false;
+    uint32_t length = lengthOf(value, kMaxProjectPathBytes, nullptr);
+    return (length >= 2 && value[length - 2] == '.' &&
+            (value[length - 1] == 'c' || value[length - 1] == 'C')) ||
+           (length >= 4 && value[length - 4] == '.' &&
+            (value[length - 3] == 'c' || value[length - 3] == 'C') &&
+            (value[length - 2] == 'p' || value[length - 2] == 'P') &&
+            (value[length - 1] == 'p' || value[length - 1] == 'P'));
+}
+
 struct JsonCursor {
     const char* bytes;
     uint32_t length;
@@ -287,6 +299,7 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
         else if (equalText(key, "outputName")) bit = 1u << 10;
         else if (equalText(key, "sourceEntry")) bit = 1u << 11;
         else if (equalText(key, "packageRoot")) bit = 1u << 12;
+        else if (equalText(key, "sources")) bit = 1u << 13;
         else { cursor.error = ProjectErrorCode::UnknownField; return false; }
         if ((fields & bit) != 0) { cursor.error = ProjectErrorCode::DuplicateField; return false; }
         fields |= bit;
@@ -327,6 +340,42 @@ static bool parseProjectObject(JsonCursor& cursor, Project* project) {
                 !copyText(project->sourceEntry, sizeof(project->sourceEntry), normalized)) {
                 cursor.error = ProjectErrorCode::InvalidRelativePath;
                 return false;
+            }
+        } else if (bit == (1u << 13)) {
+            if (!expect(cursor, '[')) return false;
+            project->hasSourceFiles = true;
+            skipWhitespace(cursor);
+            if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ']') {
+                ++cursor.position;
+            } else {
+                while (cursor.position < cursor.length) {
+                    if (project->sourceFileCount >= kMaxProjectSources) {
+                        cursor.error = ProjectErrorCode::InvalidRelativePath;
+                        return false;
+                    }
+                    char value[kMaxProjectPathBytes] = {};
+                    char normalized[kMaxProjectPathBytes] = {};
+                    if (!parseJsonString(cursor, value, sizeof(value)) ||
+                        !isSafeRelativePath(value, normalized, sizeof(normalized)) ||
+                        !copyText(project->sourceFiles[project->sourceFileCount],
+                                  sizeof(project->sourceFiles[project->sourceFileCount]), normalized)) {
+                        cursor.error = ProjectErrorCode::InvalidRelativePath;
+                        return false;
+                    }
+                    ++project->sourceFileCount;
+                    skipWhitespace(cursor);
+                    if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ',') {
+                        ++cursor.position;
+                        skipWhitespace(cursor);
+                        continue;
+                    }
+                    if (cursor.position < cursor.length && cursor.bytes[cursor.position] == ']') {
+                        ++cursor.position;
+                        break;
+                    }
+                    cursor.error = ProjectErrorCode::MalformedJson;
+                    return false;
+                }
             }
         } else if (bit == (1u << 12)) {
             if (!parseJsonString(cursor, packageRoot, sizeof(packageRoot)) || !isAbsolutePath(packageRoot) ||
@@ -622,13 +671,23 @@ static bool generateManifest(const Project& project, char* output, uint32_t outp
 static bool generateCMake(const Project& project, char* output, uint32_t outputSize, uint32_t* outBytes) {
     uint32_t length = 0;
     output[0] = '\0';
-    if (!appendText(output, outputSize, length, "cmake_minimum_required(VERSION 3.16)\n\nproject(GuideXOSNativeGuiApplication LANGUAGES CXX)\n\nset(CMAKE_CXX_STANDARD 11)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)\n\nset(GUIDEXOS_SERVER_ROOT \"\" CACHE PATH \"guideXOS Server checkout\")\nif(NOT GUIDEXOS_SERVER_ROOT)\n    message(FATAL_ERROR \"Pass -DGUIDEXOS_SERVER_ROOT=<server-checkout>\")\nendif()\n\nadd_executable(" ) ||
-        !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf\n    src/main.cpp\n    src/freestanding_memory.cpp\n)\ntarget_include_directories(" ) || !appendText(output, outputSize, length, project.outputName) ||
+    const char* linkMachine = equalText(project.architecture, "arm64") ? "aarch64elf" : "elf_x86_64";
+    if (!appendText(output, outputSize, length,
+        "cmake_minimum_required(VERSION 3.19)\n\nset(CMAKE_SYSTEM_NAME Generic)\nset(CMAKE_CXX_COMPILER_TARGET \"") ||
+        !appendText(output, outputSize, length, kCompilerTriple) ||
+        !appendText(output, outputSize, length,
+        "\")\nset(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)\nproject(GuideXOSNativeGuiApplication LANGUAGES CXX)\n\nset(CMAKE_CXX_STANDARD 11)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_EXTENSIONS OFF)\nget_filename_component(GUIDEXOS_LLVM_BIN \"${CMAKE_CXX_COMPILER}\" DIRECTORY)\nset(CMAKE_CXX_LINK_EXECUTABLE \"\\\"${GUIDEXOS_LLVM_BIN}/ld.lld.exe\\\" -m ") ||
+        !appendText(output, outputSize, length, linkMachine) ||
+        !appendText(output, outputSize, length, " -static -e gx_main <OBJECTS> -o <TARGET>\")\n\nset(GUIDEXOS_SERVER_ROOT \"\" CACHE PATH \"guideXOS Server checkout\")\nif(NOT GUIDEXOS_SERVER_ROOT)\n    message(FATAL_ERROR \"Pass -DGUIDEXOS_SERVER_ROOT=<server-checkout>\")\nendif()\n\nfile(READ \"${CMAKE_CURRENT_SOURCE_DIR}/guidexos.project\" _project_json)\n"
+        "string(JSON _source_count ERROR_VARIABLE _sources_error LENGTH \"${_project_json}\" sources)\nset(_user_sources)\nset(_seen_sources)\n"
+        "if(_sources_error)\n    string(JSON _source_entry ERROR_VARIABLE _entry_error GET \"${_project_json}\" sourceEntry)\n    if(_entry_error OR _source_entry STREQUAL \"\")\n        message(FATAL_ERROR \"Project has no bounded source list or sourceEntry\")\n    endif()\n    string(FIND \"${_source_entry}\" \"\\\\\" _entry_backslash_position)\n    string(TOLOWER \"${_source_entry}\" _entry_lower)\n    if(IS_ABSOLUTE \"${_source_entry}\" OR _source_entry MATCHES \"[;:]\" OR _source_entry MATCHES \"(^|/)[.][.]?(/|$)\" OR _entry_backslash_position GREATER -1 OR NOT _entry_lower MATCHES \"\\\\.(c|cpp)$\" OR _entry_lower STREQUAL \"freestanding_memory.cpp\")\n        message(FATAL_ERROR \"Unsafe or unsupported legacy sourceEntry\")\n    endif()\n    list(APPEND _user_sources \"src/${_source_entry}\")\n"
+        "else()\n    if(_source_count LESS 1 OR _source_count GREATER 16)\n        message(FATAL_ERROR \"Project source list must contain 1 to 16 translation units\")\n    endif()\n    math(EXPR _source_last \"${_source_count} - 1\")\n    foreach(_index RANGE 0 ${_source_last})\n        string(JSON _source GET \"${_project_json}\" sources ${_index})\n"
+        "        string(FIND \"${_source}\" \"\\\\\" _backslash_position)\n        string(TOLOWER \"${_source}\" _source_lower)\n        if(IS_ABSOLUTE \"${_source}\" OR _source MATCHES \"[;:]\" OR _source MATCHES \"(^|/)[.][.]?(/|$)\" OR _backslash_position GREATER -1 OR NOT _source_lower MATCHES \"\\\\.(c|cpp)$\" OR _source_lower STREQUAL \"freestanding_memory.cpp\")\n            message(FATAL_ERROR \"Unsafe or unsupported project source path\")\n        endif()\n"
+        "        list(FIND _seen_sources \"${_source_lower}\" _duplicate_index)\n        if(NOT _duplicate_index EQUAL -1)\n            message(FATAL_ERROR \"Duplicate project source path\")\n        endif()\n        list(APPEND _seen_sources \"${_source_lower}\")\n        list(APPEND _user_sources \"src/${_source}\")\n    endforeach()\nendif()\n\nstring(JSON _source_entry ERROR_VARIABLE _entry_error GET \"${_project_json}\" sourceEntry)\nif(NOT _entry_error AND NOT _source_entry STREQUAL \"\")\n    list(GET _user_sources 0 _first_source)\n    if(NOT \"src/${_source_entry}\" STREQUAL \"${_first_source}\")\n        message(FATAL_ERROR \"sourceEntry must be the first registered source\")\n    endif()\nendif()\nset(_source_root \"${CMAKE_CURRENT_SOURCE_DIR}/src\")\nget_filename_component(_source_root_real \"${_source_root}\" REALPATH)\nif(NOT IS_DIRECTORY \"${_source_root_real}\")\n    message(FATAL_ERROR \"Project source directory is missing\")\nendif()\nset(_source_root_prefix \"${_source_root_real}/\")\nforeach(_listed_source IN LISTS _user_sources)\n    string(LENGTH \"${_listed_source}\" _listed_length)\n    if(_listed_length LESS 7 OR _listed_length GREATER 163)\n        message(FATAL_ERROR \"Project source path exceeds its bound\")\n    endif()\n    get_filename_component(_source_real \"${CMAKE_CURRENT_SOURCE_DIR}/${_listed_source}\" REALPATH)\n    string(FIND \"${_source_real}\" \"${_source_root_prefix}\" _source_prefix_position)\n    if(NOT _source_prefix_position EQUAL 0 OR IS_DIRECTORY \"${_source_real}\")\n        message(FATAL_ERROR \"Project source resolves outside src/ or is not a file\")\n    endif()\nendforeach()\n\nadd_executable(" ) ||
+        !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf ${_user_sources} src/freestanding_memory.cpp)\ntarget_include_directories(" ) || !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, ".elf PRIVATE \"${GUIDEXOS_SERVER_ROOT}/sdk/include\")\ntarget_compile_options(" ) || !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, ".elf PRIVATE --target=") || !appendText(output, outputSize, length, kCompilerTriple) ||
-        !appendText(output, outputSize, length, " -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables)\ntarget_link_options(" ) ||
-        !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf PRIVATE --target=") ||
-        !appendText(output, outputSize, length, kCompilerTriple) || !appendText(output, outputSize, length, " -nostdlib -static -fuse-ld=lld -Wl,-e,gx_main)\nset_target_properties(" ) ||
+        !appendText(output, outputSize, length, " -g -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables)\nset_target_properties(" ) ||
         !appendText(output, outputSize, length, project.outputName) || !appendText(output, outputSize, length, ".elf PROPERTIES OUTPUT_NAME ") || !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, " SUFFIX \".elf\")\n")) return false;
     if (outBytes) *outBytes = length;
@@ -638,13 +697,28 @@ static bool generateCMake(const Project& project, char* output, uint32_t outputS
 static bool generateBuildScript(const Project& project, char* output, uint32_t outputSize, uint32_t* outBytes) {
     uint32_t length = 0;
     output[0] = '\0';
-    if (!appendText(output, outputSize, length, "# GUIDEXOS_NATIVE_BUILD_RECIPE_V1\n[CmdletBinding()]\nparam(\n    [Parameter(Mandatory=$true)][string]$SdkInclude,\n    [Parameter(Mandatory=$true)][string]$ToolchainRoot,\n    [ValidateSet(\"Debug\")][string]$Configuration = \"Debug\",\n    [ValidateSet(\"amd64\",\"arm64\")][string]$TargetArchitecture = \"amd64\",\n    [switch]$SkipReadElf\n)\n\n$ErrorActionPreference = \"Stop\"\n$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path\n$BuildRoot = Join-Path $RepoRoot \"build\"\n$PackageBin = Join-Path $BuildRoot (\"bin\\\" + $TargetArchitecture)\n$ObjectRoot = Join-Path $BuildRoot \"objects\"\n$clang = Join-Path $ToolchainRoot \"clang++.exe\"\n$lld = Join-Path $ToolchainRoot \"ld.lld.exe\"\n$readElf = Join-Path $ToolchainRoot \"llvm-readelf.exe\"\nfunction Invoke-Checked([string]$FilePath, [string[]]$Arguments) { & $FilePath @Arguments; if ($LASTEXITCODE -ne 0) { throw \"Command failed: $FilePath\" } }\nif (-not (Test-Path -LiteralPath $SdkInclude -PathType Container)) { throw \"SDK headers not found: $SdkInclude\" }\nif (-not (Test-Path -LiteralPath $clang -PathType Leaf) -or -not (Test-Path -LiteralPath $lld -PathType Leaf)) { throw \"LLVM clang++ and ld.lld are required\" }\n$compileTarget = if ($TargetArchitecture -eq \"arm64\") { \"aarch64-none-elf\" } else { \"x86_64-unknown-elf\" }\n$linkMachine = if ($TargetArchitecture -eq \"arm64\") { \"aarch64elf\" } else { \"elf_x86_64\" }\n$expectedMachine = if ($TargetArchitecture -eq \"arm64\") { \"AArch64\" } else { \"Advanced Micro Devices X86-64\" }\nWrite-Output \"Build started: ") ||
+    if (!appendText(output, outputSize, length,
+        "# GUIDEXOS_NATIVE_BUILD_RECIPE_V1\n[CmdletBinding()]\nparam(\n    [Parameter(Mandatory=$true)][string]$SdkInclude,\n    [Parameter(Mandatory=$true)][string]$ToolchainRoot,\n    [ValidateSet(\"Debug\")][string]$Configuration = \"Debug\",\n    [ValidateSet(\"amd64\",\"arm64\")][string]$TargetArchitecture = \"amd64\",\n    [switch]$SkipReadElf\n)\n\n$ErrorActionPreference = \"Stop\"\n$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path\n$BuildRoot = Join-Path $RepoRoot \"build\"\n$PackageBin = Join-Path $BuildRoot (\"bin\\\" + $TargetArchitecture)\n$ObjectRoot = Join-Path $BuildRoot \"objects\"\n$SourceRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot \"src\"))\n$clang = Join-Path $ToolchainRoot \"clang++.exe\"\n$lld = Join-Path $ToolchainRoot \"ld.lld.exe\"\n$readElf = Join-Path $ToolchainRoot \"llvm-readelf.exe\"\nfunction Invoke-Checked([string]$FilePath, [string[]]$Arguments) { & $FilePath @Arguments; if ($LASTEXITCODE -ne 0) { throw \"Command failed: $FilePath\" } }\n"
+        "if (-not (Test-Path -LiteralPath $SdkInclude -PathType Container)) { throw \"SDK headers not found: $SdkInclude\" }\nif (-not (Test-Path -LiteralPath $clang -PathType Leaf) -or -not (Test-Path -LiteralPath $lld -PathType Leaf)) { throw \"LLVM clang++ and ld.lld are required\" }\n"
+        "$metadataPath = Join-Path $RepoRoot \"guidexos.project\"\n$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json\n$sourceProperty = $metadata.PSObject.Properties['sources']\nif ($null -ne $sourceProperty) { if ($sourceProperty.Value -isnot [Array]) { throw \"Project sources must be an array\" }; $sourceCandidates = @($sourceProperty.Value); if ($metadata.sourceEntry -and ($sourceCandidates.Count -eq 0 -or [string]$sourceCandidates[0] -cne [string]$metadata.sourceEntry)) { throw \"sourceEntry must be the first registered source\" } } elseif ($metadata.sourceEntry) { $sourceCandidates = @([string]$metadata.sourceEntry) } else { throw \"Project has no registered sources or legacy sourceEntry\" }\n"
+        "if ($sourceCandidates.Count -lt 1 -or $sourceCandidates.Count -gt 16) { throw \"Project source list must contain 1 to 16 translation units\" }\n$sourceRootItem = Get-Item -LiteralPath $SourceRoot -Force\nif (-not $sourceRootItem.PSIsContainer -or ($sourceRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw \"Invalid source directory\" }\n"
+        "$sourcePrefix = $SourceRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar\n$validatedSources = @()\n$seenSources = @{}\nforeach ($sourceName in $sourceCandidates) {\n"
+        "    if ($sourceName -isnot [string] -or $sourceName.Length -lt 3 -or $sourceName.Length -gt 159 -or $sourceName.Contains('\\') -or $sourceName.Contains(':') -or $sourceName.Contains(';') -or $sourceName -notmatch '\\.(c|cpp)$') { throw \"Invalid registered source path\" }\n"
+        "    $parts = $sourceName.Split('/')\n    foreach ($part in $parts) { if ($part.Length -lt 1 -or $part.Length -gt 63 -or $part -eq '.' -or $part -eq '..' -or $part.EndsWith('.') -or $part.EndsWith(' ') -or $part -notmatch '^[A-Za-z0-9_][A-Za-z0-9_. -]*$') { throw \"Invalid registered source path\" } }\n"
+        "    if ($sourceName -ieq 'freestanding_memory.cpp') { throw \"Generated runtime source cannot be registered as a user translation unit\" }\n    $key = $sourceName.ToUpperInvariant()\n    if ($seenSources.ContainsKey($key)) { throw \"Duplicate registered source path\" }\n    $seenSources[$key] = $true\n"
+        "    $sourcePath = [IO.Path]::GetFullPath((Join-Path $SourceRoot ($sourceName.Replace('/', [IO.Path]::DirectorySeparatorChar))))\n    if (-not $sourcePath.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw \"Registered source escapes src/\" }\n"
+        "    $probe = $SourceRoot\n    foreach ($part in $parts) { $probe = Join-Path $probe $part; $item = Get-Item -LiteralPath $probe -Force; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw \"Registered source crosses a reparse point\" } }\n"
+        "    $sourceItem = Get-Item -LiteralPath $sourcePath -Force\n    if ($sourceItem.PSIsContainer -or -not $sourceItem.Exists) { throw \"Registered source is not a file\" }\n    $validatedSources += ,@($sourceName, $sourcePath)\n}\n"
+        "$compileTarget = if ($TargetArchitecture -eq \"arm64\") { \"aarch64-none-elf\" } else { \"x86_64-unknown-elf\" }\n$linkMachine = if ($TargetArchitecture -eq \"arm64\") { \"aarch64elf\" } else { \"elf_x86_64\" }\n$expectedMachine = if ($TargetArchitecture -eq \"arm64\") { \"AArch64\" } else { \"Advanced Micro Devices X86-64\" }\n"
+        "Write-Output \"Build started: ") ||
         !appendText(output, outputSize, length, project.displayName) ||
-        !appendText(output, outputSize, length, "\"\nWrite-Output \"Configuring project...\"\nNew-Item -ItemType Directory -Force -Path $PackageBin | Out-Null\nNew-Item -ItemType Directory -Force -Path $ObjectRoot | Out-Null\n$flags = @(\"--target=$compileTarget\",'-std=c++11','-ffreestanding','-fno-exceptions','-fno-rtti','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables',\"-I$SdkInclude\",\"-I$RepoRoot\\src\")\ntry {\n    $mainObject = Join-Path $ObjectRoot \"main.o\"\n    $memoryObject = Join-Path $ObjectRoot \"freestanding_memory.o\"\n    Write-Output \"Compiling main.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',(Join-Path $RepoRoot \"src\\main.cpp\"),'-o',$mainObject))\n    Write-Output \"Compiling freestanding_memory.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',(Join-Path $RepoRoot \"src\\freestanding_memory.cpp\"),'-o',$memoryObject))\n    $elfPath = Join-Path $PackageBin \"") ||
+        !appendText(output, outputSize, length,
+        "\"\nWrite-Output \"Configuring project...\"\nNew-Item -ItemType Directory -Force -Path $PackageBin | Out-Null\nNew-Item -ItemType Directory -Force -Path $ObjectRoot | Out-Null\n$flags = @(\"--target=$compileTarget\",'-std=c++11','-g','-ffreestanding','-fno-exceptions','-fno-rtti','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables',\"-I$SdkInclude\",\"-I$SourceRoot\")\ntry {\n    $objects = @()\n    for ($i = 0; $i -lt $validatedSources.Count; ++$i) {\n        $sourceName = $validatedSources[$i][0]\n        $sourcePath = $validatedSources[$i][1]\n        $objectPath = Join-Path $ObjectRoot (\"source_{0:D2}.o\" -f $i)\n        Write-Output \"Compiling $sourceName\"\n        Invoke-Checked $clang ($flags + @('-c',$sourcePath,'-o',$objectPath))\n        $objects += $objectPath\n    }\n    $memorySource = Join-Path $SourceRoot \"freestanding_memory.cpp\"\n    $memoryItem = Get-Item -LiteralPath $memorySource -Force\n    if ($memoryItem.PSIsContainer -or ($memoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw \"Invalid generated runtime source\" }\n    $memoryObject = Join-Path $ObjectRoot \"support_memory.o\"\n    Write-Output \"Compiling generated freestanding_memory.cpp\"\n    Invoke-Checked $clang ($flags + @('-c',$memorySource,'-o',$memoryObject))\n    $objects += $memoryObject\n    $elfPath = Join-Path $PackageBin \"") ||
         !appendText(output, outputSize, length, project.outputName) ||
         !appendText(output, outputSize, length, ".elf\"\n    Write-Output \"Linking ") ||
         !appendText(output, outputSize, length, project.outputName) ||
-        !appendText(output, outputSize, length, ".elf\"\n    Invoke-Checked $lld @('-m',$linkMachine,'-static','-e','gx_main',$mainObject,$memoryObject,'-o',$elfPath)\n    if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf)) { throw \"Native ELF output was not produced\" }\n    if (-not $SkipReadElf -and (Test-Path -LiteralPath $readElf -PathType Leaf)) { $header = (& $readElf -h $elfPath 2>&1 | Out-String); if ($header -notmatch 'ELF64' -or $header -notmatch $expectedMachine) { throw \"ELF64 $TargetArchitecture validation failed\" } }\n    Write-Output \"Build succeeded\"\n    Write-Output \"Artifact: $($elfPath)\"\n} finally { if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force } }\n")) return false;
+        !appendText(output, outputSize, length,
+        ".elf\"\n    $linkArguments = @('-m',$linkMachine,'-static','-e','gx_main') + $objects + @('-o',$elfPath)\n    Invoke-Checked $lld $linkArguments\n    if (-not (Test-Path -LiteralPath $elfPath -PathType Leaf)) { throw \"Native ELF output was not produced\" }\n    if (-not $SkipReadElf -and (Test-Path -LiteralPath $readElf -PathType Leaf)) { $header = (& $readElf -h $elfPath 2>&1 | Out-String); if ($header -notmatch 'ELF64' -or $header -notmatch $expectedMachine) { throw \"ELF64 $TargetArchitecture validation failed\" } }\n    Write-Output \"Build succeeded\"\n    Write-Output \"Artifact: $($elfPath)\"\n} finally { if (Test-Path -LiteralPath $ObjectRoot) { Remove-Item -LiteralPath $ObjectRoot -Recurse -Force } }\n")) return false;
     if (outBytes) *outBytes = length;
     return true;
 }
@@ -656,7 +730,7 @@ static bool generateReadme(const Project& project, char* output, uint32_t output
         !appendText(output, outputSize, length, project.projectId) || !appendText(output, outputSize, length, "`\n- Project kind: `native-gui-application`\n- Target profile: `") ||
         !appendText(output, outputSize, length, project.targetProfileId) || !appendText(output, outputSize, length, "`\n- ABI: `") ||
         !appendText(output, outputSize, length, project.abi) || !appendText(output, outputSize, length, "`\n- Architecture: `") ||
-        !appendText(output, outputSize, length, project.architecture) || !appendText(output, outputSize, length, "`\n\n## Layout\n\n- `guidexos.project` - version 1 project metadata.\n- `app/app.json` - Native ELF App Model manifest.\n- `src/main.cpp` - the `gx_main` starter application.\n- `src/freestanding_memory.cpp` - freestanding memory primitives required by the Native ELF link.\n- `CMakeLists.txt` and `build.ps1` - external build files.\n\n## External build\n\nDeveloper Studio's `Build -> Build Project` command invokes the fixed `build.ps1` recipe for this project. The script can also be run directly from this directory:\n\n```powershell\n.\\build.ps1 -SdkInclude D:\\path\\to\\guideXOSServer\\sdk\\include -ToolchainRoot \"C:\\Program Files\\LLVM\\bin\" -TargetArchitecture ") ||
+        !appendText(output, outputSize, length, project.architecture) || !appendText(output, outputSize, length, "`\n\n## Layout\n\n- `guidexos.project` - version 1 project metadata with an ordered `sources` list for user C/C++ files.\n- `app/app.json` - Native ELF App Model manifest.\n- `src/main.cpp` - the `gx_main` starter application.\n- `src/freestanding_memory.cpp` - freestanding memory primitives required by the Native ELF link.\n- `CMakeLists.txt` and `build.ps1` - external build files.\n\n## External build\n\nDeveloper Studio's `Build -> Build Project` command invokes the manifest-driven `build.ps1` recipe for this project. The script can also be run directly from this directory:\n\n```powershell\n.\\build.ps1 -SdkInclude D:\\path\\to\\guideXOSServer\\sdk\\include -ToolchainRoot \"C:\\Program Files\\LLVM\\bin\" -TargetArchitecture ") ||
         !appendText(output, outputSize, length, project.architecture) || !appendText(output, outputSize, length, "\n```\n\nThe generated app is manual-launch only and uses the selected Native ELF target. Build output is written below `build/bin/<architecture>/`.\n")) return false;
     if (outBytes) *outBytes = length;
     return true;
@@ -1121,6 +1195,29 @@ bool ValidateProjectMetadata(const Project& project, ProjectErrorCode* error) {
         if (local == ProjectErrorCode::None && project.sourceEntry[0] != '\0' &&
             (!isSafeRelativePath(project.sourceEntry, normalizedEntry, sizeof(normalizedEntry)) ||
              !equalText(project.sourceEntry, normalizedEntry))) local = ProjectErrorCode::InvalidRelativePath;
+        if (local == ProjectErrorCode::None && !project.hasSourceFiles && project.sourceFileCount != 0)
+            local = ProjectErrorCode::InvalidRelativePath;
+        if (local == ProjectErrorCode::None && project.hasSourceFiles) {
+            if (project.sourceFileCount == 0 || project.sourceFileCount > kMaxProjectSources ||
+                (project.sourceEntry[0] != '\0' && !equalText(project.sourceFiles[0], project.sourceEntry))) {
+                local = ProjectErrorCode::InvalidRelativePath;
+            }
+            for (uint32_t i = 0; local == ProjectErrorCode::None && i < project.sourceFileCount; ++i) {
+                char normalized[kMaxProjectPathBytes] = {};
+                if (!isSafeRelativePath(project.sourceFiles[i], normalized, sizeof(normalized)) ||
+                    !equalText(project.sourceFiles[i], normalized) ||
+                    !isCompilationSourcePath(project.sourceFiles[i])) {
+                    local = ProjectErrorCode::InvalidRelativePath;
+                    break;
+                }
+                for (uint32_t j = 0; j < i; ++j) {
+                    if (equalTextFolded(project.sourceFiles[i], project.sourceFiles[j])) {
+                        local = ProjectErrorCode::DuplicateField;
+                        break;
+                    }
+                }
+            }
+        }
         const bool multiTarget = equalText(project.targetProfileId, BareMetalMultiTargetProfile().id);
         if (local == ProjectErrorCode::None && !IsKnownTargetProfileId(project.targetProfileId)) local = ProjectErrorCode::UnknownTargetProfile;
         else if (local == ProjectErrorCode::None && !equalText(project.abi, kAbi)) local = ProjectErrorCode::InvalidAbi;
@@ -1181,6 +1278,24 @@ bool SerializeProjectMetadata(const Project& project, char* output, uint32_t out
     if (project.sourceEntry[0] != '\0' && !appendProjectField(output, outputSize, length, "sourceEntry", project.sourceEntry, first)) {
         if (error) *error = ProjectErrorCode::ProjectFileTooLarge;
         return false;
+    }
+    if (project.hasSourceFiles) {
+        if (!appendText(output, outputSize, length, first ? "\n  \"sources\": [" : ",\n  \"sources\": [")) {
+            if (error) *error = ProjectErrorCode::ProjectFileTooLarge;
+            return false;
+        }
+        for (uint32_t i = 0; i < project.sourceFileCount; ++i) {
+            if (!appendText(output, outputSize, length, i == 0 ? "\n    " : ",\n    ") ||
+                !appendJsonString(output, outputSize, length, project.sourceFiles[i])) {
+                if (error) *error = ProjectErrorCode::ProjectFileTooLarge;
+                return false;
+            }
+        }
+        if (!appendText(output, outputSize, length, "\n  ]")) {
+            if (error) *error = ProjectErrorCode::ProjectFileTooLarge;
+            return false;
+        }
+        first = false;
     }
     if (!appendText(output, outputSize, length, "\n}\n")) { if (error) *error = ProjectErrorCode::ProjectFileTooLarge; return false; }
     if (outBytes) *outBytes = length;
@@ -1254,6 +1369,9 @@ bool CreateNativeGuiProject(const ProjectFileSystem& fileSystem, const ProjectCr
     copyText(project.abi, sizeof(project.abi), kAbi);
     copyText(project.architecture, sizeof(project.architecture), kArchitecture);
     copyText(project.sourceEntry, sizeof(project.sourceEntry), "main.cpp");
+    project.hasSourceFiles = true;
+    project.sourceFileCount = 1;
+    copyText(project.sourceFiles[0], sizeof(project.sourceFiles[0]), "main.cpp");
     DeriveProjectOutputName(folder, project.outputName, sizeof(project.outputName));
     project.loadState = ProjectLoadState::Loaded;
     project.validationState = ProjectValidationState::Valid;
