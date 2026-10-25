@@ -10,7 +10,7 @@ PHDRS
 
 SECTIONS
 {
-  . = 0x10000000;
+  . = 0x50000000;
   .rodata : { *(.rodata .rodata.*) } :ro
   . = ALIGN(0x1000);
   .text : { *(.text .text.*) } :text

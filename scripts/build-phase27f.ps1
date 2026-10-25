@@ -2,16 +2,20 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$ServerRoot,
-    [string]$ToolchainRoot = ""
+    [string]$ToolchainRoot = "",
+    [string]$PackageDirectory = "",
+    [string]$BuildScratchDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $SdkInclude = Join-Path $ServerRoot "sdk\include"
-$PackageRoot = Join-Path $ServerRoot "Apps\DS27F"
+if ([string]::IsNullOrWhiteSpace($PackageDirectory)) { $PackageRoot = Join-Path $ServerRoot "Apps\DS27F" }
+else { $PackageRoot = [IO.Path]::GetFullPath($PackageDirectory) }
 $PackageBin = Join-Path $PackageRoot "bin\amd64"
-$ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-phase27f-build"
+if ([string]::IsNullOrWhiteSpace($BuildScratchDirectory)) { $ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-phase27f-build" }
+else { $ObjectRoot = [IO.Path]::GetFullPath($BuildScratchDirectory) }
 $ElfPath = Join-Path $PackageBin "p27f.elf"
 $StagedElf = Join-Path $ObjectRoot "p27f.elf"
 
