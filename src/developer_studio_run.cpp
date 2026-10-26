@@ -122,7 +122,8 @@ const char* RunErrorName(RunErrorCode error) {
     return "unknown";
 }
 
-bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRequest* request, RunErrorCode* error) {
+bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRequest* request,
+                         RunErrorCode* error, const BuildRequest* buildRequestIdentity) {
     if (error) *error = RunErrorCode::None;
     if (!request) { if (error) *error = RunErrorCode::InvalidRequest; return false; }
     __builtin_memset(request, 0, sizeof(*request));
@@ -144,13 +145,33 @@ bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRe
         if (error) *error = RunErrorCode::InvalidRequest;
         return false;
     }
+    if (buildRequestIdentity) {
+        const BuildRequest& identity = *buildRequestIdentity;
+        if (!sameText(identity.projectId, currentRequest.projectId) ||
+            !PathsEqual(identity.projectRoot, currentRequest.projectRoot) ||
+            !sameText(identity.projectKind, currentRequest.projectKind) ||
+            !sameText(identity.targetProfile, currentRequest.targetProfile) ||
+            !sameText(identity.buildSystem, currentRequest.buildSystem) ||
+            !sameText(identity.buildScript, currentRequest.buildScript) ||
+            !PathsEqual(identity.expectedArtifact, currentRequest.expectedArtifact) ||
+            (!sameText(identity.configuration, "Debug") &&
+             !sameText(identity.configuration, "DebugSymbols")) ||
+            ((project.hasSourceFiles || project.sourceEntry[0] != '\0') &&
+             BuildRequestSourceMembershipHash(identity) !=
+                 BuildRequestSourceMembershipHash(currentRequest))) {
+            if (error) *error = RunErrorCode::BuildRequired;
+            return false;
+        }
+        currentRequest = identity;
+    }
     if (!sameText(build.projectId, project.projectId) ||
         !PathsEqual(build.projectRoot, project.rootPath) ||
         !sameText(build.targetProfile, project.targetProfileId) ||
         !sameText(build.artifactArchitecture, project.architecture) ||
         !PathsEqual(build.artifactPath, currentRequest.expectedArtifact) ||
         build.sourceMembershipHash != BuildRequestSourceMembershipHash(currentRequest) ||
-        (!sameText(build.configuration, "Debug") && !sameText(build.configuration, "DebugSymbols"))) {
+        (!sameText(build.configuration, "Debug") && !sameText(build.configuration, "DebugSymbols")) ||
+        (buildRequestIdentity && !sameText(build.configuration, currentRequest.configuration))) {
         if (error) *error = RunErrorCode::BuildRequired;
         return false;
     }

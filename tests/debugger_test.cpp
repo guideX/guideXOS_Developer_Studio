@@ -304,6 +304,55 @@ int main() {
     assert(std::strcmp(target.executablePath, build.artifactPath) == 0);
     assert(std::strcmp(target.architecture, "amd64") == 0);
 
+    // Bare-metal projects may rely on workspace source discovery instead of
+    // listing sources in project metadata. Debug launch must validate against
+    // the exact request that produced the successful build.
+    Project discoveredSourcesProject = project;
+    std::strcpy(discoveredSourcesProject.targetProfileId, BareMetalTargetProfile().id);
+    BuildRequest discoveredSourcesBuildRequest = {};
+    BuildErrorCode discoveredSourcesBuildError = BuildErrorCode::None;
+    assert(BuildRequestFromProject(discoveredSourcesProject, &discoveredSourcesBuildRequest,
+                                   &discoveredSourcesBuildError, BuildBackendKind::BareMetal));
+    discoveredSourcesBuildRequest.sourceCount = 2;
+    std::strcpy(discoveredSourcesBuildRequest.sourceFiles[0], "src/main.cpp");
+    std::strcpy(discoveredSourcesBuildRequest.sourceFiles[1], "src/helper.cpp");
+    assert(BuildRequestEnableDebugInfo(&discoveredSourcesBuildRequest));
+
+    BuildResult discoveredSourcesBuild = {};
+    discoveredSourcesBuild.state = BuildState::Succeeded;
+    discoveredSourcesBuild.artifactValid = true;
+    discoveredSourcesBuild.artifactEntryPoint = true;
+    discoveredSourcesBuild.artifactSize = 4096;
+    discoveredSourcesBuild.sourceMembershipHash =
+        BuildRequestSourceMembershipHash(discoveredSourcesBuildRequest);
+    std::strcpy(discoveredSourcesBuild.projectId, discoveredSourcesProject.projectId);
+    std::strcpy(discoveredSourcesBuild.projectRoot, discoveredSourcesProject.rootPath);
+    std::strcpy(discoveredSourcesBuild.targetProfile, discoveredSourcesProject.targetProfileId);
+    std::strcpy(discoveredSourcesBuild.configuration, discoveredSourcesBuildRequest.configuration);
+    std::strcpy(discoveredSourcesBuild.artifactPath, discoveredSourcesBuildRequest.expectedArtifact);
+    std::strcpy(discoveredSourcesBuild.artifactArchitecture, discoveredSourcesProject.architecture);
+    std::strcpy(discoveredSourcesBuild.artifactSha256,
+                "0123456789012345678901234567890123456789012345678901234567890123");
+
+    RunRequest discoveredSourcesRun = {};
+    RunErrorCode discoveredSourcesRunError = RunErrorCode::None;
+    assert(!RunRequestFromBuild(discoveredSourcesProject, discoveredSourcesBuild,
+                                &discoveredSourcesRun, &discoveredSourcesRunError));
+    assert(discoveredSourcesRunError == RunErrorCode::BuildRequired);
+    assert(RunRequestFromBuild(discoveredSourcesProject, discoveredSourcesBuild,
+                               &discoveredSourcesRun, &discoveredSourcesRunError,
+                               &discoveredSourcesBuildRequest));
+    assert(std::strcmp(discoveredSourcesRun.artifactPath,
+                       discoveredSourcesBuild.artifactPath) == 0);
+
+    DebugTarget discoveredSourcesTarget = {};
+    assert(DebugTargetFromBuild(discoveredSourcesProject, discoveredSourcesBuild, 10,
+                                &discoveredSourcesTarget, &error, 77,
+                                &discoveredSourcesBuildRequest));
+    assert(discoveredSourcesTarget.buildOperationId == 77);
+    assert(std::strcmp(discoveredSourcesTarget.executablePath,
+                       discoveredSourcesBuild.artifactPath) == 0);
+
     char relative[kMaxProjectPathBytes] = {};
     assert(DebugRelativeSourcePath(project.rootPath, "d:\\work\\debugger\\src\\main.cpp", relative, sizeof(relative)));
     assert(std::strcmp(relative, "src/main.cpp") == 0);

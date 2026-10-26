@@ -4615,7 +4615,7 @@ static BuildErrorCode mapBuildError(uint32_t error, const char* detail) {
     case GX_BUILD_ERROR_ENTRY_POINT_MISSING: return BuildErrorCode::EntryPointMissing;
     case GX_BUILD_ERROR_MANIFEST_ARTIFACT_MISMATCH: return BuildErrorCode::ManifestArtifactMismatch;
     case GX_BUILD_ERROR_OUTPUT_TRUNCATED: return BuildErrorCode::OutputTruncated;
-    case GX_BUILD_ERROR_COMPILER_FAILED: return ClassifyBuildFailureDetail(detail);
+    case GX_BUILD_ERROR_COMPILER_FAILED: return guidexos::developer_studio::ClassifyBuildFailureDetail(detail);
     case GX_BUILD_ERROR_SOURCE_SELECTION: return BuildErrorCode::InvalidRequest;
     case GX_BUILD_ERROR_UNSUPPORTED_PROJECT: return BuildErrorCode::UnsupportedTarget;
     case GX_BUILD_ERROR_BUSY: return BuildErrorCode::AlreadyRunning;
@@ -4692,7 +4692,7 @@ static bool hostBuildPoll(void* userData, uint64_t handle, BuildResult* result, 
     }
     if (snapshot.errorCode == GX_BUILD_ERROR_PROCESS_FAILED) {
         for (uint32_t i = 0; i < result->outputCount; ++i) {
-            const BuildErrorCode diagnosticError = ClassifyBuildDiagnosticLine(result->output[i].text);
+            const BuildErrorCode diagnosticError = guidexos::developer_studio::ClassifyBuildDiagnosticLine(result->output[i].text);
             if (diagnosticError == BuildErrorCode::None) continue;
             result->error = diagnosticError;
             copyText(result->errorMessage, sizeof(result->errorMessage), result->output[i].text);
@@ -7185,7 +7185,7 @@ static bool beginDebugSession(gx_app_context* ctx) {
     phase29gDebugStartBoundary(ctx, "TARGET_CONSTRUCTION_ENTER", "entered");
     if (!DebugTargetFromBuild(g_controller.model.project, g_buildController.result,
                               g_controller.model.projectGeneration, &target, &error,
-                              g_buildController.operationId)) {
+                              g_buildController.operationId, &g_buildController.request)) {
         phase29gDebugStartBoundary(ctx, "TARGET_CONSTRUCTION_RETURN", DebugErrorName(error));
         phase29fDebugStartReject(ctx, "DEBUG_START_TARGET_INVALID");
         phase28v_startup_event(ctx, "DEBUG_BEGIN_TARGET_FAILED");

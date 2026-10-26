@@ -1,5 +1,6 @@
 #include "developer_studio_debug_symbols.h"
 #include "developer_studio_debugger.h"
+#include "debugger_test_paths.h"
 
 #include <cassert>
 #include <cstring>
@@ -100,7 +101,8 @@ int main() {
     assert(DebugDwarfComputeSha256(elf.data(), elf.size(), sha, sizeof(sha)));
     static DebugDwarfMapper mapper = {};
     DebugDwarfError error = DebugDwarfError::None;
-    const bool loaded = DebugDwarfMapperLoad(&mapper, "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase8",
+    const std::string phase8Root = debuggerTestFixtureRoot("debugger-phase8");
+    const bool loaded = DebugDwarfMapperLoad(&mapper, phase8Root.c_str(),
                                 "phase8", "native", "amd64", "build/bin/amd64/debugger-phase8.elf",
                                 elf.size(), sha, 9, elf.data(), elf.size(), 9, &error);
     assert(loaded);
@@ -148,7 +150,8 @@ int main() {
     assert(DebugDwarfComputeSha256(phase9Elf.data(), phase9Elf.size(), phase9Sha, sizeof(phase9Sha)));
     static DebugDwarfMapper phase9Mapper = {};
     error = DebugDwarfError::None;
-    assert(DebugDwarfMapperLoad(&phase9Mapper, "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase9",
+    const std::string phase9Root = debuggerTestFixtureRoot("debugger-phase9");
+    assert(DebugDwarfMapperLoad(&phase9Mapper, phase9Root.c_str(),
                                 "phase9", "native", "amd64", "build/bin/amd64/debugger-phase9.elf",
                                 phase9Elf.size(), phase9Sha, 9, phase9Elf.data(), phase9Elf.size(), 9, &error));
     assert(phase9Mapper.debugInfoReady && phase9Mapper.debugInfoCompilationUnitCount == 2);
@@ -209,7 +212,7 @@ int main() {
     char malformedSha[65] = {};
     assert(DebugDwarfComputeSha256(malformed.data(), malformed.size(), malformedSha, sizeof(malformedSha)));
     error = DebugDwarfError::None;
-    assert(!DebugDwarfMapperLoad(&malformedMapper, "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase9",
+    assert(!DebugDwarfMapperLoad(&malformedMapper, phase9Root.c_str(),
                                  "phase9", "native", "amd64", "build/bin/amd64/debugger-phase9.elf",
                                  malformed.size(), malformedSha, 9, malformed.data(), malformed.size(), 10, &error));
     assert(error != DebugDwarfError::None);

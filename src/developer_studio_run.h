@@ -215,7 +215,8 @@ struct RunController {
 
 const char* RunStateName(RunState state);
 const char* RunErrorName(RunErrorCode error);
-bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRequest* request, RunErrorCode* error);
+bool RunRequestFromBuild(const Project& project, const BuildResult& build, RunRequest* request,
+                         RunErrorCode* error, const BuildRequest* buildRequestIdentity = nullptr);
 bool RunControllerInit(RunController* controller);
 void RunControllerAttachOutput(RunController* controller, OutputService* output, uint64_t operationId);
 bool RunControllerPrepare(RunController* controller, const HostedDevelopmentRunService& service, const RunRequest& request, RunErrorCode* error);

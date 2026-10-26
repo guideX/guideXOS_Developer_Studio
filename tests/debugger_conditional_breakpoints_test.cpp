@@ -1,4 +1,5 @@
 #include "developer_studio_debugger.h"
+#include "debugger_test_paths.h"
 
 #include "test_check.h"
 #include <cassert>
@@ -355,7 +356,8 @@ int main() {
     TEST_CHECK(DebugDwarfComputeSha256(elf.data(), elf.size(), sha, sizeof(sha)));
     static DebugDwarfMapper mapper = {};
     DebugDwarfError dwarfError = DebugDwarfError::None;
-    TEST_CHECK(DebugDwarfMapperLoad(&mapper, "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase10", "phase10", "native", "amd64",
+    const std::string projectRoot = debuggerTestFixtureRoot("debugger-phase10");
+    TEST_CHECK(DebugDwarfMapperLoad(&mapper, projectRoot.c_str(), "phase10", "native", "amd64",
                                 "build/bin/amd64/debugger-phase10.elf", elf.size(), sha, 9,
                                 elf.data(), elf.size(), 11, &dwarfError));
     const uint64_t inspectAddress = findFunctionAddress(mapper, "inspect");

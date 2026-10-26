@@ -1559,14 +1559,14 @@ bool DebugRegisterContextIsValid(const DebugRegisterContext& context) {
 
 bool DebugTargetFromBuild(const Project& project, const BuildResult& build,
                           uint64_t projectGeneration, DebugTarget* target, DebugErrorCode* error,
-                          uint64_t buildOperationId) {
+                          uint64_t buildOperationId, const BuildRequest* buildRequestIdentity) {
     if (error) *error = DebugErrorCode::None;
     if (!target) { if (error) *error = DebugErrorCode::InvalidRequest; return false; }
     __builtin_memset(target, 0, sizeof(*target));
     static RunRequest request = {};
     __builtin_memset(&request, 0, sizeof(request));
     RunErrorCode runError = RunErrorCode::None;
-    if (!RunRequestFromBuild(project, build, &request, &runError)) {
+    if (!RunRequestFromBuild(project, build, &request, &runError, buildRequestIdentity)) {
         if (error) *error = runError == RunErrorCode::BuildRequired ? DebugErrorCode::NoRunnableTarget : DebugErrorCode::InvalidRequest;
         return false;
     }

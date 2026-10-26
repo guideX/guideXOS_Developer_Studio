@@ -149,7 +149,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio diagnostic sentinel detection test failed with exit code $LASTEXITCODE" }
     Invoke-Checked "g++" @(
         "-std=c++11", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_syntax.cpp", "tests\run_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\run_test.cpp",
         "-o", $RunTest
     )
     & $RunTest
@@ -253,7 +253,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\debugger_test.cpp",
         "-o", $DebuggerTest
     )
     & $DebuggerTest
@@ -261,7 +261,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_debugger_hosted.cpp", "tests\debugger_step_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_debugger_hosted.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\debugger_step_test.cpp",
         "-o", $DebuggerStepTest
     )
     & $DebuggerStepTest
@@ -269,7 +269,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_stack_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\debugger_stack_test.cpp",
         "-o", $DebuggerStackTest
     )
     & $DebuggerStackTest
@@ -277,7 +277,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_variables_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\debugger_variables_test.cpp",
         "-o", $DebuggerVariablesTest
     )
     & $DebuggerVariablesTest
@@ -285,7 +285,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_watches_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\debugger_watches_test.cpp",
         "-o", $DebuggerWatchesTest
     )
     & $DebuggerWatchesTest
@@ -293,7 +293,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_conditional_breakpoints_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_build.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "tests\debugger_conditional_breakpoints_test.cpp",
         "-o", $DebuggerConditionalTest
     )
     & $DebuggerConditionalTest

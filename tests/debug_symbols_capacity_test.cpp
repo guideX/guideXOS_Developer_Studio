@@ -1,4 +1,5 @@
 #include "developer_studio_debug_symbols.h"
+#include "debugger_test_paths.h"
 
 #include <cstring>
 #include <fstream>
@@ -248,8 +249,8 @@ int main(int argc, char** argv) {
     guidexos::developer_studio::DebugDwarfMapper mapper = {};
     guidexos::developer_studio::DebugDwarfError error =
         guidexos::developer_studio::DebugDwarfError::None;
-    const char* projectRoot = argc >= 3 ? argv[2] :
-        "D:/dev/guideXOS_Developer_Studio/tests/fixtures/debugger-phase3b";
+    const std::string defaultProjectRoot = debuggerTestFixtureRoot("debugger-phase3b");
+    const char* projectRoot = argc >= 3 ? argv[2] : defaultProjectRoot.c_str();
     const uint32_t minimumLineAddresses = argc >= 4 ?
         static_cast<uint32_t>(std::strtoul(argv[3], nullptr, 10)) : 0;
     const uint32_t requiredBreakpointLine = argc >= 5 ?
