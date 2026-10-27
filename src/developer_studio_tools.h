@@ -21,7 +21,8 @@ enum class DeveloperToolId : uint32_t {
     None = 0,
     FindInFiles = 1,
     GoToFile = 2,
-    GoToLine = 3
+    GoToLine = 3,
+    ReplaceInFiles = 4
 };
 
 struct DeveloperToolFileSearchResult {

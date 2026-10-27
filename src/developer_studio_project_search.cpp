@@ -138,11 +138,16 @@ static void clearResultStorage(ProjectSearchService* service) {
 static bool isDefaultExcludedDirectory(const char* name) {
     static const char* const names[] = {
         ".git", ".vs", ".idea", "out", "build", "bin", "obj", "dist", "node_modules",
-        ".guidexos", ".developerstudio", ".gxdeploy", ".gxbuild", "developerstudio-tmp", "guidexos-tmp"
+        ".hg", ".svn", ".cache", "target", "bazel-out", ".guidexos", ".developerstudio",
+        ".gxdeploy", ".gxbuild", "developerstudio-tmp", "guidexos-tmp"
     };
     for (uint32_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (equalAsciiInsensitive(name, names[i])) return true;
-    return false;
+    static const char kCmakeBuildPrefix[] = "cmake-build-";
+    if (!name) return false;
+    for (uint32_t i = 0; i < sizeof(kCmakeBuildPrefix) - 1u; ++i)
+        if (name[i] == '\0' || lowerAscii(name[i]) != kCmakeBuildPrefix[i]) return false;
+    return true;
 }
 
 static bool isSupportedCxxPath(const char* path) {
@@ -161,17 +166,9 @@ static bool isSupportedCxxPath(const char* path) {
 }
 
 static bool isSupportedProjectTextPath(const char* path) {
-    const char* name = BaseName(path);
-    if (equalAsciiInsensitive(name, "guidexos.project")) return true;
-    const uint32_t length = textLength(name, kMaxNameBytes);
-    uint32_t dot = length;
-    for (uint32_t i = 0; i < length; ++i) if (name[i] == '.') dot = i;
-    if (dot == length) return false;
-    const char* extension = name + dot;
-    static const char* const extensions[] = { ".gxproj", ".json", ".md", ".txt", ".cmake" };
-    for (uint32_t i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i)
-        if (equalAsciiInsensitive(extension, extensions[i])) return true;
-    return isSupportedCxxPath(path);
+    // Explicit include patterns use the editor's TOOLS3 allowlist so search
+    // and replacement preview cover the same navigable text assets.
+    return IsSupportedTextPath(path);
 }
 
 static bool hasPathTraversal(const char* path) {

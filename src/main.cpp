@@ -8,6 +8,7 @@
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
+#include "developer_studio_replace_preview.h"
 #include "developer_studio_tools.h"
 #include "developer_studio_symbols.h"
 #include "developer_studio_navigation.h"
@@ -279,6 +280,24 @@ using guidexos::developer_studio::ProjectSearchStateName;
 using guidexos::developer_studio::ProjectSearchDocumentSnapshot;
 using guidexos::developer_studio::ProjectSearchDiagnostics;
 using guidexos::developer_studio::kProjectSearchMaxFileBytes;
+using guidexos::developer_studio::ReplacePreviewError;
+using guidexos::developer_studio::ReplacePreviewFile;
+using guidexos::developer_studio::ReplacePreviewMatch;
+using guidexos::developer_studio::ReplacePreviewPlan;
+using guidexos::developer_studio::ReplacePreviewPlanBegin;
+using guidexos::developer_studio::ReplacePreviewPlanClear;
+using guidexos::developer_studio::ReplacePreviewPlanFileAt;
+using guidexos::developer_studio::ReplacePreviewPlanFinish;
+using guidexos::developer_studio::ReplacePreviewPlanInit;
+using guidexos::developer_studio::ReplacePreviewPlanMarkStale;
+using guidexos::developer_studio::ReplacePreviewPlanMatchAt;
+using guidexos::developer_studio::ReplacePreviewPlanVisitFile;
+using guidexos::developer_studio::ReplacePreviewFileFingerprintMatches;
+using guidexos::developer_studio::kReplacePreviewMaxDisplayMatches;
+using guidexos::developer_studio::kReplacePreviewMaxFindBytes;
+using guidexos::developer_studio::kReplacePreviewMaxMatches;
+using guidexos::developer_studio::kReplacePreviewMaxReplacementBytes;
+using guidexos::developer_studio::kReplacePreviewMaxPreviewBytes;
 using guidexos::developer_studio::DeveloperToolCommand;
 using guidexos::developer_studio::DeveloperToolId;
 using guidexos::developer_studio::DeveloperToolFileSearchResults;
@@ -732,6 +751,8 @@ static const int kSearchPanelTop = 48;
 static const int kSearchPanelResultsTop = 214;
 static const int kSearchPanelRowHeight = 17;
 static const int kSearchPanelMaxRows = 25;
+static const int kReplacePanelResultsTop = 218;
+static const int kReplacePanelRowHeight = 48;
 static const int kSearchFieldX = 86;
 static const int kSearchFieldWidth = 350;
 static const int kSearchIncludeY = 126;
@@ -884,6 +905,8 @@ static bool g_toolsMenuOpen = false;
 static DeveloperToolRegistry g_developerTools = {};
 static bool activateFindInFilesTool(void* userData);
 static bool closeFindInFilesTool(void* userData);
+static bool activateReplaceInFilesTool(void* userData);
+static bool closeReplaceInFilesTool(void* userData);
 static bool activateGoToFileTool(void* userData);
 static bool closeGoToFileTool(void* userData);
 static bool activateGoToLineTool(void* userData);
@@ -899,6 +922,10 @@ static const DeveloperToolCommand kGoToLineToolCommand = {
 static const DeveloperToolCommand kFindInFilesToolCommand = {
     DeveloperToolId::FindInFiles, "Find in Files", "Ctrl+Shift+F",
     activateFindInFilesTool, closeFindInFilesTool
+};
+static const DeveloperToolCommand kReplaceInFilesToolCommand = {
+    DeveloperToolId::ReplaceInFiles, "Replace in Files", "Ctrl+Shift+H",
+    activateReplaceInFilesTool, closeReplaceInFilesTool
 };
 static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
@@ -1179,6 +1206,20 @@ static char g_projectSearchProjectId[kMaxProjectIdBytes] = {};
 static char g_projectSearchStatus[128] = {};
 static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
+enum class ReplacePreviewField { Find = 0, Replacement };
+static ReplacePreviewPlan g_replacePreviewPlan = {};
+static bool g_replacePreviewPanelOpen = false;
+static bool g_replacePreviewCaseSensitive = false;
+static ReplacePreviewField g_replacePreviewField = ReplacePreviewField::Find;
+static uint32_t g_replacePreviewFieldCaret = 0;
+static uint32_t g_replacePreviewScroll = 0;
+static uint32_t g_replacePreviewValidationIndex = 0;
+static uint64_t g_replacePreviewNextValidationAt = 0;
+static bool g_replacePreviewScanSucceeded = false;
+static bool g_replacePreviewValidationPending = false;
+static char g_replacePreviewFind[kReplacePreviewMaxFindBytes + 1] = {};
+static char g_replacePreviewReplacement[kReplacePreviewMaxReplacementBytes + 1] = {};
+static char g_replacePreviewStatus[160] = {};
 static DeveloperToolFileSearchResults g_goToFileResults = {};
 static ProjectNavigationFile g_goToFileNavigationFiles[guidexos::developer_studio::kMaxProjectNavigationFiles] = {};
 static ProjectNavigationInventory g_goToFileInventory = {};
@@ -1342,6 +1383,12 @@ static void compose(char* output, uint32_t size, const char* prefix, const char*
 static void stopProjectSearch(gx_app_context* ctx);
 static bool activateFindInFiles(gx_app_context* ctx, const char* source);
 static bool closeFindInFiles(gx_app_context* ctx, const char* source);
+static bool activateReplaceInFiles(gx_app_context* ctx, const char* source);
+static bool closeReplaceInFiles(gx_app_context* ctx, const char* source);
+static bool startReplacePreview(gx_app_context* ctx);
+static void invalidateReplacePreview(gx_app_context* ctx, const char* reason);
+static bool handleReplacePreviewKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static void drawReplacePreviewPanel(gx_app_context* ctx);
 static bool activateGoToFile(gx_app_context* ctx, const char* source);
 static bool closeGoToFile(gx_app_context* ctx, const char* source);
 static bool activateGoToLine(gx_app_context* ctx, const char* source);
@@ -4436,7 +4483,289 @@ static uint32_t captureDirtyProjectSearchDocuments() {
     return count;
 }
 
+static bool replacePreviewProjectMatches() {
+    return g_controller.model.open && g_controller.model.hasProject &&
+        DeveloperToolProjectIdentityMatches(g_replacePreviewPlan.projectId,
+            g_replacePreviewPlan.projectGeneration,
+            g_controller.model.project.projectId, g_controller.model.projectGeneration);
+}
+
+static bool replacePreviewFileStillMatches(const ReplacePreviewFile& file) {
+    if (!replacePreviewProjectMatches() || PathContainsTraversal(file.relativePath)) return false;
+    char absolutePath[kMaxPathBytes] = {};
+    if (!JoinWorkspacePath(g_controller.model.project.rootPath, file.relativePath,
+                           absolutePath, sizeof(absolutePath))) return false;
+    if (file.sourceKind == guidexos::developer_studio::ProjectSearchSourceKind::DirtyDocument) {
+        for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+            const Document& document = g_controller.model.documents[i];
+            if (!document.used || document.documentId != file.documentId) continue;
+            char relativePath[kMaxPathBytes] = {};
+            return document.buffer.generation == file.documentGeneration &&
+                copyProjectRelativePath(g_controller.model, document.path,
+                                        relativePath, sizeof(relativePath)) &&
+                searchTextEqual(relativePath, file.relativePath) &&
+                ReplacePreviewFileFingerprintMatches(&file, document.buffer.data,
+                                                     document.buffer.length);
+        }
+        return false;
+    }
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        const Document& document = g_controller.model.documents[i];
+        if (document.used && PathsEqual(document.path, absolutePath) && document.buffer.dirty)
+            return false;
+    }
+    FileInfo info = {};
+    if (!g_controller.fileSystem.stat ||
+        !g_controller.fileSystem.stat(g_controller.fileSystem.userData, absolutePath, &info) ||
+        info.kind != FileInfoKind::RegularFile || info.size > kProjectSearchMaxFileBytes ||
+        info.size != file.sourceSize || !g_controller.fileSystem.read) return false;
+    uint32_t bytes = 0;
+    if (!g_controller.fileSystem.read(g_controller.fileSystem.userData, absolutePath,
+            g_projectSearch.scanBuffer, kProjectSearchMaxFileBytes, &bytes) ||
+        bytes > kProjectSearchMaxFileBytes) return false;
+    return ReplacePreviewFileFingerprintMatches(&file, g_projectSearch.scanBuffer, bytes);
+}
+
+static void invalidateReplacePreview(gx_app_context* ctx, const char* reason) {
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* oldOperation = ProjectSearchOperationInfo(&g_projectSearch);
+        if (oldOperation && oldOperation->state != ProjectSearchState::Idle)
+            ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId);
+        g_projectSearchOperationId = 0;
+        g_projectSearchTerminalReported = false;
+    }
+    ReplacePreviewPlanMarkStale(&g_replacePreviewPlan);
+    g_replacePreviewScanSucceeded = false;
+    g_replacePreviewValidationPending = false;
+    copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "STALE — ");
+    appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+               reason ? reason : "Preview inputs changed.");
+}
+
+static bool startReplacePreview(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                 "Open a project before previewing replacements.");
+        return false;
+    }
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* oldOperation = ProjectSearchOperationInfo(&g_projectSearch);
+        if (oldOperation && oldOperation->state != ProjectSearchState::Idle)
+            ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId);
+        g_projectSearchOperationId = 0;
+        g_projectSearchTerminalReported = false;
+    }
+    const ReplacePreviewError beginError = ReplacePreviewPlanBegin(&g_replacePreviewPlan,
+        g_controller.model.project.projectId, g_controller.model.projectGeneration,
+        g_replacePreviewFind, g_replacePreviewReplacement, g_replacePreviewCaseSensitive);
+    if (beginError != ReplacePreviewError::None) {
+        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Preview rejected: ");
+        if (beginError == ReplacePreviewError::EmptyFind)
+            appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Find text is empty.");
+        else if (beginError == ReplacePreviewError::FindTooLong)
+            appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Find text exceeds 128 bytes.");
+        else if (beginError == ReplacePreviewError::ReplacementTooLong)
+            appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Replacement exceeds 256 bytes.");
+        else appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "No active project.");
+        g_replacePreviewValidationPending = false;
+        g_replacePreviewScanSucceeded = false;
+        return false;
+    }
+
+    ProjectSearchRequest request = {};
+    copyText(request.projectId, sizeof(request.projectId), g_controller.model.project.projectId);
+    request.projectGeneration = g_controller.model.projectGeneration;
+    copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.project.rootPath);
+    ProjectSearchOptionsInit(&request.options);
+    request.options.caseSensitive = g_replacePreviewCaseSensitive;
+    copyText(request.options.query, sizeof(request.options.query), g_replacePreviewFind);
+    // A single wildcard asks the shared scanner to use the editor's complete
+    // supported-text allowlist. The scanner still applies its generated and
+    // dependency directory exclusions before visiting files.
+    copyText(request.options.includePattern, sizeof(request.options.includePattern), "*");
+    request.options.excludePattern[0] = '\0';
+    request.fileSystem = g_controller.fileSystem;
+    // Strip all mutation callbacks from the replacement preview's scanner
+    // copy. The visitor receives bytes only and cannot reach the controller.
+    request.fileSystem.write = nullptr;
+    request.fileSystem.createDirectory = nullptr;
+    request.fileSystem.removePath = nullptr;
+    request.dirtyDocuments = g_projectSearchSnapshots;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.scanVisitor = ReplacePreviewPlanVisitFile;
+    request.scanVisitorUserData = &g_replacePreviewPlan;
+    ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
+    uint64_t operationId = 0;
+    if (!ProjectSearchStart(&g_projectSearch, &request, ctx ? gx_get_ticks_ms(ctx) : 0,
+                            &operationId, &error)) {
+        g_projectSearchOperationId = operationId;
+        g_projectSearchProjectGeneration = request.projectGeneration;
+        copyText(g_projectSearchProjectId, sizeof(g_projectSearchProjectId), request.projectId);
+        g_projectSearchTerminalReported = false;
+        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Preview failed: ");
+        appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), ProjectSearchErrorName(error));
+        g_replacePreviewScanSucceeded = false;
+        g_replacePreviewValidationPending = false;
+        return false;
+    }
+    g_projectSearchOperationId = operationId;
+    g_projectSearchProjectGeneration = request.projectGeneration;
+    copyText(g_projectSearchProjectId, sizeof(g_projectSearchProjectId), request.projectId);
+    g_projectSearchTerminalReported = false;
+    g_replacePreviewScroll = 0;
+    g_replacePreviewValidationIndex = 0;
+    g_replacePreviewNextValidationAt = 0;
+    g_replacePreviewScanSucceeded = false;
+    g_replacePreviewValidationPending = false;
+    copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Scanning project text files...");
+    writeStudioOutput("Replace in Files preview started (read-only)");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_preview_begin=PASS read_only=1");
+    return true;
+}
+
+static void pollProjectReplacePreview(gx_app_context* ctx) {
+    const uint64_t now = ctx ? gx_get_ticks_ms(ctx) : 0;
+    if (g_replacePreviewPlan.configured && !replacePreviewProjectMatches()) {
+        invalidateReplacePreview(ctx, "Active project changed; preview is stale.");
+        return;
+    }
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch) && !replacePreviewProjectMatches()) {
+            invalidateReplacePreview(ctx, "Active project changed; preview cancelled.");
+            return;
+        }
+        ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 16, now);
+        const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+        if (operation && !ProjectSearchIsActive(&g_projectSearch) && !g_projectSearchTerminalReported) {
+            g_projectSearchTerminalReported = true;
+            if (operation->state == ProjectSearchState::Completed) {
+                ReplacePreviewPlanFinish(&g_replacePreviewPlan, false);
+                const bool sourceChanged =
+                    operation->diagnostics.changedOrDisappearedFiles != 0;
+                const bool requiredFilesSkipped =
+                    operation->diagnostics.unreadableFiles != 0 ||
+                    operation->diagnostics.oversizedFiles != 0;
+                if (sourceChanged) {
+                    ReplacePreviewPlanMarkStale(&g_replacePreviewPlan);
+                    g_replacePreviewValidationPending = false;
+                    g_replacePreviewScanSucceeded = false;
+                    copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                             "STALE — a project file changed or disappeared during scanning.");
+                    writeStudioOutput("Replace in Files preview became stale during scanning");
+                }
+                g_replacePreviewScanSucceeded = !sourceChanged && !requiredFilesSkipped &&
+                    !operation->truncated && !g_replacePreviewPlan.capacityExceeded &&
+                    !g_replacePreviewPlan.stale;
+                if (g_replacePreviewScanSucceeded) {
+                    g_replacePreviewValidationIndex = 0;
+                    g_replacePreviewValidationPending = true;
+                    g_replacePreviewNextValidationAt = now;
+                    copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                             "Checking affected files before showing the preview...");
+                    if (g_replacePreviewPlan.filesAffected == 0) {
+                        ReplacePreviewPlanFinish(&g_replacePreviewPlan, true);
+                        g_replacePreviewValidationPending = false;
+                        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                                 "Preview complete: 0 matches in 0 affected files. Read-only.");
+                    }
+                } else if (!g_replacePreviewPlan.stale) {
+                    copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                             requiredFilesSkipped ?
+                                 "Preview incomplete: unreadable or oversized text files were skipped." :
+                                 "Preview incomplete: a scan or result limit was reached.");
+                    if (operation->diagnostics.filesSkipped != 0) {
+                        appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), " Skipped files: ");
+                        appendUnsigned(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                                       operation->diagnostics.filesSkipped);
+                        appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), ".");
+                    }
+                    writeStudioOutput("Replace in Files preview incomplete; no files changed");
+                }
+            } else if (operation->state == ProjectSearchState::Cancelled) {
+                ReplacePreviewPlanFinish(&g_replacePreviewPlan, false);
+                if (!g_replacePreviewPlan.stale)
+                    copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                             "Preview cancelled; retained results are incomplete.");
+            } else if (!g_replacePreviewPlan.stale) {
+                ReplacePreviewPlanFinish(&g_replacePreviewPlan, false);
+                copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Preview failed: ");
+                appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                           ProjectSearchErrorName(operation->error));
+            }
+        }
+    }
+
+    if (!g_replacePreviewValidationPending || !g_replacePreviewScanSucceeded ||
+        g_replacePreviewPlan.stale || now < g_replacePreviewNextValidationAt) return;
+    if (!replacePreviewProjectMatches()) {
+        invalidateReplacePreview(ctx, "Active project changed; preview is stale.");
+        return;
+    }
+    if (g_replacePreviewValidationIndex >= g_replacePreviewPlan.filesAffected) {
+        ReplacePreviewPlanFinish(&g_replacePreviewPlan, true);
+        g_replacePreviewValidationPending = false;
+        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Preview complete: ");
+        appendUnsigned(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                       g_replacePreviewPlan.matchCount);
+        appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), " matches in ");
+        appendUnsigned(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                       g_replacePreviewPlan.filesAffected);
+        appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                   " affected files. Read-only; no files changed.");
+        writeStudioOutput("Replace in Files preview completed; no files changed");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_preview_complete=PASS read_only=1");
+        return;
+    }
+    const ReplacePreviewFile* file = ReplacePreviewPlanFileAt(&g_replacePreviewPlan,
+                                                               g_replacePreviewValidationIndex);
+    if (!file || !replacePreviewFileStillMatches(*file)) {
+        ReplacePreviewPlanMarkStale(&g_replacePreviewPlan);
+        g_replacePreviewValidationPending = false;
+        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                 "STALE — an affected file changed or was removed. Preview again.");
+        writeStudioOutput("Replace in Files preview became stale; no files changed");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_preview_stale=FILE_CHANGED");
+        return;
+    }
+    ++g_replacePreviewValidationIndex;
+    if (g_replacePreviewValidationIndex >= g_replacePreviewPlan.filesAffected) {
+        // Keep validating the captured files periodically while the preview is
+        // open. A future Apply operation must still revalidate immediately.
+        g_replacePreviewValidationIndex = 0;
+        if (!g_replacePreviewPlan.complete) {
+            ReplacePreviewPlanFinish(&g_replacePreviewPlan, true);
+            copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), "Preview complete: ");
+            appendUnsigned(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                           g_replacePreviewPlan.matchCount);
+            appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus), " matches in ");
+            appendUnsigned(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                           g_replacePreviewPlan.filesAffected);
+            appendText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                       " affected files. Read-only; no files changed.");
+            writeStudioOutput("Replace in Files preview completed; no files changed");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_preview_complete=PASS read_only=1");
+        }
+        g_replacePreviewNextValidationAt = now + 500u;
+    } else {
+        g_replacePreviewNextValidationAt = now + 25u;
+    }
+}
+
 static void pollProjectSearch(gx_app_context* ctx) {
+    if (g_replacePreviewPanelOpen) {
+        pollProjectReplacePreview(ctx);
+        return;
+    }
     if (g_projectSearchOperationId == 0) return;
     if (ProjectSearchIsActive(&g_projectSearch) &&
         (!g_controller.model.open || !g_controller.model.hasProject ||
@@ -4539,6 +4868,89 @@ static bool closeFindInFilesTool(void* userData) {
     return true;
 }
 
+static bool activateReplaceInFilesTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (!ctx) return false;
+    if (!g_replacePreviewPanelOpen) {
+        ReplacePreviewPlanClear(&g_replacePreviewPlan);
+        g_replacePreviewStatus[0] = '\0';
+        g_replacePreviewFind[0] = '\0';
+        g_replacePreviewReplacement[0] = '\0';
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        bool usedSelection = false;
+        if (document && document->buffer.selectionActive) {
+            const uint32_t start = document->buffer.selectionAnchor < document->buffer.caret ?
+                document->buffer.selectionAnchor : document->buffer.caret;
+            const uint32_t end = document->buffer.selectionAnchor < document->buffer.caret ?
+                document->buffer.caret : document->buffer.selectionAnchor;
+            if (end > start && end - start <= kReplacePreviewMaxFindBytes) {
+                usedSelection = true;
+                for (uint32_t i = start; i < end; ++i) {
+                    if (document->buffer.data[i] == '\r' || document->buffer.data[i] == '\n') {
+                        usedSelection = false;
+                        break;
+                    }
+                }
+                if (usedSelection) {
+                    for (uint32_t i = start; i < end; ++i)
+                        g_replacePreviewFind[i - start] = document->buffer.data[i];
+                    g_replacePreviewFind[end - start] = '\0';
+                }
+            }
+        }
+        if (!usedSelection && g_lastProjectSearchQuery[0] != '\0')
+            copyText(g_replacePreviewFind, sizeof(g_replacePreviewFind), g_lastProjectSearchQuery);
+        else if (!usedSelection && g_lastProjectSearchQuery[0] == '\0' && g_findSession.query[0] != '\0')
+            copyText(g_replacePreviewFind, sizeof(g_replacePreviewFind), g_findSession.query);
+        g_replacePreviewCaseSensitive = false;
+        g_replacePreviewField = ReplacePreviewField::Find;
+        g_replacePreviewFieldCaret = lengthOf(g_replacePreviewFind, sizeof(g_replacePreviewFind));
+        g_replacePreviewScroll = 0;
+        g_replacePreviewValidationIndex = 0;
+        g_replacePreviewNextValidationAt = 0;
+        g_replacePreviewScanSucceeded = false;
+        g_replacePreviewValidationPending = false;
+    }
+    if (g_findBarOpen) closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(ctx);
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_projectSearchPanelOpen = false;
+    g_replacePreviewPanelOpen = true;
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    return true;
+}
+
+static bool closeReplaceInFilesTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+        if (operation && operation->state != ProjectSearchState::Idle &&
+            !ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId)) return false;
+        g_projectSearchOperationId = 0;
+        g_projectSearchTerminalReported = false;
+    }
+    g_replacePreviewPanelOpen = false;
+    g_replacePreviewValidationPending = false;
+    g_replacePreviewScanSucceeded = false;
+    g_replacePreviewScroll = 0;
+    ReplacePreviewPlanClear(&g_replacePreviewPlan);
+    return true;
+}
+
 static bool activateFindInFiles(gx_app_context* ctx, const char* source) {
     if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::FindInFiles, ctx)) {
         writeStudioOutput("Unable to open Find in Files");
@@ -4562,6 +4974,35 @@ static bool closeFindInFiles(gx_app_context* ctx, const char* source) {
     if (source) {
         copyText(g_textScratch, sizeof(g_textScratch),
                  "GUIDEXOS_DEVELOPER_STUDIO_MARKER find_in_files_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool activateReplaceInFiles(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::ReplaceInFiles, ctx)) {
+        writeStudioOutput("Unable to open Replace in Files");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_in_files_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_in_files_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool closeReplaceInFiles(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::ReplaceInFiles, ctx)) {
+        writeStudioOutput("Replace in Files is still active");
+        return false;
+    }
+    if (source && (searchTextEqual(source, "escape") || searchTextEqual(source, "cancel")))
+        g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_in_files_close=PASS source=");
         appendText(g_textScratch, sizeof(g_textScratch), source);
         logMarker(ctx, g_textScratch);
     }
@@ -10261,6 +10702,95 @@ static void drawProjectSearchPanel(gx_app_context* ctx) {
     if (groups == 0 && active) drawText(ctx, 24, kSearchPanelResultsTop, "Scanning project files...");
     if (groups != 0 && projectSearchTotalRows() > kSearchPanelMaxRows)
         drawText(ctx, 760, 177, "Scroll: mouse wheel / Up / Down");
+}
+
+static void drawReplacePreviewPanel(gx_app_context* ctx) {
+    if (!g_replacePreviewPanelOpen) return;
+    drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 78, "Replace in Files — Preview Only");
+    drawText(ctx, 24, 102, "Find:");
+    drawText(ctx, 24, 126, "Replace:");
+    drawPanel(ctx, { 100, 87, 395, 20 },
+              g_replacePreviewField == ReplacePreviewField::Find ? 0x405775u : 0x202A36u);
+    drawPanel(ctx, { 100, 111, 630, 20 },
+              g_replacePreviewField == ReplacePreviewField::Replacement ? 0x405775u : 0x202A36u);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_replacePreviewFind);
+    drawText(ctx, 105, 102, g_textScratch);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_replacePreviewReplacement);
+    drawText(ctx, 105, 126, g_textScratch);
+    drawText(ctx, 510, 102, g_replacePreviewCaseSensitive ? "[x]Case" : "[ ]Case");
+    drawPanel(ctx, { 760, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 770, 102, "Preview");
+    const bool scanning = ProjectSearchIsActive(&g_projectSearch);
+    drawPanel(ctx, { 840, 87, 72, 20 }, scanning ? 0xA96F2Au : 0x34496Au);
+    drawText(ctx, 846, 102, scanning ? "Cancel" : "Clear");
+    drawText(ctx, 100, 149, "Read-only: previews never write files; there is no Apply or Replace All action.");
+
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    if (scanning && operation) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Scanning: ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesSearched));
+        appendText(g_textScratch, sizeof(g_textScratch), " / ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(operation->filesEnumerated));
+        appendText(g_textScratch, sizeof(g_textScratch), " files examined.");
+        drawText(ctx, 24, 173, g_textScratch);
+    } else if (g_replacePreviewStatus[0] != '\0') {
+        drawText(ctx, 24, 173, g_replacePreviewStatus);
+    } else if (!g_controller.model.hasProject) {
+        drawText(ctx, 24, 173, "Open a project to preview replacements.");
+    }
+
+    copyText(g_textScratch, sizeof(g_textScratch), "Matches: ");
+    if (g_replacePreviewPlan.capacityExceeded) appendText(g_textScratch, sizeof(g_textScratch), "at least ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_replacePreviewPlan.matchesObserved);
+    appendText(g_textScratch, sizeof(g_textScratch), "   Affected files: ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_replacePreviewPlan.filesAffected);
+    appendText(g_textScratch, sizeof(g_textScratch), "   Retained preview rows: ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_replacePreviewPlan.matchCount);
+    if (operation && operation->diagnostics.filesSkipped != 0) {
+        appendText(g_textScratch, sizeof(g_textScratch), "   Skipped: ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), operation->diagnostics.filesSkipped);
+    }
+    drawText(ctx, 24, 190, g_textScratch);
+    drawPanel(ctx, { 16, kReplacePanelResultsTop - 12, 928, 1 }, 0x405775u);
+
+    const uint32_t first = g_replacePreviewScroll;
+    uint32_t end = first + kReplacePreviewMaxDisplayMatches;
+    if (end > g_replacePreviewPlan.matchCount) end = g_replacePreviewPlan.matchCount;
+    for (uint32_t i = first; i < end; ++i) {
+        const ReplacePreviewMatch* match = ReplacePreviewPlanMatchAt(&g_replacePreviewPlan, i);
+        if (!match) continue;
+        const ReplacePreviewFile* file = ReplacePreviewPlanFileAt(&g_replacePreviewPlan,
+                                                                   match->fileIndex);
+        if (!file) continue;
+        const int y = kReplacePanelResultsTop + static_cast<int>((i - first) * kReplacePanelRowHeight);
+        copyText(g_textScratch, sizeof(g_textScratch), file->relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), match->line);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), match->column);
+        appendText(g_textScratch, sizeof(g_textScratch), "  byte ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), static_cast<uint32_t>(match->byteOffset));
+        drawText(ctx, 24, y, g_textScratch);
+
+        copyText(g_textScratch, sizeof(g_textScratch), "Before excerpt: ");
+        if (match->beforeLeftTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+        appendText(g_textScratch, sizeof(g_textScratch), match->before);
+        if (match->beforeRightTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+        drawText(ctx, 40, y + 16, g_textScratch);
+
+        copyText(g_textScratch, sizeof(g_textScratch), "After excerpt:  ");
+        if (match->afterLeftTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+        appendText(g_textScratch, sizeof(g_textScratch), match->after);
+        if (match->afterRightTruncated) appendText(g_textScratch, sizeof(g_textScratch), "...");
+        drawText(ctx, 40, y + 32, g_textScratch);
+    }
+    if (g_replacePreviewPlan.matchCount == 0 && scanning)
+        drawText(ctx, 24, kReplacePanelResultsTop, "Scanning supported project text files...");
+    else if (g_replacePreviewPlan.matchCount == 0 && g_replacePreviewPlan.complete)
+        drawText(ctx, 24, kReplacePanelResultsTop, "No matches found.");
+    if (g_replacePreviewPlan.matchCount > kReplacePreviewMaxDisplayMatches)
+        drawText(ctx, 760, 190, "Scroll: mouse wheel");
 }
 
 static void drawEditorRangeOverlay(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
@@ -17329,6 +17859,7 @@ static void drawShell(gx_app_context* ctx) {
     drawOutputAndStatus(ctx);
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
+    drawReplacePreviewPanel(ctx);
     drawReferencesPanel(ctx);
     drawSymbolSearch(ctx);
     drawDefinitionPicker(ctx);
@@ -17870,6 +18401,100 @@ static bool handleProjectSearchKey(gx_app_context* ctx, int keyCode, int action,
     return false;
 }
 
+static char* replacePreviewFieldBuffer() {
+    return g_replacePreviewField == ReplacePreviewField::Find ?
+        g_replacePreviewFind : g_replacePreviewReplacement;
+}
+
+static uint32_t replacePreviewFieldCapacity() {
+    return g_replacePreviewField == ReplacePreviewField::Find ?
+        sizeof(g_replacePreviewFind) : sizeof(g_replacePreviewReplacement);
+}
+
+static void replacePreviewInputChanged(gx_app_context* ctx) {
+    if (g_replacePreviewPlan.configured || ProjectSearchIsActive(&g_projectSearch)) {
+        invalidateReplacePreview(ctx, "Find/replacement text changed; preview again.");
+    } else {
+        copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                 "Inputs changed. Preview again to scan the project.");
+    }
+}
+
+static void replacePreviewInsertCharacter(gx_app_context* ctx, char value) {
+    if (value == '\0') return;
+    char* field = replacePreviewFieldBuffer();
+    const uint32_t capacity = replacePreviewFieldCapacity();
+    const uint32_t length = lengthOf(field, capacity);
+    if (g_replacePreviewFieldCaret > length || length + 1 >= capacity) return;
+    for (uint32_t i = length; i > g_replacePreviewFieldCaret; --i) field[i] = field[i - 1];
+    field[g_replacePreviewFieldCaret++] = value;
+    field[length + 1] = '\0';
+    replacePreviewInputChanged(ctx);
+}
+
+static void replacePreviewBackspace(gx_app_context* ctx) {
+    char* field = replacePreviewFieldBuffer();
+    const uint32_t length = lengthOf(field, replacePreviewFieldCapacity());
+    if (g_replacePreviewFieldCaret == 0 || g_replacePreviewFieldCaret > length) return;
+    for (uint32_t i = g_replacePreviewFieldCaret - 1; i < length; ++i) field[i] = field[i + 1];
+    --g_replacePreviewFieldCaret;
+    replacePreviewInputChanged(ctx);
+}
+
+static void replacePreviewDelete(gx_app_context* ctx) {
+    char* field = replacePreviewFieldBuffer();
+    const uint32_t length = lengthOf(field, replacePreviewFieldCapacity());
+    if (g_replacePreviewFieldCaret >= length) return;
+    for (uint32_t i = g_replacePreviewFieldCaret; i < length; ++i) field[i] = field[i + 1];
+    replacePreviewInputChanged(ctx);
+}
+
+static bool handleReplacePreviewKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_replacePreviewPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            g_replacePreviewScanSucceeded = false;
+            g_replacePreviewValidationPending = false;
+            copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                     "Cancelling preview... Press Esc again to close.");
+        } else {
+            closeReplaceInFiles(ctx, "escape");
+        }
+        return true;
+    }
+    if (keyCode == 13) {
+        startReplacePreview(ctx);
+        return true;
+    }
+    if (keyCode == 9) {
+        g_replacePreviewField = g_replacePreviewField == ReplacePreviewField::Find ?
+            ReplacePreviewField::Replacement : ReplacePreviewField::Find;
+        g_replacePreviewFieldCaret = lengthOf(replacePreviewFieldBuffer(),
+                                               replacePreviewFieldCapacity());
+        return true;
+    }
+    if (keyCode == 8) { replacePreviewBackspace(ctx); return true; }
+    if (keyCode == 46) { replacePreviewDelete(ctx); return true; }
+    if (keyCode == GX_KEY_LEFT) {
+        if (g_replacePreviewFieldCaret > 0) --g_replacePreviewFieldCaret;
+        return true;
+    }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(replacePreviewFieldBuffer(), replacePreviewFieldCapacity());
+        if (g_replacePreviewFieldCaret < length) ++g_replacePreviewFieldCaret;
+        return true;
+    }
+    if (keyCode == 36) { g_replacePreviewFieldCaret = 0; return true; }
+    if (keyCode == 35) {
+        g_replacePreviewFieldCaret = lengthOf(replacePreviewFieldBuffer(), replacePreviewFieldCapacity());
+        return true;
+    }
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value != '\0') { replacePreviewInsertCharacter(ctx, value); return true; }
+    return false;
+}
+
 static bool handleReferencePickerKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_referencePickerOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) {
@@ -18162,6 +18787,10 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         activateFindInFiles(ctx, "keyboard_shortcut");
         return;
     }
+    if (shortcutTool == DeveloperToolId::ReplaceInFiles) {
+        activateReplaceInFiles(ctx, "keyboard_shortcut");
+        return;
+    }
     // F5 continues a paused debug target even when source navigation or
     // inspection left keyboard focus on another pane.  Preserve the normal
     // Run Project meaning when no debug session owns the key.
@@ -18276,6 +18905,8 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (g_goToFilePanelOpen) return;
     if (g_goToLinePanelOpen && handleGoToLineKey(ctx, keyCode, action, modifiers)) return;
     if (g_goToLinePanelOpen) return;
+    if (g_replacePreviewPanelOpen && handleReplacePreviewKey(ctx, keyCode, action, modifiers)) return;
+    if (g_replacePreviewPanelOpen) return;
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
     if (g_symbolSearchOpen) return;
     if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
@@ -18929,6 +19560,70 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
+    if (g_replacePreviewPanelOpen) {
+        if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN &&
+            y < 48 && x >= 480 && x < 560) {
+            invalidateReplacePreview(ctx, "Workspace inventory refreshed; preview again.");
+            WorkspaceControllerRefresh(&g_controller);
+            writeOutput("Workspace refresh completed");
+            drawShell(ctx);
+            return;
+        }
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t total = g_replacePreviewPlan.matchCount;
+            const uint32_t maximum = total > kReplacePreviewMaxDisplayMatches ?
+                total - kReplacePreviewMaxDisplayMatches : 0;
+            if (event.param4 > 0) g_replacePreviewScroll = g_replacePreviewScroll > 2 ?
+                g_replacePreviewScroll - 2 : 0;
+            else g_replacePreviewScroll = g_replacePreviewScroll + 2 < maximum ?
+                g_replacePreviewScroll + 2 : maximum;
+            drawShell(ctx);
+            return;
+        }
+        if (button != GX_MOUSE_BUTTON_LEFT ||
+            (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+        if (y >= 87 && y < 107 && x >= 105 && x < 500) {
+            g_replacePreviewField = ReplacePreviewField::Find;
+            g_replacePreviewFieldCaret = lengthOf(g_replacePreviewFind, sizeof(g_replacePreviewFind));
+        } else if (y >= 111 && y < 131 && x >= 105 && x < 730) {
+            g_replacePreviewField = ReplacePreviewField::Replacement;
+            g_replacePreviewFieldCaret = lengthOf(g_replacePreviewReplacement,
+                                                   sizeof(g_replacePreviewReplacement));
+        } else if (y >= 87 && y < 108 && x >= 510 && x < 590) {
+            g_replacePreviewCaseSensitive = !g_replacePreviewCaseSensitive;
+            invalidateReplacePreview(ctx, "Case setting changed; preview again.");
+        } else if (y >= 87 && y < 108 && x >= 760 && x < 832) {
+            startReplacePreview(ctx);
+        } else if (y >= 87 && y < 108 && x >= 840 && x < 912) {
+            if (ProjectSearchIsActive(&g_projectSearch)) {
+                ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+                g_replacePreviewScanSucceeded = false;
+                g_replacePreviewValidationPending = false;
+                copyText(g_replacePreviewStatus, sizeof(g_replacePreviewStatus),
+                         "Cancelling preview...");
+            } else {
+                if (g_projectSearchOperationId != 0) {
+                    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+                    if (operation && operation->state != ProjectSearchState::Idle)
+                        ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId);
+                    g_projectSearchOperationId = 0;
+                    g_projectSearchTerminalReported = false;
+                }
+                ReplacePreviewPlanClear(&g_replacePreviewPlan);
+                g_replacePreviewScanSucceeded = false;
+                g_replacePreviewValidationPending = false;
+                g_replacePreviewStatus[0] = '\0';
+                g_replacePreviewScroll = 0;
+            }
+        } else if (y >= kReplacePanelResultsTop - 4 &&
+                   y < kSearchPanelTop + 580 && g_replacePreviewPlan.matchCount != 0) {
+            const uint32_t row = g_replacePreviewScroll +
+                static_cast<uint32_t>((y - kReplacePanelResultsTop) / kReplacePanelRowHeight);
+            if (row < g_replacePreviewPlan.matchCount) g_replacePreviewScroll = row;
+        }
+        drawShell(ctx);
+        return;
+    }
     if (g_projectSearchPanelOpen) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             const uint32_t total = projectSearchTotalRows();
@@ -19105,7 +19800,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 270 && x < 330) { g_fileMenuOpen = !g_fileMenuOpen; g_buildMenuOpen = false; g_debugMenuOpen = false; g_toolsMenuOpen = false; g_editorFocused = false; g_outputFocused = false; drawShell(ctx); return; }
     if (y < 48 && x >= 330 && x < 390) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
     if (y < 48 && x >= 390 && x < 480) { saveAll(ctx); drawShell(ctx); return; }
-    if (y < 48 && x >= 480 && x < 560) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
+    if (y < 48 && x >= 480 && x < 560) { if (g_replacePreviewPanelOpen) invalidateReplacePreview(ctx, "Workspace inventory refreshed; preview again."); WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
     if (y < 48 && x >= 600 && x < 650) { g_toolsMenuOpen = !g_toolsMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_buildMenuOpen = false; g_editorFocused = false; drawShell(ctx); return; }
     if (y < 48 && x >= 650 && x < 710) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 710 && x < 790) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
@@ -19119,6 +19814,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             activateGoToLine(ctx, "tools_menu");
         else if (tool && tool->id == DeveloperToolId::FindInFiles)
             activateFindInFiles(ctx, "tools_menu");
+        else if (tool && tool->id == DeveloperToolId::ReplaceInFiles)
+            activateReplaceInFiles(ctx, "tools_menu");
         g_toolsMenuOpen = false;
         drawShell(ctx);
         return;
@@ -19610,12 +20307,26 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     const bool toolsRegistered =
         DeveloperToolRegistryRegister(&g_developerTools, &kGoToFileToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kGoToLineToolCommand) &&
-        DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand);
+        DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand) &&
+        DeveloperToolRegistryRegister(&g_developerTools, &kReplaceInFilesToolCommand);
     if (!toolsRegistered)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=FAIL");
     else
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=3");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=4");
     g_projectSearchPanelOpen = false;
+    ReplacePreviewPlanInit(&g_replacePreviewPlan);
+    g_replacePreviewPanelOpen = false;
+    g_replacePreviewCaseSensitive = false;
+    g_replacePreviewField = ReplacePreviewField::Find;
+    g_replacePreviewFieldCaret = 0;
+    g_replacePreviewScroll = 0;
+    g_replacePreviewValidationIndex = 0;
+    g_replacePreviewNextValidationAt = 0;
+    g_replacePreviewScanSucceeded = false;
+    g_replacePreviewValidationPending = false;
+    g_replacePreviewFind[0] = '\0';
+    g_replacePreviewReplacement[0] = '\0';
+    g_replacePreviewStatus[0] = '\0';
     g_toolsMenuOpen = false;
     g_projectSearchResultsFocused = false;
     g_projectSearchOperationId = 0;
@@ -20000,14 +20711,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             }
             gx_event event;
             clear_event(&event);
-            const uint32_t eventPollTimeout = g_phase28oDiagnostic ? 50u : 500u;
+            const uint32_t eventPollTimeout = (g_phase28oDiagnostic || g_replacePreviewPanelOpen) ? 50u : 500u;
             if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 8u)) {
                 phase28v_startup_event(ctx, "EVENT_POLL_ENTRY");
                 g_phase28vLoopTraceMask |= 8u;
             }
             gx_result result = ctx->host->poll_event(ctx, &event,
                 (IncludeGraphIsActive(&g_includeGraphOperation) || OwnershipGraphBuildIsActive(&g_ownershipService) ||
-                 ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch)) ?
+                 ProjectSearchIsActive(&g_projectSearch) || ReferenceSearchIsActive(&g_referenceSearch) ||
+                 g_replacePreviewPanelOpen) ?
                     50 : eventPollTimeout);
             if (g_phase28qDiagnostic && g_debugReadyReported && !(g_phase28vLoopTraceMask & 16u)) {
                 phase28v_startup_event(ctx, "EVENT_POLL_RETURN");
@@ -20027,6 +20739,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                         g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
                     }
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
+                             !g_replacePreviewPanelOpen &&
                              !g_goToFilePanelOpen && !g_goToLinePanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
                              !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen && !g_debugPanelOpen) {

@@ -227,6 +227,7 @@ DeveloperToolId DeveloperToolIdFromShortcut(uint32_t keyCode, bool control,
     if (!shift && (keyCode == 80u || keyCode == 112u)) return DeveloperToolId::GoToFile;
     if (!shift && (keyCode == 71u || keyCode == 103u)) return DeveloperToolId::GoToLine;
     if (shift && (keyCode == 70u || keyCode == 102u)) return DeveloperToolId::FindInFiles;
+    if (shift && (keyCode == 72u || keyCode == 104u)) return DeveloperToolId::ReplaceInFiles;
     return DeveloperToolId::None;
 }
 

@@ -3,6 +3,8 @@ param(
     [string]$ServerRoot = "",
     [string]$SdkInclude = "",
     [string]$ToolchainRoot = "",
+    [string]$StagingRoot = "",
+    [string]$BuildRoot = "",
     [ValidateSet("Debug", "DebugSymbols")]
     [string]$Configuration = "Debug",
     [ValidateSet("amd64", "arm64")]
@@ -18,38 +20,43 @@ if (-not $ServerRoot) { $ServerRoot = $env:GUIDEXOS_SERVER_ROOT }
 if (-not $ServerRoot) { throw "Pass -ServerRoot or set GUIDEXOS_SERVER_ROOT." }
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 if (-not $SdkInclude) { $SdkInclude = Join-Path $ServerRoot "sdk\include" }
-$PackageRoot = Join-Path $ServerRoot "Apps\DeveloperStudio"
+$PackageRoot = if ($StagingRoot) {
+    Join-Path ([IO.Path]::GetFullPath($StagingRoot)) "Apps\DeveloperStudio"
+} else {
+    Join-Path $ServerRoot "Apps\DeveloperStudio"
+}
 $PackageBin = Join-Path $PackageRoot ("bin\" + $TargetArchitecture)
 $Manifest = Join-Path $RepoRoot "app\app.json"
-$ModelTest = Join-Path $ServerRoot "tmp\developer-studio-model-test.exe"
-$ProjectTest = Join-Path $ServerRoot "tmp\developer-studio-project-test.exe"
-$AppModelActivationTest = Join-Path $ServerRoot "tmp\developer-studio-appmodel-activation-test.exe"
-$AppModelActivationAbiTest = Join-Path $ServerRoot "tmp\developer-studio-appmodel-activation-abi-test.exe"
-$StartupTest = Join-Path $ServerRoot "tmp\developer-studio-startup-test.exe"
-$SentinelTest = Join-Path $ServerRoot "tmp\developer-studio-sentinel-test.exe"
-$RunTest = Join-Path $ServerRoot "tmp\developer-studio-run-test.exe"
-$FindTest = Join-Path $ServerRoot "tmp\developer-studio-find-test.exe"
-$SearchTest = Join-Path $ServerRoot "tmp\developer-studio-project-search-test.exe"
-$ToolsTest = Join-Path $ServerRoot "tmp\developer-studio-tools-test.exe"
-$SymbolTest = Join-Path $ServerRoot "tmp\developer-studio-symbol-test.exe"
-$NavigationTest = Join-Path $ServerRoot "tmp\developer-studio-navigation-definition-test.exe"
-$ReferenceTest = Join-Path $ServerRoot "tmp\developer-studio-reference-test.exe"
-$RenameTest = Join-Path $ServerRoot "tmp\developer-studio-rename-test.exe"
-$CompletionTest = Join-Path $ServerRoot "tmp\developer-studio-completion-test.exe"
-$SignatureTest = Join-Path $ServerRoot "tmp\developer-studio-signature-test.exe"
-$IncludeGraphTest = Join-Path $ServerRoot "tmp\developer-studio-include-graph-test.exe"
-$RelationshipTest = Join-Path $ServerRoot "tmp\developer-studio-relationship-test.exe"
-$OwnershipTest = Join-Path $ServerRoot "tmp\developer-studio-ownership-test.exe"
-$TypesTest = Join-Path $ServerRoot "tmp\developer-studio-types-test.exe"
-$DebuggerTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-test.exe"
-$DebuggerStepTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-step-test.exe"
-$DebuggerStackTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-stack-test.exe"
-$DebuggerVariablesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-variables-test.exe"
-$DebuggerWatchesTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-watches-test.exe"
-$DebuggerConditionalTest = Join-Path $ServerRoot "tmp\developer-studio-debugger-conditional-breakpoints-test.exe"
-$DebugEditorTest = Join-Path $ServerRoot "tmp\developer-studio-debug-editor-test.exe"
-$DebugDataTipTest = Join-Path $ServerRoot "tmp\developer-studio-debug-data-tips-test.exe"
-$ObjectRoot = Join-Path $ServerRoot "tmp\developer-studio-build"
+$BuildRoot = if ($BuildRoot) { [IO.Path]::GetFullPath($BuildRoot) } else { Join-Path $ServerRoot "tmp" }
+$ModelTest = Join-Path $BuildRoot "developer-studio-model-test.exe"
+$ProjectTest = Join-Path $BuildRoot "developer-studio-project-test.exe"
+$AppModelActivationTest = Join-Path $BuildRoot "developer-studio-appmodel-activation-test.exe"
+$AppModelActivationAbiTest = Join-Path $BuildRoot "developer-studio-appmodel-activation-abi-test.exe"
+$StartupTest = Join-Path $BuildRoot "developer-studio-startup-test.exe"
+$SentinelTest = Join-Path $BuildRoot "developer-studio-sentinel-test.exe"
+$RunTest = Join-Path $BuildRoot "developer-studio-run-test.exe"
+$FindTest = Join-Path $BuildRoot "developer-studio-find-test.exe"
+$SearchTest = Join-Path $BuildRoot "developer-studio-project-search-test.exe"
+$ToolsTest = Join-Path $BuildRoot "developer-studio-tools-test.exe"
+$SymbolTest = Join-Path $BuildRoot "developer-studio-symbol-test.exe"
+$NavigationTest = Join-Path $BuildRoot "developer-studio-navigation-definition-test.exe"
+$ReferenceTest = Join-Path $BuildRoot "developer-studio-reference-test.exe"
+$RenameTest = Join-Path $BuildRoot "developer-studio-rename-test.exe"
+$CompletionTest = Join-Path $BuildRoot "developer-studio-completion-test.exe"
+$SignatureTest = Join-Path $BuildRoot "developer-studio-signature-test.exe"
+$IncludeGraphTest = Join-Path $BuildRoot "developer-studio-include-graph-test.exe"
+$RelationshipTest = Join-Path $BuildRoot "developer-studio-relationship-test.exe"
+$OwnershipTest = Join-Path $BuildRoot "developer-studio-ownership-test.exe"
+$TypesTest = Join-Path $BuildRoot "developer-studio-types-test.exe"
+$DebuggerTest = Join-Path $BuildRoot "developer-studio-debugger-test.exe"
+$DebuggerStepTest = Join-Path $BuildRoot "developer-studio-debugger-step-test.exe"
+$DebuggerStackTest = Join-Path $BuildRoot "developer-studio-debugger-stack-test.exe"
+$DebuggerVariablesTest = Join-Path $BuildRoot "developer-studio-debugger-variables-test.exe"
+$DebuggerWatchesTest = Join-Path $BuildRoot "developer-studio-debugger-watches-test.exe"
+$DebuggerConditionalTest = Join-Path $BuildRoot "developer-studio-debugger-conditional-breakpoints-test.exe"
+$DebugEditorTest = Join-Path $BuildRoot "developer-studio-debug-editor-test.exe"
+$DebugDataTipTest = Join-Path $BuildRoot "developer-studio-debug-data-tips-test.exe"
+$ObjectRoot = Join-Path $BuildRoot "developer-studio-build"
 
 function Find-Tool([string[]]$Names, [string[]]$KnownRoots) {
     foreach ($name in $Names) {
@@ -350,6 +357,7 @@ $compileFlags = @(
     $outputObject = Join-Path $ObjectRoot "developer_studio_output.o"
     $runObject = Join-Path $ObjectRoot "developer_studio_run.o"
     $searchObject = Join-Path $ObjectRoot "developer_studio_project_search.o"
+    $replacePreviewObject = Join-Path $ObjectRoot "developer_studio_replace_preview.o"
     $toolsObject = Join-Path $ObjectRoot "developer_studio_tools.o"
     $symbolObject = Join-Path $ObjectRoot "developer_studio_symbols.o"
     $navigationObject = Join-Path $ObjectRoot "developer_studio_navigation.o"
@@ -383,6 +391,7 @@ $compileFlags = @(
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_output.cpp"), "-o", $outputObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_run.cpp"), "-o", $runObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_project_search.cpp"), "-o", $searchObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_replace_preview.cpp"), "-o", $replacePreviewObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_tools.cpp"), "-o", $toolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_symbols.cpp"), "-o", $symbolObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_navigation.cpp"), "-o", $navigationObject))
@@ -412,7 +421,7 @@ $compileFlags = @(
     # both target artifacts at the same canonical base so the package can be
     # validated and selected consistently in-OS.
     $linkFlags = @("-m", $linkMachine, "-static", "--image-base=0x50000000", "-z", "max-page-size=0x1000")
-    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
+    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $replacePreviewObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }

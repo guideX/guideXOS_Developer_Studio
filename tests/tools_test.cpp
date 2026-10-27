@@ -42,13 +42,19 @@ int main() {
         DeveloperToolId::GoToLine, "Go to Line", "Ctrl+G",
         activateFindInFiles, closeFindInFiles
     };
+    const DeveloperToolCommand replaceInFiles = {
+        DeveloperToolId::ReplaceInFiles, "Replace in Files", "Ctrl+Shift+H",
+        activateFindInFiles, closeFindInFiles
+    };
 
     assert(DeveloperToolRegistryRegister(&registry, &goToFile));
     assert(DeveloperToolRegistryRegister(&registry, &goToLine));
     assert(DeveloperToolRegistryRegister(&registry, &findInFiles));
+    assert(DeveloperToolRegistryRegister(&registry, &replaceInFiles));
     assert(!DeveloperToolRegistryRegister(&registry, &findInFiles));
     assert(DeveloperToolRegistryAt(&registry, 0) != nullptr);
-    assert(DeveloperToolRegistryAt(&registry, 3) == nullptr);
+    assert(DeveloperToolRegistryAt(&registry, 3)->id == DeveloperToolId::ReplaceInFiles);
+    assert(DeveloperToolRegistryAt(&registry, 4) == nullptr);
     assert(DeveloperToolRegistryAt(&registry, 0)->id == DeveloperToolId::GoToFile);
     assert(DeveloperToolRegistryAt(&registry, 1)->id == DeveloperToolId::GoToLine);
     assert(DeveloperToolRegistryAt(&registry, 2)->id == DeveloperToolId::FindInFiles);
@@ -59,6 +65,8 @@ int main() {
     assert(DeveloperToolIdFromShortcut(71, true, false, false) == DeveloperToolId::GoToLine);
     assert(DeveloperToolIdFromShortcut(103, true, false, false) == DeveloperToolId::GoToLine);
     assert(DeveloperToolIdFromShortcut(70, true, true, false) == DeveloperToolId::FindInFiles);
+    assert(DeveloperToolIdFromShortcut(72, true, true, false) == DeveloperToolId::ReplaceInFiles);
+    assert(DeveloperToolIdFromShortcut(72, true, true, true) == DeveloperToolId::None);
     assert(DeveloperToolIdFromShortcut(80, false, false, false) == DeveloperToolId::None);
     assert(DeveloperToolIdFromShortcut(80, true, true, false) == DeveloperToolId::None);
     assert(DeveloperToolIdFromShortcut(71, true, false, true) == DeveloperToolId::None);

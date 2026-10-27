@@ -18,6 +18,7 @@ add_library(developer_studio_models STATIC
     src/developer_studio_run.cpp
     src/developer_studio_workspace.cpp
     src/developer_studio_project_search.cpp
+    src/developer_studio_replace_preview.cpp
     src/developer_studio_tools.cpp
     src/developer_studio_symbols.cpp
     src/developer_studio_navigation.cpp
@@ -142,6 +143,13 @@ add_executable(developer_studio_project_search_test
 target_link_libraries(developer_studio_project_search_test PRIVATE developer_studio_models)
 set_target_properties(developer_studio_project_search_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_project_search_test COMMAND developer_studio_project_search_test)
+
+add_executable(developer_studio_replace_preview_test
+    tests/replace_preview_test.cpp
+)
+target_link_libraries(developer_studio_replace_preview_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_replace_preview_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_replace_preview_test COMMAND developer_studio_replace_preview_test)
 
 add_executable(developer_studio_tools_test
     tests/tools_test.cpp
@@ -303,13 +311,15 @@ set_tests_properties(
     PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
-# The production Native ELF link is intentionally driven by build.ps1. That
-# script follows the Server SDK's direct clang/ld.lld convention and writes the
-# package into the Server checkout rather than creating a second SDK copy here.
+# The production Native ELF link is normally driven by build.ps1. The CMake
+# target mirrors its freestanding bounds and fixed-address ELF contract, and
+# can direct its output to an isolated staging directory for qualification.
 option(GUIDEXOS_BUILD_NATIVE_ELF "Build the Native ELF shell with CMake" OFF)
 set(GUIDEXOS_SERVER_ROOT "" CACHE PATH "guideXOS Server checkout")
 set(GUIDEXOS_TARGET_ARCHITECTURE "amd64" CACHE STRING "Native ELF target architecture")
 set_property(CACHE GUIDEXOS_TARGET_ARCHITECTURE PROPERTY STRINGS amd64 arm64)
+set(GUIDEXOS_NATIVE_ELF_OUTPUT_DIR "" CACHE PATH
+    "Optional override for the Native ELF output directory (useful for isolated staging)")
 
 if(GUIDEXOS_TARGET_ARCHITECTURE STREQUAL "amd64")
     set(GUIDEXOS_COMPILER_TRIPLE "x86_64-unknown-elf")
@@ -337,6 +347,7 @@ add_executable(developerstudio.elf
         src/developer_studio_run.cpp
         src/developer_studio_workspace.cpp
         src/developer_studio_project_search.cpp
+        src/developer_studio_replace_preview.cpp
         src/developer_studio_symbols.cpp
         src/developer_studio_navigation.cpp
         src/developer_studio_references.cpp
@@ -362,6 +373,7 @@ add_executable(developerstudio.elf
         src
         "${GUIDEXOS_SERVER_ROOT}/sdk/include"
     )
+    target_compile_definitions(developerstudio.elf PRIVATE GXOS_DEVELOPER_STUDIO_BARE_METAL)
     target_compile_options(developerstudio.elf PRIVATE
         --target=${GUIDEXOS_COMPILER_TRIPLE}
         -ffreestanding
@@ -379,10 +391,18 @@ add_executable(developerstudio.elf
         -fuse-ld=lld
         -Wl,-e,gx_main
         -Wl,-m,${GUIDEXOS_LINK_MACHINE}
+        -Wl,--image-base=0x50000000
+        -Wl,-z,max-page-size=0x1000
     )
+    if(GUIDEXOS_NATIVE_ELF_OUTPUT_DIR)
+        set(_developer_studio_native_output_dir "${GUIDEXOS_NATIVE_ELF_OUTPUT_DIR}")
+    else()
+        set(_developer_studio_native_output_dir
+            "${GUIDEXOS_SERVER_ROOT}/Apps/DeveloperStudio/bin/${GUIDEXOS_TARGET_ARCHITECTURE}")
+    endif()
     set_target_properties(developerstudio.elf PROPERTIES
         OUTPUT_NAME developerstudio
         SUFFIX .elf
-        RUNTIME_OUTPUT_DIRECTORY "${GUIDEXOS_SERVER_ROOT}/Apps/DeveloperStudio/bin/${GUIDEXOS_TARGET_ARCHITECTURE}"
+        RUNTIME_OUTPUT_DIRECTORY "${_developer_studio_native_output_dir}"
     )
 endif()
