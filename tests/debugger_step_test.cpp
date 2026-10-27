@@ -38,6 +38,8 @@ struct StepOverFake {
     uint64_t commandGeneration = 0;
 };
 
+struct StepRestartFake {};
+
 struct StepOutFake {
     bool overlapUserBreakpoint = false;
     bool exitBeforeStepStop = false;
@@ -477,6 +479,34 @@ static DebugBackend makeStepOverBackend(StepOverFake* fake) {
     return backend;
 }
 
+static bool restartAfterStepLaunch(void*, const DebugTarget&, uint64_t generation,
+                                   DebugBackendSnapshot* snapshot) {
+    if (!snapshot) return false;
+    *snapshot = DebugBackendSnapshot();
+    snapshot->sessionGeneration = generation;
+    snapshot->state = DebugSessionState::Launching;
+    snapshot->processId = 12;
+    snapshot->nativeRuntimeId = 77;
+    std::strcpy(snapshot->backendName, "Step Restart Backend");
+    return true;
+}
+
+static bool restartAfterStepPoll(void*, uint64_t generation, DebugBackendSnapshot* snapshot) {
+    if (!snapshot) return false;
+    *snapshot = DebugBackendSnapshot();
+    snapshot->sessionGeneration = generation;
+    snapshot->state = DebugSessionState::Exited;
+    snapshot->stopReason = DebugStopReason::Exited;
+    snapshot->processId = 12;
+    snapshot->nativeRuntimeId = 77;
+    snapshot->cleanupComplete = true;
+    return true;
+}
+
+static bool restartAfterStepStop(void*, uint64_t) {
+    return true;
+}
+
 static void prepareMapper(DebugDwarfMapper* mapper) {
     *mapper = DebugDwarfMapper();
     mapper->state = DebugDwarfMapperState::Ready;
@@ -873,6 +903,33 @@ int main() {
            !stopDuringStepOver.stepOver.temporaryInstalled &&
            stopDuringStepOver.stepOver.temporaryBreakpointId == 0 &&
            stopOverFake.removeCalls == 0 && stopOverFake.pollCalls == 1);
+
+    StepRestartFake stepRestartFake;
+    DebugBackend stepRestartBackend = {};
+    stepRestartBackend.userData = &stepRestartFake;
+    stepRestartBackend.capabilities.canLaunch = true;
+    stepRestartBackend.capabilities.canStop = true;
+    std::strcpy(stepRestartBackend.name, "Step Restart Backend");
+    stepRestartBackend.launch = restartAfterStepLaunch;
+    stepRestartBackend.poll = restartAfterStepPoll;
+    stepRestartBackend.stop = restartAfterStepStop;
+    DebugTarget stepRestartTarget = {};
+    std::strcpy(stepRestartTarget.projectId, "com.example.debugger");
+    std::strcpy(stepRestartTarget.projectRoot, "D:/work/debugger");
+    std::strcpy(stepRestartTarget.executablePath, "D:/work/debugger/build/debugger.elf");
+    stepRestartTarget.projectGeneration = 9;
+    const uint64_t stoppedStepGeneration = stopDuringStepOver.sessionGeneration;
+    assert(DebugControllerStart(&stopDuringStepOver, stepRestartBackend, stepRestartTarget, &error));
+    assert(stopDuringStepOver.sessionGeneration != stoppedStepGeneration &&
+           stopDuringStepOver.state == DebugSessionState::Launching &&
+           !stopDuringStepOver.stepOver.active &&
+           !stopDuringStepOver.stepOver.temporaryInstalled &&
+           stopDuringStepOver.stepOver.temporaryBreakpointId == 0 &&
+           stopDuringStepOver.stepOver.temporaryBindingId == 0);
+    assert(DebugControllerRequestStop(&stopDuringStepOver, stepRestartBackend, &error));
+    assert(DebugControllerPoll(&stopDuringStepOver, stepRestartBackend, &mapper));
+    assert(stopDuringStepOver.state == DebugSessionState::Exited &&
+           stopDuringStepOver.cleanupComplete && !stopDuringStepOver.active);
 
     StepOutFake outFake;
     DebugBackend outBackend = makeStepOutBackend(&outFake);
