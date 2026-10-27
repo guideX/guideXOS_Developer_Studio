@@ -1,15 +1,34 @@
 #include "developer_studio_project_search.h"
+#include "developer_studio_workspace.h"
 
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <string>
 
 using namespace guidexos::developer_studio;
 namespace fs = std::filesystem;
 
-static bool statFile(void*, const char* path, FileInfo* info) {
+struct SearchFileSystemBehavior {
+    std::string unreadablePath;
+    std::string disappearedPath;
+};
+
+static bool pathEndsWith(const char* path, const std::string& suffix) {
+    if (!path || suffix.empty()) return false;
+    const uint32_t length = static_cast<uint32_t>(std::strlen(path));
+    if (length < suffix.size()) return false;
+    const char* name = path + length;
+    while (name > path && name[-1] != '/' && name[-1] != '\\') --name;
+    return std::strcmp(name, suffix.c_str()) == 0;
+}
+
+static bool statFile(void* userData, const char* path, FileInfo* info) {
+    SearchFileSystemBehavior* behavior = static_cast<SearchFileSystemBehavior*>(userData);
+    if (behavior && pathEndsWith(path, behavior->disappearedPath)) return false;
     std::error_code ec;
     const fs::file_status status = fs::symlink_status(fs::path(path), ec);
     if (ec || !fs::exists(status)) return false;
@@ -40,7 +59,9 @@ static bool listFiles(void*, const char* path, FileListEntry* entries, uint32_t 
     return true;
 }
 
-static bool readFile(void*, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
+static bool readFile(void* userData, const char* path, char* buffer, uint32_t capacity, uint32_t* outBytes) {
+    SearchFileSystemBehavior* behavior = static_cast<SearchFileSystemBehavior*>(userData);
+    if (behavior && pathEndsWith(path, behavior->unreadablePath)) return false;
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     input.seekg(0, std::ios::end);
@@ -111,6 +132,34 @@ int main() {
     assert(first && first->line == 1 && first->column == 8 && first->byteOffset == 7);
     assert(first->previewMatchLength == 12);
 
+    WorkspaceFileSystem navigationFileSystem = { nullptr, statFile, nullptr, readFile,
+        nullptr, nullptr, nullptr };
+    static WorkspaceController navigationController;
+    WorkspaceControllerInit(&navigationController, navigationFileSystem);
+    navigationController.model.open = true;
+    navigationController.model.hasProject = true;
+    setText(navigationController.model.rootPath, sizeof(navigationController.model.rootPath), root.generic_string().c_str());
+    setText(navigationController.model.project.projectId,
+            sizeof(navigationController.model.project.projectId), "com.example.search");
+    navigationController.model.project.valid = true;
+    uint32_t navigationIndex = kMaxOpenDocuments;
+    OutputErrorCode navigationError = OutputErrorCode::None;
+    const ProjectSearchFileGroup* navigationGroup = ProjectSearchResultGroupAt(&service, 2);
+    const ProjectSearchMatch* navigationMatch = ProjectSearchResultMatchAt(&service, navigationGroup, 0);
+    assert(navigationGroup && navigationMatch);
+    const bool navigatedToSearchResult = WorkspaceControllerOpenDocumentAtLocation(&navigationController,
+        navigationController.model.project.projectId, navigationGroup->relativePath,
+        navigationMatch->line, navigationMatch->column, &navigationIndex, &navigationError);
+    if (!navigatedToSearchResult)
+        std::cerr << "Search result navigation failed: error=" << static_cast<int>(navigationError)
+                  << " modelError=" << static_cast<int>(navigationController.lastError)
+                  << " root=" << navigationController.model.rootPath
+                  << " result=" << navigationGroup->relativePath << '\n';
+    assert(navigatedToSearchResult);
+    const Document* navigated = WorkspaceControllerActiveDocumentConst(&navigationController);
+    assert(navigated && std::strstr(navigated->path, "/src/main.cpp") != nullptr);
+    assert(navigated->buffer.caret == navigationMatch->byteOffset);
+
     ProjectSearchOptionsInit(&request.options);
     setText(request.options.query, sizeof(request.options.query), "CreateWindow");
     setText(request.options.includePattern, sizeof(request.options.includePattern), "src/*.cpp;*.txt");
@@ -156,12 +205,68 @@ int main() {
     assert(ProjectSearchPoll(&service, operationId, 16, 1));
     assert(ProjectSearchOperationInfo(&service)->state == ProjectSearchState::Cancelled);
     assert(ProjectSearchOperationInfo(&service)->error == ProjectSearchErrorCode::Cancelled);
+    assert(ProjectSearchRelease(&service, operationId));
+    assert(ProjectSearchQueryResultGroups(&service) == 0);
+    assert(ProjectSearchOperationInfo(&service)->state == ProjectSearchState::Idle);
 
     ProjectSearchOptionsInit(&request.options);
     setText(request.options.query, sizeof(request.options.query), "CreateWindow");
     setText(request.options.includePattern, sizeof(request.options.includePattern), "bad/../pattern");
     assert(!ProjectSearchStart(&service, &request, 0, &operationId, &error));
     assert(error == ProjectSearchErrorCode::InvalidIncludePattern);
+    assert(ProjectSearchRelease(&service, operationId));
+
+    const fs::path oversizedPath = root / "oversized.cpp";
+    const fs::path unreadablePath = root / "unreadable.cpp";
+    const fs::path disappearedPath = root / "disappeared.cpp";
+    std::string oversizedContents(kProjectSearchMaxFileBytes + 1u, 'x');
+    oversizedContents.replace(0, 12, "CreateWindow");
+    { std::ofstream output(oversizedPath, std::ios::binary); output.write(oversizedContents.data(), oversizedContents.size()); }
+    writeFile(unreadablePath, "CreateWindow hidden by the test filesystem\n");
+    writeFile(disappearedPath, "CreateWindow disappears after enumeration\n");
+    SearchFileSystemBehavior behavior = { "unreadable.cpp", "disappeared.cpp" };
+    ProjectSearchOptionsInit(&request.options);
+    setText(request.options.query, sizeof(request.options.query), "CreateWindow");
+    setText(request.options.excludePattern, sizeof(request.options.excludePattern), "third_party/*");
+    request.fileSystem.userData = &behavior;
+    assert(ProjectSearchStart(&service, &request, 0, &operationId, &error));
+    for (uint32_t i = 0; i < 1000 && ProjectSearchIsActive(&service); ++i)
+        assert(ProjectSearchPoll(&service, operationId, 16, i));
+    operation = ProjectSearchOperationInfo(&service);
+    assert(operation && operation->state == ProjectSearchState::Completed && !operation->truncated);
+    assert(operation->diagnostics.filesSkipped == 4);
+    assert(operation->diagnostics.unreadableFiles == 1);
+    assert(operation->diagnostics.binaryFiles == 1);
+    assert(operation->diagnostics.oversizedFiles == 1);
+    assert(operation->diagnostics.changedOrDisappearedFiles == 1);
+
+    const fs::path capacityRoot = fs::temp_directory_path() / "guidexos-project-search-capacity-test";
+    fs::remove_all(capacityRoot, ec);
+    fs::create_directories(capacityRoot, ec);
+    const uint32_t filesPerDirectory = 80;
+    for (uint32_t directoryIndex = 0; directoryIndex <= kProjectSearchMaxResultFiles / filesPerDirectory; ++directoryIndex) {
+        char directoryName[24] = {};
+        std::snprintf(directoryName, sizeof(directoryName), "set-%02u", directoryIndex);
+        fs::create_directories(capacityRoot / directoryName, ec);
+    }
+    for (uint32_t i = 0; i <= kProjectSearchMaxResultFiles; ++i) {
+        char fileName[32] = {};
+        char directoryName[24] = {};
+        std::snprintf(fileName, sizeof(fileName), "match-%03u.cpp", i);
+        std::snprintf(directoryName, sizeof(directoryName), "set-%02u", i / filesPerDirectory);
+        writeFile(capacityRoot / directoryName / fileName, "Needle\n");
+    }
+    request = requestFor(capacityRoot, "Needle");
+    assert(ProjectSearchStart(&service, &request, 0, &operationId, &error));
+    for (uint32_t i = 0; i < 1000 && ProjectSearchIsActive(&service); ++i)
+        assert(ProjectSearchPoll(&service, operationId, 16, i));
+    operation = ProjectSearchOperationInfo(&service);
+    assert(operation && operation->state == ProjectSearchState::Completed && operation->truncated);
+    assert(operation->error == ProjectSearchErrorCode::ResultLimit);
+    assert(operation->resultFileCount == kProjectSearchMaxResultFiles);
+    assert(operation->resultMatchCount == kProjectSearchMaxResultFiles);
+    assert(ProjectSearchRelease(&service, operationId));
+    fs::remove_all(capacityRoot, ec);
 
     fs::remove_all(root, ec);
     std::cout << "Developer Studio project search PASS\n";

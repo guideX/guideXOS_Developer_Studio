@@ -30,6 +30,7 @@ $SentinelTest = Join-Path $ServerRoot "tmp\developer-studio-sentinel-test.exe"
 $RunTest = Join-Path $ServerRoot "tmp\developer-studio-run-test.exe"
 $FindTest = Join-Path $ServerRoot "tmp\developer-studio-find-test.exe"
 $SearchTest = Join-Path $ServerRoot "tmp\developer-studio-project-search-test.exe"
+$ToolsTest = Join-Path $ServerRoot "tmp\developer-studio-tools-test.exe"
 $SymbolTest = Join-Path $ServerRoot "tmp\developer-studio-symbol-test.exe"
 $NavigationTest = Join-Path $ServerRoot "tmp\developer-studio-navigation-definition-test.exe"
 $ReferenceTest = Join-Path $ServerRoot "tmp\developer-studio-reference-test.exe"
@@ -149,7 +150,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio diagnostic sentinel detection test failed with exit code $LASTEXITCODE" }
     Invoke-Checked "g++" @(
         "-std=c++11", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_syntax.cpp", "tests\run_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_syntax.cpp", "tests\run_test.cpp",
         "-o", $RunTest
     )
     & $RunTest
@@ -165,11 +166,19 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_project_search.cpp", "tests\project_search_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_project_search.cpp", "tests\project_search_test.cpp",
         "-o", $SearchTest
     )
     & $SearchTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio project search test failed with exit code $LASTEXITCODE" }
+
+    Invoke-Checked "g++" @(
+        "-std=c++11", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_tools.cpp", "tests\tools_test.cpp",
+        "-o", $ToolsTest
+    )
+    & $ToolsTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio tools test failed with exit code $LASTEXITCODE" }
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
@@ -253,7 +262,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_test.cpp",
         "-o", $DebuggerTest
     )
     & $DebuggerTest
@@ -261,7 +270,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_debugger_hosted.cpp", "tests\debugger_step_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "src\developer_studio_debugger_hosted.cpp", "tests\debugger_step_test.cpp",
         "-o", $DebuggerStepTest
     )
     & $DebuggerStepTest
@@ -269,7 +278,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_stack_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_stack_test.cpp",
         "-o", $DebuggerStackTest
     )
     & $DebuggerStackTest
@@ -277,7 +286,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_variables_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_variables_test.cpp",
         "-o", $DebuggerVariablesTest
     )
     & $DebuggerVariablesTest
@@ -285,7 +294,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_watches_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_watches_test.cpp",
         "-o", $DebuggerWatchesTest
     )
     & $DebuggerWatchesTest
@@ -293,7 +302,7 @@ try {
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
-        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_conditional_breakpoints_test.cpp",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_output.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_build.cpp", "src\developer_studio_run.cpp", "src\developer_studio_debug_symbols.cpp", "src\developer_studio_debug_variables.cpp", "src\developer_studio_debug_watches.cpp", "src\developer_studio_debugger.cpp", "src\developer_studio_debugger_stack.cpp", "tests\debugger_conditional_breakpoints_test.cpp",
         "-o", $DebuggerConditionalTest
     )
     & $DebuggerConditionalTest
@@ -341,6 +350,7 @@ $compileFlags = @(
     $outputObject = Join-Path $ObjectRoot "developer_studio_output.o"
     $runObject = Join-Path $ObjectRoot "developer_studio_run.o"
     $searchObject = Join-Path $ObjectRoot "developer_studio_project_search.o"
+    $toolsObject = Join-Path $ObjectRoot "developer_studio_tools.o"
     $symbolObject = Join-Path $ObjectRoot "developer_studio_symbols.o"
     $navigationObject = Join-Path $ObjectRoot "developer_studio_navigation.o"
     $referencesObject = Join-Path $ObjectRoot "developer_studio_references.o"
@@ -373,6 +383,7 @@ $compileFlags = @(
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_output.cpp"), "-o", $outputObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_run.cpp"), "-o", $runObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_project_search.cpp"), "-o", $searchObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_tools.cpp"), "-o", $toolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_symbols.cpp"), "-o", $symbolObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_navigation.cpp"), "-o", $navigationObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_references.cpp"), "-o", $referencesObject))
@@ -401,7 +412,7 @@ $compileFlags = @(
     # both target artifacts at the same canonical base so the package can be
     # validated and selected consistently in-OS.
     $linkFlags = @("-m", $linkMachine, "-static", "--image-base=0x50000000", "-z", "max-page-size=0x1000")
-    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
+    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }
@@ -436,6 +447,7 @@ $compileFlags = @(
     if (Test-Path -LiteralPath $RunTest) { Remove-Item -LiteralPath $RunTest -Force }
     if (Test-Path -LiteralPath $FindTest) { Remove-Item -LiteralPath $FindTest -Force }
     if (Test-Path -LiteralPath $SearchTest) { Remove-Item -LiteralPath $SearchTest -Force }
+    if (Test-Path -LiteralPath $ToolsTest) { Remove-Item -LiteralPath $ToolsTest -Force }
     if (Test-Path -LiteralPath $SymbolTest) { Remove-Item -LiteralPath $SymbolTest -Force }
     if (Test-Path -LiteralPath $NavigationTest) { Remove-Item -LiteralPath $NavigationTest -Force }
     if (Test-Path -LiteralPath $ReferenceTest) { Remove-Item -LiteralPath $ReferenceTest -Force }

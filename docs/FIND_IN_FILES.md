@@ -147,13 +147,27 @@ line/column with `Search result may be stale`.
 
 ## Results, UI, and Output
 
-`Ctrl+Shift+F` opens the dedicated panel. Query initialization is selected
+The visible **Tools** menu registers Find in Files through the fixed-capacity
+`DeveloperToolRegistry`; `Ctrl+Shift+F` dispatches through the same activation
+callback. The registry stores command descriptors in fixed storage and does
+not load dynamic plugins. Re-activating the open tool preserves its query and
+current operation. Closing it requests cancellation and releases terminal
+search state.
+
+Query initialization is selected
 single-line text, then the previous project-search query, then active-document
 Find query, then empty. Include/exclude fields start with the C/C++ patterns
 and common output-directory patterns. The panel provides Match case, Whole
 word, Search, Cancel, progress, empty/cancelled/failed/truncated states,
 bounded scrolling, keyboard selection, mouse selection, double-click, and
 Enter activation.
+
+The panel reports aggregate skipped-file counts for large, binary, unreadable,
+and changed or disappeared files. It also shows a compact limit or failure
+reason for truncated or failed searches. Counters use fixed storage and do not
+create a row or allocate text per skipped file. Directory-list truncation has
+its own `PROJECT_SEARCH_DIRECTORY_ENTRIES_LIMIT` reason; result and other
+capacity limits retain bounded partial results.
 
 Groups sort by normalized relative path using case-insensitive ordinal order
 with original-byte tie-breaking. Matches within groups remain in source order.

@@ -74,6 +74,7 @@ enum class ProjectSearchErrorCode {
     PathOutsideProject,
     EnumerationFailed,
     DirectoryLimit,
+    DirectoryEntriesLimit,
     FileLimit,
     FileTooLarge,
     BinaryFile,
@@ -157,6 +158,16 @@ struct ProjectSearchFileGroup {
     uint32_t documentGeneration;
 };
 
+// Aggregate counters keep skip reporting useful without retaining one record
+// or allocating diagnostic text for every file.
+struct ProjectSearchDiagnostics {
+    uint32_t filesSkipped;
+    uint32_t unreadableFiles;
+    uint32_t binaryFiles;
+    uint32_t oversizedFiles;
+    uint32_t changedOrDisappearedFiles;
+};
+
 struct ProjectSearchOperation {
     uint64_t operationId;
     uint64_t projectId;
@@ -167,6 +178,7 @@ struct ProjectSearchOperation {
     uint64_t filesSearched;
     uint64_t bytesScanned;
     uint64_t matchesFound;
+    ProjectSearchDiagnostics diagnostics;
     uint32_t resultFileCount;
     uint32_t resultMatchCount;
     bool truncated;

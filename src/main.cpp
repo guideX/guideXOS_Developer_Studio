@@ -8,6 +8,7 @@
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
+#include "developer_studio_tools.h"
 #include "developer_studio_symbols.h"
 #include "developer_studio_navigation.h"
 #include "developer_studio_references.h"
@@ -51,6 +52,8 @@ using guidexos::developer_studio::BuildErrorName;
 using guidexos::developer_studio::BuildResult;
 using guidexos::developer_studio::BuildState;
 using guidexos::developer_studio::BuildStateName;
+using guidexos::developer_studio::ClassifyBuildFailureDetail;
+using guidexos::developer_studio::ClassifyBuildDiagnosticLine;
 using guidexos::developer_studio::HostedBuildService;
 using guidexos::developer_studio::HostedDevelopmentRunService;
 using guidexos::developer_studio::RunBackendKind;
@@ -271,7 +274,18 @@ using guidexos::developer_studio::ProjectSearchStart;
 using guidexos::developer_studio::ProjectSearchState;
 using guidexos::developer_studio::ProjectSearchStateName;
 using guidexos::developer_studio::ProjectSearchDocumentSnapshot;
+using guidexos::developer_studio::ProjectSearchDiagnostics;
 using guidexos::developer_studio::kProjectSearchMaxFileBytes;
+using guidexos::developer_studio::DeveloperToolCommand;
+using guidexos::developer_studio::DeveloperToolId;
+using guidexos::developer_studio::DeveloperToolRegistry;
+using guidexos::developer_studio::DeveloperToolRegistryActivate;
+using guidexos::developer_studio::DeveloperToolRegistryAt;
+using guidexos::developer_studio::DeveloperToolRegistryClose;
+using guidexos::developer_studio::DeveloperToolRegistryFind;
+using guidexos::developer_studio::DeveloperToolRegistryInit;
+using guidexos::developer_studio::DeveloperToolRegistryIsActive;
+using guidexos::developer_studio::DeveloperToolRegistryRegister;
 using guidexos::developer_studio::ReferenceConfidence;
 using guidexos::developer_studio::ReferenceConfidenceName;
 using guidexos::developer_studio::ReferenceFileGroup;
@@ -703,7 +717,7 @@ static const int kFindReplaceButtonX = 590;
 static const int kFindReplaceAllX = 660;
 static const uint32_t kFindVisibleOverlayCapacity = 256;
 static const int kSearchPanelTop = 48;
-static const int kSearchPanelResultsTop = 190;
+static const int kSearchPanelResultsTop = 214;
 static const int kSearchPanelRowHeight = 17;
 static const int kSearchPanelMaxRows = 25;
 static const int kSearchFieldX = 86;
@@ -854,6 +868,14 @@ static bool g_editorFocused = false;
 static bool g_fileMenuOpen = false;
 static bool g_buildMenuOpen = false;
 static bool g_debugMenuOpen = false;
+static bool g_toolsMenuOpen = false;
+static DeveloperToolRegistry g_developerTools = {};
+static bool activateFindInFilesTool(void* userData);
+static bool closeFindInFilesTool(void* userData);
+static const DeveloperToolCommand kFindInFilesToolCommand = {
+    DeveloperToolId::FindInFiles, "Find in Files", "Ctrl+Shift+F",
+    activateFindInFilesTool, closeFindInFilesTool
+};
 static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
 static uint32_t g_debugSelectedBreakpoint = 0;
@@ -1274,6 +1296,8 @@ static char g_ownershipStatus[192] = {};
 static char mapKeyToChar(int keyCode, int modifiers);
 static void compose(char* output, uint32_t size, const char* prefix, const char* value, const char* suffix);
 static void stopProjectSearch(gx_app_context* ctx);
+static bool activateFindInFiles(gx_app_context* ctx, const char* source);
+static bool closeFindInFiles(gx_app_context* ctx, const char* source);
 static uint32_t captureDirtyProjectSearchDocuments();
 static void stopReferenceSearch(gx_app_context* ctx);
 static void closeFindBar();
@@ -2860,7 +2884,7 @@ static void openSymbolSearch(gx_app_context* ctx) {
     g_outputFocused = false;
     g_findBarOpen = false;
     if (g_projectSearchPanelOpen) stopProjectSearch(ctx);
-    g_projectSearchPanelOpen = false;
+    closeFindInFiles(ctx, "switch_to_symbol_search");
     symbolSearchRefresh();
 }
 
@@ -3706,6 +3730,32 @@ static void projectSearchSetStatus(const char* text) {
     copyText(g_projectSearchStatus, sizeof(g_projectSearchStatus), text ? text : "");
 }
 
+static void projectSearchDiagnosticsLine(char* output, uint32_t outputSize,
+                                         const ProjectSearchOperation* operation) {
+    if (!output || outputSize == 0) return;
+    output[0] = '\0';
+    if (!operation) return;
+    const ProjectSearchDiagnostics& diagnostics = operation->diagnostics;
+    if (diagnostics.filesSkipped != 0) {
+        copyText(output, outputSize, "Skipped ");
+        appendUnsigned(output, outputSize, diagnostics.filesSkipped);
+        appendText(output, outputSize, " (large ");
+        appendUnsigned(output, outputSize, diagnostics.oversizedFiles);
+        appendText(output, outputSize, ", binary ");
+        appendUnsigned(output, outputSize, diagnostics.binaryFiles);
+        appendText(output, outputSize, ", unreadable ");
+        appendUnsigned(output, outputSize, diagnostics.unreadableFiles);
+        appendText(output, outputSize, ", changed ");
+        appendUnsigned(output, outputSize, diagnostics.changedOrDisappearedFiles);
+        appendText(output, outputSize, ")");
+    }
+    if (operation->truncated || operation->state == ProjectSearchState::Failed) {
+        if (output[0] != '\0') appendText(output, outputSize, "; ");
+        appendText(output, outputSize, operation->state == ProjectSearchState::Failed ? "Stopped: " : "Limit: ");
+        appendText(output, outputSize, ProjectSearchErrorName(operation->error));
+    }
+}
+
 static void referencesSetStatus(const char* text) {
     copyText(g_referencesStatus, sizeof(g_referencesStatus), text ? text : "");
 }
@@ -3884,7 +3934,7 @@ static bool startFindAllReferences(gx_app_context* ctx) {
         return false;
     }
     stopProjectSearch(ctx);
-    g_projectSearchPanelOpen = false;
+    closeFindInFiles(ctx, "switch_to_references");
     g_findBarOpen = false;
     if (g_referenceTargetResolution.kind == ReferenceTargetResolutionKind::LexicalFallback) {
         if (!ReferenceTargetFromDefinitionQuery(g_referenceQuery, g_controller.model.project.projectId,
@@ -4349,7 +4399,7 @@ static void pollProjectSearch(gx_app_context* ctx) {
         appendUnsigned(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->resultFileCount);
         appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), " files, ");
         appendUnsigned(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->resultMatchCount);
-        appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->truncated ? " matches (truncated)" : " matches");
+        appendText(g_projectSearchStatus, sizeof(g_projectSearchStatus), operation->truncated ? " matches; limits reached" : " matches");
         if (operation->truncated) {
             markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_complete=TRUNCATED", ProjectSearchErrorName(operation->error));
         } else {
@@ -4387,6 +4437,74 @@ static void stopProjectSearch(gx_app_context* ctx) {
         ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId);
     g_projectSearchOperationId = 0;
     g_projectSearchTerminalReported = false;
+}
+
+static bool activateFindInFilesTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (!ctx) return false;
+    if (!g_projectSearchPanelOpen) {
+        if (g_findBarOpen) closeFindBar();
+        projectSearchInitializeDraft(WorkspaceControllerActiveDocument(&g_controller));
+    }
+    g_projectSearchPanelOpen = true;
+    g_projectSearchResultsFocused = false;
+    g_projectSearchField = ProjectSearchField::Query;
+    g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    return true;
+}
+
+static bool closeFindInFilesTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+        if (operation && operation->state != ProjectSearchState::Idle &&
+            !ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId)) return false;
+        g_projectSearchOperationId = 0;
+        g_projectSearchTerminalReported = false;
+    }
+    g_projectSearchPanelOpen = false;
+    g_projectSearchResultsFocused = false;
+    return true;
+}
+
+static bool activateFindInFiles(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::FindInFiles, ctx)) {
+        writeStudioOutput("Unable to open Find in Files");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER find_in_files_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER find_in_files_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool closeFindInFiles(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::FindInFiles, ctx)) {
+        writeStudioOutput("Find in Files is still active");
+        return false;
+    }
+    if (source && (searchTextEqual(source, "escape") || searchTextEqual(source, "cancel")))
+        g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER find_in_files_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
 }
 
 static bool startProjectSearch(gx_app_context* ctx) {
@@ -9562,6 +9680,8 @@ static void drawProjectSearchPanel(gx_app_context* ctx) {
     } else if (!g_controller.model.hasProject) {
         drawText(ctx, 24, 177, "Open a project to search its files.");
     }
+    projectSearchDiagnosticsLine(g_textScratch, sizeof(g_textScratch), operation);
+    if (g_textScratch[0] != '\0') drawText(ctx, 24, 196, g_textScratch);
     drawPanel(ctx, { 16, kSearchPanelResultsTop - 12, 928, 1 }, 0x405775u);
     uint32_t row = 0;
     const uint32_t firstRow = g_projectSearchScroll;
@@ -10003,7 +10123,7 @@ static void dismissWorkspaceTransientUi(gx_app_context* ctx) {
     closeReferencePicker();
     stopReferenceSearch(ctx);
     stopProjectSearch(ctx);
-    g_projectSearchPanelOpen = false;
+    closeFindInFiles(ctx, "workspace_change");
     g_projectSearchResultsFocused = false;
     g_referencesPanelOpen = false;
     g_referencesResultsFocused = false;
@@ -10089,8 +10209,7 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
     if (selectedExact && SelectTextRange(&document->buffer, match->byteOffset, match->matchLength)) {
         g_editorFocused = true;
         keepCaretVisible(document);
-        g_projectSearchPanelOpen = false;
-        g_projectSearchResultsFocused = false;
+        closeFindInFiles(ctx, "result_activation");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=PASS");
         return true;
     }
@@ -10112,8 +10231,7 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
     g_editorFocused = true;
     if (selectedNearby) {
         keepCaretVisible(document);
-        g_projectSearchPanelOpen = false;
-        g_projectSearchResultsFocused = false;
+        closeFindInFiles(ctx, "result_activation");
         projectSearchSetStatus("Search result was stale; nearby match selected");
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE");
         return true;
@@ -10122,8 +10240,7 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
     WorkspaceControllerSetCaretPosition(&g_controller, documentIndex, match->line, match->column,
                                         &clamped, &navigationError);
     keepCaretVisible(document);
-    g_projectSearchPanelOpen = false;
-    g_projectSearchResultsFocused = false;
+    closeFindInFiles(ctx, "result_activation");
     projectSearchSetStatus("Search result may be stale");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE");
     return true;
@@ -16595,8 +16712,9 @@ static void drawShell(gx_app_context* ctx) {
     drawPanel(ctx, kStatusRect, 0x243451u);
     drawText(ctx, 16, 30, "guideXOS Developer Studio");
     drawText(ctx, 290, 30, "File");
-    drawText(ctx, 610, 30, "Debug");
-    drawText(ctx, 700, 30, "Build");
+    drawText(ctx, 610, 30, "Tools");
+    drawText(ctx, 655, 30, "Debug");
+    drawText(ctx, 720, 30, "Build");
     drawText(ctx, 340, 30, "Save");
     drawText(ctx, 400, 30, "Save All");
     drawText(ctx, 490, 30, "Refresh");
@@ -16633,29 +16751,44 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 282, 240, "Save As");
         drawText(ctx, 282, 262, "Exit");
     }
+    if (g_toolsMenuOpen) {
+        drawPanel(ctx, { 600, 42, 340, 48 }, 0x34496Au);
+        const DeveloperToolCommand* tool = DeveloperToolRegistryAt(&g_developerTools, 0);
+        if (tool) {
+            copyText(g_textScratch, sizeof(g_textScratch), tool->label);
+            if (tool->shortcut && tool->shortcut[0]) {
+                appendText(g_textScratch, sizeof(g_textScratch), " (");
+                appendText(g_textScratch, sizeof(g_textScratch), tool->shortcut);
+                appendText(g_textScratch, sizeof(g_textScratch), ")");
+            }
+            drawText(ctx, 612, 64, g_textScratch);
+        } else {
+            drawText(ctx, 612, 64, "No tools registered");
+        }
+    }
     if (g_buildMenuOpen) {
-        drawPanel(ctx, { 300, 42, 260, 92 }, 0x34496Au);
-        drawText(ctx, 312, 68, "Build Project");
-        drawText(ctx, 312, 92, "Run Project (F5)");
-        drawText(ctx, 312, 116, "Request Project Close");
+        drawPanel(ctx, { 710, 42, 280, 92 }, 0x34496Au);
+        drawText(ctx, 722, 68, "Build Project");
+        drawText(ctx, 722, 92, "Run Project (F5)");
+        drawText(ctx, 722, 116, "Request Project Close");
     }
     if (g_debugMenuOpen) {
-        drawPanel(ctx, { 580, 42, 360, 334 }, 0x34496Au);
-        drawText(ctx, 592, 64, "Start Debugging (Ctrl+F5)");
-        drawText(ctx, 592, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
-        drawText(ctx, 592, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
-        drawText(ctx, 592, 130, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over (unavailable)");
-        drawText(ctx, 592, 152, DebugControllerCanStepOut(&g_debugController) ? "Step Out (Shift+F11)" : "Step Out (unavailable)");
-        drawText(ctx, 592, 174, DebugControllerCanPause(&g_debugController) ? "Pause (F6)" : "Pause (unavailable)");
-        drawText(ctx, 592, 196, "Stop Debugging");
-        drawText(ctx, 592, 218, "Toggle Breakpoint (F9)");
-        drawText(ctx, 592, 240, "Breakpoints");
-        drawText(ctx, 592, 262, "Debug Session");
-        drawText(ctx, 592, 284, "Call Stack");
-        drawText(ctx, 592, 306, "Locals");
-        drawText(ctx, 592, 328, "Arguments");
-        drawText(ctx, 592, 350, "Watch");
-        drawText(ctx, 592, 372, "Edit Selected Breakpoint Condition (Ctrl+Shift+C)");
+        drawPanel(ctx, { 645, 42, 345, 334 }, 0x34496Au);
+        drawText(ctx, 657, 64, "Start Debugging (Ctrl+F5)");
+        drawText(ctx, 657, 86, DebugControllerCanContinue(&g_debugController) ? "Continue (F5)" : "Continue (unavailable)");
+        drawText(ctx, 657, 108, DebugControllerCanStepInto(&g_debugController) ? "Step Into (F11)" : "Step Into (unavailable)");
+        drawText(ctx, 657, 130, DebugControllerCanStepOver(&g_debugController) ? "Step Over (F10)" : "Step Over (unavailable)");
+        drawText(ctx, 657, 152, DebugControllerCanStepOut(&g_debugController) ? "Step Out (Shift+F11)" : "Step Out (unavailable)");
+        drawText(ctx, 657, 174, DebugControllerCanPause(&g_debugController) ? "Pause (F6)" : "Pause (unavailable)");
+        drawText(ctx, 657, 196, "Stop Debugging");
+        drawText(ctx, 657, 218, "Toggle Breakpoint (F9)");
+        drawText(ctx, 657, 240, "Breakpoints");
+        drawText(ctx, 657, 262, "Debug Session");
+        drawText(ctx, 657, 284, "Call Stack");
+        drawText(ctx, 657, 306, "Locals");
+        drawText(ctx, 657, 328, "Arguments");
+        drawText(ctx, 657, 350, "Watch");
+        drawText(ctx, 657, 372, "Edit Selected Breakpoint Condition (Ctrl+Shift+C)");
     }
     drawModal(ctx);
 }
@@ -17070,8 +17203,7 @@ static bool handleProjectSearchKey(gx_app_context* ctx, int keyCode, int action,
             projectSearchSetStatus("Cancelling search...");
             logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_cancel=REQUESTED");
         } else {
-            g_projectSearchPanelOpen = false;
-            g_projectSearchResultsFocused = false;
+            closeFindInFiles(ctx, "escape");
         }
         return true;
     }
@@ -17523,13 +17655,7 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
     if (g_symbolSearchOpen) return;
     if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 70 || keyCode == 102)) {
-        if (g_findBarOpen) closeFindBar();
-        if (!g_projectSearchPanelOpen) projectSearchInitializeDraft(WorkspaceControllerActiveDocument(&g_controller));
-        g_projectSearchPanelOpen = true;
-        g_projectSearchResultsFocused = false;
-        g_projectSearchField = ProjectSearchField::Query;
-        g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
-        g_editorFocused = false;
+        activateFindInFiles(ctx, "keyboard_shortcut");
         return;
     }
     if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
@@ -18184,8 +18310,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                 projectSearchSetStatus("Cancelling search...");
                 logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_cancel=REQUESTED");
             } else {
-                g_projectSearchPanelOpen = false;
-                g_projectSearchResultsFocused = false;
+                closeFindInFiles(ctx, "cancel");
             }
         } else if (y >= kSearchPanelResultsTop - 4 && y < kSearchPanelTop + 580) {
             const uint32_t row = g_projectSearchScroll + static_cast<uint32_t>((y - kSearchPanelResultsTop) / kSearchPanelRowHeight);
@@ -18322,13 +18447,21 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     // Keep the hit regions aligned with the labels drawn in drawShell.  The
     // old regions belonged to the pre-toolbar layout and made the visible
     // Save/Save All/Refresh commands inert.
-    if (y < 48 && x >= 270 && x < 330) { g_fileMenuOpen = !g_fileMenuOpen; g_buildMenuOpen = false; g_debugMenuOpen = false; g_editorFocused = false; g_outputFocused = false; drawShell(ctx); return; }
+    if (y < 48 && x >= 270 && x < 330) { g_fileMenuOpen = !g_fileMenuOpen; g_buildMenuOpen = false; g_debugMenuOpen = false; g_toolsMenuOpen = false; g_editorFocused = false; g_outputFocused = false; drawShell(ctx); return; }
     if (y < 48 && x >= 330 && x < 390) { if (g_controller.model.activeDocument < kMaxOpenDocuments) saveDocument(ctx, g_controller.model.activeDocument); drawShell(ctx); return; }
     if (y < 48 && x >= 390 && x < 480) { saveAll(ctx); drawShell(ctx); return; }
     if (y < 48 && x >= 480 && x < 560) { WorkspaceControllerRefresh(&g_controller); writeOutput("Workspace refresh completed"); drawShell(ctx); return; }
-    if (y < 48 && x >= 580 && x < 700) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; drawShell(ctx); return; }
-    if (y < 48 && x >= 700 && x < 800) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; drawShell(ctx); return; }
-    if (g_debugMenuOpen && x >= 580 && x < 940 && y >= 42 && y < 376) {
+    if (y < 48 && x >= 600 && x < 650) { g_toolsMenuOpen = !g_toolsMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_buildMenuOpen = false; g_editorFocused = false; drawShell(ctx); return; }
+    if (y < 48 && x >= 650 && x < 710) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
+    if (y < 48 && x >= 710 && x < 790) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
+    if (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 && y < 90) {
+        if (y < 68 && DeveloperToolRegistryFind(&g_developerTools, DeveloperToolId::FindInFiles))
+            activateFindInFiles(ctx, "tools_menu");
+        g_toolsMenuOpen = false;
+        drawShell(ctx);
+        return;
+    }
+    if (g_debugMenuOpen && x >= 645 && x < 990 && y >= 42 && y < 376) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 22);
         if (row == 0) requestDebug(ctx);
         else if (row == 1) {
@@ -18378,7 +18511,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (g_buildMenuOpen && x >= 300 && x < 560 && y >= 42 && y < 134) {
+    if (g_buildMenuOpen && x >= 710 && x < 990 && y >= 42 && y < 134) {
         if (y < 66) requestBuild(ctx);
         else if (y < 90) requestRun(ctx);
         else requestRunClose(ctx);
@@ -18811,7 +18944,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     findSetStatus("");
     ProjectSearchServiceInit(&g_projectSearch);
     projectSearchInitializeDraft(nullptr);
+    DeveloperToolRegistryInit(&g_developerTools);
+    if (!DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand))
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=FAIL");
+    else
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=1");
     g_projectSearchPanelOpen = false;
+    g_toolsMenuOpen = false;
     g_projectSearchResultsFocused = false;
     g_projectSearchOperationId = 0;
     g_projectSearchProjectGeneration = 0;
@@ -19199,10 +19338,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                     if (requestApplicationClose(ctx, event.window)) running = false;
                 } else if (event.type == GX_EVENT_KEY) {
                     if (g_inputMode != InputMode::Normal) handleModalKey(ctx, event.param1, event.param2, event.param3);
-                    else if (gx_event_is_escape_down(&event) && (g_fileMenuOpen || g_buildMenuOpen || g_debugMenuOpen)) {
+                    else if (gx_event_is_escape_down(&event) && (g_fileMenuOpen || g_buildMenuOpen || g_debugMenuOpen || g_toolsMenuOpen)) {
                         g_fileMenuOpen = false;
                         g_buildMenuOpen = false;
                         g_debugMenuOpen = false;
+                        g_toolsMenuOpen = false;
                         g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
                     }
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&

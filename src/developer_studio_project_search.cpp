@@ -112,6 +112,13 @@ static void markTruncated(ProjectSearchService* service, ProjectSearchErrorCode 
     setNotice(service, "Search results truncated.");
 }
 
+static void recordSkipped(ProjectSearchService* service, uint32_t* reasonCount) {
+    if (!service) return;
+    if (service->operation.diagnostics.filesSkipped != 0xFFFFFFFFu)
+        ++service->operation.diagnostics.filesSkipped;
+    if (reasonCount && *reasonCount != 0xFFFFFFFFu) ++(*reasonCount);
+}
+
 static bool isTerminal(ProjectSearchState state) {
     return state == ProjectSearchState::Completed || state == ProjectSearchState::Failed ||
         state == ProjectSearchState::Cancelled || state == ProjectSearchState::Idle;
@@ -299,9 +306,10 @@ static bool dequeueDirectory(ProjectSearchService* service) {
     service->currentDirectoryActive = true;
     service->currentEntryCount = 0;
     service->currentEntryIndex = 0;
+    bool entriesTruncated = false;
     if (!service->fileSystem.list || !service->fileSystem.list(service->fileSystem.userData,
         service->currentDirectory, service->currentEntries, kMaxWorkspaceEntries,
-        &service->currentEntryCount, &service->operation.truncated)) {
+        &service->currentEntryCount, &entriesTruncated)) {
         service->currentDirectoryActive = false;
         if (service->directoriesVisited == 1) {
             setError(service, ProjectSearchErrorCode::EnumerationFailed);
@@ -309,6 +317,7 @@ static bool dequeueDirectory(ProjectSearchService* service) {
         }
         return false;
     }
+    if (entriesTruncated) markTruncated(service, ProjectSearchErrorCode::DirectoryEntriesLimit);
     for (uint32_t i = 0; i < service->currentEntryCount; ++i) {
         for (uint32_t j = i + 1; j < service->currentEntryCount; ++j) {
             const char* left = service->currentEntries[j].name;
@@ -325,7 +334,6 @@ static bool dequeueDirectory(ProjectSearchService* service) {
             }
         }
     }
-    if (service->operation.truncated) markTruncated(service, ProjectSearchErrorCode::FileLimit);
     return true;
 }
 
@@ -510,15 +518,29 @@ static bool scanCurrentFile(ProjectSearchService* service, const char* absoluteP
         bytes = dirty->length;
     } else {
         FileInfo info = {};
-        if (!service->fileSystem.stat || !service->fileSystem.stat(service->fileSystem.userData, absolutePath, &info) ||
-            info.kind != FileInfoKind::RegularFile) return false;
+        if (!service->fileSystem.stat ||
+            !service->fileSystem.stat(service->fileSystem.userData, absolutePath, &info)) {
+            recordSkipped(service, &service->operation.diagnostics.changedOrDisappearedFiles);
+            return false;
+        }
+        if (info.kind != FileInfoKind::RegularFile) {
+            recordSkipped(service, &service->operation.diagnostics.changedOrDisappearedFiles);
+            return false;
+        }
         fileSize = info.size;
         if (fileSize > kProjectSearchMaxFileBytes) {
-            if (service->operation.error == ProjectSearchErrorCode::None) service->operation.error = ProjectSearchErrorCode::FileTooLarge;
+            recordSkipped(service, &service->operation.diagnostics.oversizedFiles);
             return false;
         }
         if (!service->fileSystem.read || !service->fileSystem.read(service->fileSystem.userData, absolutePath,
-            service->scanBuffer, kProjectSearchMaxFileBytes, &bytes) || bytes > kProjectSearchMaxFileBytes) return false;
+            service->scanBuffer, kProjectSearchMaxFileBytes, &bytes)) {
+            recordSkipped(service, &service->operation.diagnostics.unreadableFiles);
+            return false;
+        }
+        if (bytes > kProjectSearchMaxFileBytes) {
+            recordSkipped(service, &service->operation.diagnostics.oversizedFiles);
+            return false;
+        }
         data = service->scanBuffer;
     }
     service->operation.bytesScanned += bytes;
@@ -526,7 +548,10 @@ static bool scanCurrentFile(ProjectSearchService* service, const char* absoluteP
         markTruncated(service, ProjectSearchErrorCode::BytesLimit);
         return false;
     }
-    if (LooksBinary(data, bytes)) return false;
+    if (LooksBinary(data, bytes)) {
+        recordSkipped(service, &service->operation.diagnostics.binaryFiles);
+        return false;
+    }
     if (service->scanVisitor) {
         ProjectSearchScanFile file = {};
         file.relativePath = relativePath;
@@ -642,6 +667,7 @@ const char* ProjectSearchErrorName(ProjectSearchErrorCode error) {
     case ProjectSearchErrorCode::PathOutsideProject: return "PROJECT_SEARCH_PATH_OUTSIDE_PROJECT";
     case ProjectSearchErrorCode::EnumerationFailed: return "PROJECT_SEARCH_ENUMERATION_FAILED";
     case ProjectSearchErrorCode::DirectoryLimit: return "PROJECT_SEARCH_DIRECTORY_LIMIT";
+    case ProjectSearchErrorCode::DirectoryEntriesLimit: return "PROJECT_SEARCH_DIRECTORY_ENTRIES_LIMIT";
     case ProjectSearchErrorCode::FileLimit: return "PROJECT_SEARCH_FILE_LIMIT";
     case ProjectSearchErrorCode::FileTooLarge: return "PROJECT_SEARCH_FILE_TOO_LARGE";
     case ProjectSearchErrorCode::BinaryFile: return "PROJECT_SEARCH_BINARY_FILE";
