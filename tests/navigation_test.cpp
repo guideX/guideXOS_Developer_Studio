@@ -1,4 +1,5 @@
 #include "developer_studio_workspace.h"
+#include "developer_studio_tools.h"
 
 #include "test_check.h"
 #include <cstring>
@@ -38,6 +39,17 @@ int main() {
     Document* document = WorkspaceControllerActiveDocument(&controller);
     TEST_CHECK(document && document->buffer.caret == 6 && !document->buffer.dirty);
 
+    const char* indexedPaths[] = { "d:/project/src/main.cpp", "d:/outside/other.cpp" };
+    DeveloperToolFileSearchResults fileResults = {};
+    TEST_CHECK(DeveloperToolBuildFileSearchResults(controller.model.rootPath, indexedPaths, 2,
+                                                   "main", &fileResults));
+    TEST_CHECK(fileResults.count == 1 &&
+               std::strcmp(fileResults.results[0].relativePath, "src/main.cpp") == 0);
+    TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation",
+                                                         fileResults.results[0].relativePath, 1, 1,
+                                                         &index, &error));
+    TEST_CHECK(document->buffer.caret == 0);
+
     TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 99, 99, &index, &error));
     TEST_CHECK(error == OutputErrorCode::NavigationLocationClamped);
     TEST_CHECK(document->buffer.dirty == false);
@@ -47,6 +59,18 @@ int main() {
     TEST_CHECK(error == OutputErrorCode::DiagnosticPathOutsideProject);
     TEST_CHECK(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "missing.cpp", 1, 1, &index, &error));
     TEST_CHECK(error == OutputErrorCode::DiagnosticFileNotFound);
+
+    const char* renamedPaths[] = { "d:/project/src/renamed.cpp" };
+    TEST_CHECK(DeveloperToolBuildFileSearchResults(controller.model.rootPath, renamedPaths, 1,
+                                                   "renamed", &fileResults));
+    TEST_CHECK(fileResults.count == 1);
+    const uint64_t activeDocumentId = document->documentId;
+    const uint32_t activeCaret = document->buffer.caret;
+    TEST_CHECK(!WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation",
+                                                          fileResults.results[0].relativePath, 1, 1,
+                                                          &index, &error));
+    TEST_CHECK(controller.model.documents[controller.model.activeDocument].documentId == activeDocumentId);
+    TEST_CHECK(document->buffer.caret == activeCaret);
 
     document->buffer.dirty = true;
     TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, "com.example.navigation", "src/main.cpp", 1, 1, &index, &error));

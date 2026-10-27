@@ -147,12 +147,15 @@ line/column with `Search result may be stale`.
 
 ## Results, UI, and Output
 
-The visible **Tools** menu registers Find in Files through the fixed-capacity
-`DeveloperToolRegistry`; `Ctrl+Shift+F` dispatches through the same activation
-callback. The registry stores command descriptors in fixed storage and does
-not load dynamic plugins. Re-activating the open tool preserves its query and
-current operation. Closing it requests cancellation and releases terminal
-search state.
+The visible **Tools** menu registers Go to File (`Ctrl+P`), Go to Line
+(`Ctrl+G`), and Find in Files (`Ctrl+Shift+F`) through the fixed-capacity
+`DeveloperToolRegistry`. Menu selections and keyboard shortcuts dispatch
+through the same command activation callbacks. The registry stores command
+descriptors in fixed storage and does not load dynamic plugins. Re-activating
+Find in Files preserves its query and current operation. Closing it requests
+cancellation and releases terminal search state. See
+[TOOLS2_FILE_NAVIGATION.md](TOOLS2_FILE_NAVIGATION.md) for the two navigation
+commands.
 
 Query initialization is selected
 single-line text, then the previous project-search query, then active-document

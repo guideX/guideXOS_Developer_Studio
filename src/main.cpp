@@ -278,10 +278,17 @@ using guidexos::developer_studio::ProjectSearchDiagnostics;
 using guidexos::developer_studio::kProjectSearchMaxFileBytes;
 using guidexos::developer_studio::DeveloperToolCommand;
 using guidexos::developer_studio::DeveloperToolId;
+using guidexos::developer_studio::DeveloperToolFileSearchResults;
+using guidexos::developer_studio::DeveloperToolBuildFileSearchResults;
+using guidexos::developer_studio::DeveloperToolParsePositiveLineNumber;
+using guidexos::developer_studio::DeveloperToolPositionAtLine;
+using guidexos::developer_studio::DeveloperToolProjectIdentityMatches;
+using guidexos::developer_studio::DeveloperToolIdFromShortcut;
 using guidexos::developer_studio::DeveloperToolRegistry;
 using guidexos::developer_studio::DeveloperToolRegistryActivate;
 using guidexos::developer_studio::DeveloperToolRegistryAt;
 using guidexos::developer_studio::DeveloperToolRegistryClose;
+using guidexos::developer_studio::DeveloperToolRegistryCloseActive;
 using guidexos::developer_studio::DeveloperToolRegistryFind;
 using guidexos::developer_studio::DeveloperToolRegistryInit;
 using guidexos::developer_studio::DeveloperToolRegistryIsActive;
@@ -702,6 +709,8 @@ static const int kOutlineMaxRows = 11;
 static const int kSymbolSearchTop = 76;
 static const int kSymbolSearchRowHeight = 18;
 static const int kSymbolSearchMaxRows = 22;
+static const int kGoToFileRowHeight = 24;
+static const int kGoToFileMaxRows = 15;
 static const int kMaxPromptBytes = 240;
 static const int kFindFieldX = 326;
 static const int kFindFieldWidth = 250;
@@ -872,6 +881,18 @@ static bool g_toolsMenuOpen = false;
 static DeveloperToolRegistry g_developerTools = {};
 static bool activateFindInFilesTool(void* userData);
 static bool closeFindInFilesTool(void* userData);
+static bool activateGoToFileTool(void* userData);
+static bool closeGoToFileTool(void* userData);
+static bool activateGoToLineTool(void* userData);
+static bool closeGoToLineTool(void* userData);
+static const DeveloperToolCommand kGoToFileToolCommand = {
+    DeveloperToolId::GoToFile, "Go to File", "Ctrl+P",
+    activateGoToFileTool, closeGoToFileTool
+};
+static const DeveloperToolCommand kGoToLineToolCommand = {
+    DeveloperToolId::GoToLine, "Go to Line", "Ctrl+G",
+    activateGoToLineTool, closeGoToLineTool
+};
 static const DeveloperToolCommand kFindInFilesToolCommand = {
     DeveloperToolId::FindInFiles, "Find in Files", "Ctrl+Shift+F",
     activateFindInFilesTool, closeFindInFilesTool
@@ -1155,6 +1176,21 @@ static char g_projectSearchProjectId[kMaxProjectIdBytes] = {};
 static char g_projectSearchStatus[128] = {};
 static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
+static DeveloperToolFileSearchResults g_goToFileResults = {};
+static bool g_goToFilePanelOpen = false;
+static uint32_t g_goToFileSelected = 0;
+static uint32_t g_goToFileScroll = 0;
+static uint32_t g_goToFileQueryCaret = 0;
+static char g_goToFileQuery[guidexos::developer_studio::kDeveloperToolMaxFileQueryBytes + 1] = {};
+static char g_goToFileProjectId[kMaxProjectIdBytes] = {};
+static uint64_t g_goToFileProjectGeneration = 0;
+static uint64_t g_goToFileSymbolGeneration = 0;
+static char g_goToFileStatus[128] = {};
+static bool g_goToLinePanelOpen = false;
+static uint32_t g_goToLineInputCaret = 0;
+static char g_goToLineInput[guidexos::developer_studio::kDeveloperToolMaxLineInputBytes + 1] = {};
+static uint64_t g_goToLineDocumentId = 0;
+static char g_goToLineStatus[128] = {};
 static ReferenceSearchService g_referenceSearch = {};
 static ReferenceTarget g_referenceTarget = {};
 static ReferenceTargetResolution g_referenceTargetResolution = {};
@@ -1298,6 +1334,14 @@ static void compose(char* output, uint32_t size, const char* prefix, const char*
 static void stopProjectSearch(gx_app_context* ctx);
 static bool activateFindInFiles(gx_app_context* ctx, const char* source);
 static bool closeFindInFiles(gx_app_context* ctx, const char* source);
+static bool activateGoToFile(gx_app_context* ctx, const char* source);
+static bool closeGoToFile(gx_app_context* ctx, const char* source);
+static bool activateGoToLine(gx_app_context* ctx, const char* source);
+static bool closeGoToLine(gx_app_context* ctx, const char* source);
+static void refreshGoToFileResults();
+static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex);
+static bool handleGoToFileKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static bool handleGoToLineKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static uint32_t captureDirtyProjectSearchDocuments();
 static void stopReferenceSearch(gx_app_context* ctx);
 static void closeFindBar();
@@ -2885,6 +2929,8 @@ static void openSymbolSearch(gx_app_context* ctx) {
     g_findBarOpen = false;
     if (g_projectSearchPanelOpen) stopProjectSearch(ctx);
     closeFindInFiles(ctx, "switch_to_symbol_search");
+    DeveloperToolRegistryCloseActive(&g_developerTools, ctx);
+    g_editorFocused = false;
     symbolSearchRefresh();
 }
 
@@ -4446,6 +4492,12 @@ static bool activateFindInFilesTool(void* userData) {
         if (g_findBarOpen) closeFindBar();
         projectSearchInitializeDraft(WorkspaceControllerActiveDocument(&g_controller));
     }
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(ctx);
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
     g_projectSearchPanelOpen = true;
     g_projectSearchResultsFocused = false;
     g_projectSearchField = ProjectSearchField::Query;
@@ -4504,6 +4556,423 @@ static bool closeFindInFiles(gx_app_context* ctx, const char* source) {
         appendText(g_textScratch, sizeof(g_textScratch), source);
         logMarker(ctx, g_textScratch);
     }
+    return true;
+}
+
+static void goToFileEnsureSelectionVisible() {
+    if (g_goToFileResults.count == 0) {
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        return;
+    }
+    if (g_goToFileSelected >= g_goToFileResults.count)
+        g_goToFileSelected = g_goToFileResults.count - 1;
+    if (g_goToFileSelected < g_goToFileScroll) g_goToFileScroll = g_goToFileSelected;
+    if (g_goToFileSelected >= g_goToFileScroll + static_cast<uint32_t>(kGoToFileMaxRows))
+        g_goToFileScroll = g_goToFileSelected - static_cast<uint32_t>(kGoToFileMaxRows) + 1;
+}
+
+static void captureGoToFileProjectIdentity() {
+    g_goToFileProjectId[0] = '\0';
+    g_goToFileProjectGeneration = 0;
+    g_goToFileSymbolGeneration = 0;
+    if (!g_controller.model.open || !g_controller.model.hasProject) return;
+    copyText(g_goToFileProjectId, sizeof(g_goToFileProjectId), g_controller.model.project.projectId);
+    g_goToFileProjectGeneration = g_controller.model.projectGeneration;
+    g_goToFileSymbolGeneration = g_symbolDatabase.symbolDatabaseGeneration;
+}
+
+static void refreshGoToFileResults() {
+    g_goToFileResults = {};
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Open a project to find source files.");
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        return;
+    }
+    if (!DeveloperToolProjectIdentityMatches(g_goToFileProjectId, g_goToFileProjectGeneration,
+                                             g_controller.model.project.projectId,
+                                             g_controller.model.projectGeneration)) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project changed; close and reopen Go to File.");
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        return;
+    }
+    if (g_symbolDatabase.projectGeneration != g_controller.model.projectGeneration) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project source index is unavailable.");
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        return;
+    }
+    g_goToFileSymbolGeneration = g_symbolDatabase.symbolDatabaseGeneration;
+    const uint32_t indexedCount = SymbolDatabaseDocumentCount(&g_symbolDatabase);
+    if (indexedCount > kSymbolMaxDocuments ||
+        indexedCount > guidexos::developer_studio::kDeveloperToolMaxIndexedFiles) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project source index exceeds the navigation limit.");
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        return;
+    }
+    const char* indexedPaths[kSymbolMaxDocuments] = {};
+    for (uint32_t i = 0; i < indexedCount; ++i)
+        indexedPaths[i] = SymbolDatabaseDocumentPath(&g_symbolDatabase, i);
+    if (!DeveloperToolBuildFileSearchResults(g_controller.model.rootPath, indexedPaths,
+                                             indexedCount, g_goToFileQuery, &g_goToFileResults)) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "File search input exceeds its limit.");
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        return;
+    }
+    if (g_goToFileResults.count == 0) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), indexedCount == 0 ?
+                 "No source or header files are in the project index." : "No files match this search.");
+    } else if (g_goToFileResults.truncated) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Showing 64 of ");
+        appendUnsigned(g_goToFileStatus, sizeof(g_goToFileStatus), g_goToFileResults.totalMatches);
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " matches.");
+    } else {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "");
+    }
+    if (g_goToFileResults.count != 0 && SymbolDatabaseIsTruncated(&g_symbolDatabase))
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Project index is at capacity.");
+    goToFileEnsureSelectionVisible();
+}
+
+static bool activateGoToFileTool(void* userData) {
+    if (!userData) return false;
+    if (!g_goToFilePanelOpen) {
+        g_goToFileQuery[0] = '\0';
+        g_goToFileQueryCaret = 0;
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        captureGoToFileProjectIdentity();
+    }
+    if (g_findBarOpen) closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(static_cast<gx_app_context*>(userData));
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_goToFilePanelOpen = true;
+    g_goToLinePanelOpen = false;
+    g_goToFileQueryCaret = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery));
+    refreshGoToFileResults();
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    g_debugPanelOpen = false;
+    return true;
+}
+
+static bool closeGoToFileTool(void*) {
+    g_goToFilePanelOpen = false;
+    g_goToFileResults = {};
+    g_goToFileProjectId[0] = '\0';
+    g_goToFileProjectGeneration = 0;
+    g_goToFileSymbolGeneration = 0;
+    g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    return true;
+}
+
+static bool activateGoToFile(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::GoToFile, ctx)) {
+        writeStudioOutput("Unable to open Go to File");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool closeGoToFile(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::GoToFile, ctx)) {
+        writeStudioOutput("Go to File is still active");
+        return false;
+    }
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool activateGoToLineTool(void* userData) {
+    if (!userData) return false;
+    const Document* document = WorkspaceControllerActiveDocumentConst(&g_controller);
+    if (!g_goToLinePanelOpen || (document ? document->documentId : 0) != g_goToLineDocumentId) {
+        g_goToLineInput[0] = '\0';
+        g_goToLineInputCaret = 0;
+        g_goToLineDocumentId = document ? document->documentId : 0;
+        g_goToLineStatus[0] = '\0';
+    }
+    if (g_findBarOpen) closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(static_cast<gx_app_context*>(userData));
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_goToLinePanelOpen = true;
+    g_goToFilePanelOpen = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    g_debugPanelOpen = false;
+    if (!document) copyText(g_goToLineStatus, sizeof(g_goToLineStatus), "No editable document is active.");
+    return true;
+}
+
+static bool closeGoToLineTool(void*) {
+    g_goToLinePanelOpen = false;
+    g_goToLineDocumentId = 0;
+    g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    return true;
+}
+
+static bool activateGoToLine(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::GoToLine, ctx)) {
+        writeStudioOutput("Unable to open Go to Line");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_line_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_line_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool closeGoToLine(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::GoToLine, ctx)) {
+        writeStudioOutput("Go to Line is still active");
+        return false;
+    }
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_line_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex) {
+    if (!g_goToFilePanelOpen || resultIndex >= g_goToFileResults.count ||
+        !g_controller.model.open || !g_controller.model.hasProject ||
+        !DeveloperToolProjectIdentityMatches(g_goToFileProjectId, g_goToFileProjectGeneration,
+                                             g_controller.model.project.projectId,
+                                             g_controller.model.projectGeneration)) {
+        g_goToFileResults = {};
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "File result is stale; search again.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=STALE");
+        return false;
+    }
+    if (g_symbolDatabase.projectGeneration != g_controller.model.projectGeneration ||
+        g_symbolDatabase.symbolDatabaseGeneration != g_goToFileSymbolGeneration) {
+        g_goToFileSelected = 0;
+        g_goToFileScroll = 0;
+        refreshGoToFileResults();
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project file index changed; select a result again.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=STALE");
+        return false;
+    }
+    const char* relativePath = g_goToFileResults.results[resultIndex].relativePath;
+    if (!relativePath[0] || guidexos::developer_studio::PathContainsTraversal(relativePath) ||
+        relativePath[0] == '/' || relativePath[0] == '\\' || relativePath[1] == ':') {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Selected path is outside the project.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=REJECTED");
+        return false;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode navigationError = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_goToFileProjectId,
+                                                   relativePath, 1, 1,
+                                                   &documentIndex, &navigationError)) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Unable to open selected file: ");
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), OutputErrorName(navigationError));
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=FAIL");
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || documentIndex >= kMaxOpenDocuments || document->documentId == 0) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "File opened without an active document.");
+        return false;
+    }
+    document->buffer.selectionActive = false;
+    document->buffer.selectionAnchor = document->buffer.caret;
+    g_editorScrollLine = 0;
+    g_editorScrollColumn = 0;
+    keepCaretVisible(document);
+    g_editorFocused = true;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=PASS");
+    closeGoToFile(ctx, "open_result");
+    return true;
+}
+
+static bool handleGoToFileKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_goToFilePanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { closeGoToFile(ctx, "escape"); return true; }
+    if (keyCode == GX_KEY_UP) {
+        if (g_goToFileSelected > 0) --g_goToFileSelected;
+        goToFileEnsureSelectionVisible();
+        return true;
+    }
+    if (keyCode == GX_KEY_DOWN) {
+        if (g_goToFileSelected + 1 < g_goToFileResults.count) ++g_goToFileSelected;
+        goToFileEnsureSelectionVisible();
+        return true;
+    }
+    if (keyCode == 13) {
+        if (g_goToFileResults.count == 0) {
+            refreshGoToFileResults();
+            return true;
+        }
+        activateGoToFileResult(ctx, g_goToFileSelected);
+        return true;
+    }
+    if (keyCode == 8) {
+        const uint32_t length = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery));
+        if (g_goToFileQueryCaret > 0 && g_goToFileQueryCaret <= length) {
+            for (uint32_t i = g_goToFileQueryCaret - 1; i < length; ++i)
+                g_goToFileQuery[i] = g_goToFileQuery[i + 1];
+            --g_goToFileQueryCaret;
+            g_goToFileSelected = 0;
+            g_goToFileScroll = 0;
+            refreshGoToFileResults();
+        }
+        return true;
+    }
+    if (keyCode == 46) {
+        const uint32_t length = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery));
+        if (g_goToFileQueryCaret < length) {
+            for (uint32_t i = g_goToFileQueryCaret; i < length; ++i)
+                g_goToFileQuery[i] = g_goToFileQuery[i + 1];
+            g_goToFileSelected = 0;
+            g_goToFileScroll = 0;
+            refreshGoToFileResults();
+        }
+        return true;
+    }
+    if (keyCode == GX_KEY_LEFT) {
+        if (g_goToFileQueryCaret > 0) --g_goToFileQueryCaret;
+        return true;
+    }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery));
+        if (g_goToFileQueryCaret < length) ++g_goToFileQueryCaret;
+        return true;
+    }
+    if (keyCode == 36) { g_goToFileQueryCaret = 0; return true; }
+    if (keyCode == 35) { g_goToFileQueryCaret = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery)); return true; }
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value == '\0') return false;
+    const uint32_t length = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery));
+    if (length >= guidexos::developer_studio::kDeveloperToolMaxFileQueryBytes ||
+        g_goToFileQueryCaret > length) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Search is limited to 128 characters.");
+        return true;
+    }
+    for (uint32_t i = length; i > g_goToFileQueryCaret; --i)
+        g_goToFileQuery[i] = g_goToFileQuery[i - 1];
+    g_goToFileQuery[g_goToFileQueryCaret++] = value;
+    g_goToFileQuery[length + 1] = '\0';
+    g_goToFileSelected = 0;
+    g_goToFileScroll = 0;
+    refreshGoToFileResults();
+    return true;
+}
+
+static bool handleGoToLineKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_goToLinePanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) { closeGoToLine(ctx, "escape"); return true; }
+    if (keyCode == 13) {
+        uint32_t line = 0;
+        if (!DeveloperToolParsePositiveLineNumber(g_goToLineInput, &line)) {
+            copyText(g_goToLineStatus, sizeof(g_goToLineStatus), "Enter a positive decimal line number.");
+            return true;
+        }
+        Document* document = WorkspaceControllerActiveDocument(&g_controller);
+        if (!document || document->documentId != g_goToLineDocumentId) {
+            copyText(g_goToLineStatus, sizeof(g_goToLineStatus), "Active document changed; reopen Go to Line.");
+            return true;
+        }
+        const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+        if (line > lineCount ||
+            !DeveloperToolPositionAtLine(document->buffer.data, document->buffer.length, line,
+                                         &document->buffer.caret, &document->buffer.selectionAnchor,
+                                         &document->buffer.selectionActive)) {
+            copyText(g_goToLineStatus, sizeof(g_goToLineStatus), "Line is out of range (document has ");
+            appendUnsigned(g_goToLineStatus, sizeof(g_goToLineStatus), lineCount);
+            appendText(g_goToLineStatus, sizeof(g_goToLineStatus), " lines).");
+            return true;
+        }
+        g_editorScrollColumn = 0;
+        keepCaretVisible(document);
+        g_editorFocused = true;
+        copyText(g_textScratch, sizeof(g_textScratch), "Moved to line ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), line);
+        writeStudioOutput(g_textScratch);
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_line_navigate=PASS");
+        closeGoToLine(ctx, "navigate");
+        return true;
+    }
+    if (keyCode == 8 || keyCode == 46) {
+        const uint32_t length = lengthOf(g_goToLineInput, sizeof(g_goToLineInput));
+        if (keyCode == 8) {
+            if (g_goToLineInputCaret > 0 && g_goToLineInputCaret <= length) {
+                for (uint32_t i = g_goToLineInputCaret - 1; i < length; ++i)
+                    g_goToLineInput[i] = g_goToLineInput[i + 1];
+                --g_goToLineInputCaret;
+            }
+        } else if (g_goToLineInputCaret < length) {
+            for (uint32_t i = g_goToLineInputCaret; i < length; ++i)
+                g_goToLineInput[i] = g_goToLineInput[i + 1];
+        }
+        g_goToLineStatus[0] = '\0';
+        return true;
+    }
+    if (keyCode == GX_KEY_LEFT) {
+        if (g_goToLineInputCaret > 0) --g_goToLineInputCaret;
+        return true;
+    }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(g_goToLineInput, sizeof(g_goToLineInput));
+        if (g_goToLineInputCaret < length) ++g_goToLineInputCaret;
+        return true;
+    }
+    if (keyCode == 36) { g_goToLineInputCaret = 0; return true; }
+    if (keyCode == 35) { g_goToLineInputCaret = lengthOf(g_goToLineInput, sizeof(g_goToLineInput)); return true; }
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value == '\0') return false;
+    if (value < '0' || value > '9') {
+        copyText(g_goToLineStatus, sizeof(g_goToLineStatus), "Line numbers use decimal digits only.");
+        return true;
+    }
+    const uint32_t length = lengthOf(g_goToLineInput, sizeof(g_goToLineInput));
+    if (length >= guidexos::developer_studio::kDeveloperToolMaxLineInputBytes ||
+        g_goToLineInputCaret > length) {
+        copyText(g_goToLineStatus, sizeof(g_goToLineStatus), "Line input is limited to 10 digits.");
+        return true;
+    }
+    for (uint32_t i = length; i > g_goToLineInputCaret; --i)
+        g_goToLineInput[i] = g_goToLineInput[i - 1];
+    g_goToLineInput[g_goToLineInputCaret++] = value;
+    g_goToLineInput[length + 1] = '\0';
+    g_goToLineStatus[0] = '\0';
     return true;
 }
 
@@ -9865,6 +10334,65 @@ static void drawSymbolSearch(gx_app_context* ctx) {
     drawText(ctx, 206, 576, "Up/Down Select   Enter Open   Esc Close   Ctrl+I Case");
 }
 
+static void copyGoToFileDisplayPath(char* output, uint32_t outputSize, const char* path) {
+    if (!output || outputSize == 0) return;
+    const uint32_t length = lengthOf(path, kMaxPathBytes);
+    if (length + 1 < outputSize) {
+        copyText(output, outputSize, path);
+        return;
+    }
+    if (outputSize < 8) {
+        copyText(output, outputSize, path);
+        return;
+    }
+    const uint32_t payload = outputSize - 4;
+    const uint32_t left = payload / 2;
+    const uint32_t right = payload - left;
+    for (uint32_t i = 0; i < left; ++i) output[i] = path[i];
+    output[left] = '.';
+    output[left + 1] = '.';
+    output[left + 2] = '.';
+    for (uint32_t i = 0; i < right; ++i) output[left + 3 + i] = path[length - right + i];
+    output[outputSize - 1] = '\0';
+}
+
+static void drawGoToFilePanel(gx_app_context* ctx) {
+    if (!g_goToFilePanelOpen) return;
+    drawPanel(ctx, { 176, 62, 608, 536 }, 0x2A3852u);
+    drawText(ctx, 198, 90, "Go to File");
+    drawPanel(ctx, { 198, 102, 560, 24 }, 0x111722u);
+    findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_goToFileQuery);
+    drawText(ctx, 206, 120, g_textScratch);
+    if (g_goToFileResults.count == 0) {
+        drawText(ctx, 206, 160, "No matching source or header files.");
+    } else {
+        const uint32_t end = g_goToFileScroll + static_cast<uint32_t>(kGoToFileMaxRows) < g_goToFileResults.count ?
+            g_goToFileScroll + static_cast<uint32_t>(kGoToFileMaxRows) : g_goToFileResults.count;
+        for (uint32_t row = g_goToFileScroll; row < end; ++row) {
+            const int y = 158 + static_cast<int>(row - g_goToFileScroll) * kGoToFileRowHeight;
+            if (row == g_goToFileSelected)
+                drawPanel(ctx, { 198, y - 13, 560, kGoToFileRowHeight }, 0x405775u);
+            char pathDisplay[96] = {};
+            copyGoToFileDisplayPath(pathDisplay, sizeof(pathDisplay),
+                                    g_goToFileResults.results[row].relativePath);
+            drawText(ctx, 206, y, pathDisplay);
+        }
+    }
+    drawText(ctx, 198, 536, g_goToFileStatus);
+    drawText(ctx, 198, 576, "Filename matches first   Up/Down Select   Enter Open   Esc Close");
+}
+
+static void drawGoToLinePanel(gx_app_context* ctx) {
+    if (!g_goToLinePanelOpen) return;
+    drawPanel(ctx, { 266, 248, 492, 188 }, 0x2A3852u);
+    drawText(ctx, 290, 280, "Go to Line");
+    drawText(ctx, 290, 310, "Line number (1-based)");
+    drawPanel(ctx, { 290, 322, 444, 26 }, 0x111722u);
+    drawText(ctx, 300, 341, g_goToLineInput);
+    drawText(ctx, 290, 378, g_goToLineStatus);
+    drawText(ctx, 290, 414, "Enter Navigate   Esc Close");
+}
+
 static void drawDefinitionPicker(gx_app_context* ctx) {
     if (!g_definitionPickerOpen) return;
     drawPanel(ctx, { 136, 58, 688, 560 }, 0x2A3852u);
@@ -10124,6 +10652,7 @@ static void dismissWorkspaceTransientUi(gx_app_context* ctx) {
     stopReferenceSearch(ctx);
     stopProjectSearch(ctx);
     closeFindInFiles(ctx, "workspace_change");
+    DeveloperToolRegistryCloseActive(&g_developerTools, ctx);
     g_projectSearchResultsFocused = false;
     g_referencesPanelOpen = false;
     g_referencesResultsFocused = false;
@@ -16738,6 +17267,8 @@ static void drawShell(gx_app_context* ctx) {
     drawIncludeTargetPicker(ctx);
     drawOwnershipPanel(ctx);
     drawIntegratedDebugPanel(ctx);
+    drawGoToFilePanel(ctx);
+    drawGoToLinePanel(ctx);
     if (g_fileMenuOpen) {
         drawPanel(ctx, { 270, 42, 270, 250 }, 0x34496Au);
         drawText(ctx, 282, 64, "New Project");
@@ -16752,17 +17283,20 @@ static void drawShell(gx_app_context* ctx) {
         drawText(ctx, 282, 262, "Exit");
     }
     if (g_toolsMenuOpen) {
-        drawPanel(ctx, { 600, 42, 340, 48 }, 0x34496Au);
-        const DeveloperToolCommand* tool = DeveloperToolRegistryAt(&g_developerTools, 0);
-        if (tool) {
+        const uint32_t toolCount = g_developerTools.count;
+        drawPanel(ctx, { 600, 42, 340, static_cast<int>(toolCount * 24u + 12u) }, 0x34496Au);
+        for (uint32_t i = 0; i < toolCount; ++i) {
+            const DeveloperToolCommand* tool = DeveloperToolRegistryAt(&g_developerTools, i);
+            if (!tool) continue;
             copyText(g_textScratch, sizeof(g_textScratch), tool->label);
             if (tool->shortcut && tool->shortcut[0]) {
                 appendText(g_textScratch, sizeof(g_textScratch), " (");
                 appendText(g_textScratch, sizeof(g_textScratch), tool->shortcut);
                 appendText(g_textScratch, sizeof(g_textScratch), ")");
             }
-            drawText(ctx, 612, 64, g_textScratch);
-        } else {
+            drawText(ctx, 612, 64 + static_cast<int>(i * 24u), g_textScratch);
+        }
+        if (toolCount == 0) {
             drawText(ctx, 612, 64, "No tools registered");
         }
     }
@@ -17542,6 +18076,21 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         requestDebug(ctx);
         return;
     }
+    const DeveloperToolId shortcutTool = DeveloperToolIdFromShortcut(
+        static_cast<uint32_t>(keyCode), (modifiers & GX_KEY_MOD_CTRL) != 0,
+        (modifiers & GX_KEY_MOD_SHIFT) != 0, (modifiers & GX_KEY_MOD_ALT) != 0);
+    if (shortcutTool == DeveloperToolId::GoToFile) {
+        activateGoToFile(ctx, "keyboard_shortcut");
+        return;
+    }
+    if (shortcutTool == DeveloperToolId::GoToLine) {
+        activateGoToLine(ctx, "keyboard_shortcut");
+        return;
+    }
+    if (shortcutTool == DeveloperToolId::FindInFiles) {
+        activateFindInFiles(ctx, "keyboard_shortcut");
+        return;
+    }
     // F5 continues a paused debug target even when source navigation or
     // inspection left keyboard focus on another pane.  Preserve the normal
     // Run Project meaning when no debug session owns the key.
@@ -17652,12 +18201,12 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
         openSymbolSearch(ctx);
         return;
     }
+    if (g_goToFilePanelOpen && handleGoToFileKey(ctx, keyCode, action, modifiers)) return;
+    if (g_goToFilePanelOpen) return;
+    if (g_goToLinePanelOpen && handleGoToLineKey(ctx, keyCode, action, modifiers)) return;
+    if (g_goToLinePanelOpen) return;
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
     if (g_symbolSearchOpen) return;
-    if ((modifiers & GX_KEY_MOD_CTRL) && (modifiers & GX_KEY_MOD_SHIFT) && (keyCode == 70 || keyCode == 102)) {
-        activateFindInFiles(ctx, "keyboard_shortcut");
-        return;
-    }
     if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
     if (g_projectSearchPanelOpen) return;
     if (g_referencesPanelOpen && handleReferencesKey(ctx, keyCode, action)) return;
@@ -17817,10 +18366,45 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     int action = GX_MOUSE_ACTION(event.param3);
     int button = GX_MOUSE_BUTTON(event.param3);
     if (action == GX_MOUSE_ACTION_MOVE) {
-        if (!g_debugPanelOpen && g_inputMode == InputMode::Normal)
+        if (!g_debugPanelOpen && !g_goToFilePanelOpen && !g_goToLinePanelOpen &&
+            g_inputMode == InputMode::Normal)
             (void)debugDataTipHandleMove(ctx, x, y);
         else
             debugDataTipInvalidate(ctx, "popup_or_modal");
+        return;
+    }
+    if (g_goToFilePanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t maximum = g_goToFileResults.count > static_cast<uint32_t>(kGoToFileMaxRows) ?
+                g_goToFileResults.count - static_cast<uint32_t>(kGoToFileMaxRows) : 0;
+            if (event.param4 > 0) g_goToFileScroll = g_goToFileScroll > 3 ? g_goToFileScroll - 3 : 0;
+            else g_goToFileScroll = g_goToFileScroll + 3 < maximum ? g_goToFileScroll + 3 : maximum;
+            goToFileEnsureSelectionVisible();
+            drawShell(ctx);
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (y >= 102 && y < 126 && x >= 198 && x < 758) {
+                g_goToFileQueryCaret = lengthOf(g_goToFileQuery, sizeof(g_goToFileQuery));
+            } else if (y >= 145 && x >= 198 && x < 758) {
+                const uint32_t row = g_goToFileScroll + static_cast<uint32_t>((y - 145) / kGoToFileRowHeight);
+                if (row < g_goToFileResults.count &&
+                    row < g_goToFileScroll + static_cast<uint32_t>(kGoToFileMaxRows)) {
+                    g_goToFileSelected = row;
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                        activateGoToFileResult(ctx, row);
+                }
+            }
+        }
+        drawShell(ctx);
+        return;
+    }
+    if (g_goToLinePanelOpen) {
+        if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN &&
+            y >= 322 && y < 348 && x >= 290 && x < 734)
+            g_goToLineInputCaret = lengthOf(g_goToLineInput, sizeof(g_goToLineInput));
+        drawShell(ctx);
         return;
     }
     if (g_ownershipPanelOpen) {
@@ -18454,8 +19038,15 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 600 && x < 650) { g_toolsMenuOpen = !g_toolsMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_buildMenuOpen = false; g_editorFocused = false; drawShell(ctx); return; }
     if (y < 48 && x >= 650 && x < 710) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 710 && x < 790) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
-    if (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 && y < 90) {
-        if (y < 68 && DeveloperToolRegistryFind(&g_developerTools, DeveloperToolId::FindInFiles))
+    if (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 &&
+        y < 42 + static_cast<int>(g_developerTools.count * 24u)) {
+        const uint32_t row = static_cast<uint32_t>((y - 42) / 24);
+        const DeveloperToolCommand* tool = DeveloperToolRegistryAt(&g_developerTools, row);
+        if (tool && tool->id == DeveloperToolId::GoToFile)
+            activateGoToFile(ctx, "tools_menu");
+        else if (tool && tool->id == DeveloperToolId::GoToLine)
+            activateGoToLine(ctx, "tools_menu");
+        else if (tool && tool->id == DeveloperToolId::FindInFiles)
             activateFindInFiles(ctx, "tools_menu");
         g_toolsMenuOpen = false;
         drawShell(ctx);
@@ -18945,10 +19536,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     ProjectSearchServiceInit(&g_projectSearch);
     projectSearchInitializeDraft(nullptr);
     DeveloperToolRegistryInit(&g_developerTools);
-    if (!DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand))
+    const bool toolsRegistered =
+        DeveloperToolRegistryRegister(&g_developerTools, &kGoToFileToolCommand) &&
+        DeveloperToolRegistryRegister(&g_developerTools, &kGoToLineToolCommand) &&
+        DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand);
+    if (!toolsRegistered)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=FAIL");
     else
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=1");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=3");
     g_projectSearchPanelOpen = false;
     g_toolsMenuOpen = false;
     g_projectSearchResultsFocused = false;
@@ -18958,6 +19553,21 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_projectSearchStatus[0] = '\0';
     g_lastProjectSearchQuery[0] = '\0';
     g_projectSearchTerminalReported = false;
+    g_goToFileResults = {};
+    g_goToFilePanelOpen = false;
+    g_goToFileSelected = 0;
+    g_goToFileScroll = 0;
+    g_goToFileQueryCaret = 0;
+    g_goToFileQuery[0] = '\0';
+    g_goToFileProjectId[0] = '\0';
+    g_goToFileProjectGeneration = 0;
+    g_goToFileSymbolGeneration = 0;
+    g_goToFileStatus[0] = '\0';
+    g_goToLinePanelOpen = false;
+    g_goToLineInputCaret = 0;
+    g_goToLineInput[0] = '\0';
+    g_goToLineDocumentId = 0;
+    g_goToLineStatus[0] = '\0';
     ReferenceSearchServiceInit(&g_referenceSearch);
     ReferenceTargetInit(&g_referenceTarget);
     g_referenceTargetResolution = {};
@@ -19346,6 +19956,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                         g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
                     }
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
+                             !g_goToFilePanelOpen && !g_goToLinePanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
                              !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen && !g_debugPanelOpen) {
                         if (BuildControllerIsActive(&g_buildController)) writeOutput("Build in progress; close blocked");
