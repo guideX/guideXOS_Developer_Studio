@@ -721,6 +721,146 @@ int main() {
     assert(relaunch.state == DebugSessionState::Launching);
     assert(!DebugControllerContinue(&relaunch, relaunchBackend, &error));
 
+    // Three deterministic session generations exercise breakpoint rebinding,
+    // stale notification rejection, and a valid command after restart. This
+    // is a controller/backend protocol contract; the Server runtime test
+    // below the IDE suite exercises real host instructions separately.
+    FakeBackend restartFake;
+    restartFake.trapOnSecondPoll = true;
+    DebugBackend restartBackend = makeBreakpointBackend(&restartFake);
+    static DebugController restartCycles = {};
+    assert(DebugControllerInit(&restartCycles));
+    assert(DebugControllerSetProjectContext(&restartCycles, project.projectId, project.rootPath, 9));
+    uint64_t restartBreakpointId = 0;
+    assert(DebugControllerToggleBreakpoint(&restartCycles, project.projectId, project.rootPath, 9,
+                                           "src/main.cpp", 91, 0, 3, &restartBreakpointId, &error));
+    prepareMappedBreakpoint(&restartCycles, restartBreakpointId);
+    restartCycles.variables.valid = true;
+    restartCycles.variables.stale = false;
+    restartCycles.variables.sessionGeneration = 88;
+    restartCycles.variables.stopGeneration = 12;
+    restartCycles.callStack.valid = true;
+    restartCycles.callStack.selectedFrameIndex = 7;
+    uint64_t previousCycleGeneration = 0;
+    DebugBackendSnapshot previousCycleStop = {};
+    uint64_t pendingStepGeneration = 0;
+    DebugBackendSnapshot pendingStepCompletion = {};
+    for (uint32_t cycle = 0; cycle < 3; ++cycle) {
+        restartFake.polls = 0;
+        restartFake.trapOnSecondPoll = true;
+        restartFake.sharedBindingId = 9100 + cycle;
+        assert(DebugControllerStart(&restartCycles, restartBackend, target, &error));
+        const uint64_t generation = restartCycles.sessionGeneration;
+        assert(generation != previousCycleGeneration);
+        assert(!restartCycles.variables.valid && restartCycles.variables.stale &&
+               !restartCycles.callStack.valid && restartCycles.callStack.selectedFrameIndex == 0);
+        assert(restartCycles.breakpointCount == 1 &&
+               restartCycles.breakpoints[0].id == restartBreakpointId &&
+               restartCycles.breakpoints[0].sessionGeneration == generation &&
+               restartCycles.breakpoints[0].backendBindingId == 0 &&
+               !restartCycles.sourceStep.active && !restartCycles.stepOver.active &&
+               restartCycles.stepOver.temporaryBreakpointId == 0 &&
+               !restartCycles.stepOut.active && restartCycles.stepOut.temporaryBreakpointId == 0);
+        assert(DebugControllerPoll(&restartCycles, restartBackend));
+        assert(restartCycles.state == DebugSessionState::Running &&
+               restartCycles.breakpoints[0].backendBindingId == restartFake.sharedBindingId &&
+               restartFake.bindCalls == cycle + 1);
+        assert(DebugControllerPoll(&restartCycles, restartBackend));
+        assert(restartCycles.state == DebugSessionState::Paused &&
+               restartCycles.stopReason == DebugStopReason::Breakpoint &&
+               restartCycles.currentInstructionAddress.value == 0x401010 &&
+               restartCycles.breakpoints[0].enabled &&
+               restartCycles.breakpoints[0].lastHitSessionGeneration == generation);
+        if (cycle == 1) {
+            // A step/stop completion from the first session is late even when
+            // the new session is paused at the same source address.
+            DebugBackendSnapshot staleStop = previousCycleStop;
+            staleStop.state = DebugSessionState::Failed;
+            staleStop.stopReason = DebugStopReason::Unknown;
+            assert(!DebugControllerApplySnapshot(&restartCycles, previousCycleGeneration, staleStop));
+            DebugBackendSnapshot staleStep = previousCycleStop;
+            staleStep.state = DebugSessionState::Paused;
+            staleStep.stopReason = DebugStopReason::Step;
+            staleStep.singleStepTrap = true;
+            staleStep.executionState = DebugBackendExecutionState::PausedAtSourceStep;
+            staleStep.commandGeneration = 1;
+            assert(!DebugControllerApplySnapshot(&restartCycles, previousCycleGeneration, staleStep));
+            assert(restartCycles.state == DebugSessionState::Paused &&
+                   restartCycles.sessionGeneration == generation &&
+                   restartCycles.currentInstructionAddress.value == 0x401010 &&
+                   restartCycles.lastBreakpointId == restartBreakpointId);
+        }
+        if (cycle == 2) {
+            // A completion queued by the stopped, previous generation must
+            // not replace the current breakpoint stop or source location.
+            assert(pendingStepGeneration != 0 && pendingStepGeneration != generation);
+            assert(!DebugControllerApplySnapshot(&restartCycles, pendingStepGeneration,
+                                                 pendingStepCompletion));
+            assert(restartCycles.state == DebugSessionState::Paused &&
+                   restartCycles.sessionGeneration == generation &&
+                   restartCycles.currentInstructionAddress.value == 0x401010 &&
+                   restartCycles.lastBreakpointId == restartBreakpointId);
+        }
+        if (cycle == 0) {
+            previousCycleGeneration = generation;
+            previousCycleStop.sessionGeneration = generation;
+            previousCycleStop.state = DebugSessionState::Paused;
+            previousCycleStop.stopReason = DebugStopReason::Breakpoint;
+            previousCycleStop.stopGeneration = restartCycles.stopGeneration;
+            previousCycleStop.threadId = restartCycles.currentThreadId;
+            previousCycleStop.breakpointTrap = true;
+        }
+        if (cycle == 1) {
+            assert(DebugControllerContinue(&restartCycles, restartBackend, &error));
+            assert(restartCycles.state == DebugSessionState::Paused &&
+                   restartCycles.backendExecutionState == DebugBackendExecutionState::SingleStepPending);
+            assert(!DebugControllerContinue(&restartCycles, restartBackend, &error));
+            pendingStepGeneration = generation;
+            pendingStepCompletion.sessionGeneration = generation;
+            pendingStepCompletion.state = DebugSessionState::Paused;
+            pendingStepCompletion.stopReason = DebugStopReason::Step;
+            pendingStepCompletion.singleStepTrap = true;
+            pendingStepCompletion.executionState = DebugBackendExecutionState::PausedAtSourceStep;
+            pendingStepCompletion.commandGeneration = 1;
+            pendingStepCompletion.stopGeneration = 2;
+        }
+        if (cycle == 2) {
+            assert(DebugControllerContinue(&restartCycles, restartBackend, &error));
+            assert(restartCycles.state == DebugSessionState::Paused &&
+                   restartCycles.backendExecutionState == DebugBackendExecutionState::SingleStepPending);
+            assert(!DebugControllerContinue(&restartCycles, restartBackend, &error));
+            assert(DebugControllerPoll(&restartCycles, restartBackend));
+            assert(restartCycles.state == DebugSessionState::Running &&
+                   restartCycles.stopGeneration == 0 && !restartCycles.variables.valid);
+        }
+        assert(DebugControllerRequestStop(&restartCycles, restartBackend, &error));
+        assert(restartCycles.state == DebugSessionState::Stopping && !restartCycles.stepOver.active);
+        if (cycle == 1) {
+            // The acknowledged step is still pending. Stopping owns the
+            // lifecycle even if the backend returns its queued Running state.
+            assert(DebugControllerPoll(&restartCycles, restartBackend));
+            assert(restartCycles.state == DebugSessionState::Stopping && restartCycles.active);
+        }
+        assert(DebugControllerPoll(&restartCycles, restartBackend));
+        assert(restartCycles.state == DebugSessionState::Exited && !restartCycles.active &&
+               restartCycles.cleanupComplete && restartCycles.breakpoints[0].enabled);
+    }
+
+    // A controlled backend launch rejection is recoverable on the same
+    // controller and starts a fresh generation once launch becomes available.
+    FakeBackend failedLaunchFake;
+    failedLaunchFake.launchFails = true;
+    DebugBackend failedLaunchBackend = makeBackend(&failedLaunchFake);
+    static DebugController failedLaunchRecovery = {};
+    assert(DebugControllerInit(&failedLaunchRecovery));
+    assert(DebugControllerStart(&failedLaunchRecovery, failedLaunchBackend, target, &error) == false);
+    const uint64_t failedLaunchGeneration = failedLaunchRecovery.sessionGeneration;
+    assert(failedLaunchRecovery.state == DebugSessionState::Failed && !failedLaunchRecovery.active);
+    failedLaunchFake.launchFails = false;
+    assert(DebugControllerStart(&failedLaunchRecovery, failedLaunchBackend, target, &error));
+    assert(failedLaunchRecovery.sessionGeneration != failedLaunchGeneration &&
+           failedLaunchRecovery.state == DebugSessionState::Launching);
+
     FakeBackend partialFake;
     partialFake.failBindAt = 2;
     DebugBackend partialBackend = makeBreakpointBackend(&partialFake);
@@ -742,10 +882,26 @@ int main() {
         partial.breakpoints[i].mappedAddresses[0] = partial.breakpoints[i].location.instructionAddress;
     }
     assert(DebugControllerStart(&partial, partialBackend, target, &error));
-    assert(!DebugControllerPoll(&partial, partialBackend));
-    assert(partial.state == DebugSessionState::Failed && !partial.active);
+    assert(DebugControllerPoll(&partial, partialBackend));
+    assert(partial.state == DebugSessionState::Stopping && partial.active &&
+           partial.failureCleanupPending && partialFake.stops == 1);
     assert(partialFake.restoreCommands == 1 && partialFake.debugCommands == 1);
     assert(partial.breakpoints[0].backendBindingId == 0 && partial.breakpoints[0].state == DebugBreakpointState::Mapped);
+    assert(DebugControllerPoll(&partial, partialBackend));
+    assert(partial.state == DebugSessionState::Failed && !partial.active &&
+           !partial.failureCleanupPending && partial.cleanupComplete &&
+           partial.error == DebugErrorCode::BreakpointRejected);
+    partialFake.failBindAt = 0;
+    partialFake.polls = 0;
+    partialFake.sharedBindingId = 9200;
+    assert(DebugControllerStart(&partial, partialBackend, target, &error));
+    assert(DebugControllerPoll(&partial, partialBackend));
+    assert(partial.state == DebugSessionState::Running &&
+           partial.breakpoints[0].backendBindingId == 9200 &&
+           partial.breakpoints[1].backendBindingId == 9200);
+    assert(DebugControllerRequestStop(&partial, partialBackend, &error));
+    assert(DebugControllerPoll(&partial, partialBackend));
+    assert(partial.state == DebugSessionState::Exited && partial.cleanupComplete);
 
     FakeBackend delayedFake;
     delayedFake.delayRuntimePublication = true;
@@ -810,10 +966,14 @@ int main() {
                                            "src/main.cpp", 86, 0, 3, &firstRejectId, &error));
     prepareMappedBreakpoint(&firstReject, firstRejectId);
     assert(DebugControllerStart(&firstReject, firstRejectBackend, target, &error));
-    assert(!DebugControllerPoll(&firstReject, firstRejectBackend));
-    assert(firstReject.state == DebugSessionState::Failed && !firstReject.active);
+    assert(DebugControllerPoll(&firstReject, firstRejectBackend));
+    assert(firstReject.state == DebugSessionState::Stopping && firstReject.active &&
+           firstReject.failureCleanupPending && firstRejectFake.stops == 1);
     assert(!firstReject.targetExecutionReleased && firstRejectFake.restoreCommands == 1);
     assert(firstReject.breakpoints[0].state == DebugBreakpointState::Rejected);
+    assert(DebugControllerPoll(&firstReject, firstRejectBackend));
+    assert(firstReject.state == DebugSessionState::Failed && !firstReject.active &&
+           !firstReject.failureCleanupPending && firstReject.cleanupComplete);
 
     FakeBackend unexpectedFake;
     DebugBackend unexpectedBackend = makeBreakpointBackend(&unexpectedFake);

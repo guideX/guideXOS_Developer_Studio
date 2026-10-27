@@ -735,6 +735,8 @@ struct DebugController {
     bool conditionEvaluationPending;
     bool pauseRequestPending;
     uint64_t pauseRequestGeneration;
+    bool failureCleanupPending;
+    DebugErrorCode failureCleanupError;
 };
 
 const char* DebugSessionStateName(DebugSessionState state);

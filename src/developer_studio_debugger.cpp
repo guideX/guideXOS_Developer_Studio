@@ -1729,10 +1729,13 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     for (uint32_t i = 0; i < sizeof(controller->stoppedContext); ++i) startContextBytes[i] = 0;
     controller->pauseRequestPending = false;
     controller->pauseRequestGeneration = 0;
+    controller->failureCleanupPending = false;
+    controller->failureCleanupError = DebugErrorCode::None;
     controller->conditionResumePending = false;
     controller->conditionEvaluationPending = false;
     if (controller->watches) DebugWatchCollectionMarkStale(controller->watches);
     clearCallStack(controller);
+    clearVariableView(&controller->variables);
     unsigned char* addressBytes = reinterpret_cast<unsigned char*>(&controller->currentInstructionAddress);
     for (uint32_t i = 0; i < sizeof(controller->currentInstructionAddress); ++i) addressBytes[i] = 0;
     unsigned char* locationBytes = reinterpret_cast<unsigned char*>(&controller->currentLocation);
@@ -1765,11 +1768,19 @@ bool DebugControllerStart(DebugController* controller, const DebugBackend& backe
     for (uint32_t i = 0; i < controller->breakpointCount; ++i) {
         DebugBreakpoint& breakpoint = controller->breakpoints[i];
         breakpoint.sessionGeneration = controller->sessionGeneration;
+        // Backend binding IDs belong to one NativeAppDebugger runtime. Keep
+        // the user's source/address mapping across sessions, but always bind a
+        // fresh owner in the new generation.
+        breakpoint.backendBindingId = 0;
+        breakpoint.lastHit = false;
+        breakpoint.lastHitSessionGeneration = 0;
         if (!breakpoint.enabled) breakpoint.state = DebugBreakpointState::Disabled;
         else if (breakpoint.location.projectGeneration != target.projectGeneration) {
             breakpoint.state = DebugBreakpointState::Stale;
             setBreakpointMessage(breakpoint, "Stale: built project generation differs");
-        } else if (breakpoint.state == DebugBreakpointState::Mapped && breakpoint.mappedAddressCount > 0) {
+        } else if (breakpoint.mappedAddressCount > 0 && breakpoint.location.instructionAddress.valid &&
+                   breakpoint.location.mapping == DebugMappingState::Mapped) {
+            breakpoint.state = DebugBreakpointState::Mapped;
             breakpoint.location.mapping = DebugMappingState::Mapped;
         } else if (!backend.capabilities.canSetSourceBreakpoint) {
             breakpoint.state = DebugBreakpointState::Pending;
@@ -1924,6 +1935,47 @@ bool DebugControllerApplySnapshot(DebugController* controller, uint64_t sessionG
     return controller->error != DebugErrorCode::InvalidTransition;
 }
 
+static void publishControllerFailure(DebugController* controller, uint64_t sessionGeneration,
+                                     DebugErrorCode error, const char* message) {
+    if (!controller) return;
+    DebugBackendSnapshot failure = {};
+    failure.sessionGeneration = sessionGeneration;
+    failure.state = DebugSessionState::Failed;
+    failure.stopReason = DebugStopReason::Unknown;
+    copyText(failure.errorMessage, sizeof(failure.errorMessage), message ? message : "Debugger session failed");
+    DebugControllerApplySnapshot(controller, sessionGeneration, failure);
+    controller->error = error;
+    controller->failureCleanupPending = false;
+    controller->failureCleanupError = DebugErrorCode::None;
+}
+
+static bool requestFailureCleanup(DebugController* controller, const DebugBackend& backend,
+                                  DebugErrorCode error, const char* message) {
+    if (!controller) return false;
+    controller->error = error;
+    if (message && message[0]) setMessage(controller, message);
+    if (controller->active && backend.stop && backend.capabilities.canStop &&
+        backend.stop(backend.userData, controller->sessionGeneration)) {
+        controller->failureCleanupPending = true;
+        controller->failureCleanupError = error;
+        recordStateTransition(controller, DebugSessionState::Stopping);
+        controller->active = true;
+        controller->stopReason = DebugStopReason::Unknown;
+        controller->backendExecutionState = DebugBackendExecutionState::None;
+        clearStoppedContext(controller);
+        controller->currentLocation = DebugSourceLocation();
+        clearSourceStep(controller, DebugSourceStepStatus::Failed, "Source step ended because the session failed");
+        clearStepOver(controller, DebugStepOverStatus::Failed, "Step over ended because the session failed");
+        clearStepOut(controller, DebugStepOutStatus::Failed, "Step out ended because the session failed");
+        appendEvent(controller, DebugEventKind::Stopped, controller->state, DebugStopReason::Unknown,
+                    "Debugger failure cleanup requested");
+        return true;
+    }
+    publishControllerFailure(controller, controller->sessionGeneration, error,
+                             controller->lastMessage[0] ? controller->lastMessage : "Debugger session failed");
+    return false;
+}
+
 bool DebugControllerPoll(DebugController* controller, const DebugBackend& backend,
                          const DebugDwarfMapper* mapper) {
     if (!controller || !controller->active || !backend.poll) return false;
@@ -1932,22 +1984,36 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
     clearSnapshot(&snapshot);
     snapshot.sessionGeneration = controller->sessionGeneration;
     if (!backend.poll(backend.userData, controller->sessionGeneration, &snapshot)) {
-        controller->error = DebugErrorCode::PollFailed;
-        recordStateTransition(controller, DebugSessionState::Failed);
-        controller->active = false;
-        setMessage(controller, snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend poll failed");
-        appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
-        return false;
+        const DebugErrorCode failure = controller->failureCleanupPending ? controller->failureCleanupError :
+            DebugErrorCode::PollFailed;
+        const char* message = snapshot.errorMessage[0] ? snapshot.errorMessage : "Debugger backend poll failed";
+        if (controller->state == DebugSessionState::Stopping) {
+            publishControllerFailure(controller, controller->sessionGeneration, failure,
+                                     controller->lastMessage[0] ? controller->lastMessage : message);
+            return false;
+        }
+        return requestFailureCleanup(controller, backend, failure, message);
     }
     DebugControllerTrace("DEBUGGER_POLL_BACKEND_RETURN");
-    if (!bindAndReleaseIfReady(controller, backend, &snapshot)) {
-        recordStateTransition(controller, DebugSessionState::Failed);
-        controller->active = false;
-        appendEvent(controller, DebugEventKind::Failed, controller->state, DebugStopReason::Unknown, controller->lastMessage);
-        return false;
-    }
-    DebugControllerTrace("DEBUGGER_POLL_BIND_RETURN");
     if (controller->state == DebugSessionState::Stopping) {
+        if (controller->failureCleanupPending) {
+            if (snapshot.state == DebugSessionState::Failed ||
+                (snapshot.state == DebugSessionState::Exited && snapshot.cleanupComplete)) {
+                const DebugErrorCode failure = controller->failureCleanupError;
+                const char* message = controller->lastMessage[0] ? controller->lastMessage :
+                    "Debugger session failed; target cleanup completed";
+                snapshot.state = DebugSessionState::Failed;
+                snapshot.stopReason = DebugStopReason::Unknown;
+                if (snapshot.errorMessage[0] == '\0')
+                    copyText(snapshot.errorMessage, sizeof(snapshot.errorMessage), message);
+                const bool applied = DebugControllerApplySnapshot(controller, controller->sessionGeneration, snapshot);
+                controller->error = failure;
+                controller->failureCleanupPending = false;
+                controller->failureCleanupError = DebugErrorCode::None;
+                return applied;
+            }
+            return true;
+        }
         // A stop request owns the remainder of this session lifecycle. The
         // backend can still report a queued breakpoint/single-step trap while
         // the target is being terminated; those traps are no longer debugger
@@ -1961,6 +2027,14 @@ bool DebugControllerPoll(DebugController* controller, const DebugBackend& backen
         }
         return true;
     }
+    if (!bindAndReleaseIfReady(controller, backend, &snapshot)) {
+        const DebugErrorCode failure = controller->error == DebugErrorCode::None ?
+            DebugErrorCode::BackendError : controller->error;
+        return requestFailureCleanup(controller, backend, failure,
+                                     controller->lastMessage[0] ? controller->lastMessage :
+                                     "Debugger startup binding failed");
+    }
+    DebugControllerTrace("DEBUGGER_POLL_BIND_RETURN");
     // A hosted breakpoint trap remains visible until the target is resumed.
     // Once the controller has evaluated that exact stopped context, polling
     // the same physical trap must not re-arm condition evaluation or publish
