@@ -10719,12 +10719,15 @@ static void drawReplacePreviewPanel(gx_app_context* ctx) {
     findFieldDisplay(g_textScratch, sizeof(g_textScratch), g_replacePreviewReplacement);
     drawText(ctx, 105, 126, g_textScratch);
     drawText(ctx, 510, 102, g_replacePreviewCaseSensitive ? "[x]Case" : "[ ]Case");
+    drawPanel(ctx, { 610, 87, 120, 20 }, 0x202A36u);
+    drawText(ctx, 615, 102, "Apply disabled");
     drawPanel(ctx, { 760, 87, 72, 20 }, 0x34496Au);
     drawText(ctx, 770, 102, "Preview");
     const bool scanning = ProjectSearchIsActive(&g_projectSearch);
     drawPanel(ctx, { 840, 87, 72, 20 }, scanning ? 0xA96F2Au : 0x34496Au);
     drawText(ctx, 846, 102, scanning ? "Cancel" : "Clear");
-    drawText(ctx, 100, 149, "Read-only: previews never write files; there is no Apply or Replace All action.");
+    drawText(ctx, 100, 149,
+             "Apply disabled: workspace APIs lack atomic replace and durable sync. Replace All is unavailable.");
 
     const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
     if (scanning && operation) {
