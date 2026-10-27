@@ -501,6 +501,89 @@ static bool pathBefore(const char* left, const char* right) {
            static_cast<unsigned char>(right && right[i] ? right[i] : 0);
 }
 
+static bool navigationEntryNameSafe(const char* name) {
+    if (!name || name[0] == '\0') return false;
+    uint32_t length = 0;
+    while (length < kMaxNameBytes && name[length] != '\0') {
+        const unsigned char value = static_cast<unsigned char>(name[length]);
+        if (value < 0x20u || name[length] == '/' || name[length] == '\\' || name[length] == ':') return false;
+        ++length;
+    }
+    return length > 0 && length < kMaxNameBytes &&
+        !(length == 1 && name[0] == '.') &&
+        !(length == 2 && name[0] == '.' && name[1] == '.');
+}
+
+static bool navigationSourceOrHeaderPath(const char* name) {
+    if (!name) return false;
+    const char* dot = name;
+    for (uint32_t i = 0; name[i] != '\0'; ++i) if (name[i] == '.') dot = name + i;
+    if (dot == name) return false;
+    const char* extensions[] = { ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx" };
+    for (uint32_t candidate = 0; candidate < sizeof(extensions) / sizeof(extensions[0]); ++candidate) {
+        uint32_t i = 0;
+        while (dot[i] && extensions[candidate][i] &&
+               foldAscii(dot[i]) == foldAscii(extensions[candidate][i])) ++i;
+        if (dot[i] == '\0' && extensions[candidate][i] == '\0') return true;
+    }
+    return false;
+}
+
+static bool navigationDirectoryExcluded(const char* name) {
+    static const char* const excluded[] = {
+        ".git", ".hg", ".svn", ".cache", "build", "out", "dist", "target",
+        "node_modules", "bazel-out"
+    };
+    if (!name) return false;
+    for (uint32_t candidate = 0; candidate < sizeof(excluded) / sizeof(excluded[0]); ++candidate)
+        if (equalTextFolded(name, excluded[candidate])) return true;
+    static const char cmakeBuildPrefix[] = "cmake-build-";
+    for (uint32_t i = 0; cmakeBuildPrefix[i] != '\0'; ++i) {
+        if (name[i] == '\0' || foldAscii(name[i]) != cmakeBuildPrefix[i]) return false;
+    }
+    return true;
+}
+
+static bool appendNavigationRelativePath(const char* parent, const char* child,
+                                         char* output, uint32_t outputSize) {
+    if (!parent || !child || !output || outputSize == 0 || !navigationEntryNameSafe(child)) return false;
+    output[0] = '\0';
+    uint32_t length = 0;
+    while (parent[length] != '\0') {
+        if (length + 1 >= outputSize) return false;
+        output[length] = parent[length];
+        ++length;
+    }
+    if (length != 0) {
+        if (length + 1 >= outputSize) return false;
+        output[length++] = '/';
+    }
+    for (uint32_t i = 0; child[i] != '\0'; ++i) {
+        if (length + 1 >= outputSize) return false;
+        output[length++] = child[i];
+    }
+    output[length] = '\0';
+    return true;
+}
+
+static bool navigationPathsEqual(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t i = 0;
+    while (left[i] != '\0' && right[i] != '\0' && left[i] == right[i]) ++i;
+    return left[i] == right[i];
+}
+
+static bool navigationDirectoryWasSeen(const char* path, const char paths[][kMaxPathBytes],
+                                       uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i)
+        if (navigationPathsEqual(path, paths[i])) return true;
+    return false;
+}
+
+static void incrementNavigationCount(uint32_t* value) {
+    if (value && *value != UINT32_MAX) ++*value;
+}
+
 } // namespace
 
 const char* WorkspaceProjectLoadOwnershipResultName(WorkspaceProjectLoadOwnershipResult result) {
@@ -1087,6 +1170,186 @@ bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* contr
     }
     if (count == 0) return false;
     *outCount = count;
+    return true;
+}
+
+bool WorkspaceControllerEnumerateProjectNavigationFiles(
+    const WorkspaceController* controller, ProjectNavigationFile* files,
+    uint32_t capacity, ProjectNavigationInventory* inventory) {
+    if (inventory) *inventory = {};
+    if (!controller || !files || !inventory || capacity == 0 ||
+        capacity > kMaxProjectNavigationFiles || !controller->model.open ||
+        !controller->model.hasProject || !controller->fileSystem.stat ||
+        !controller->fileSystem.list || !controller->fileSystem.read) return false;
+
+    const Project& project = controller->model.project;
+    if (project.rootPath[0] == '\0' || PathContainsTraversal(project.rootPath)) return false;
+    FileInfo rootInfo = {};
+    if (!controller->fileSystem.stat(controller->fileSystem.userData, project.rootPath, &rootInfo) ||
+        rootInfo.kind != FileInfoKind::Directory) return false;
+
+    char directoryPaths[kMaxProjectNavigationDirectories][kMaxPathBytes] = {};
+    uint32_t directoryDepths[kMaxProjectNavigationDirectories] = {};
+    uint32_t directoryCount = 1;
+    directoryPaths[0][0] = '\0';
+    bool stop = false;
+
+    for (uint32_t directoryIndex = 0; directoryIndex < directoryCount && !stop; ++directoryIndex) {
+        if (inventory->directoriesVisited >= kMaxProjectNavigationDirectories) {
+            inventory->truncated = true;
+            break;
+        }
+
+        char absoluteDirectory[kMaxPathBytes] = {};
+        if (directoryPaths[directoryIndex][0] == '\0') {
+            if (!copyEntryName(absoluteDirectory, sizeof(absoluteDirectory), project.rootPath)) {
+                inventory->truncated = true;
+                break;
+            }
+        } else if (!JoinWorkspacePath(project.rootPath, directoryPaths[directoryIndex],
+                                      absoluteDirectory, sizeof(absoluteDirectory))) {
+            inventory->truncated = true;
+            continue;
+        }
+
+        FileListEntry entries[kMaxWorkspaceEntries] = {};
+        uint32_t entryCount = 0;
+        bool listingTruncated = false;
+        incrementNavigationCount(&inventory->directoriesVisited);
+        if (!controller->fileSystem.list(controller->fileSystem.userData, absoluteDirectory,
+                                         entries, kMaxWorkspaceEntries, &entryCount,
+                                         &listingTruncated)) {
+            incrementNavigationCount(&inventory->readFailures);
+            inventory->truncated = true;
+            continue;
+        }
+        if (listingTruncated || entryCount > kMaxWorkspaceEntries) inventory->truncated = true;
+        if (entryCount > kMaxWorkspaceEntries) entryCount = kMaxWorkspaceEntries;
+
+        for (uint32_t i = 0; i < entryCount; ++i) {
+            for (uint32_t j = i + 1; j < entryCount; ++j) {
+                if (pathBefore(entries[j].name, entries[i].name)) {
+                    const FileListEntry swap = entries[i];
+                    entries[i] = entries[j];
+                    entries[j] = swap;
+                }
+            }
+        }
+
+        for (uint32_t i = 0; i < entryCount; ++i) {
+            if (inventory->entriesVisited >= kMaxProjectNavigationEntries) {
+                inventory->truncated = true;
+                stop = true;
+                break;
+            }
+            incrementNavigationCount(&inventory->entriesVisited);
+            const FileListEntry& entry = entries[i];
+            if (!navigationEntryNameSafe(entry.name)) {
+                incrementNavigationCount(&inventory->unsupportedEntries);
+                inventory->truncated = true;
+                continue;
+            }
+
+            if (entry.kind == FileInfoKind::Directory) {
+                if (navigationDirectoryExcluded(entry.name)) {
+                    incrementNavigationCount(&inventory->skippedDirectories);
+                    continue;
+                }
+                if (directoryDepths[directoryIndex] >= kMaxProjectNavigationDepth) {
+                    inventory->truncated = true;
+                    continue;
+                }
+                char relativeDirectory[kMaxPathBytes] = {};
+                if (!appendNavigationRelativePath(directoryPaths[directoryIndex], entry.name,
+                                                  relativeDirectory, sizeof(relativeDirectory))) {
+                    inventory->truncated = true;
+                    incrementNavigationCount(&inventory->unsupportedEntries);
+                    continue;
+                }
+                if (navigationDirectoryWasSeen(relativeDirectory, directoryPaths, directoryCount)) continue;
+                if (directoryCount >= kMaxProjectNavigationDirectories) {
+                    inventory->truncated = true;
+                    continue;
+                }
+                copyEntryName(directoryPaths[directoryCount], sizeof(directoryPaths[directoryCount]),
+                              relativeDirectory);
+                directoryDepths[directoryCount] = directoryDepths[directoryIndex] + 1;
+                ++directoryCount;
+                continue;
+            }
+
+            if (entry.kind != FileInfoKind::RegularFile) {
+                // Unknown kinds include links on the hosted and bare-metal APIs.
+                incrementNavigationCount(&inventory->unsupportedEntries);
+                continue;
+            }
+            if (navigationSourceOrHeaderPath(entry.name)) continue;
+            if (!IsSupportedTextPath(entry.name)) {
+                incrementNavigationCount(&inventory->unsupportedFiles);
+                continue;
+            }
+
+            char relativePath[kMaxPathBytes] = {};
+            char absolutePath[kMaxPathBytes] = {};
+            if (!appendNavigationRelativePath(directoryPaths[directoryIndex], entry.name,
+                                              relativePath, sizeof(relativePath)) ||
+                !JoinWorkspacePath(project.rootPath, relativePath, absolutePath,
+                                   sizeof(absolutePath))) {
+                inventory->truncated = true;
+                incrementNavigationCount(&inventory->unsupportedEntries);
+                continue;
+            }
+
+            FileInfo info = {};
+            if (!controller->fileSystem.stat(controller->fileSystem.userData, absolutePath, &info)) {
+                incrementNavigationCount(&inventory->readFailures);
+                continue;
+            }
+            if (info.kind != FileInfoKind::RegularFile) {
+                incrementNavigationCount(&inventory->unsupportedEntries);
+                continue;
+            }
+            if (info.size > kMaxEditorBytes) {
+                incrementNavigationCount(&inventory->oversizedFiles);
+                continue;
+            }
+            if (inventory->fileCount >= capacity) {
+                inventory->truncated = true;
+                continue;
+            }
+
+            uint32_t bytesRead = 0;
+            if (!controller->fileSystem.read(controller->fileSystem.userData, absolutePath,
+                                             g_workspaceDocumentReadBuffer, kMaxEditorBytes,
+                                             &bytesRead)) {
+                incrementNavigationCount(&inventory->readFailures);
+                continue;
+            }
+            if (bytesRead > kMaxEditorBytes) {
+                incrementNavigationCount(&inventory->oversizedFiles);
+                continue;
+            }
+            if (LooksBinary(g_workspaceDocumentReadBuffer, bytesRead)) {
+                incrementNavigationCount(&inventory->binaryFiles);
+                continue;
+            }
+            bool duplicate = false;
+            for (uint32_t existing = 0; existing < inventory->fileCount; ++existing) {
+                if (navigationPathsEqual(files[existing].absolutePath, absolutePath)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            if (!copyEntryName(files[inventory->fileCount].absolutePath,
+                               sizeof(files[inventory->fileCount].absolutePath), absolutePath)) {
+                inventory->truncated = true;
+                incrementNavigationCount(&inventory->unsupportedEntries);
+                continue;
+            }
+            ++inventory->fileCount;
+        }
+    }
     return true;
 }
 

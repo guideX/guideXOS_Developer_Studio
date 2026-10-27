@@ -112,8 +112,15 @@ add_executable(developer_studio_navigation_test
     tests/navigation_test.cpp
 )
 target_link_libraries(developer_studio_navigation_test PRIVATE developer_studio_models)
+
+add_executable(developer_studio_project_navigation_inventory_test
+    tests/project_navigation_inventory_test.cpp
+)
+target_link_libraries(developer_studio_project_navigation_inventory_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_project_navigation_inventory_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 set_target_properties(developer_studio_navigation_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_navigation_test COMMAND developer_studio_navigation_test)
+add_test(NAME developer_studio_project_navigation_inventory_test COMMAND developer_studio_project_navigation_inventory_test)
 
 add_executable(developer_studio_syntax_test
     tests/syntax_test.cpp

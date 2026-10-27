@@ -177,6 +177,8 @@ using guidexos::developer_studio::SyntaxSelection;
 using guidexos::developer_studio::SyntaxTokenKind;
 using guidexos::developer_studio::SyntaxTokenSpan;
 using guidexos::developer_studio::WorkspaceController;
+using guidexos::developer_studio::ProjectNavigationFile;
+using guidexos::developer_studio::ProjectNavigationInventory;
 using guidexos::developer_studio::WorkspaceControllerActiveDocument;
 using guidexos::developer_studio::WorkspaceControllerCloseDocument;
 using guidexos::developer_studio::WorkspaceControllerCloseWorkspace;
@@ -190,6 +192,7 @@ using guidexos::developer_studio::IsAppModelDocumentPathSupported;
 using guidexos::developer_studio::WorkspaceControllerOpenProjectFrom;
 using guidexos::developer_studio::WorkspaceControllerOpenWorkspace;
 using guidexos::developer_studio::WorkspaceControllerRefresh;
+using guidexos::developer_studio::WorkspaceControllerEnumerateProjectNavigationFiles;
 using guidexos::developer_studio::WorkspaceControllerSaveActive;
 using guidexos::developer_studio::WorkspaceControllerSaveAll;
 using guidexos::developer_studio::WorkspaceControllerSaveDocument;
@@ -1177,6 +1180,11 @@ static char g_projectSearchStatus[128] = {};
 static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
 static DeveloperToolFileSearchResults g_goToFileResults = {};
+static ProjectNavigationFile g_goToFileNavigationFiles[guidexos::developer_studio::kMaxProjectNavigationFiles] = {};
+static ProjectNavigationInventory g_goToFileInventory = {};
+static bool g_goToFileInventoryAvailable = false;
+static bool g_goToFileSourceIndexAvailable = false;
+static bool g_goToFilePathLimitReached = false;
 static bool g_goToFilePanelOpen = false;
 static uint32_t g_goToFileSelected = 0;
 static uint32_t g_goToFileScroll = 0;
@@ -1342,6 +1350,7 @@ static void refreshGoToFileResults();
 static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex);
 static bool handleGoToFileKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static bool handleGoToLineKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static void buildGoToFileInventory();
 static uint32_t captureDirtyProjectSearchDocuments();
 static void stopReferenceSearch(gx_app_context* ctx);
 static void closeFindBar();
@@ -4576,16 +4585,32 @@ static void captureGoToFileProjectIdentity() {
     g_goToFileProjectId[0] = '\0';
     g_goToFileProjectGeneration = 0;
     g_goToFileSymbolGeneration = 0;
+    g_goToFileSourceIndexAvailable = false;
     if (!g_controller.model.open || !g_controller.model.hasProject) return;
     copyText(g_goToFileProjectId, sizeof(g_goToFileProjectId), g_controller.model.project.projectId);
     g_goToFileProjectGeneration = g_controller.model.projectGeneration;
     g_goToFileSymbolGeneration = g_symbolDatabase.symbolDatabaseGeneration;
 }
 
+static void buildGoToFileInventory() {
+    g_goToFileInventory = {};
+    g_goToFileInventoryAvailable = false;
+    g_goToFilePathLimitReached = false;
+    for (uint32_t i = 0; i < guidexos::developer_studio::kMaxProjectNavigationFiles; ++i)
+        g_goToFileNavigationFiles[i].absolutePath[0] = '\0';
+    if (!g_controller.model.open || !g_controller.model.hasProject ||
+        !DeveloperToolProjectIdentityMatches(g_goToFileProjectId, g_goToFileProjectGeneration,
+                                             g_controller.model.project.projectId,
+                                             g_controller.model.projectGeneration)) return;
+    g_goToFileInventoryAvailable = WorkspaceControllerEnumerateProjectNavigationFiles(
+        &g_controller, g_goToFileNavigationFiles,
+        guidexos::developer_studio::kMaxProjectNavigationFiles, &g_goToFileInventory);
+}
+
 static void refreshGoToFileResults() {
     g_goToFileResults = {};
     if (!g_controller.model.open || !g_controller.model.hasProject) {
-        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Open a project to find source files.");
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Open a project to find files.");
         g_goToFileSelected = 0;
         g_goToFileScroll = 0;
         return;
@@ -4598,34 +4623,47 @@ static void refreshGoToFileResults() {
         g_goToFileScroll = 0;
         return;
     }
-    if (g_symbolDatabase.projectGeneration != g_controller.model.projectGeneration) {
-        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project source index is unavailable.");
+    const bool sourceIndexAvailable =
+        g_symbolDatabase.projectGeneration == g_controller.model.projectGeneration;
+    g_goToFileSourceIndexAvailable = sourceIndexAvailable;
+    if (!sourceIndexAvailable && !g_goToFileInventoryAvailable) {
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project file inventories are unavailable.");
         g_goToFileSelected = 0;
         g_goToFileScroll = 0;
         return;
     }
-    g_goToFileSymbolGeneration = g_symbolDatabase.symbolDatabaseGeneration;
-    const uint32_t indexedCount = SymbolDatabaseDocumentCount(&g_symbolDatabase);
+    if (sourceIndexAvailable) g_goToFileSymbolGeneration = g_symbolDatabase.symbolDatabaseGeneration;
+    const uint32_t indexedCount = sourceIndexAvailable ? SymbolDatabaseDocumentCount(&g_symbolDatabase) : 0;
     if (indexedCount > kSymbolMaxDocuments ||
         indexedCount > guidexos::developer_studio::kDeveloperToolMaxIndexedFiles) {
-        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project source index exceeds the navigation limit.");
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Project source index exceeds the file navigation limit.");
         g_goToFileSelected = 0;
         g_goToFileScroll = 0;
         return;
     }
-    const char* indexedPaths[kSymbolMaxDocuments] = {};
+    const char* indexedPaths[guidexos::developer_studio::kDeveloperToolMaxIndexedFiles] = {};
+    uint32_t pathCount = 0;
     for (uint32_t i = 0; i < indexedCount; ++i)
-        indexedPaths[i] = SymbolDatabaseDocumentPath(&g_symbolDatabase, i);
+        indexedPaths[pathCount++] = SymbolDatabaseDocumentPath(&g_symbolDatabase, i);
+    if (g_goToFileInventoryAvailable) {
+        for (uint32_t i = 0; i < g_goToFileInventory.fileCount; ++i) {
+            if (pathCount >= guidexos::developer_studio::kDeveloperToolMaxIndexedFiles) {
+                g_goToFilePathLimitReached = true;
+                break;
+            }
+            indexedPaths[pathCount++] = g_goToFileNavigationFiles[i].absolutePath;
+        }
+    }
     if (!DeveloperToolBuildFileSearchResults(g_controller.model.rootPath, indexedPaths,
-                                             indexedCount, g_goToFileQuery, &g_goToFileResults)) {
+                                             pathCount, g_goToFileQuery, &g_goToFileResults)) {
         copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "File search input exceeds its limit.");
         g_goToFileSelected = 0;
         g_goToFileScroll = 0;
         return;
     }
     if (g_goToFileResults.count == 0) {
-        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), indexedCount == 0 ?
-                 "No source or header files are in the project index." : "No files match this search.");
+        copyText(g_goToFileStatus, sizeof(g_goToFileStatus), pathCount == 0 ?
+                 "No supported text files were indexed." : "No files match this search.");
     } else if (g_goToFileResults.truncated) {
         copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Showing 64 of ");
         appendUnsigned(g_goToFileStatus, sizeof(g_goToFileStatus), g_goToFileResults.totalMatches);
@@ -4633,8 +4671,25 @@ static void refreshGoToFileResults() {
     } else {
         copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "");
     }
-    if (g_goToFileResults.count != 0 && SymbolDatabaseIsTruncated(&g_symbolDatabase))
-        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Project index is at capacity.");
+    if (g_goToFileResults.count != 0 && sourceIndexAvailable && SymbolDatabaseIsTruncated(&g_symbolDatabase))
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Source index at capacity.");
+    if (g_goToFileInventoryAvailable && g_goToFileInventory.truncated)
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " File inventory truncated.");
+    if (g_goToFilePathLimitReached)
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Combined index capped.");
+    if (g_goToFileInventoryAvailable && g_goToFileInventory.skippedDirectories != 0) {
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Ignored ");
+        appendUnsigned(g_goToFileStatus, sizeof(g_goToFileStatus), g_goToFileInventory.skippedDirectories);
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " generated/dependency dirs.");
+    }
+    if (g_goToFileInventoryAvailable &&
+        (g_goToFileInventory.unsupportedFiles != 0 || g_goToFileInventory.unsupportedEntries != 0 ||
+         g_goToFileInventory.binaryFiles != 0 || g_goToFileInventory.oversizedFiles != 0 ||
+         g_goToFileInventory.readFailures != 0)) {
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Unsupported, binary, or oversized files omitted.");
+    }
+    if (!g_goToFileInventoryAvailable)
+        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), " Text asset scan unavailable.");
     goToFileEnsureSelectionVisible();
 }
 
@@ -4646,6 +4701,7 @@ static bool activateGoToFileTool(void* userData) {
         g_goToFileSelected = 0;
         g_goToFileScroll = 0;
         captureGoToFileProjectIdentity();
+        buildGoToFileInventory();
     }
     if (g_findBarOpen) closeFindBar();
     closeSymbolSearch();
@@ -4671,6 +4727,12 @@ static bool activateGoToFileTool(void* userData) {
 static bool closeGoToFileTool(void*) {
     g_goToFilePanelOpen = false;
     g_goToFileResults = {};
+    for (uint32_t i = 0; i < guidexos::developer_studio::kMaxProjectNavigationFiles; ++i)
+        g_goToFileNavigationFiles[i].absolutePath[0] = '\0';
+    g_goToFileInventory = {};
+    g_goToFileInventoryAvailable = false;
+    g_goToFileSourceIndexAvailable = false;
+    g_goToFilePathLimitReached = false;
     g_goToFileProjectId[0] = '\0';
     g_goToFileProjectGeneration = 0;
     g_goToFileSymbolGeneration = 0;
@@ -4781,8 +4843,11 @@ static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=STALE");
         return false;
     }
-    if (g_symbolDatabase.projectGeneration != g_controller.model.projectGeneration ||
-        g_symbolDatabase.symbolDatabaseGeneration != g_goToFileSymbolGeneration) {
+    const bool sourceIndexAvailable =
+        g_symbolDatabase.projectGeneration == g_controller.model.projectGeneration;
+    if (sourceIndexAvailable != g_goToFileSourceIndexAvailable ||
+        (sourceIndexAvailable &&
+         g_symbolDatabase.symbolDatabaseGeneration != g_goToFileSymbolGeneration)) {
         g_goToFileSelected = 0;
         g_goToFileScroll = 0;
         refreshGoToFileResults();
@@ -4802,8 +4867,14 @@ static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex) {
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_goToFileProjectId,
                                                    relativePath, 1, 1,
                                                    &documentIndex, &navigationError)) {
+        const ModelErrorCode modelError = g_controller.lastError;
+        buildGoToFileInventory();
+        refreshGoToFileResults();
         copyText(g_goToFileStatus, sizeof(g_goToFileStatus), "Unable to open selected file: ");
-        appendText(g_goToFileStatus, sizeof(g_goToFileStatus), OutputErrorName(navigationError));
+        if (modelError != ModelErrorCode::None)
+            appendText(g_goToFileStatus, sizeof(g_goToFileStatus), ModelErrorName(modelError));
+        else
+            appendText(g_goToFileStatus, sizeof(g_goToFileStatus), OutputErrorName(navigationError));
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=FAIL");
         return false;
     }

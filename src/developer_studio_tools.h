@@ -9,7 +9,11 @@ namespace developer_studio {
 
 static const uint32_t kDeveloperToolMaxCommands = 4u;
 static const uint32_t kDeveloperToolMaxFileQueryBytes = 128u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kDeveloperToolMaxIndexedFiles = 32u;
+#else
 static const uint32_t kDeveloperToolMaxIndexedFiles = 2048u;
+#endif
 static const uint32_t kDeveloperToolMaxFileResults = 64u;
 static const uint32_t kDeveloperToolMaxLineInputBytes = 10u;
 
@@ -32,9 +36,8 @@ struct DeveloperToolFileSearchResults {
     bool truncated;
 };
 
-// Search a bounded snapshot of absolute paths from the active project's
-// existing source/header inventory. Results own their relative paths so a
-// later selection never depends on a SymbolDatabase pointer.
+// Search a bounded snapshot of absolute project paths. Results own their
+// relative paths so a later selection never depends on an inventory pointer.
 bool DeveloperToolBuildFileSearchResults(const char* projectRoot,
                                          const char* const* indexedAbsolutePaths,
                                          uint32_t indexedPathCount,

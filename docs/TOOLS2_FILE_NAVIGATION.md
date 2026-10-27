@@ -1,5 +1,9 @@
 # TOOLS2 File Navigation
 
+This document records the TOOLS2 baseline. The current extended navigation
+inventory and TOOLS3 qualification are documented in
+[TOOLS3_EXTENDED_NAVIGATION.md](TOOLS3_EXTENDED_NAVIGATION.md).
+
 ## Result
 
 **Outcome A — `TOOLS2_HOSTED_VERIFIED`.** Go to File and Go to Line are
@@ -16,19 +20,18 @@ existing **Find in Files** command. All three use the fixed-capacity
 `DeveloperToolRegistry`. The registry holds three of its four command slots;
 it remains a static command table, not a dynamic plugin system.
 
-Go to File reuses the active project's existing `SymbolDatabase` file index.
-That index is built by the workspace controller and contains project C/C++
-source and header paths. Go to File does not recursively scan the filesystem
-or read file contents. The current inventory does not include arbitrary text
-assets such as JSON or Markdown, so those files are outside Go to File's
-search scope.
+The existing `SymbolDatabase` remains the source of Go to File's C/C++ source
+and header results. TOOLS3 adds a separate, navigation-only text-asset
+inventory built from bounded project-root traversal. It does not alter the
+compilation source inventory or the project symbol index. The extended
+inventory is content-checked before it is made searchable; supported file
+types and exclusions are listed in the TOOLS3 document.
 
-Selecting a result passes its copied project-relative path and the captured
-project ID to `WorkspaceControllerOpenDocumentAtLocation`. That existing
-workspace API validates the active project, path containment, file type,
-readability, binary content, and editor size limit before activating a
-document. No file contents or document pointers are retained by the result
-list.
+Selecting a result passes its copied project-relative path and captured
+project ID to `WorkspaceControllerOpenDocumentAtLocation`. That workspace API
+validates the active project, path containment, file type, readability,
+UTF-8 text content, and editor size limit before activating a document. Search
+results retain copied paths only, never file contents or document pointers.
 
 Go to Line operates on the current editable document buffer. It does not
 reopen, rewrite, or save the file. A successful move uses the existing
@@ -82,8 +85,9 @@ document identity is checked again before Go to Line moves the caret.
 ## Bounds and safety
 
 - Search input: 128 bytes.
-- Indexed candidates: at most 2,048 hosted entries (32 in the bare-metal
-  model configuration).
+- Combined indexed candidates: at most 2,048 hosted entries (32 in the
+  bare-metal model configuration); the separate TOOLS3 text-asset inventory
+  retains at most 256 hosted paths (32 bare-metal paths).
 - Displayed search results: at most 64, with a visible truncation count.
 - Stored paths: at most `kMaxPathBytes - 1` bytes; displayed paths are clipped
   to a bounded UI buffer.
@@ -96,7 +100,7 @@ document identity is checked again before Go to Line moves the caret.
   Filesystem symlink metadata is not exposed by the hosted ABI; the Server
   rejects symlink path components and unknown file kinds are not indexed.
 
-## Hosted regression and package evidence
+## TOOLS2 hosted regression and package evidence
 
 `tests/tools_test.cpp` covers filename-first matching, relative-path matching,
 empty results, oversized queries, result limits, project identity changes,
@@ -120,7 +124,7 @@ Both package builds used the existing Server SDK headers and the TOOLS2-only
 staging root `out/tools2-package`. The production Server package was not
 written.
 
-## Qualification status and limitations
+## TOOLS2 qualification snapshot
 
 Live hosted UI acceptance is **PENDING** because
 `D:\dev\guideXOS_DeveloperStudio_Tools\guideXOSServer.experimental.exe` was
@@ -128,7 +132,8 @@ absent. QAC guest acceptance is **PENDING** because `qac.exe` was unavailable;
 at the initial audit an unrelated QEMU system process was active, and no QEMU
 instance was started or modified.
 
-Go to File currently searches only the C/C++ source/header inventory maintained
-by the symbol index. It does not search project metadata, documentation,
-configuration files, or arbitrary text assets. Its indexed candidate and
-display-result capacities are intentionally bounded.
+TOOLS2 searched the C/C++ source/header inventory only. TOOLS3 extends that
+scope to supported project text assets; see
+[TOOLS3_EXTENDED_NAVIGATION.md](TOOLS3_EXTENDED_NAVIGATION.md) for the current
+behavior, supported formats, safety bounds, test results, and qualification
+status.

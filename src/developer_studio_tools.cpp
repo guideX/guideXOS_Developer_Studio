@@ -112,6 +112,22 @@ static bool fileResultBefore(bool fileNameMatch, const char* relativePath,
     return comparePath(relativePath, existing.relativePath) < 0;
 }
 
+static bool equalPathExact(const char* left, const char* right) {
+    if (!left || !right) return left == right;
+    uint32_t i = 0;
+    while (left[i] != '\0' && right[i] != '\0' && left[i] == right[i]) ++i;
+    return left[i] == right[i];
+}
+
+static uint32_t pathHash(const char* path) {
+    uint32_t hash = 2166136261u;
+    for (uint32_t i = 0; path && path[i] != '\0'; ++i) {
+        hash ^= static_cast<uint8_t>(path[i]);
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
 static uint32_t findIndex(const DeveloperToolRegistry* registry, DeveloperToolId id) {
     if (!registry || id == DeveloperToolId::None) return kDeveloperToolMaxCommands;
     for (uint32_t i = 0; i < registry->count; ++i)
@@ -132,9 +148,28 @@ bool DeveloperToolBuildFileSearchResults(const char* projectRoot,
         indexedPathCount > kDeveloperToolMaxIndexedFiles ||
         textLength(query, kDeveloperToolMaxFileQueryBytes + 1u) > kDeveloperToolMaxFileQueryBytes) return false;
 
+    static const uint32_t kSeenPathSlotCount = kDeveloperToolMaxIndexedFiles * 2u;
+    uint32_t seenPathSlots[kSeenPathSlotCount] = {};
     for (uint32_t i = 0; i < indexedPathCount; ++i) {
         char relativePath[kMaxPathBytes] = {};
         if (!relativePathFor(projectRoot, indexedAbsolutePaths[i], relativePath, sizeof(relativePath))) continue;
+
+        uint32_t slot = pathHash(relativePath) & (kSeenPathSlotCount - 1u);
+        bool duplicate = false;
+        while (seenPathSlots[slot] != 0) {
+            const uint32_t previousIndex = seenPathSlots[slot] - 1u;
+            char previousRelativePath[kMaxPathBytes] = {};
+            if (relativePathFor(projectRoot, indexedAbsolutePaths[previousIndex],
+                                previousRelativePath, sizeof(previousRelativePath)) &&
+                equalPathExact(relativePath, previousRelativePath)) {
+                duplicate = true;
+                break;
+            }
+            slot = (slot + 1u) & (kSeenPathSlotCount - 1u);
+        }
+        if (duplicate) continue;
+        seenPathSlots[slot] = i + 1u;
+
         const char* fileName = relativePath;
         for (uint32_t p = 0; relativePath[p] != '\0'; ++p)
             if (relativePath[p] == '/') fileName = relativePath + p + 1;

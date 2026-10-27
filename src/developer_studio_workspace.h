@@ -9,9 +9,38 @@ namespace developer_studio {
 
 static const uint32_t kMaxProjectSourceFiles = kMaxProjectSources;
 
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+static const uint32_t kMaxProjectNavigationFiles = 32u;
+static const uint32_t kMaxProjectNavigationDirectories = 16u;
+static const uint32_t kMaxProjectNavigationEntries = 512u;
+static const uint32_t kMaxProjectNavigationDepth = 6u;
+#else
+static const uint32_t kMaxProjectNavigationFiles = 256u;
+static const uint32_t kMaxProjectNavigationDirectories = 64u;
+static const uint32_t kMaxProjectNavigationEntries = 4096u;
+static const uint32_t kMaxProjectNavigationDepth = 8u;
+#endif
+
 struct ProjectSourceFile {
     char relativePath[kMaxProjectPathBytes];
     uint64_t size;
+};
+
+struct ProjectNavigationFile {
+    char absolutePath[kMaxPathBytes];
+};
+
+struct ProjectNavigationInventory {
+    uint32_t fileCount;
+    uint32_t directoriesVisited;
+    uint32_t entriesVisited;
+    uint32_t unsupportedFiles;
+    uint32_t unsupportedEntries;
+    uint32_t binaryFiles;
+    uint32_t oversizedFiles;
+    uint32_t readFailures;
+    uint32_t skippedDirectories;
+    bool truncated;
 };
 
 enum class WorkspaceProjectOpenState {
@@ -204,6 +233,12 @@ bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* contr
                                                 ProjectSourceFile* files,
                                                 uint32_t capacity,
                                                 uint32_t* outCount);
+// This navigation-only inventory walks the active project root with explicit
+// depth, directory, entry, path, and editable-file bounds. It never mutates
+// Project source metadata and never participates in Build or Run requests.
+bool WorkspaceControllerEnumerateProjectNavigationFiles(
+    const WorkspaceController* controller, ProjectNavigationFile* files,
+    uint32_t capacity, ProjectNavigationInventory* inventory);
 bool WorkspaceControllerEnterSelected(WorkspaceController* controller);
 bool WorkspaceControllerGoUp(WorkspaceController* controller);
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path);

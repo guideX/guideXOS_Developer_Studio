@@ -93,6 +93,7 @@ int main() {
         "C:/project/tests/main_test.cpp",
         "C:/project/src/nested/main.h",
         "C:/project/src/utility.cpp",
+        "C:\\project\\src\\main.cpp",
         "C:/elsewhere/main.cpp",
         "C:/project/../outside.cpp",
         "C:/project/include/src_only.h"
@@ -115,6 +116,19 @@ int main() {
     assert(fileResults.count == 1);
     assert(std::strcmp(fileResults.results[0].relativePath, "include/src_only.h") == 0);
     assert(!fileResults.results[0].fileNameMatch);
+
+    const char* filenameFirstPaths[] = {
+        "C:/project/z/src-folder/document.txt",
+        "C:/project/a/src.txt",
+        "C:/project/a/src.txt"
+    };
+    assert(DeveloperToolBuildFileSearchResults("C:/project", filenameFirstPaths, 3,
+                                               "src", &fileResults));
+    assert(fileResults.count == 2 && fileResults.totalMatches == 2);
+    assert(fileResults.results[0].fileNameMatch);
+    assert(std::strcmp(fileResults.results[0].relativePath, "a/src.txt") == 0);
+    assert(!fileResults.results[1].fileNameMatch);
+    assert(std::strcmp(fileResults.results[1].relativePath, "z/src-folder/document.txt") == 0);
 
     assert(DeveloperToolBuildFileSearchResults("C:/project", filePaths,
                                                sizeof(filePaths) / sizeof(filePaths[0]),

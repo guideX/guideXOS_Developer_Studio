@@ -455,7 +455,9 @@ const char* BaseName(const char* path) {
 
 bool IsSupportedTextPath(const char* path) {
     const char* name = BaseName(path);
-    if (equalText(name, "guidexos.project", true)) return true;
+    if (equalText(name, "guidexos.project", true) ||
+        equalText(name, ".env", true) ||
+        equalText(name, ".editorconfig", true)) return true;
     uint32_t length = textLength(name, kMaxNameBytes);
     uint32_t dot = length;
     for (uint32_t i = 0; i < length; ++i) if (name[i] == '.') dot = i;
@@ -463,7 +465,8 @@ bool IsSupportedTextPath(const char* path) {
     const char* extension = name + dot;
     static const char* const extensions[] = {
         ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".txt", ".md", ".json", ".xml", ".css", ".html", ".htm",
-        ".js", ".ts", ".ps1", ".cmd", ".bat", ".cmake", ".ini", ".cfg", ".log", ".mk", ".yml", ".yaml"
+        ".js", ".ts", ".ps1", ".cmd", ".bat", ".cmake", ".ini", ".cfg", ".conf", ".config",
+        ".properties", ".toml", ".log", ".mk", ".yml", ".yaml"
     };
     for (uint32_t i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i) {
         if (equalText(extension, extensions[i], true)) return true;
@@ -473,8 +476,44 @@ bool IsSupportedTextPath(const char* path) {
 
 bool LooksBinary(const char* bytes, uint32_t length) {
     if (!bytes) return length != 0;
-    for (uint32_t i = 0; i < length; ++i) {
-        if (bytes[i] == '\0') return true;
+    for (uint32_t i = 0; i < length;) {
+        const uint8_t first = static_cast<uint8_t>(bytes[i]);
+        if (first < 0x20u) {
+            if (first != '\t' && first != '\n' && first != '\r' && first != '\f') return true;
+            ++i;
+            continue;
+        }
+        if (first < 0x80u) {
+            if (first == 0x7Fu) return true;
+            ++i;
+            continue;
+        }
+
+        uint32_t continuationCount = 0;
+        uint8_t secondMinimum = 0x80u;
+        uint8_t secondMaximum = 0xBFu;
+        if (first >= 0xC2u && first <= 0xDFu) {
+            continuationCount = 1;
+        } else if (first >= 0xE0u && first <= 0xEFu) {
+            continuationCount = 2;
+            if (first == 0xE0u) secondMinimum = 0xA0u;
+            if (first == 0xEDu) secondMaximum = 0x9Fu;
+        } else if (first >= 0xF0u && first <= 0xF4u) {
+            continuationCount = 3;
+            if (first == 0xF0u) secondMinimum = 0x90u;
+            if (first == 0xF4u) secondMaximum = 0x8Fu;
+        } else {
+            return true;
+        }
+        if (continuationCount > length - i - 1) return true;
+        const uint8_t second = static_cast<uint8_t>(bytes[i + 1]);
+        if (second < secondMinimum || second > secondMaximum) return true;
+        if (first == 0xC2u && second <= 0x9Fu) return true;
+        for (uint32_t j = 2; j <= continuationCount; ++j) {
+            const uint8_t continuation = static_cast<uint8_t>(bytes[i + j]);
+            if (continuation < 0x80u || continuation > 0xBFu) return true;
+        }
+        i += continuationCount + 1;
     }
     return false;
 }
