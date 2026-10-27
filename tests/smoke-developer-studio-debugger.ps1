@@ -5,11 +5,11 @@ param(
     [string]$FixtureSourceOrigin = "",
     [int]$BreakpointLine = 20,
     [string]$BreakpointCondition = "",
-    [int]$LifecycleStepIntoExpectedLine = 43,
-    [string]$LifecycleStepOverExpectedFunctionFragment = "debugCall",
-    [int]$LifecycleStepOverExpectedLine = 48,
-    [int]$LifecycleStepOutExpectedLine = 59,
-    [string]$LifecycleStepOutExpectedFunctionFragment = "gx_main",
+    [int]$LifecycleStepIntoExpectedLine = 38,
+    [string]$LifecycleStepOverExpectedFunctionFragment = "debugLoop",
+    [int]$LifecycleStepOverExpectedLine = 39,
+    [int]$LifecycleStepOutExpectedLine = 48,
+    [string]$LifecycleStepOutExpectedFunctionFragment = "debugCaller",
     [int]$DebugWaitSeconds = 120,
     [int]$MaxRuntimeSeconds = 240,
     [switch]$DiagnosticOnly,
@@ -58,6 +58,14 @@ $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $FixtureRoot = [IO.Path]::GetFullPath($FixtureRoot)
 $Executable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
 $WatchExpression = if ($PositiveGxsmLifecycle -or $SteppingLifecycle) { 'counter == 2' } elseif ($FixtureRoot -match 'debugger-phase15') { 'total' } elseif ($FixtureRoot -match 'debugger-phase9|debugger-phase10') { 'doubled == 42' } else { 'ctx != 0' }
+if ($SteppingLifecycle -and -not $PSBoundParameters.ContainsKey('BreakpointLine')) {
+    $BreakpointLine = 37
+}
+if ($SteppingLifecycle -and -not $PSBoundParameters.ContainsKey('BreakpointCondition')) {
+    # The loop reaches this source line several times. Stop on its final pass
+    # so the subsequent Step Out reaches the real caller-return address.
+    $BreakpointCondition = 'counter == 2'
+}
 
 if ($PositiveGxsmLifecycle) {
     $projectMetadataPath = Join-Path $FixtureRoot 'guidexos.project'
@@ -1037,7 +1045,9 @@ try {
         Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_SOURCE_PATH kind=dwarf_compilation_entry pgen=\d+ op=\d+ symgen=\d+ id=\d+ part=1/\d+ value=') "the request retains its raw DWARF compilation entry"
     }
     Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=PENDING .*state=Pending') "runtime breakpoint enters Pending only after symbol publication"
-    $mappedBreakpointPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=MAPPED pgen=\d+ op=\d+ symgen=\d+ id=(\d+) src=src/main\.cpp line=' + [regex]::Escape([string]$BreakpointLine) + ' col=1 enabled=1 state=Mapped err=none addr=0x[0-9A-Fa-f]+ addrs=[1-9]\d*'
+    # The line mapper reports the DWARF row column (often 0) rather than the
+    # editor request column. Source-line qualification must not require col=1.
+    $mappedBreakpointPattern = 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=MAPPED pgen=\d+ op=\d+ symgen=\d+ id=(\d+) src=src/main\.cpp line=' + [regex]::Escape([string]$BreakpointLine) + ' col=\d+ enabled=1 state=Mapped err=none addr=0x[0-9A-Fa-f]+ addrs=[1-9]\d*'
     if ($text -notmatch $mappedBreakpointPattern) {
         Write-Host 'Captured Phase 29N hosted symbol/breakpoint diagnostics:'
         @($text -split "`r?`n" | Where-Object { $_ -match 'DEVELOPER_STUDIO_PHASE29N_HOST_|debug_binding|breakpoint bound' } | Select-Object -Last 80)

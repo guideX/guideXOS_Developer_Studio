@@ -483,6 +483,20 @@ int main() {
     assert(mapped && mapped->state == DebugBreakpointState::Mapped);
     assert(mapped->location.mapping == DebugMappingState::Mapped && mapped->mappedAddressCount == 3);
     assert(mapped->location.instructionAddress.valid && mapped->location.instructionAddress.value == 0x401000);
+    DebugController unmappedController = {};
+    assert(DebugControllerInit(&unmappedController));
+    unmappedController.target = controller.target;
+    uint64_t unmappedBreakpointId = 0;
+    assert(DebugControllerAddBreakpoint(&unmappedController, "fixture", "D:/fixture", 7,
+                                        "src/main.cpp", 7, 0, 1,
+                                        &unmappedBreakpointId, &controllerError));
+    assert(!DebugControllerMapBreakpoints(&unmappedController, &mapper, &controllerError));
+    const DebugBreakpoint* unmapped = DebugControllerBreakpointAt(&unmappedController, 0);
+    assert(controllerError == DebugErrorCode::LineNotMapped && unmapped &&
+           unmapped->state == DebugBreakpointState::Pending &&
+           unmapped->mappingError == DebugErrorCode::LineNotMapped &&
+           std::strcmp(unmapped->message, "Pending: no executable mapping for this line") == 0 &&
+           unmapped->mappedAddressCount == 0 && !unmapped->location.instructionAddress.valid);
     static DebugDwarfMapper staleForMapping;
     staleForMapping = mapper;
     staleForMapping.identity.sha256[0] = 'b';

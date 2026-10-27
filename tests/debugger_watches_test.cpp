@@ -17,6 +17,8 @@ struct Memory {
     uint8_t bytes[0x30000];
     uint32_t reads;
     uint32_t writes;
+    uint64_t sessionGeneration;
+    uint64_t stopGeneration;
 };
 
 static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t processId,
@@ -24,8 +26,9 @@ static bool readMemory(void* userData, uint64_t sessionGeneration, uint64_t proc
                        uint64_t address, uint8_t* bytes, uint32_t requested, uint32_t* returned) {
     Memory* memory = static_cast<Memory*>(userData);
     if (returned) *returned = 0;
-    if (!memory || sessionGeneration != 9 || processId != 42 || runtimeId != 77 || threadId != 11 ||
-        stopGeneration != 5 || !bytes || requested == 0 || address < memory->base ||
+    if (!memory || sessionGeneration != memory->sessionGeneration || processId != 42 ||
+        runtimeId != 77 || threadId != 11 || stopGeneration != memory->stopGeneration ||
+        !bytes || requested == 0 || address < memory->base ||
         requested > sizeof(memory->bytes) || address - memory->base > sizeof(memory->bytes) - requested) return false;
     ++memory->reads;
     for (uint32_t i = 0; i < requested; ++i) bytes[i] = memory->bytes[address - memory->base + i];
@@ -193,6 +196,8 @@ int main() {
     frame.threadId = 11;
     frame.sessionGeneration = 9;
     frame.stopGeneration = 5;
+    memory.sessionGeneration = frame.sessionGeneration;
+    memory.stopGeneration = frame.stopGeneration;
     frame.frameBaseKnown = true;
     frame.frameBase = 0x700100;
     DebugDwarfVariableView roots = {};
@@ -247,6 +252,10 @@ int main() {
     context.userData = &memory;
     TEST_CHECK(DebugWatchCollectionRefresh(&watches, context));
     TEST_CHECK(watchNamed(&watches, "rect")->result.state == DebugWatchState::Available);
+    TEST_CHECK(watchNamed(&watches, "rect.width")->result.sessionGeneration == frame.sessionGeneration &&
+               watchNamed(&watches, "rect.width")->result.stopGeneration == frame.stopGeneration &&
+               watchNamed(&watches, "rect.width")->result.frameIndex == frame.frameIndex &&
+               watchNamed(&watches, "rect.width")->result.artifactGeneration == mapper.identity.mapperGeneration);
     TEST_CHECK(watchNamed(&watches, "rect")->result.structured);
     TEST_CHECK(std::strcmp(watchNamed(&watches, "rect.width")->result.valueDisplay, "100") == 0);
     TEST_CHECK(std::strcmp(watchNamed(&watches, "rect.origin.x")->result.valueDisplay, "10") == 0);
@@ -291,6 +300,10 @@ int main() {
     TEST_CHECK(std::strcmp(watchNamed(&watches, "config != 0")->result.valueDisplay, "false") == 0);
     put64(&memory, configAddress, configTarget);
     TEST_CHECK(DebugWatchCollectionRefresh(&watches, context));
+    TEST_CHECK(watchNamed(&watches, "doesNotExist")->result.state == DebugWatchState::UnknownIdentifier &&
+               watchNamed(&watches, "doesNotExist")->result.sessionGeneration == frame.sessionGeneration &&
+               watchNamed(&watches, "doesNotExist")->result.stopGeneration == frame.stopGeneration &&
+               watchNamed(&watches, "doesNotExist")->result.frameIndex == frame.frameIndex);
     TEST_CHECK(DebugWatchCollectionExpand(&watches, context, watchNamed(&watches, "rect")->id));
     TEST_CHECK(watches.tree.nodes[watchNamed(&watches, "rect")->result.nodeId - 1u].childCount > 0);
     TEST_CHECK(DebugWatchCollectionExpand(&watches, context, watchNamed(&watches, "node")->id));
@@ -303,10 +316,27 @@ int main() {
     const uint32_t readsBeforeRunning = memory.reads;
     DebugWatchCollectionMarkRunning(&watches);
     TEST_CHECK(watchNamed(&watches, "rect.width")->result.state == DebugWatchState::Running);
+    TEST_CHECK(watchNamed(&watches, "rect.width")->result.sessionGeneration == 0 &&
+               watchNamed(&watches, "rect.width")->result.stopGeneration == 0 &&
+               watchNamed(&watches, "rect.width")->result.frameIndex == 0);
     TEST_CHECK(!DebugWatchCollectionExpand(&watches, context, watchNamed(&watches, "rect")->id));
     TEST_CHECK(memory.reads == readsBeforeRunning);
     DebugWatchCollectionMarkStale(&watches);
     TEST_CHECK(watchNamed(&watches, "rect")->result.state == DebugWatchState::Stale);
+    TEST_CHECK(watchNamed(&watches, "rect")->result.sessionGeneration == 0 &&
+               watchNamed(&watches, "rect")->result.stopGeneration == 0 &&
+               watchNamed(&watches, "rect")->result.frameIndex == 0);
+    frame.sessionGeneration = 10;
+    frame.stopGeneration = 1;
+    memory.sessionGeneration = frame.sessionGeneration;
+    memory.stopGeneration = frame.stopGeneration;
+    context.frame = frame;
+    put32(&memory, doubledAddress, 51);
+    TEST_CHECK(DebugWatchCollectionRefresh(&watches, context));
+    TEST_CHECK(std::strcmp(watchNamed(&watches, "doubled == 42")->result.valueDisplay, "false") == 0 &&
+               watchNamed(&watches, "doubled == 42")->result.sessionGeneration == 10 &&
+               watchNamed(&watches, "doubled == 42")->result.stopGeneration == 1 &&
+               watchNamed(&watches, "doubled == 42")->result.frameIndex == frame.frameIndex);
     TEST_CHECK(DebugWatchCollectionEdit(&watches, watchNamed(&watches, "rect")->id, "rect.height"));
     TEST_CHECK(DebugWatchCollectionRemove(&watches, watchNamed(&watches, "rect.height")->id));
 
