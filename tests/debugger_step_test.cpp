@@ -27,6 +27,8 @@ struct StepFake {
 struct StepOverFake {
     bool trapPending = false;
     bool exitBeforeStepStop = false;
+    bool interruptWithUserBreakpoint = false;
+    bool stopRequested = false;
     uint32_t pollCalls = 0;
     uint32_t readCalls = 0;
     uint32_t bindCalls = 0;
@@ -334,6 +336,15 @@ static bool overPoll(void* userData, uint64_t generation, DebugBackendSnapshot* 
     ++fake->pollCalls;
     *snapshot = DebugBackendSnapshot();
     snapshot->sessionGeneration = generation;
+    if (fake->stopRequested) {
+        snapshot->state = DebugSessionState::Exited;
+        snapshot->stopReason = DebugStopReason::Exited;
+        snapshot->processId = 12;
+        snapshot->nativeRuntimeId = 77;
+        snapshot->exitCode = 0;
+        snapshot->cleanupComplete = true;
+        return true;
+    }
     if (fake->exitBeforeStepStop) {
         snapshot->state = DebugSessionState::Exited;
         snapshot->stopReason = DebugStopReason::Exited;
@@ -346,6 +357,32 @@ static bool overPoll(void* userData, uint64_t generation, DebugBackendSnapshot* 
     snapshot->processId = 12;
     snapshot->nativeRuntimeId = 77;
     snapshot->threadId = 44;
+    if (fake->interruptWithUserBreakpoint) {
+        snapshot->state = DebugSessionState::Paused;
+        snapshot->stopReason = DebugStopReason::Breakpoint;
+        snapshot->breakpointTrap = true;
+        snapshot->targetAddress = { true, 0x200 };
+        snapshot->breakpointBindingId = 700;
+        snapshot->bindingOwnerCount = 1;
+        snapshot->bindingInstalled = true;
+        snapshot->instructionPointer = 0x201;
+        snapshot->stopGeneration = 4;
+        snapshot->commandGeneration = fake->commandGeneration;
+        snapshot->executionState = DebugBackendExecutionState::PausedAtBreakpoint;
+        snapshot->registerContext.valid = true;
+        snapshot->registerContext.architecture = DebugArchitecture::Amd64;
+        snapshot->registerContext.processId = 12;
+        snapshot->registerContext.nativeRuntimeId = 77;
+        snapshot->registerContext.threadId = 44;
+        snapshot->registerContext.sessionGeneration = generation;
+        snapshot->registerContext.stopGeneration = 4;
+        snapshot->registerContext.commandGeneration = fake->commandGeneration;
+        snapshot->registerContext.rip = 0x201;
+        snapshot->registerContext.rflags = 0x202;
+        snapshot->registerContext.rsp = 0x700000;
+        snapshot->registerContext.rbp = 0x700100;
+        return true;
+    }
     fake->trapPending = true;
     snapshot->state = DebugSessionState::Paused;
     snapshot->stopReason = DebugStopReason::Step;
@@ -419,17 +456,24 @@ static bool overResume(void* userData, uint64_t, const DebugRegisterContext&) {
     return true;
 }
 
+static bool overStop(void* userData, uint64_t) {
+    static_cast<StepOverFake*>(userData)->stopRequested = true;
+    return true;
+}
+
 static DebugBackend makeStepOverBackend(StepOverFake* fake) {
     DebugBackend backend = {};
     backend.userData = fake;
     backend.capabilities.canContinue = true;
     backend.capabilities.canStepOver = true;
+    backend.capabilities.canStop = true;
     backend.poll = overPoll;
     backend.readMemory = overRead;
     backend.bindSoftwareBreakpoint = overBind;
     backend.debugCommand = overCommand;
     backend.stepOverCall = overCall;
     backend.resumeExecution = overResume;
+    backend.stop = overStop;
     return backend;
 }
 
@@ -539,6 +583,13 @@ int main() {
     DebugBackend backend = makeBackend(&fake);
     DebugController controller = {};
     preparePausedController(&controller, true);
+    controller.callStack.valid = true;
+    controller.callStack.sessionGeneration = 9;
+    controller.callStack.stopGeneration = 3;
+    controller.callStack.result.frameCount = 1;
+    controller.variables.valid = true;
+    controller.variables.sessionGeneration = 9;
+    controller.variables.stopGeneration = 3;
     DebugErrorCode error = DebugErrorCode::None;
     assert(DebugControllerCanStepInto(&controller));
     assert(DebugControllerStepInto(&controller, backend, &mapper, &error));
@@ -570,6 +621,8 @@ int main() {
     assert(!controller.sourceStep.active);
     assert(controller.sourceStep.status == DebugSourceStepStatus::Completed);
     assert(controller.currentLocation.line == 11);
+    assert(!controller.callStack.valid && !controller.variables.valid &&
+           DebugControllerCallStackFrameAt(&controller, 0) == nullptr);
     assert(controller.currentInstructionAddress.value == 0x108);
     assert(controller.stoppedContext.rip == 0x108 && controller.stoppedContext.rflags == 0x202);
     assert(controller.stopGeneration == 5 && controller.lastStopGeneration == 5 &&
@@ -578,6 +631,25 @@ int main() {
            controller.reportedInstructionPointer == 0x108 &&
            controller.currentInstructionAddress.value == controller.stoppedContext.rip &&
            controller.stepCompletionGeneration == 5);
+
+    // Source-map contract for a Step Into whose next executed instruction is
+    // in a called helper function. The hosted fake reports the mapped callee
+    // PC; the Server native-runtime test separately proves real instruction
+    // execution and trap delivery.
+    static DebugController intoCallee = {};
+    preparePausedController(&intoCallee, true);
+    StepFake intoCalleeFake;
+    intoCalleeFake.nextRip = 0x200;
+    DebugBackend intoCalleeBackend = makeBackend(&intoCalleeFake);
+    assert(DebugControllerStepInto(&intoCallee, intoCalleeBackend, &mapper, &error));
+    assert(DebugControllerPoll(&intoCallee, intoCalleeBackend, &mapper));
+    assert(intoCallee.state == DebugSessionState::Paused &&
+           intoCallee.stopReason == DebugStopReason::Step &&
+           intoCallee.currentInstructionAddress.value == 0x200 &&
+           std::strcmp(intoCallee.currentLocation.relativePath, "src/math.cpp") == 0 &&
+           intoCallee.currentLocation.line == 4 &&
+           intoCallee.stepCompletionGeneration == intoCallee.stopGeneration);
+
     assert(DebugControllerCanStepInto(&controller));
     assert(DebugControllerCanContinue(&controller));
     assert(DebugControllerContinue(&controller, backend, &error));
@@ -655,6 +727,13 @@ int main() {
     overController.capabilities.canStepOver = true;
     overController.currentInstructionAddress = { true, 0x103 };
     overController.stoppedContext.rip = 0x103;
+    overController.callStack.valid = true;
+    overController.callStack.sessionGeneration = 9;
+    overController.callStack.stopGeneration = 3;
+    overController.callStack.result.frameCount = 1;
+    overController.variables.valid = true;
+    overController.variables.sessionGeneration = 9;
+    overController.variables.stopGeneration = 3;
     assert(DebugControllerCanStepOver(&overController));
     assert(DebugControllerStepOver(&overController, overBackend, &mapper, &error));
     const uint64_t stepOverCommandGeneration = overController.stepOver.commandGeneration;
@@ -667,6 +746,8 @@ int main() {
     assert(DebugControllerPoll(&overController, overBackend, &mapper));
     assert(overController.state == DebugSessionState::Paused && overController.stopReason == DebugStopReason::Step);
     assert(overController.currentLocation.line == 11 && overController.currentInstructionAddress.value == 0x108);
+    assert(!overController.callStack.valid && !overController.variables.valid &&
+           DebugControllerCallStackFrameAt(&overController, 0) == nullptr);
     assert(!overController.stepOver.active && overController.stepOver.status == DebugStepOverStatus::Completed);
     assert(overFake.removeCalls == 1 && !overController.stepOver.temporaryInstalled &&
            overController.stopGeneration == 4 && overController.lastStopGeneration == 4 &&
@@ -722,6 +803,77 @@ int main() {
     assert(staleOverCommand.error == DebugErrorCode::StaleStepOver &&
            !staleOverCommand.stepOver.active && staleOverFake.removeCalls == 1);
 
+    static DebugController interruptedStepOver = {};
+    preparePausedController(&interruptedStepOver, true);
+    interruptedStepOver.capabilities.canStepOver = true;
+    interruptedStepOver.currentInstructionAddress = { true, 0x103 };
+    interruptedStepOver.stoppedContext.rip = 0x103;
+    interruptedStepOver.stopReason = DebugStopReason::Breakpoint;
+    interruptedStepOver.backendExecutionState = DebugBackendExecutionState::PausedAtBreakpoint;
+    interruptedStepOver.lastBreakpointId = 1;
+    interruptedStepOver.breakpointCount = 2;
+    interruptedStepOver.breakpoints[0].id = 1;
+    interruptedStepOver.breakpoints[0].enabled = true;
+    interruptedStepOver.breakpoints[0].state = DebugBreakpointState::Verified;
+    interruptedStepOver.breakpoints[0].sessionGeneration = 9;
+    interruptedStepOver.breakpoints[0].backendBindingId = 400;
+    interruptedStepOver.breakpoints[0].location.instructionAddress = { true, 0x103 };
+    interruptedStepOver.breakpoints[1].id = 2;
+    interruptedStepOver.breakpoints[1].enabled = true;
+    interruptedStepOver.breakpoints[1].state = DebugBreakpointState::Verified;
+    interruptedStepOver.breakpoints[1].sessionGeneration = 9;
+    interruptedStepOver.breakpoints[1].backendBindingId = 700;
+    interruptedStepOver.breakpoints[1].location.instructionAddress = { true, 0x200 };
+    interruptedStepOver.callStack.valid = true;
+    interruptedStepOver.variables.valid = true;
+    StepOverFake interruptFake;
+    interruptFake.interruptWithUserBreakpoint = true;
+    DebugBackend interruptBackend = makeStepOverBackend(&interruptFake);
+    assert(DebugControllerStepOver(&interruptedStepOver, interruptBackend, &mapper, &error));
+    const uint64_t interruptedTemporaryId = interruptedStepOver.stepOver.temporaryBreakpointId;
+    assert(interruptedTemporaryId != 0 && interruptedStepOver.stepOver.temporaryInstalled);
+    assert(DebugControllerPoll(&interruptedStepOver, interruptBackend, &mapper));
+    assert(interruptedStepOver.state == DebugSessionState::Paused &&
+           interruptedStepOver.stopReason == DebugStopReason::Breakpoint &&
+           interruptedStepOver.lastBreakpointId == 2 &&
+           interruptedStepOver.currentInstructionAddress.value == 0x200 &&
+           interruptedStepOver.stopGeneration == 4 &&
+           !interruptedStepOver.stepOver.active &&
+           interruptedStepOver.stepOver.status == DebugStepOverStatus::Cancelled &&
+           !interruptedStepOver.stepOver.temporaryInstalled &&
+           interruptFake.removeCalls == 1 &&
+           interruptedStepOver.lastBindingId == 700 &&
+           interruptedStepOver.breakpoints[0].enabled &&
+           interruptedStepOver.breakpoints[1].enabled &&
+           !interruptedStepOver.callStack.valid && !interruptedStepOver.variables.valid);
+    bool sawStepOverInterrupted = false;
+    for (uint32_t i = 0; i < interruptedStepOver.eventCount; ++i) {
+        const DebugEvent* event = DebugControllerEventAt(&interruptedStepOver, i);
+        if (event && event->kind == DebugEventKind::StepOverInterrupted) sawStepOverInterrupted = true;
+    }
+    assert(sawStepOverInterrupted);
+
+    static DebugController stopDuringStepOver = {};
+    preparePausedController(&stopDuringStepOver, true);
+    stopDuringStepOver.capabilities.canStepOver = true;
+    stopDuringStepOver.currentInstructionAddress = { true, 0x103 };
+    stopDuringStepOver.stoppedContext.rip = 0x103;
+    StepOverFake stopOverFake;
+    DebugBackend stopOverBackend = makeStepOverBackend(&stopOverFake);
+    assert(DebugControllerStepOver(&stopDuringStepOver, stopOverBackend, &mapper, &error));
+    assert(stopDuringStepOver.stepOver.active && stopDuringStepOver.stepOver.temporaryInstalled);
+    assert(DebugControllerRequestStop(&stopDuringStepOver, stopOverBackend, &error));
+    assert(stopDuringStepOver.state == DebugSessionState::Stopping &&
+           !stopDuringStepOver.stepOver.active &&
+           stopDuringStepOver.stepOver.status == DebugStepOverStatus::Cancelled &&
+           stopDuringStepOver.stepOver.temporaryInstalled && !stopDuringStepOver.stoppedContext.valid);
+    assert(DebugControllerPoll(&stopDuringStepOver, stopOverBackend, &mapper));
+    assert(stopDuringStepOver.state == DebugSessionState::Exited &&
+           stopDuringStepOver.cleanupComplete && !stopDuringStepOver.active &&
+           !stopDuringStepOver.stepOver.temporaryInstalled &&
+           stopDuringStepOver.stepOver.temporaryBreakpointId == 0 &&
+           stopOverFake.removeCalls == 0 && stopOverFake.pollCalls == 1);
+
     StepOutFake outFake;
     DebugBackend outBackend = makeStepOutBackend(&outFake);
     DebugController outController = {};
@@ -755,6 +907,9 @@ int main() {
     outController.callStack.result.frames[2].hasReturnAddress = true;
     outController.callStack.result.frames[2].confidence = DebugStackFrameConfidence::FramePointer;
     outController.callStack.result.frames[2].rawReturnAddress = 0x220;
+    outController.variables.valid = true;
+    outController.variables.sessionGeneration = 9;
+    outController.variables.stopGeneration = 3;
     outController.callStack.selectedFrameIndex = 0;
     assert(DebugControllerSelectCallStackFrame(&outController, 2, &error));
     DebugController overlapController = outController;
@@ -833,7 +988,9 @@ int main() {
     assert(outController.stepCleanupCount == 1 && outController.stepCompletionGeneration == 4);
     assert(outController.currentLocation.line == 4 && outController.stoppedContext.rflags == 0x202);
     assert(outController.callStack.valid && outController.callStack.selectedFrameIndex == 0 &&
-           outController.callStack.result.frameCount == 2 && outController.callStack.result.frames[0].current);
+           outController.callStack.result.frameCount == 2 && outController.callStack.result.frames[0].current &&
+           outController.callStack.sessionGeneration == 9 && outController.callStack.stopGeneration == 4 &&
+           !outController.variables.valid);
     assert(outController.callStack.result.frames[0].instructionAddress == 0x202);
 
     assert(DebugControllerPoll(&outController, outBackend, &mapper));

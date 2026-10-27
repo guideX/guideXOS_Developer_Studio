@@ -598,6 +598,9 @@ static bool applyOwnedBreakpointTrap(DebugController* controller, const DebugBac
         }
     }
     if (ownerIndex < 0) return false;
+    controller->currentLocation = DebugSourceLocation();
+    clearCallStack(controller);
+    clearVariableView(&controller->variables);
     controller->currentInstructionAddress = snapshot.targetAddress;
     controller->currentThreadId = snapshot.threadId;
     controller->reportedInstructionPointer = snapshot.instructionPointer;
@@ -723,6 +726,8 @@ static bool mapSourceStepLocation(const DebugController* controller, const Debug
 static void publishSourceStepStop(DebugController* controller, const DebugBackendSnapshot& snapshot,
                                   const DebugSourceLocation& location, DebugSourceStepStatus status,
                                   const char* message) {
+    clearCallStack(controller);
+    clearVariableView(&controller->variables);
     recordStateTransition(controller, DebugSessionState::Paused);
     controller->active = true;
     controller->stopReason = DebugStopReason::Step;
@@ -963,6 +968,8 @@ static void publishStepOverStop(DebugController* controller, const DebugBackendS
                                 const DebugSourceLocation& location, DebugStepOverStatus status,
                                 const char* message) {
     if (!controller) return;
+    clearCallStack(controller);
+    clearVariableView(&controller->variables);
     recordStateTransition(controller, DebugSessionState::Paused);
     controller->active = true;
     controller->stopReason = DebugStopReason::Step;
@@ -1144,6 +1151,8 @@ static void publishStepOutStop(DebugController* controller, const DebugBackendSn
                                const DebugSourceLocation& location, DebugStepOutStatus status,
                                const char* message) {
     if (!controller) return;
+    clearCallStack(controller);
+    clearVariableView(&controller->variables);
     recordStateTransition(controller, DebugSessionState::Paused);
     controller->active = true;
     controller->stopReason = DebugStopReason::Step;
