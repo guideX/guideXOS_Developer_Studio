@@ -319,6 +319,22 @@ set_tests_properties(
     PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
+# CMake defines NDEBUG for Release builds. These model tests use assert() for
+# checks and fixture setup, so keep assertions enabled in test executables
+# without changing the optimized Release configuration of the model library.
+get_property(developer_studio_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+if(MSVC)
+    set(developer_studio_undefine_ndebug /UNDEBUG)
+else()
+    set(developer_studio_undefine_ndebug -UNDEBUG)
+endif()
+foreach(developer_studio_test_target IN LISTS developer_studio_directory_targets)
+    if(developer_studio_test_target MATCHES "^developer_studio_.*_test$")
+        target_compile_options(${developer_studio_test_target} PRIVATE
+            ${developer_studio_undefine_ndebug})
+    endif()
+endforeach()
+
 # The production Native ELF link is normally driven by build.ps1. The CMake
 # target mirrors its freestanding bounds and fixed-address ELF contract, and
 # can direct its output to an isolated staging directory for qualification.
