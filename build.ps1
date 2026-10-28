@@ -378,6 +378,7 @@ $compileFlags = @(
     $cppLexerObject = Join-Path $ObjectRoot "developer_studio_cpp_lexer.o"
     $taskListObject = Join-Path $ObjectRoot "developer_studio_task_list.o"
     $documentOutlineObject = Join-Path $ObjectRoot "developer_studio_document_outline.o"
+    $projectSymbolsObject = Join-Path $ObjectRoot "developer_studio_project_symbols.o"
     $replacePreviewObject = Join-Path $ObjectRoot "developer_studio_replace_preview.o"
     $toolsObject = Join-Path $ObjectRoot "developer_studio_tools.o"
     $symbolObject = Join-Path $ObjectRoot "developer_studio_symbols.o"
@@ -415,6 +416,7 @@ $compileFlags = @(
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_cpp_lexer.cpp"), "-o", $cppLexerObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_task_list.cpp"), "-o", $taskListObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_document_outline.cpp"), "-o", $documentOutlineObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_project_symbols.cpp"), "-o", $projectSymbolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_replace_preview.cpp"), "-o", $replacePreviewObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_tools.cpp"), "-o", $toolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_symbols.cpp"), "-o", $symbolObject))
@@ -445,7 +447,7 @@ $compileFlags = @(
     # both target artifacts at the same canonical base so the package can be
     # validated and selected consistently in-OS.
     $linkFlags = @("-m", $linkMachine, "-static", "--image-base=0x50000000", "-z", "max-page-size=0x1000")
-    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $cppLexerObject, $taskListObject, $documentOutlineObject, $replacePreviewObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
+    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $cppLexerObject, $taskListObject, $documentOutlineObject, $projectSymbolsObject, $replacePreviewObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }

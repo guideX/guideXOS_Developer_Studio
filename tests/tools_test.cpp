@@ -55,6 +55,10 @@ int main() {
         DeveloperToolId::DocumentOutline, "Document Outline", "",
         activateFindInFiles, closeFindInFiles
     };
+    const DeveloperToolCommand projectSymbols = {
+        DeveloperToolId::ProjectSymbols, "Project Symbols", "",
+        activateFindInFiles, closeFindInFiles
+    };
 
     TEST_CHECK(DeveloperToolRegistryRegister(&registry, &goToFile));
     TEST_CHECK(DeveloperToolRegistryRegister(&registry, &goToLine));
@@ -62,12 +66,14 @@ int main() {
     TEST_CHECK(DeveloperToolRegistryRegister(&registry, &replaceInFiles));
     TEST_CHECK(DeveloperToolRegistryRegister(&registry, &taskList));
     TEST_CHECK(DeveloperToolRegistryRegister(&registry, &documentOutline));
+    TEST_CHECK(DeveloperToolRegistryRegister(&registry, &projectSymbols));
     TEST_CHECK(!DeveloperToolRegistryRegister(&registry, &findInFiles));
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 0) != nullptr);
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 3)->id == DeveloperToolId::ReplaceInFiles);
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 4)->id == DeveloperToolId::TaskList);
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 5)->id == DeveloperToolId::DocumentOutline);
-    TEST_CHECK(DeveloperToolRegistryAt(&registry, 6) == nullptr);
+    TEST_CHECK(DeveloperToolRegistryAt(&registry, 6)->id == DeveloperToolId::ProjectSymbols);
+    TEST_CHECK(DeveloperToolRegistryAt(&registry, 7) == nullptr);
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 0)->id == DeveloperToolId::GoToFile);
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 1)->id == DeveloperToolId::GoToLine);
     TEST_CHECK(DeveloperToolRegistryAt(&registry, 2)->id == DeveloperToolId::FindInFiles);

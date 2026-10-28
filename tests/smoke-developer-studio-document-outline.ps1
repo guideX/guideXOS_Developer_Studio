@@ -11,14 +11,14 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $AppPackageRoot = [IO.Path]::GetFullPath($AppPackageRoot)
-if (-not $EvidenceRoot) { $EvidenceRoot = Join-Path $RepoRoot "out\tools9-hosted-ui-evidence" }
+if (-not $EvidenceRoot) { $EvidenceRoot = Join-Path $RepoRoot "out\tools10-hosted-ui-evidence" }
 $EvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
 $ServerExecutable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
 $PackageElf = Join-Path $AppPackageRoot "bin\amd64\developerstudio.elf"
-$EvidenceFile = Join-Path $EvidenceRoot "document-outline-hosted-ui.log"
+$EvidenceFile = Join-Path $EvidenceRoot "project-symbols-hosted-ui.log"
 
 function Assert-True([bool]$Condition, [string]$Message) {
-    if (-not $Condition) { throw "Document Outline hosted UI test failed: $Message" }
+    if (-not $Condition) { throw "Developer Studio hosted UI test failed: $Message" }
     Write-Host "PASS: $Message"
 }
 
@@ -31,7 +31,7 @@ if (-not (Test-Path -LiteralPath $PackageElf -PathType Leaf)) {
 
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 $RunId = [Guid]::NewGuid().ToString("N")
-$RuntimeParentRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "guidexos-tools9-hosted-ui"))
+$RuntimeParentRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "guidexos-tools10-hosted-ui"))
 $RuntimeRoot = Join-Path $RuntimeParentRoot ("r-" + $RunId)
 $RuntimeRootFull = [IO.Path]::GetFullPath($RuntimeRoot)
 $RuntimeParentPrefix = $RuntimeParentRoot.TrimEnd([IO.Path]::DirectorySeparatorChar,
@@ -59,6 +59,9 @@ int original() { return 0; }
 $script:OtherSource = @'
 struct Other { int value; };
 int second() { return 2; }
+'@
+$script:StaleSource = @'
+int obsolete() { return 3; }
 '@
 
 function Receive-AvailableOutput {
@@ -176,6 +179,11 @@ function Send-MouseClick([int]$X, [int]$Y) {
     Start-Sleep -Milliseconds 100
 }
 
+function Send-MouseClickFast([int]$X, [int]$Y) {
+    Send-Command ("gui.mouse {0} {1} {2} 1 down" -f $script:WindowId, $X, $Y)
+    Send-Command ("gui.mouse {0} {1} {2} 1 up" -f $script:WindowId, $X, $Y)
+}
+
 function Write-FixtureText([string]$Path, [string]$Text) {
     [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
 }
@@ -226,6 +234,7 @@ function New-ProjectFixture([string]$Path, [string]$ProjectId, [string]$DisplayN
     Write-FixtureText (Join-Path $Path "README.md") "# $DisplayName`n`nDisposable hosted UI qualification fixture.`n"
     Write-FixtureText (Join-Path $Path "src\main.cpp") $script:MainSource
     Write-FixtureText (Join-Path $Path "src\other.cpp") $script:OtherSource
+    Write-FixtureText (Join-Path $Path "src\stale.cpp") $script:StaleSource
 }
 
 function Get-FixtureHash([string]$Root) {
@@ -258,6 +267,22 @@ function Open-DocumentOutlineFromToolsMenu {
     return $start
 }
 
+function Open-ProjectSymbolsFromToolsMenu {
+    $start = $script:CapturedLines.Count
+    Send-MouseClick 620 25
+    Send-MouseClick 620 198
+    Wait-Marker 'project_symbols_open=PASS source=tools_menu' $start
+    Wait-Marker 'project_symbols_panel_visible=PASS' $start
+    return $start
+}
+
+function Set-ProjectSymbolsNameFilter([string]$Value) {
+    Send-MouseClick 200 98
+    Send-Key 65 2 # Ctrl+A selects the current bounded name filter.
+    Send-Key 8 0
+    if ($Value) { Send-TextAsKeys $Value }
+}
+
 $success = $false
 try {
     New-Item -ItemType Directory -Path $RuntimeParentRoot -Force | Out-Null
@@ -271,10 +296,11 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "sdk\samples") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "examples\apps") -Force | Out-Null
 
-    $script:FixtureRoot = Join-Path $RuntimeRoot "DocumentOutlineFixture"
-    New-ProjectFixture $script:FixtureRoot "com.example.tools9-document-outline" "TOOLS9 Document Outline Fixture"
+    $script:FixtureRoot = Join-Path $RuntimeRoot "ProjectSymbolsFixture"
+    New-ProjectFixture $script:FixtureRoot "com.example.tools10-project-symbols" "TOOLS10 Project Symbols Fixture"
     $mainPath = Join-Path $script:FixtureRoot "src\main.cpp"
     $otherPath = Join-Path $script:FixtureRoot "src\other.cpp"
+    $stalePath = Join-Path $script:FixtureRoot "src\stale.cpp"
     $fixtureHashBefore = Get-FixtureHash $script:FixtureRoot
 
     $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -367,6 +393,71 @@ try {
     Send-Key 27 0
     Wait-Marker 'document_outline_close=PASS source=escape' $closeOutlineStart
 
+    # Project Symbols scans the active project, sees the dirty main.cpp buffer,
+    # and navigates from the active document into the saved other.cpp file.
+    $projectSymbolsStart = Open-ProjectSymbolsFromToolsMenu
+    Wait-Marker 'project_symbols_scan=COMPLETED files=3 symbols=7 retained=7 skipped=0 truncated=false' $projectSymbolsStart 30
+    Set-ProjectSymbolsNameFilter "second"
+    Send-Key 13 0 # Move focus from the name field to the result list.
+    $secondNavigationStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    $secondNavigation = Read-Until { param($line, $all) $line -match 'project_symbols_navigation=PASS name=second file=src/other\.cpp line=2 caret=' } $secondNavigationStart
+    Read-Until { param($line, $all) $line -match 'text="Document: other\.cpp' } $secondNavigationStart 20 | Out-Null
+    Assert-True ($secondNavigation -match 'file=src/other\.cpp line=2') "Project Symbols switches documents and navigates to the known function in the second C++ file"
+    Assert-True ((Get-FixtureHash $script:FixtureRoot) -eq $fixtureHashBefore) "project symbol scanning and cross-file navigation do not write fixture files"
+
+    Set-ProjectSymbolsNameFilter ""
+    Send-MouseClick 200 126
+    Send-Key 65 2
+    Send-Key 8 0
+    Send-TextAsKeys "other.cpp"
+    Read-Until { param($line, $all) $line -match 'draw_text .*text="second"' } $projectSymbolsStart 20 | Out-Null
+    Write-Host "PASS: the filename filter narrows project symbols to other.cpp"
+    Send-MouseClick 200 126
+    Send-Key 65 2
+    Send-Key 8 0
+
+    # Invalidate a result for a closed file after scanning. Selection must be
+    # rejected, preserve the current editor, and trigger a fresh project scan.
+    Set-ProjectSymbolsNameFilter "obsolete"
+    Write-FixtureText $stalePath "int replacement() { return 4; }`n"
+    $staleNavigationStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    Send-Key 13 0
+    Wait-Marker 'project_symbols_navigation=REJECTED reason=stale_symbol' $staleNavigationStart
+    Wait-Marker 'project_symbols_scan=COMPLETED files=3 symbols=7 retained=7 skipped=0 truncated=false' $staleNavigationStart 30
+    Read-Until { param($line, $all) $line -match 'text="Document: other\.cpp' } $staleNavigationStart 20 | Out-Null
+    Set-ProjectSymbolsNameFilter "replacement"
+    Send-Key 13 0
+    $replacementNavigationStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    Wait-Marker 'project_symbols_navigation=PASS name=replacement file=src/stale\.cpp line=1 caret=' $replacementNavigationStart
+    Read-Until { param($line, $all) $line -match 'text="Document: stale\.cpp' } $replacementNavigationStart 20 | Out-Null
+    Write-Host "PASS: stale symbol selection preserves the prior editor, refreshes results, and finds the replacement declaration"
+
+    # Keep each directory small and the project within the existing per-list
+    # bound while making the scan long enough for real UI cancellation.
+    $sourceRoot = Join-Path $script:FixtureRoot "src"
+    for ($index = 0; $index -lt 16; ++$index) {
+        $slowDirectory = Join-Path $sourceRoot ("slow_{0:D3}" -f $index)
+        for ($nestedIndex = 0; $nestedIndex -lt 2; ++$nestedIndex) {
+            $nestedDirectory = Join-Path $slowDirectory ("deep_{0:D3}" -f $nestedIndex)
+            New-Item -ItemType Directory -Path $nestedDirectory -Force | Out-Null
+            Write-FixtureText (Join-Path $nestedDirectory "empty.cpp") ""
+        }
+    }
+    $fixtureHashBefore = Get-FixtureHash $script:FixtureRoot
+    $cancelStart = $script:CapturedLines.Count
+    Send-MouseClick 684 98 # Refresh.
+    Wait-Marker 'project_symbols_scan=STARTED source=manual_refresh' $cancelStart 10
+    Send-MouseClickFast 766 98 # Cancel while the bounded file walk is active.
+    Wait-Marker 'project_symbols_cancel=REQUESTED' $cancelStart 10
+    Wait-Marker 'project_symbols_scan=CANCELLED reason=user' $cancelStart 20
+    Read-Until { param($line, $all) $line -match 'text="Scan cancelled; partial results retained\.' } $cancelStart 20 | Out-Null
+    $cancelCloseStart = $script:CapturedLines.Count
+    Send-MouseClick 846 98 # Close the completed scan through its visible control.
+    Wait-Marker 'project_symbols_close=PASS source=close' $cancelCloseStart
+
     # Switch to a second document through the real Explorer and make sure the
     # next outline belongs to that active document only.
     $goToOtherStart = $script:CapturedLines.Count
@@ -404,7 +495,7 @@ try {
     if (-not $script:Process.WaitForExit(20000)) { throw "The hosted Server did not exit after the acceptance run." }
     Assert-True ($script:Process.ExitCode -eq 0) "the hosted Server exits cleanly after the UI acceptance run"
     $success = $true
-    Write-Host "Developer Studio Document Outline hosted UI integration PASS"
+    Write-Host "Developer Studio Document Outline and Project Symbols hosted UI integration PASS"
 } finally {
     if ($script:Process -and -not $script:Process.HasExited) {
         try { $script:Process.Kill(); $script:Process.WaitForExit() } catch { }

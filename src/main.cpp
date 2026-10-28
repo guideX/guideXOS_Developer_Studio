@@ -10,6 +10,7 @@
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
 #include "developer_studio_document_outline.h"
+#include "developer_studio_project_symbols.h"
 #include "developer_studio_task_list.h"
 #include "developer_studio_replace_preview.h"
 #include "developer_studio_tools.h"
@@ -304,6 +305,24 @@ using guidexos::developer_studio::DocumentOutlineInit;
 using guidexos::developer_studio::DocumentOutlineScan;
 using guidexos::developer_studio::DocumentOutlineSetIdentity;
 using guidexos::developer_studio::kDocumentOutlineMaxSymbols;
+using guidexos::developer_studio::ProjectSymbolCandidate;
+using guidexos::developer_studio::ProjectSymbolResults;
+using guidexos::developer_studio::ProjectSymbolResultsInit;
+using guidexos::developer_studio::ProjectSymbolResultsSort;
+using guidexos::developer_studio::ProjectSymbolFilteredCount;
+using guidexos::developer_studio::ProjectSymbolFilteredAt;
+using guidexos::developer_studio::ProjectSymbolFilterValid;
+using guidexos::developer_studio::ProjectSymbolsResolvePath;
+using guidexos::developer_studio::ProjectSymbolsVisitFile;
+using guidexos::developer_studio::ProjectSymbolValidateCurrent;
+using guidexos::developer_studio::ProjectSymbolsProjectIdentityMatches;
+using guidexos::developer_studio::kProjectSymbolsMaxCandidates;
+using guidexos::developer_studio::kProjectSymbolsMaxDisplayedResults;
+using guidexos::developer_studio::kProjectSymbolsMaxNameFilterBytes;
+using guidexos::developer_studio::kProjectSymbolsMaxFileFilterBytes;
+using guidexos::developer_studio::kProjectSymbolsMaxFiles;
+using guidexos::developer_studio::kProjectSymbolsMaxBytes;
+using guidexos::developer_studio::kProjectSymbolsMaxDurationMs;
 using guidexos::developer_studio::ReplacePreviewError;
 using guidexos::developer_studio::ReplacePreviewFile;
 using guidexos::developer_studio::ReplacePreviewMatch;
@@ -939,6 +958,8 @@ static bool activateTaskListTool(void* userData);
 static bool closeTaskListTool(void* userData);
 static bool activateDocumentOutlineTool(void* userData);
 static bool closeDocumentOutlineTool(void* userData);
+static bool activateProjectSymbolsTool(void* userData);
+static bool closeProjectSymbolsTool(void* userData);
 static const DeveloperToolCommand kGoToFileToolCommand = {
     DeveloperToolId::GoToFile, "Go to File", "Ctrl+P",
     activateGoToFileTool, closeGoToFileTool
@@ -962,6 +983,10 @@ static const DeveloperToolCommand kTaskListToolCommand = {
 static const DeveloperToolCommand kDocumentOutlineToolCommand = {
     DeveloperToolId::DocumentOutline, "Document Outline", "",
     activateDocumentOutlineTool, closeDocumentOutlineTool
+};
+static const DeveloperToolCommand kProjectSymbolsToolCommand = {
+    DeveloperToolId::ProjectSymbols, "Project Symbols", "",
+    activateProjectSymbolsTool, closeProjectSymbolsTool
 };
 static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
@@ -1257,6 +1282,28 @@ static bool g_documentOutlinePanelVisibleReported = false;
 static uint32_t g_documentOutlineSelected = 0;
 static uint32_t g_documentOutlineScroll = 0;
 static char g_documentOutlineStatus[160] = {};
+enum class ProjectSymbolsField { Name = 0, File };
+static const uint32_t kProjectSymbolsPanelRows = 8u;
+static const int kProjectSymbolsPanelRowHeight = 42;
+static ProjectSymbolResults g_projectSymbols = {};
+static bool g_projectSymbolsPanelOpen = false;
+static bool g_projectSymbolsPanelVisibleReported = false;
+static bool g_projectSymbolsResultsFocused = false;
+static bool g_projectSymbolsFieldSelectAll = false;
+static ProjectSymbolsField g_projectSymbolsField = ProjectSymbolsField::Name;
+static char g_projectSymbolsNameFilter[kProjectSymbolsMaxNameFilterBytes + 1u] = {};
+static char g_projectSymbolsFileFilter[kProjectSymbolsMaxFileFilterBytes + 1u] = {};
+static uint32_t g_projectSymbolsFieldCaret = 0;
+static uint32_t g_projectSymbolsSelected = 0;
+static uint32_t g_projectSymbolsScroll = 0;
+static uint64_t g_projectSymbolsOperationId = 0;
+static uint64_t g_projectSymbolsProjectGeneration = 0;
+static uint64_t g_projectSymbolsStartedAt = 0;
+static char g_projectSymbolsProjectId[kMaxProjectIdBytes] = {};
+static char g_projectSymbolsProjectRoot[kMaxPathBytes] = {};
+static char g_projectSymbolsStatus[192] = {};
+static bool g_projectSymbolsTerminalReported = false;
+static bool g_projectSymbolsTimedOut = false;
 enum class ReplacePreviewField { Find = 0, Replacement };
 static ReplacePreviewPlan g_replacePreviewPlan = {};
 static bool g_replacePreviewPanelOpen = false;
@@ -1454,6 +1501,13 @@ static bool refreshDocumentOutline(gx_app_context* ctx, const char* reason);
 static bool activateDocumentOutlineSymbol(gx_app_context* ctx, uint32_t symbolIndex);
 static bool handleDocumentOutlineKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static void drawDocumentOutlinePanel(gx_app_context* ctx);
+static bool activateProjectSymbols(gx_app_context* ctx, const char* source);
+static bool closeProjectSymbols(gx_app_context* ctx, const char* source);
+static bool startProjectSymbolsScan(gx_app_context* ctx, const char* reason);
+static void pollProjectSymbols(gx_app_context* ctx);
+static bool activateProjectSymbol(gx_app_context* ctx, uint32_t resultIndex);
+static bool handleProjectSymbolsKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static void drawProjectSymbolsPanel(gx_app_context* ctx);
 static bool activateGoToFile(gx_app_context* ctx, const char* source);
 static bool closeGoToFile(gx_app_context* ctx, const char* source);
 static bool activateGoToLine(gx_app_context* ctx, const char* source);
@@ -4827,6 +4881,10 @@ static void pollProjectReplacePreview(gx_app_context* ctx) {
 }
 
 static void pollProjectSearch(gx_app_context* ctx) {
+    if (g_projectSymbolsPanelOpen) {
+        pollProjectSymbols(ctx);
+        return;
+    }
     if (g_replacePreviewPanelOpen) {
         pollProjectReplacePreview(ctx);
         return;
@@ -5114,6 +5172,58 @@ static bool closeDocumentOutlineTool(void* userData) {
     return true;
 }
 
+static bool activateProjectSymbolsTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (!ctx) return false;
+    if (g_findBarOpen) closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(ctx);
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_projectSearchPanelOpen = false;
+    g_replacePreviewPanelOpen = false;
+    g_projectTaskListPanelOpen = false;
+    g_documentOutlinePanelOpen = false;
+    g_projectSymbolsPanelOpen = true;
+    g_projectSymbolsPanelVisibleReported = false;
+    g_projectSymbolsResultsFocused = false;
+    g_projectSymbolsField = ProjectSymbolsField::Name;
+    g_projectSymbolsFieldCaret = lengthOf(g_projectSymbolsNameFilter,
+                                          sizeof(g_projectSymbolsNameFilter));
+    g_projectSymbolsFieldSelectAll = false;
+    g_projectSymbolsSelected = 0;
+    g_projectSymbolsScroll = 0;
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    return true;
+}
+
+static bool closeProjectSymbolsTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (g_projectSymbolsOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSymbolsOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSymbolsOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+        if (operation && operation->state != ProjectSearchState::Idle &&
+            !ProjectSearchRelease(&g_projectSearch, g_projectSymbolsOperationId)) return false;
+        g_projectSymbolsOperationId = 0;
+    }
+    g_projectSymbolsPanelOpen = false;
+    g_projectSymbolsPanelVisibleReported = false;
+    g_projectSymbolsTerminalReported = false;
+    g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    return true;
+}
+
 static bool activateFindInFiles(gx_app_context* ctx, const char* source) {
     if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::FindInFiles, ctx)) {
         writeStudioOutput("Unable to open Find in Files");
@@ -5304,6 +5414,375 @@ static bool activateDocumentOutlineSymbol(gx_app_context* ctx, uint32_t symbolIn
     appendUnsigned(g_textScratch, sizeof(g_textScratch), symbol->line);
     appendText(g_textScratch, sizeof(g_textScratch), " caret=");
     appendUnsigned(g_textScratch, sizeof(g_textScratch), document->buffer.caret);
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool projectSymbolsProjectMatches() {
+    return g_controller.model.open && g_controller.model.hasProject &&
+        ProjectSymbolsProjectIdentityMatches(g_projectSymbolsProjectId,
+            g_projectSymbolsProjectGeneration, g_projectSymbolsProjectRoot,
+            g_controller.model.project.projectId, g_controller.model.projectGeneration,
+            g_controller.model.project.rootPath);
+}
+
+static void restoreProjectSymbolEditorState(uint64_t activeDocumentId,
+                                             uint32_t activeDocumentIndex,
+                                             uint32_t scrollLine,
+                                             uint32_t scrollColumn,
+                                             bool editorFocused) {
+    bool restored = false;
+    if (activeDocumentId != 0) {
+        for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+            if (g_controller.model.documents[i].used &&
+                g_controller.model.documents[i].documentId == activeDocumentId) {
+                g_controller.model.activeDocument = i;
+                restored = true;
+                break;
+            }
+        }
+    }
+    if (!restored) g_controller.model.activeDocument = activeDocumentIndex;
+    g_editorScrollLine = scrollLine;
+    g_editorScrollColumn = scrollColumn;
+    g_editorFocused = editorFocused;
+}
+
+static bool startProjectSymbolsScan(gx_app_context* ctx, const char* reason) {
+    if (g_projectSymbolsOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSymbolsOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSymbolsOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* previous = ProjectSearchOperationInfo(&g_projectSearch);
+        if (previous && previous->state != ProjectSearchState::Idle)
+            ProjectSearchRelease(&g_projectSearch, g_projectSymbolsOperationId);
+        g_projectSymbolsOperationId = 0;
+    }
+    ProjectSymbolResultsInit(&g_projectSymbols);
+    g_projectSymbolsSelected = 0;
+    g_projectSymbolsScroll = 0;
+    g_projectSymbolsTerminalReported = false;
+    g_projectSymbolsTimedOut = false;
+    g_projectSymbolsProjectId[0] = '\0';
+    g_projectSymbolsProjectRoot[0] = '\0';
+    g_projectSymbolsProjectGeneration = 0;
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "Open a project to search its C/C++ symbols.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=REJECTED reason=no_active_project");
+        return false;
+    }
+
+    ProjectSearchRequest request = {};
+    if (lengthOf(g_controller.model.project.projectId, sizeof(request.projectId)) >= sizeof(request.projectId) ||
+        lengthOf(g_controller.model.project.rootPath, sizeof(request.rootPath)) >= sizeof(request.rootPath)) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "Project identity exceeds the symbol search path bound.");
+        return false;
+    }
+    copyText(request.projectId, sizeof(request.projectId), g_controller.model.project.projectId);
+    copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.project.rootPath);
+    request.projectGeneration = g_controller.model.projectGeneration;
+    ProjectSearchOptionsInit(&request.options);
+    // A visitor request validates but does not run the literal text matcher.
+    copyText(request.options.query, sizeof(request.options.query), "project-symbols");
+    request.fileSystem = g_controller.fileSystem;
+    request.fileSystem.write = nullptr;
+    request.fileSystem.createDirectory = nullptr;
+    request.fileSystem.removePath = nullptr;
+    request.dirtyDocuments = g_projectSearchSnapshots;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.scanVisitor = ProjectSymbolsVisitFile;
+    request.scanVisitorUserData = &g_projectSymbols;
+
+    copyText(g_projectSymbolsProjectId, sizeof(g_projectSymbolsProjectId), request.projectId);
+    copyText(g_projectSymbolsProjectRoot, sizeof(g_projectSymbolsProjectRoot), request.rootPath);
+    g_projectSymbolsProjectGeneration = request.projectGeneration;
+    g_projectSymbolsStartedAt = ctx ? gx_get_ticks_ms(ctx) : 0;
+    ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
+    uint64_t operationId = 0;
+    const bool started = ProjectSearchStart(&g_projectSearch, &request,
+        g_projectSymbolsStartedAt, &operationId, &error);
+    g_projectSymbolsOperationId = operationId;
+    g_projectSearchOperationId = 0;
+    g_projectSearchTerminalReported = false;
+    if (!started) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Project symbol scan failed: ");
+        appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), ProjectSearchErrorName(error));
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=FAILED");
+        return false;
+    }
+    copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Scanning project C/C++ files...");
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=STARTED source=");
+    appendText(g_textScratch, sizeof(g_textScratch), reason ? reason : "refresh");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static void pollProjectSymbols(gx_app_context* ctx) {
+    if (g_projectSymbolsOperationId == 0) return;
+    const uint64_t now = ctx ? gx_get_ticks_ms(ctx) : 0;
+    if (ProjectSearchIsActive(&g_projectSearch) && !projectSymbolsProjectMatches()) {
+        ProjectSearchCancel(&g_projectSearch, g_projectSymbolsOperationId);
+        ProjectSymbolResultsInit(&g_projectSymbols);
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "The active project changed; old symbol results were discarded.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=CANCELLED reason=project_changed");
+    }
+    if (ProjectSearchIsActive(&g_projectSearch) && now >= g_projectSymbolsStartedAt &&
+        now - g_projectSymbolsStartedAt > kProjectSymbolsMaxDurationMs) {
+        g_projectSymbolsTimedOut = true;
+        ProjectSearchCancel(&g_projectSearch, g_projectSymbolsOperationId);
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "Scan time limit reached; cancelling with partial results.");
+    }
+    ProjectSearchPoll(&g_projectSearch, g_projectSymbolsOperationId, 1, now);
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    if (!operation || ProjectSearchIsActive(&g_projectSearch) || g_projectSymbolsTerminalReported) return;
+    g_projectSymbolsTerminalReported = true;
+    if (operation->truncated || operation->diagnostics.filesSkipped != 0)
+        g_projectSymbols.incomplete = true;
+    if (operation->state == ProjectSearchState::Completed) {
+        ProjectSymbolResultsSort(&g_projectSymbols);
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 operation->truncated || g_projectSymbols.truncated || g_projectSymbols.incomplete ?
+                    "Scan completed with truncation or incomplete files." : "Scan complete.");
+        appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), " ");
+        appendUnsigned(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), g_projectSymbols.totalRecognized);
+        appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), " symbols in ");
+        appendUnsigned(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), g_projectSymbols.filesProcessed);
+        appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), " files; skipped ");
+        appendUnsigned(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), operation->diagnostics.filesSkipped);
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=COMPLETED files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectSymbols.filesProcessed);
+        appendText(g_textScratch, sizeof(g_textScratch), " symbols=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectSymbols.totalRecognized);
+        appendText(g_textScratch, sizeof(g_textScratch), " retained=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectSymbols.count);
+        appendText(g_textScratch, sizeof(g_textScratch), " skipped=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), operation->diagnostics.filesSkipped);
+        appendText(g_textScratch, sizeof(g_textScratch), " truncated=");
+        appendText(g_textScratch, sizeof(g_textScratch),
+            (operation->truncated || g_projectSymbols.truncated || g_projectSymbols.incomplete) ? "true" : "false");
+        logMarker(ctx, g_textScratch);
+    } else if (operation->state == ProjectSearchState::Cancelled) {
+        g_projectSymbols.incomplete = true;
+        if (g_projectSymbolsTimedOut) {
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                     "Scan timed out; partial results retained.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=TIMEOUT");
+        } else if (projectSymbolsProjectMatches()) {
+            ProjectSymbolResultsSort(&g_projectSymbols);
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                     "Scan cancelled; partial results retained.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=CANCELLED reason=user");
+        }
+    } else {
+        g_projectSymbols.incomplete = true;
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Project symbol scan failed: ");
+        appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), ProjectSearchErrorName(operation->error));
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_scan=FAILED");
+    }
+}
+
+static bool activateProjectSymbols(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::ProjectSymbols, ctx)) {
+        writeStudioOutput("Unable to open Project Symbols");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    startProjectSymbolsScan(ctx, "activation");
+    return true;
+}
+
+static bool closeProjectSymbols(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::ProjectSymbols, ctx)) {
+        writeStudioOutput("Project Symbols is still active");
+        return false;
+    }
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool activateProjectSymbol(gx_app_context* ctx, uint32_t resultIndex) {
+    if (g_projectSymbolsOperationId != 0 && ProjectSearchIsActive(&g_projectSearch)) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "Wait for the current scan to finish before navigating.");
+        return false;
+    }
+    if (!projectSymbolsProjectMatches()) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "The active project changed; refresh the symbol results.");
+        ProjectSymbolResultsInit(&g_projectSymbols);
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=project_changed");
+        return false;
+    }
+    const ProjectSymbolCandidate* selected = ProjectSymbolFilteredAt(&g_projectSymbols,
+        g_projectSymbolsNameFilter, g_projectSymbolsFileFilter, resultIndex);
+    if (!selected) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "The selected symbol result is no longer available.");
+        return false;
+    }
+    const ProjectSymbolCandidate candidate = *selected;
+    char absolutePath[kMaxPathBytes] = {};
+    if (!ProjectSymbolsResolvePath(g_controller.model.project.rootPath,
+            candidate.relativePath, absolutePath, sizeof(absolutePath))) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Rejected a symbol path outside the active project.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=path_outside_project");
+        return false;
+    }
+    FileInfo info = {};
+    if (!g_controller.fileSystem.stat ||
+        !g_controller.fileSystem.stat(g_controller.fileSystem.userData, absolutePath, &info) ||
+        info.kind != FileInfoKind::RegularFile) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "The symbol file was removed; rescanning.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=file_missing");
+        startProjectSymbolsScan(ctx, "removed_file");
+        return false;
+    }
+
+    uint32_t openDocumentIndex = kMaxOpenDocuments;
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        const Document& document = g_controller.model.documents[i];
+        if (document.used && PathsEqual(document.path, absolutePath)) {
+            openDocumentIndex = i;
+            break;
+        }
+    }
+    const bool alreadyOpen = openDocumentIndex < kMaxOpenDocuments;
+    const char* sourceData = nullptr;
+    uint32_t sourceLength = 0;
+    if (alreadyOpen) {
+        const Document& document = g_controller.model.documents[openDocumentIndex];
+        sourceData = document.buffer.data;
+        sourceLength = document.buffer.length;
+    } else {
+        if (info.size > kMaxEditorBytes || !g_controller.fileSystem.read) {
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "The symbol file exceeds the navigation read limit.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=file_too_large");
+            return false;
+        }
+        if (!g_controller.fileSystem.read(g_controller.fileSystem.userData, absolutePath,
+                g_projectSearch.scanBuffer, kMaxEditorBytes, &sourceLength) ||
+            sourceLength > kMaxEditorBytes ||
+            guidexos::developer_studio::LooksBinary(g_projectSearch.scanBuffer, sourceLength)) {
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "The symbol file changed or is no longer readable.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=file_unreadable");
+            startProjectSymbolsScan(ctx, "unreadable_file");
+            return false;
+        }
+        sourceData = g_projectSearch.scanBuffer;
+    }
+
+    uint32_t targetLine = 0;
+    uint32_t targetOffset = 0;
+    if (!ProjectSymbolValidateCurrent(&g_projectSymbols, &candidate, candidate.relativePath,
+            sourceData, sourceLength, &targetLine, &targetOffset)) {
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                 "The symbol changed since scanning; refreshing project results.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=stale_symbol");
+        startProjectSymbolsScan(ctx, "stale_symbol");
+        return false;
+    }
+
+    uint32_t previousActiveIndex = g_controller.model.activeDocument;
+    uint64_t previousActiveId = 0;
+    if (previousActiveIndex < kMaxOpenDocuments &&
+        g_controller.model.documents[previousActiveIndex].used)
+        previousActiveId = g_controller.model.documents[previousActiveIndex].documentId;
+    const uint32_t previousScrollLine = g_editorScrollLine;
+    const uint32_t previousScrollColumn = g_editorScrollColumn;
+    const bool previousEditorFocused = g_editorFocused;
+    if (!alreadyOpen) {
+        OutputErrorCode openError = OutputErrorCode::None;
+        if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller,
+                g_projectSymbolsProjectId, candidate.relativePath, targetLine, 1,
+                &openDocumentIndex, &openError) || openDocumentIndex >= kMaxOpenDocuments) {
+            // The workspace helper normally fails before changing the model.
+            // Still remove a partially opened target and restore the prior tab
+            // and viewport before returning to the caller.
+            for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+                if (g_controller.model.documents[i].used &&
+                    PathsEqual(g_controller.model.documents[i].path, absolutePath)) {
+                    WorkspaceControllerCloseDocument(&g_controller, i, CloseDecision::Discard);
+                    break;
+                }
+            }
+            restoreProjectSymbolEditorState(previousActiveId, previousActiveIndex,
+                previousScrollLine, previousScrollColumn, previousEditorFocused);
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Unable to open the selected symbol file.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=open_failed");
+            return false;
+        }
+        Document* opened = &g_controller.model.documents[openDocumentIndex];
+        uint32_t openedLine = 0;
+        uint32_t openedOffset = 0;
+        if (!opened->used || !PathsEqual(opened->path, absolutePath) ||
+            !ProjectSymbolValidateCurrent(&g_projectSymbols, &candidate, candidate.relativePath,
+                opened->buffer.data, opened->buffer.length, &openedLine, &openedOffset)) {
+            WorkspaceControllerCloseDocument(&g_controller, openDocumentIndex, CloseDecision::Discard);
+            restoreProjectSymbolEditorState(previousActiveId, previousActiveIndex,
+                previousScrollLine, previousScrollColumn, previousEditorFocused);
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                     "The file changed while opening; the old editor state was restored.");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=changed_while_opening");
+            startProjectSymbolsScan(ctx, "changed_while_opening");
+            return false;
+        }
+        targetLine = openedLine;
+        targetOffset = openedOffset;
+    }
+
+    Document* target = &g_controller.model.documents[openDocumentIndex];
+    const uint32_t previousTargetCaret = target->used ? target->buffer.caret : 0;
+    const uint32_t previousTargetSelectionAnchor = target->used ? target->buffer.selectionAnchor : 0;
+    const bool previousTargetSelectionActive = target->used && target->buffer.selectionActive;
+    if (!target->used || !SetCaretOffset(&target->buffer, targetOffset)) {
+        if (target->used) {
+            target->buffer.caret = previousTargetCaret;
+            target->buffer.selectionAnchor = previousTargetSelectionAnchor;
+            target->buffer.selectionActive = previousTargetSelectionActive;
+        }
+        if (!alreadyOpen && target->used) {
+            WorkspaceControllerCloseDocument(&g_controller, openDocumentIndex, CloseDecision::Discard);
+        }
+        restoreProjectSymbolEditorState(previousActiveId, previousActiveIndex,
+            previousScrollLine, previousScrollColumn, previousEditorFocused);
+        copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Unable to position the editor at the selected symbol.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=REJECTED reason=invalid_offset");
+        return false;
+    }
+    g_controller.model.activeDocument = openDocumentIndex;
+    g_editorScrollLine = 0;
+    g_editorScrollColumn = 0;
+    keepCaretVisible(target);
+    g_editorFocused = true;
+    copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Navigated to ");
+    appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), candidate.name);
+    appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), " in ");
+    appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), candidate.relativePath);
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_navigation=PASS name=");
+    appendText(g_textScratch, sizeof(g_textScratch), candidate.name);
+    appendText(g_textScratch, sizeof(g_textScratch), " file=");
+    appendText(g_textScratch, sizeof(g_textScratch), candidate.relativePath);
+    appendText(g_textScratch, sizeof(g_textScratch), " line=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), targetLine);
+    appendText(g_textScratch, sizeof(g_textScratch), " caret=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), target->buffer.caret);
     logMarker(ctx, g_textScratch);
     return true;
 }
@@ -11443,6 +11922,116 @@ static void drawDocumentOutlinePanel(gx_app_context* ctx) {
         drawText(ctx, 760, 190, "Scroll: mouse wheel / Up / Down");
 }
 
+static void projectSymbolsDisplayPath(const char* path, char* output, uint32_t outputSize) {
+    if (!output || outputSize == 0) return;
+    output[0] = '\0';
+    if (!path) return;
+    const uint32_t length = lengthOf(path, kMaxPathBytes);
+    const uint32_t displayLimit = outputSize > 4u ? outputSize - 4u : 0u;
+    if (length <= displayLimit) {
+        copyText(output, outputSize, path);
+        return;
+    }
+    if (displayLimit < 8u) return;
+    const uint32_t prefix = displayLimit / 2u;
+    uint32_t suffix = displayLimit - prefix;
+    uint32_t written = 0;
+    for (; written < prefix; ++written) output[written] = path[written];
+    output[written++] = '.';
+    output[written++] = '.';
+    output[written++] = '.';
+    const uint32_t start = length - suffix;
+    for (uint32_t i = start; i < length && written + 1u < outputSize; ++i)
+        output[written++] = path[i];
+    output[written] = '\0';
+}
+
+static void drawProjectSymbolsPanel(gx_app_context* ctx) {
+    if (!g_projectSymbolsPanelOpen) return;
+    if (g_projectSymbolsOperationId != 0 && !ProjectSearchIsActive(&g_projectSearch) &&
+        !g_projectSymbolsTerminalReported) pollProjectSymbols(ctx);
+    if (!g_projectSymbolsPanelVisibleReported) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_panel_visible=PASS");
+        g_projectSymbolsPanelVisibleReported = true;
+    }
+    drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 78, "Project Symbols — lexical C/C++ navigation");
+    drawText(ctx, 24, 102, "Name:");
+    drawPanel(ctx, { 78, 87, 450, 20 },
+        g_projectSymbolsField == ProjectSymbolsField::Name && !g_projectSymbolsResultsFocused ?
+            0x405775u : 0x202A36u);
+    drawText(ctx, 83, 102, g_projectSymbolsNameFilter);
+    drawText(ctx, 24, 130, "File:");
+    drawPanel(ctx, { 78, 115, 450, 20 },
+        g_projectSymbolsField == ProjectSymbolsField::File && !g_projectSymbolsResultsFocused ?
+            0x405775u : 0x202A36u);
+    drawText(ctx, 83, 130, g_projectSymbolsFileFilter);
+    drawPanel(ctx, { 650, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 660, 102, "Refresh");
+    const bool active = g_projectSymbolsOperationId != 0 && ProjectSearchIsActive(&g_projectSearch);
+    drawPanel(ctx, { 730, 87, 72, 20 }, active ? 0xA96F2Au : 0x34496Au);
+    drawText(ctx, 739, 102, active ? "Cancel" : "Idle");
+    drawPanel(ctx, { 810, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 824, 102, "Close");
+
+    if (g_projectSymbolsStatus[0]) drawText(ctx, 24, 158, g_projectSymbolsStatus);
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    copyText(g_textScratch, sizeof(g_textScratch), "Recognized ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectSymbols.totalRecognized);
+    appendText(g_textScratch, sizeof(g_textScratch), "  Retained ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectSymbols.count);
+    appendText(g_textScratch, sizeof(g_textScratch), "/");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), kProjectSymbolsMaxCandidates);
+    appendText(g_textScratch, sizeof(g_textScratch), "  Files ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectSymbols.filesProcessed);
+    if (operation) {
+        appendText(g_textScratch, sizeof(g_textScratch), "  Skipped ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), operation->diagnostics.filesSkipped);
+    }
+    if (g_projectSymbols.truncated || g_projectSymbols.incomplete ||
+        (operation && operation->truncated))
+        appendText(g_textScratch, sizeof(g_textScratch), "  Truncated / incomplete");
+    drawText(ctx, 24, 184, g_textScratch);
+    drawPanel(ctx, { 16, kSearchPanelResultsTop - 12, 928, 1 }, 0x405775u);
+
+    const uint32_t total = ProjectSymbolFilteredCount(&g_projectSymbols,
+        g_projectSymbolsNameFilter, g_projectSymbolsFileFilter);
+    const uint32_t shown = total < kProjectSymbolsMaxDisplayedResults ?
+        total : kProjectSymbolsMaxDisplayedResults;
+    const uint32_t first = g_projectSymbolsScroll;
+    const uint32_t last = first + kProjectSymbolsPanelRows;
+    for (uint32_t row = first; row < shown && row < last; ++row) {
+        const ProjectSymbolCandidate* symbol = ProjectSymbolFilteredAt(&g_projectSymbols,
+            g_projectSymbolsNameFilter, g_projectSymbolsFileFilter, row);
+        if (!symbol) continue;
+        const int y = kSearchPanelResultsTop + static_cast<int>((row - first) * kProjectSymbolsPanelRowHeight);
+        if (row == g_projectSymbolsSelected)
+            drawPanel(ctx, { 20, y - 12, 920, kProjectSymbolsPanelRowHeight - 2 }, 0x34496Au);
+        drawText(ctx, 24, y, symbol->name);
+        drawText(ctx, 210, y, DocumentOutlineCategoryName(symbol->category));
+        char displayPath[68] = {};
+        projectSymbolsDisplayPath(symbol->relativePath, displayPath, sizeof(displayPath));
+        drawText(ctx, 330, y, displayPath);
+        copyText(g_textScratch, sizeof(g_textScratch), "Line ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), symbol->line);
+        drawText(ctx, 850, y, g_textScratch);
+        drawText(ctx, 24, y + 17, symbol->signature);
+    }
+    if (shown == 0) {
+        if (active) drawText(ctx, 24, kSearchPanelResultsTop, "Scanning project files...");
+        else if (g_projectSymbols.count == 0 && !g_projectSymbolsNameFilter[0] &&
+                 !g_projectSymbolsFileFilter[0] && !g_projectSymbolsStatus[0])
+            drawText(ctx, 24, kSearchPanelResultsTop, "No symbols were found.");
+        else if (g_projectSymbols.count == 0)
+            drawText(ctx, 24, kSearchPanelResultsTop, "No symbols match these filters.");
+        else drawText(ctx, 24, kSearchPanelResultsTop, "No results match these filters.");
+    }
+    if (total > shown)
+        drawText(ctx, 760, 204, "Displayed results are capped; refine filters.");
+    if (shown > kProjectSymbolsPanelRows)
+        drawText(ctx, 760, 220, "Scroll: mouse wheel / Up / Down");
+}
+
 static void drawEditorRangeOverlay(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
                                    uint32_t lineEnd, uint64_t rangeStart, uint64_t rangeEnd,
                                    uint32_t color, uint32_t rowY) {
@@ -11934,6 +12523,17 @@ static void resetProjectSessionUi() {
     g_documentOutlineSelected = 0;
     g_documentOutlineScroll = 0;
     g_documentOutlineStatus[0] = '\0';
+    ProjectSymbolResultsInit(&g_projectSymbols);
+    g_projectSymbolsPanelOpen = false;
+    g_projectSymbolsPanelVisibleReported = false;
+    g_projectSymbolsResultsFocused = false;
+    g_projectSymbolsNameFilter[0] = '\0';
+    g_projectSymbolsFileFilter[0] = '\0';
+    g_projectSymbolsStatus[0] = '\0';
+    g_projectSymbolsOperationId = 0;
+    g_projectSymbolsProjectGeneration = 0;
+    g_projectSymbolsTerminalReported = false;
+    g_projectSymbolsTimedOut = false;
     OutputServiceClearChannel(&g_outputService, OutputChannel::Build);
     OutputServiceClearChannel(&g_outputService, OutputChannel::Run);
     OutputServiceClearChannel(&g_outputService, OutputChannel::DeveloperStudio);
@@ -18528,6 +19128,7 @@ static void drawShell(gx_app_context* ctx) {
     drawReplacePreviewPanel(ctx);
     drawTaskListPanel(ctx);
     drawDocumentOutlinePanel(ctx);
+    drawProjectSymbolsPanel(ctx);
     drawReferencesPanel(ctx);
     drawSymbolSearch(ctx);
     drawDefinitionPicker(ctx);
@@ -19214,6 +19815,204 @@ static bool handleTaskListKey(gx_app_context* ctx, int keyCode, int action, int 
     return false;
 }
 
+static char* projectSymbolsFieldBuffer() {
+    return g_projectSymbolsField == ProjectSymbolsField::File ?
+        g_projectSymbolsFileFilter : g_projectSymbolsNameFilter;
+}
+
+static uint32_t projectSymbolsFieldCapacity() {
+    return g_projectSymbolsField == ProjectSymbolsField::File ?
+        sizeof(g_projectSymbolsFileFilter) : sizeof(g_projectSymbolsNameFilter);
+}
+
+static void projectSymbolsFilterChanged() {
+    g_projectSymbolsSelected = 0;
+    g_projectSymbolsScroll = 0;
+}
+
+static void projectSymbolsInsertCharacter(char value) {
+    if (value == '\0') return;
+    char* field = projectSymbolsFieldBuffer();
+    const uint32_t capacity = projectSymbolsFieldCapacity();
+    if (g_projectSymbolsFieldSelectAll) {
+        field[0] = '\0';
+        g_projectSymbolsFieldCaret = 0;
+        g_projectSymbolsFieldSelectAll = false;
+    }
+    const uint32_t length = lengthOf(field, capacity);
+    if (g_projectSymbolsFieldCaret > length || length + 1u >= capacity) return;
+    for (uint32_t i = length; i > g_projectSymbolsFieldCaret; --i) field[i] = field[i - 1u];
+    field[g_projectSymbolsFieldCaret++] = value;
+    field[length + 1u] = '\0';
+    projectSymbolsFilterChanged();
+}
+
+static void projectSymbolsBackspace() {
+    char* field = projectSymbolsFieldBuffer();
+    const uint32_t capacity = projectSymbolsFieldCapacity();
+    if (g_projectSymbolsFieldSelectAll) {
+        field[0] = '\0';
+        g_projectSymbolsFieldCaret = 0;
+        g_projectSymbolsFieldSelectAll = false;
+        projectSymbolsFilterChanged();
+        return;
+    }
+    const uint32_t length = lengthOf(field, capacity);
+    if (g_projectSymbolsFieldCaret == 0 || g_projectSymbolsFieldCaret > length) return;
+    for (uint32_t i = g_projectSymbolsFieldCaret - 1u; i < length; ++i) field[i] = field[i + 1u];
+    --g_projectSymbolsFieldCaret;
+    projectSymbolsFilterChanged();
+}
+
+static void projectSymbolsDelete() {
+    if (g_projectSymbolsFieldSelectAll) {
+        projectSymbolsBackspace();
+        return;
+    }
+    char* field = projectSymbolsFieldBuffer();
+    const uint32_t length = lengthOf(field, projectSymbolsFieldCapacity());
+    if (g_projectSymbolsFieldCaret >= length) return;
+    for (uint32_t i = g_projectSymbolsFieldCaret; i < length; ++i) field[i] = field[i + 1u];
+    projectSymbolsFilterChanged();
+}
+
+static void projectSymbolsEnsureSelectionVisible() {
+    uint32_t count = ProjectSymbolFilteredCount(&g_projectSymbols,
+        g_projectSymbolsNameFilter, g_projectSymbolsFileFilter);
+    if (count > kProjectSymbolsMaxDisplayedResults) count = kProjectSymbolsMaxDisplayedResults;
+    if (count == 0) {
+        g_projectSymbolsSelected = 0;
+        g_projectSymbolsScroll = 0;
+        return;
+    }
+    if (g_projectSymbolsSelected >= count) g_projectSymbolsSelected = count - 1u;
+    if (g_projectSymbolsSelected < g_projectSymbolsScroll)
+        g_projectSymbolsScroll = g_projectSymbolsSelected;
+    if (g_projectSymbolsSelected >= g_projectSymbolsScroll + kProjectSymbolsPanelRows)
+        g_projectSymbolsScroll = g_projectSymbolsSelected - kProjectSymbolsPanelRows + 1u;
+    const uint32_t maximum = count > kProjectSymbolsPanelRows ?
+        count - kProjectSymbolsPanelRows : 0;
+    if (g_projectSymbolsScroll > maximum) g_projectSymbolsScroll = maximum;
+}
+
+static bool handleProjectSymbolsKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_projectSymbolsPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    const bool control = (modifiers & GX_KEY_MOD_CTRL) != 0;
+    const bool shift = (modifiers & GX_KEY_MOD_SHIFT) != 0;
+    const bool alt = (modifiers & GX_KEY_MOD_ALT) != 0;
+    if (control && !alt && !shift && (keyCode == 80 || keyCode == 112)) {
+        closeProjectSymbols(ctx, "switch_tool");
+        activateGoToFile(ctx, "keyboard_shortcut");
+        return true;
+    }
+    if (control && !alt && !shift && (keyCode == 71 || keyCode == 103)) {
+        closeProjectSymbols(ctx, "switch_tool");
+        activateGoToLine(ctx, "keyboard_shortcut");
+        return true;
+    }
+    if (control && !alt && shift && (keyCode == 70 || keyCode == 102)) {
+        closeProjectSymbols(ctx, "switch_tool");
+        activateFindInFiles(ctx, "keyboard_shortcut");
+        return true;
+    }
+    if (control && !alt && shift && (keyCode == 72 || keyCode == 104)) {
+        closeProjectSymbols(ctx, "switch_tool");
+        activateReplaceInFiles(ctx, "keyboard_shortcut");
+        return true;
+    }
+    if (keyCode == 27) {
+        if (ProjectSearchIsActive(&g_projectSearch) && g_projectSymbolsOperationId != 0) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSymbolsOperationId);
+            copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Cancelling project symbol scan...");
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_cancel=REQUESTED");
+        } else {
+            closeProjectSymbols(ctx, "escape");
+        }
+        return true;
+    }
+    if (g_projectSymbolsResultsFocused) {
+        if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
+            const uint32_t count = ProjectSymbolFilteredCount(&g_projectSymbols,
+                g_projectSymbolsNameFilter, g_projectSymbolsFileFilter);
+            const uint32_t shown = count < kProjectSymbolsMaxDisplayedResults ?
+                count : kProjectSymbolsMaxDisplayedResults;
+            if (keyCode == GX_KEY_DOWN && g_projectSymbolsSelected + 1u < shown)
+                ++g_projectSymbolsSelected;
+            else if (keyCode == GX_KEY_UP && g_projectSymbolsSelected > 0)
+                --g_projectSymbolsSelected;
+            projectSymbolsEnsureSelectionVisible();
+            return true;
+        }
+        if (keyCode == 13) {
+            if (!ProjectSearchIsActive(&g_projectSearch))
+                activateProjectSymbol(ctx, g_projectSymbolsSelected);
+            return true;
+        }
+        if (!control && !shift && !alt && (keyCode == 82 || keyCode == 114)) {
+            startProjectSymbolsScan(ctx, "manual_refresh");
+            return true;
+        }
+        if (keyCode == 9) {
+            g_projectSymbolsResultsFocused = false;
+            g_projectSymbolsField = shift ? ProjectSymbolsField::File : ProjectSymbolsField::Name;
+            g_projectSymbolsFieldCaret = lengthOf(projectSymbolsFieldBuffer(), projectSymbolsFieldCapacity());
+            return true;
+        }
+        return false;
+    }
+    if (keyCode == 13) {
+        g_projectSymbolsResultsFocused = true;
+        projectSymbolsEnsureSelectionVisible();
+        return true;
+    }
+    if (keyCode == 9) {
+        if (shift) {
+            if (g_projectSymbolsField == ProjectSymbolsField::File) {
+                g_projectSymbolsField = ProjectSymbolsField::Name;
+                g_projectSymbolsFieldCaret = lengthOf(g_projectSymbolsNameFilter, sizeof(g_projectSymbolsNameFilter));
+            } else {
+                g_projectSymbolsResultsFocused = true;
+                projectSymbolsEnsureSelectionVisible();
+            }
+        } else if (g_projectSymbolsField == ProjectSymbolsField::Name) {
+            g_projectSymbolsField = ProjectSymbolsField::File;
+            g_projectSymbolsFieldCaret = lengthOf(g_projectSymbolsFileFilter, sizeof(g_projectSymbolsFileFilter));
+        } else {
+            g_projectSymbolsResultsFocused = true;
+            projectSymbolsEnsureSelectionVisible();
+        }
+        g_projectSymbolsFieldSelectAll = false;
+        return true;
+    }
+    if (control && !alt && (keyCode == 65 || keyCode == 97)) {
+        g_projectSymbolsFieldSelectAll = true;
+        return true;
+    }
+    if (keyCode == 8) { projectSymbolsBackspace(); return true; }
+    if (keyCode == 46) { projectSymbolsDelete(); return true; }
+    if (keyCode == GX_KEY_LEFT) {
+        if (g_projectSymbolsFieldCaret > 0) --g_projectSymbolsFieldCaret;
+        g_projectSymbolsFieldSelectAll = false;
+        return true;
+    }
+    if (keyCode == GX_KEY_RIGHT) {
+        const uint32_t length = lengthOf(projectSymbolsFieldBuffer(), projectSymbolsFieldCapacity());
+        if (g_projectSymbolsFieldCaret < length) ++g_projectSymbolsFieldCaret;
+        g_projectSymbolsFieldSelectAll = false;
+        return true;
+    }
+    if (keyCode == 36) { g_projectSymbolsFieldCaret = 0; g_projectSymbolsFieldSelectAll = false; return true; }
+    if (keyCode == 35) {
+        g_projectSymbolsFieldCaret = lengthOf(projectSymbolsFieldBuffer(), projectSymbolsFieldCapacity());
+        g_projectSymbolsFieldSelectAll = false;
+        return true;
+    }
+    if (control || alt) return false;
+    const char value = mapKeyToChar(keyCode, modifiers);
+    if (value != '\0') { projectSymbolsInsertCharacter(value); return true; }
+    return false;
+}
+
 static bool handleDocumentOutlineKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
     if (!g_documentOutlinePanelOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) {
@@ -19662,6 +20461,8 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (g_replacePreviewPanelOpen) return;
     if (g_documentOutlinePanelOpen && handleDocumentOutlineKey(ctx, keyCode, action, modifiers)) return;
     if (g_documentOutlinePanelOpen) return;
+    if (g_projectSymbolsPanelOpen && handleProjectSymbolsKey(ctx, keyCode, action, modifiers)) return;
+    if (g_projectSymbolsPanelOpen) return;
     if (g_projectTaskListPanelOpen && handleTaskListKey(ctx, keyCode, action, modifiers)) return;
     if (g_projectTaskListPanelOpen) return;
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
@@ -19945,6 +20746,67 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
                     if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
                         activateProjectTask(ctx, row);
                 }
+            }
+        }
+        drawShell(ctx);
+        return;
+    }
+    if (g_projectSymbolsPanelOpen && !taskListToolbarMenuClick) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            uint32_t total = ProjectSymbolFilteredCount(&g_projectSymbols,
+                g_projectSymbolsNameFilter, g_projectSymbolsFileFilter);
+            if (total > kProjectSymbolsMaxDisplayedResults) total = kProjectSymbolsMaxDisplayedResults;
+            const uint32_t maximum = total > kProjectSymbolsPanelRows ?
+                total - kProjectSymbolsPanelRows : 0;
+            if (event.param4 > 0)
+                g_projectSymbolsScroll = g_projectSymbolsScroll > 3u ?
+                    g_projectSymbolsScroll - 3u : 0u;
+            else if (g_projectSymbolsScroll + 3u < maximum)
+                g_projectSymbolsScroll += 3u;
+            else
+                g_projectSymbolsScroll = maximum;
+            projectSymbolsEnsureSelectionVisible();
+            drawShell(ctx);
+            return;
+        }
+        if (button != GX_MOUSE_BUTTON_LEFT ||
+            (action != GX_MOUSE_ACTION_DOWN && action != GX_MOUSE_ACTION_DOUBLE_CLICK)) return;
+        if (y >= 87 && y < 107 && x >= 78 && x < 528) {
+            g_projectSymbolsResultsFocused = false;
+            g_projectSymbolsField = ProjectSymbolsField::Name;
+            g_projectSymbolsFieldCaret = lengthOf(g_projectSymbolsNameFilter, sizeof(g_projectSymbolsNameFilter));
+            g_projectSymbolsFieldSelectAll = false;
+        } else if (y >= 115 && y < 135 && x >= 78 && x < 528) {
+            g_projectSymbolsResultsFocused = false;
+            g_projectSymbolsField = ProjectSymbolsField::File;
+            g_projectSymbolsFieldCaret = lengthOf(g_projectSymbolsFileFilter, sizeof(g_projectSymbolsFileFilter));
+            g_projectSymbolsFieldSelectAll = false;
+        } else if (y >= 87 && y < 108 && x >= 650 && x < 722) {
+            startProjectSymbolsScan(ctx, "manual_refresh");
+        } else if (y >= 87 && y < 108 && x >= 730 && x < 802) {
+            if (ProjectSearchIsActive(&g_projectSearch)) {
+                ProjectSearchCancel(&g_projectSearch, g_projectSymbolsOperationId);
+                copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus),
+                         "Cancelling project symbol scan...");
+                logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_symbols_cancel=REQUESTED");
+            } else {
+                copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "No project symbol scan is running.");
+            }
+        } else if (y >= 87 && y < 108 && x >= 810 && x < 882) {
+            closeProjectSymbols(ctx, "close");
+        } else if (y >= kSearchPanelResultsTop && y < kSearchPanelTop + 580) {
+            const uint32_t row = g_projectSymbolsScroll +
+                static_cast<uint32_t>((y - kSearchPanelResultsTop) / kProjectSymbolsPanelRowHeight);
+            const uint32_t count = ProjectSymbolFilteredCount(&g_projectSymbols,
+                g_projectSymbolsNameFilter, g_projectSymbolsFileFilter);
+            const uint32_t shown = count < kProjectSymbolsMaxDisplayedResults ?
+                count : kProjectSymbolsMaxDisplayedResults;
+            if (!ProjectSearchIsActive(&g_projectSearch) && row < shown &&
+                row < g_projectSymbolsScroll + kProjectSymbolsPanelRows) {
+                g_projectSymbolsSelected = row;
+                g_projectSymbolsResultsFocused = true;
+                if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                    activateProjectSymbol(ctx, row);
             }
         }
         drawShell(ctx);
@@ -20661,6 +21523,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             activateTaskList(ctx, "tools_menu");
         else if (tool && tool->id == DeveloperToolId::DocumentOutline)
             activateDocumentOutline(ctx, "tools_menu");
+        else if (tool && tool->id == DeveloperToolId::ProjectSymbols)
+            activateProjectSymbols(ctx, "tools_menu");
         g_toolsMenuOpen = false;
         drawShell(ctx);
         return;
@@ -21147,6 +22011,24 @@ static gx_result developerStudioMain(gx_app_context* ctx) {
     g_findFieldCaret = 0;
     findSetStatus("");
     ProjectSearchServiceInit(&g_projectSearch);
+    ProjectSymbolResultsInit(&g_projectSymbols);
+    g_projectSymbolsPanelOpen = false;
+    g_projectSymbolsPanelVisibleReported = false;
+    g_projectSymbolsResultsFocused = false;
+    g_projectSymbolsField = ProjectSymbolsField::Name;
+    g_projectSymbolsFieldSelectAll = false;
+    g_projectSymbolsNameFilter[0] = '\0';
+    g_projectSymbolsFileFilter[0] = '\0';
+    g_projectSymbolsFieldCaret = 0;
+    g_projectSymbolsSelected = 0;
+    g_projectSymbolsScroll = 0;
+    g_projectSymbolsOperationId = 0;
+    g_projectSymbolsProjectGeneration = 0;
+    g_projectSymbolsProjectId[0] = '\0';
+    g_projectSymbolsProjectRoot[0] = '\0';
+    g_projectSymbolsStatus[0] = '\0';
+    g_projectSymbolsTerminalReported = false;
+    g_projectSymbolsTimedOut = false;
     projectSearchInitializeDraft(nullptr);
     DeveloperToolRegistryInit(&g_developerTools);
     const bool toolsRegistered =
@@ -21155,11 +22037,12 @@ static gx_result developerStudioMain(gx_app_context* ctx) {
         DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kReplaceInFilesToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kTaskListToolCommand) &&
-        DeveloperToolRegistryRegister(&g_developerTools, &kDocumentOutlineToolCommand);
+        DeveloperToolRegistryRegister(&g_developerTools, &kDocumentOutlineToolCommand) &&
+        DeveloperToolRegistryRegister(&g_developerTools, &kProjectSymbolsToolCommand);
     if (!toolsRegistered)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=FAIL");
     else
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=6");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=7");
     g_projectSearchPanelOpen = false;
     ReplacePreviewPlanInit(&g_replacePreviewPlan);
     g_replacePreviewPanelOpen = false;
