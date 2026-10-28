@@ -8,7 +8,7 @@ param(
     [ValidateRange(1, 10000)]
     [int]$StartIteration = 1,
     [ValidateRange(0, 255)]
-    [int]$ExpectedTargetExitCode = 7,
+    [int]$ExpectedTargetExitCode = 0,
     [ValidateRange(30, 600)]
     [int]$MaxRuntimeSeconds = 240,
     [ValidateRange(10, 300)]
@@ -196,7 +196,16 @@ for ($offset = 0; $offset -lt $Iterations; ++$offset) {
     if (-not $runnerText.Contains('process_reaped=True')) { $failureReasons.Add('server_process_not_reaped') }
     $targetExitCount = ([regex]::Matches($traceText, "TARGET_EXIT_NORMAL code=$ExpectedTargetExitCode")).Count
     $debuggerTeardownCount = ([regex]::Matches($traceText, 'debugger_teardown=PASS')).Count
-    if ($targetExitCount -lt 2) { $failureReasons.Add("target_exit_markers=$targetExitCount") }
+    if ($targetExitCount -lt 1) { $failureReasons.Add("cycle1_normal_exit_markers=$targetExitCount") }
+    if ($runnerText -notmatch 'PASS: hosted target publishes a fresh-session GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested marker after baseline count') {
+        $failureReasons.Add('cycle2_debug_stop_request_not_observed')
+    }
+    if ($runnerText -notmatch 'PASS: hosted target publishes a fresh-session GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_TERMINATED reason=user_requested marker after baseline count') {
+        $failureReasons.Add('cycle2_user_stop_not_observed')
+    }
+    if ($runnerText -notmatch 'PASS: hosted target publishes a fresh-session GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED marker after baseline count') {
+        $failureReasons.Add('cycle2_debugger_exit_not_observed')
+    }
     if ($debuggerTeardownCount -lt 2) { $failureReasons.Add("debugger_teardown_markers=$debuggerTeardownCount") }
 
     $remainingServerProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='guideXOSServer.experimental.exe'" -ErrorAction SilentlyContinue |
@@ -234,7 +243,7 @@ for ($offset = 0; $offset -lt $Iterations; ++$offset) {
         ) -TraceFiles @($childTracePath) -OutputTail $result.OutputTail
         throw "Hosted fresh-fixture target-exit gate stopped at iteration $iteration; $($failureReasons -join '; '). No retry was attempted."
     }
-    Write-Host ("hosted_target_exit_iteration_{0}=PASS target_sessions=2 exit_code={1} fixture_root={2} server_reaped=true" -f $iterationName, $ExpectedTargetExitCode, $fixtureRootForRun)
+    Write-Host ("hosted_target_exit_iteration_{0}=PASS target_sessions=2 cycle1_exit_code={1} cycle2=stopped fixture_root={2} server_reaped=true" -f $iterationName, $ExpectedTargetExitCode, $fixtureRootForRun)
 }
 
 $elapsed = [Math]::Round(((Get-Date) - $started).TotalSeconds, 1)

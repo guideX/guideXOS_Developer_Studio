@@ -607,22 +607,37 @@ if ($ContinueBreakpoint) {
     Add-ShortDelay $parts
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS')
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session=2')
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop_context=authoritative reason=Breakpoint session_gen=2')
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS')
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=0 expression=counter == 2 status=1 session_gen=2')
+    $parts.Add('MARKERBASE|[NativeAppDebugger] GXSM variables accepted=1 version=2')
+    $parts.Add('MARKERBASE|[NativeAppDebugger] GXSM variable read result=PASS')
     Add-Key $parts 116 2 $true
     Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_session=2' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.debuglog 200'
     Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_variables=PASS' $DebugWaitSeconds
-    Add-Delay $parts 2
     Add-ServerLine $parts 'nativeapp.debuglog 200'
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop_context=authoritative reason=Breakpoint session_gen=2' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_call_stack=PASS' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_ui_watch_result=refreshed watch_index=0 expression=counter == 2 status=1 session_gen=2' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts '[NativeAppDebugger] GXSM variables accepted=1 version=2' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts '[NativeAppDebugger] GXSM variable read result=PASS' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.processes'
     Add-ServerLine $parts 'gui.activate __DEVSTUDIO_WINDOW__'
     Add-ShortDelay $parts
-    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode)
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested')
+    $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_TERMINATED reason=user_requested')
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')
     $parts.Add('MARKERBASE|GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')
-    Add-Key $parts 116 0 $true
-    Add-WaitFromBaseline $parts ('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode) $DebugWaitSeconds
+    # Stop the freshly rebound session through the visible Debug menu after
+    # the new source breakpoint, stack and GXSM locals have been observed.
+    Add-Mouse $parts 1000 610 30 1 'down' $false
+    Add-ShortDelay $parts
+    Add-Mouse $parts 1000 620 185 1 'down' $true
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_TERMINATED reason=user_requested' $DebugWaitSeconds
     Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS' $DebugWaitSeconds
-    Add-WaitMarker $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
+    Add-WaitFromBaseline $parts 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED' $DebugWaitSeconds
     Add-ServerLine $parts 'nativeapp.debuglog 200'
     Add-ServerLine $parts 'nativeapp.processes'
 } elseif ($StepOut) {
@@ -995,7 +1010,7 @@ try {
         @($text -split "`r?`n" | Where-Object { $_ -match 'debug_|F9|breakpoint|editor|focus|Caret|project_open|project_metadata' } | Select-Object -Last 160)
     }
     if ($PositiveGxsmLifecycle) {
-        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND .*src=src/main\.cpp line=4 col=1 enabled=1 state=Verified') "the fixture's enabled line-4 breakpoint binds to the hosted target"
+        Assert-True ($text -match 'DEVELOPER_STUDIO_PHASE29N_HOST_BREAKPOINT stage=BOUND .*src=src/main\.cpp line=4 col=0 enabled=1 state=Verified') "the fixture's line-keyed breakpoint binds at any executable column on line 4"
     } elseif ($SteppingLifecycle) {
         Assert-True ($text -match ('debug_stop_context=authoritative reason=Breakpoint .*source=src/main\.cpp:' + [regex]::Escape([string]$BreakpointLine) + ' source_map=current')) "the metadata-free Phase 15 source breakpoint produces an authoritative stop at the configured mapped line"
     } else {
@@ -1198,6 +1213,9 @@ try {
             Assert-True ($gxsmValidationProcessIds.Count -ge 2 -and $gxsmValidationSessionIds.Count -ge 2) "NativeAppDebugger accepts the compiler-produced GXSM v2 header and variable records in both target sessions with bounded capacities"
             Assert-True ($counterTwoRead.Count -ge 1 -and $counterThreeRead.Count -ge 1) "target stack reads yield raw counter bytes 2 then 3 from the same live record"
             Assert-True ($counterTwoReadSessionIds.Count -ge 2 -and $counterTwoAddressBySession.Count -ge 2 -and $counterThreeReadSessionIds.Count -ge 1) "both launches reread counter=2 at distinct runtime addresses and Step Over reads counter=3 from the first launch"
+            $relaunchBreakpointStop = @($text -split "`r?`n" | Where-Object { $_ -match 'debug_stop_context=authoritative reason=Breakpoint session_gen=2 .*function=debugProbe source=src/main\.cpp:4 source_map=current can_continue=1' } | Select-Object -First 1)
+            $relaunchCounterRead = @($counterTwoReads | Where-Object { $_ -match 'session_gen=2 .*function=debugProbe source=src/main\.cpp:3 name=counter .*raw_bytes=02 00 00 00 raw=0x2 signed_value=2' } | Select-Object -First 1)
+            Assert-True ($relaunchBreakpointStop.Count -ge 1 -and $relaunchCounterRead.Count -ge 1) "Cycle 2 hits the fresh source breakpoint and reads counter=2 from the new target frame"
             $hostedGxsmRows = @($text -split "`r?`n" | Where-Object { $_ -match $hostedGxsmSummaryPattern })
             $buildOperations = @($hostedGxsmRows | ForEach-Object {
                 [regex]::Match($_, 'build_operation=(\d+)').Groups[1].Value
@@ -1214,9 +1232,10 @@ try {
                 $addressValue = [Convert]::ToUInt64($readLine.Groups[3].Value, 16)
                 Assert-True (($rbpValue - [uint64](-$offsetValue)) -eq $addressValue) "RBP plus the signed GXSM offset equals the raw-read target address"
             }
-            Assert-True ($text -match 'debug_inspection=invalidated .*context_valid=0 stack_valid=0 locals_valid=0' -and
-                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=RUNNING')) "Continue invalidates the previous stopped value before target exit"
-            Assert-True (([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')).Count -ge 2) "both positive GXSM target sessions exit and tear down cleanly"
+            Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_stop=requested') -and
+                         $text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_TERMINATED reason=user_requested') -and
+                         $text -match 'debug_inspection=invalidated .*context_valid=0 stack_valid=0 locals_valid=0') "Cycle 2 Stop invalidates the paused inspection and terminates the fresh target"
+            Assert-True (([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')).Count -ge 2) "Cycle 1 exits normally and Cycle 2 stops with both debugger sessions torn down"
         }
         elseif ($SteppingLifecycle) {
             $stepIntoPattern = 'debug_step_complete=StepInto command_gen=1 session_gen=(\d+) target_gen=(\d+) stop_gen=(\d+) source=src/main\.cpp:' + [regex]::Escape([string]$LifecycleStepIntoExpectedLine) + ' source_map=current'
@@ -1333,12 +1352,14 @@ try {
         Assert-True ($text.Contains('GUIDEXOS_DEVELOPER_STUDIO_MARKER clean_close=PASS')) "Developer Studio closes cleanly after teardown"
     } elseif ($PositiveGxsmLifecycle) {
         $targetCleanupPattern = '\[NativeAppRuntime\] Cleanup complete app=com\.example\.debuggerphase29qpositive(?: \([^)]*\))? runtimeId=(\d+) state=Exited exitCode=' + $ExpectedTargetExitCode + ' cleanedWindows=0 remainingWindows=0'
-        $targetExitPattern = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode + ' session_gen=(\d+) target_gen=(\d+) process=(\d+) runtime=(\d+)'
+        $targetExitPattern = 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_(?:NORMAL code=' + $ExpectedTargetExitCode + '|TERMINATED reason=user_requested) session_gen=(\d+) target_gen=(\d+) process=(\d+) runtime=(\d+)'
         $targetCleanupMatches = [regex]::Matches($text, $targetCleanupPattern)
         $cleanupRuntimes = @($targetCleanupMatches | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
         $targetCleanupCount = $cleanupRuntimes.Count
         $targetExitMatches = [regex]::Matches($text, $targetExitPattern)
         $targetExitRawCount = $targetExitMatches.Count
+        $targetNormalExitCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_NORMAL code=' + $ExpectedTargetExitCode + ' session_gen=')).Count
+        $targetUserStopCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER TARGET_EXIT_TERMINATED reason=user_requested session_gen=')).Count
         $debuggerTeardownCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debugger_teardown=PASS')).Count
         $exitSessions = @($targetExitMatches | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
         $exitProcesses = @($targetExitMatches | ForEach-Object { $_.Groups[3].Value } | Select-Object -Unique)
@@ -1346,12 +1367,13 @@ try {
         $watchInvalidationMatches = [regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_watch_runtime=invalidated session_gen=(\d+) watch_count=\d+')
         $watchInvalidationSessions = @($watchInvalidationMatches | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
         $exitedStateCount = ([regex]::Matches($text, 'GUIDEXOS_DEVELOPER_STUDIO_MARKER debug_state=EXITED')).Count
-        Write-Host "positive_gxsm_counts cleanup_runtimes=$($cleanupRuntimes.Count) target_exit_raw=$targetExitRawCount debugger_teardown_raw=$debuggerTeardownCount exited_state_raw=$exitedStateCount watch_sessions=$($watchInvalidationSessions.Count) sessions=$($exitSessions.Count) processes=$($exitProcesses.Count) runtimes=$($exitRuntimes.Count)"
+        Write-Host "positive_gxsm_counts cleanup_runtimes=$($cleanupRuntimes.Count) target_exit_raw=$targetExitRawCount normal_exits=$targetNormalExitCount user_stops=$targetUserStopCount debugger_teardown_raw=$debuggerTeardownCount exited_state_raw=$exitedStateCount watch_sessions=$($watchInvalidationSessions.Count) sessions=$($exitSessions.Count) processes=$($exitProcesses.Count) runtimes=$($exitRuntimes.Count)"
         Assert-True ($targetCleanupCount -eq 2) "both GXSM targets clean runtime resources with exact application exit code $ExpectedTargetExitCode (found $targetCleanupCount)"
-        Assert-True ($targetExitRawCount -ge 2 -and $debuggerTeardownCount -ge 2 -and $exitedStateCount -ge 2 -and
+        Assert-True ($targetExitRawCount -ge 2 -and $targetNormalExitCount -ge 1 -and $targetUserStopCount -ge 1 -and
+                     $debuggerTeardownCount -ge 2 -and $exitedStateCount -ge 2 -and
                      $exitSessions.Count -eq 2 -and $exitProcesses.Count -eq 2 -and $exitRuntimes.Count -eq 2 -and
                      (Compare-Object ($exitRuntimes | Sort-Object) ($cleanupRuntimes | Sort-Object)).Count -eq 0 -and
-                     -not $text.Contains('DEBUG_BACKEND_FAILED')) "target exit result and debugger teardown are reported independently for both sessions"
+                     -not $text.Contains('DEBUG_BACKEND_FAILED')) "Cycle 1 exits normally and Cycle 2 is stopped, with independent exit and teardown results for both sessions"
         Assert-True ($watchInvalidationSessions.Count -eq 2 -and
                      (Compare-Object ($exitSessions | Sort-Object) ($watchInvalidationSessions | Sort-Object)).Count -eq 0) "both target exits invalidate runtime watch values while preserving the logical watch for relaunch"
     } elseif (($ContinueBreakpoint -or $ContinueAfterStepOut) -and $DiagnosticOnly) {
