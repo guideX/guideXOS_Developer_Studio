@@ -38,6 +38,7 @@ $RunTest = Join-Path $BuildRoot "developer-studio-run-test.exe"
 $FindTest = Join-Path $BuildRoot "developer-studio-find-test.exe"
 $SearchTest = Join-Path $BuildRoot "developer-studio-project-search-test.exe"
 $ToolsTest = Join-Path $BuildRoot "developer-studio-tools-test.exe"
+$TaskListTest = Join-Path $BuildRoot "developer-studio-task-list-test.exe"
 $SymbolTest = Join-Path $BuildRoot "developer-studio-symbol-test.exe"
 $NavigationTest = Join-Path $BuildRoot "developer-studio-navigation-definition-test.exe"
 $ReferenceTest = Join-Path $BuildRoot "developer-studio-reference-test.exe"
@@ -186,6 +187,14 @@ try {
     )
     & $ToolsTest
     if ($LASTEXITCODE -ne 0) { throw "Developer Studio tools test failed with exit code $LASTEXITCODE" }
+
+    Invoke-Checked "g++" @(
+        "-std=c++17", "-Wall", "-Wextra", "-pedantic",
+        "-Isrc", "src\developer_studio_find.cpp", "src\developer_studio_syntax.cpp", "src\developer_studio_models.cpp", "src\developer_studio_projects.cpp", "src\developer_studio_symbols.cpp", "src\developer_studio_workspace.cpp", "src\developer_studio_project_search.cpp", "src\developer_studio_task_list.cpp", "src\developer_studio_tools.cpp", "tests\task_list_test.cpp",
+        "-o", $TaskListTest
+    )
+    & $TaskListTest
+    if ($LASTEXITCODE -ne 0) { throw "Developer Studio task list test failed with exit code $LASTEXITCODE" }
 
     Invoke-Checked "g++" @(
         "-std=c++17", "-Wall", "-Wextra", "-pedantic",
@@ -357,6 +366,7 @@ $compileFlags = @(
     $outputObject = Join-Path $ObjectRoot "developer_studio_output.o"
     $runObject = Join-Path $ObjectRoot "developer_studio_run.o"
     $searchObject = Join-Path $ObjectRoot "developer_studio_project_search.o"
+    $taskListObject = Join-Path $ObjectRoot "developer_studio_task_list.o"
     $replacePreviewObject = Join-Path $ObjectRoot "developer_studio_replace_preview.o"
     $toolsObject = Join-Path $ObjectRoot "developer_studio_tools.o"
     $symbolObject = Join-Path $ObjectRoot "developer_studio_symbols.o"
@@ -391,6 +401,7 @@ $compileFlags = @(
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_output.cpp"), "-o", $outputObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_run.cpp"), "-o", $runObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_project_search.cpp"), "-o", $searchObject))
+    Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_task_list.cpp"), "-o", $taskListObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_replace_preview.cpp"), "-o", $replacePreviewObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_tools.cpp"), "-o", $toolsObject))
     Invoke-Checked $clang ($compileFlags + @("-c", (Join-Path $RepoRoot "src\developer_studio_symbols.cpp"), "-o", $symbolObject))
@@ -421,7 +432,7 @@ $compileFlags = @(
     # both target artifacts at the same canonical base so the package can be
     # validated and selected consistently in-OS.
     $linkFlags = @("-m", $linkMachine, "-static", "--image-base=0x50000000", "-z", "max-page-size=0x1000")
-    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $replacePreviewObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
+    Invoke-Checked $lld ($linkFlags + @("-e", "gx_main", $findObject, $syntaxObject, $modelObject, $projectObject, $workspaceObject, $buildObject, $outputObject, $runObject, $searchObject, $taskListObject, $replacePreviewObject, $toolsObject, $symbolObject, $navigationObject, $referencesObject, $renameObject, $completionObject, $signatureObject, $includeGraphObject, $relationshipObject, $ownershipObject, $typesObject, $debuggerObject, $debuggerStackObject, $debugSymbolsObject, $debugVariablesObject, $debugWatchesObject, $debugTipsObject, $debuggerHostedObject, $debugEditorObject, $debuggerWorkspaceObject, $startupObject, $appActivationObject, $memoryObject, $mainObject, "-o", $stagedElfPath))
     if (-not (Test-Path -LiteralPath $stagedElfPath -PathType Leaf) -or (Get-Item -LiteralPath $stagedElfPath).Length -le 0) {
         throw "Native ELF output was not produced: $stagedElfPath"
     }
@@ -457,6 +468,7 @@ $compileFlags = @(
     if (Test-Path -LiteralPath $FindTest) { Remove-Item -LiteralPath $FindTest -Force }
     if (Test-Path -LiteralPath $SearchTest) { Remove-Item -LiteralPath $SearchTest -Force }
     if (Test-Path -LiteralPath $ToolsTest) { Remove-Item -LiteralPath $ToolsTest -Force }
+    if (Test-Path -LiteralPath $TaskListTest) { Remove-Item -LiteralPath $TaskListTest -Force }
     if (Test-Path -LiteralPath $SymbolTest) { Remove-Item -LiteralPath $SymbolTest -Force }
     if (Test-Path -LiteralPath $NavigationTest) { Remove-Item -LiteralPath $NavigationTest -Force }
     if (Test-Path -LiteralPath $ReferenceTest) { Remove-Item -LiteralPath $ReferenceTest -Force }

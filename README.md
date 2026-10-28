@@ -20,6 +20,8 @@ The hosted Native ELF debugger provides generation-safe session supervision, F9 
 
 The repository-native validation tiers and bounded hosted debugger soak are documented in [docs/VALIDATION_TIERS.md](docs/VALIDATION_TIERS.md).
 
+The read-only project TODO/FIXME Navigator is available in **Tools → Task List**; see [docs/TOOLS6_PROJECT_TASK_LIST.md](docs/TOOLS6_PROJECT_TASK_LIST.md).
+
 ## Workspace versus project
 
 A workspace is any directory that Developer Studio can browse and edit. It does not need metadata. A project is a validated guideXOS application workspace with a `guidexos.project` file, identity, target profile, source root, and App Model manifest. The shell labels these states as `Workspace:` and `Project:` respectively; opening a project never upgrades or modifies an arbitrary workspace.

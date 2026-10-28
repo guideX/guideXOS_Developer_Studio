@@ -18,6 +18,7 @@ add_library(developer_studio_models STATIC
     src/developer_studio_run.cpp
     src/developer_studio_workspace.cpp
     src/developer_studio_project_search.cpp
+    src/developer_studio_task_list.cpp
     src/developer_studio_replace_preview.cpp
     src/developer_studio_tools.cpp
     src/developer_studio_symbols.cpp
@@ -156,6 +157,13 @@ add_executable(developer_studio_tools_test
 )
 target_link_libraries(developer_studio_tools_test PRIVATE developer_studio_models)
 add_test(NAME developer_studio_tools_test COMMAND developer_studio_tools_test)
+
+add_executable(developer_studio_task_list_test
+    tests/task_list_test.cpp
+)
+target_link_libraries(developer_studio_task_list_test PRIVATE developer_studio_models)
+set_target_properties(developer_studio_task_list_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_task_list_test COMMAND developer_studio_task_list_test)
 
 add_executable(developer_studio_symbol_test
     tests/symbol_test.cpp
@@ -347,6 +355,7 @@ add_executable(developerstudio.elf
         src/developer_studio_run.cpp
         src/developer_studio_workspace.cpp
         src/developer_studio_project_search.cpp
+        src/developer_studio_task_list.cpp
         src/developer_studio_replace_preview.cpp
         src/developer_studio_symbols.cpp
         src/developer_studio_navigation.cpp

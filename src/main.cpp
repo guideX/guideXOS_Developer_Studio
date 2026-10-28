@@ -8,6 +8,7 @@
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
+#include "developer_studio_task_list.h"
 #include "developer_studio_replace_preview.h"
 #include "developer_studio_tools.h"
 #include "developer_studio_symbols.h"
@@ -280,6 +281,15 @@ using guidexos::developer_studio::ProjectSearchStateName;
 using guidexos::developer_studio::ProjectSearchDocumentSnapshot;
 using guidexos::developer_studio::ProjectSearchDiagnostics;
 using guidexos::developer_studio::kProjectSearchMaxFileBytes;
+using guidexos::developer_studio::ProjectTask;
+using guidexos::developer_studio::ProjectTaskAnnotation;
+using guidexos::developer_studio::ProjectTaskList;
+using guidexos::developer_studio::ProjectTaskListInit;
+using guidexos::developer_studio::ProjectTaskListSort;
+using guidexos::developer_studio::ProjectTaskListVisitFile;
+using guidexos::developer_studio::ProjectTaskAnnotationName;
+using guidexos::developer_studio::kProjectTaskListMaxTasks;
+using guidexos::developer_studio::kProjectTaskListMaxDescriptionBytes;
 using guidexos::developer_studio::ReplacePreviewError;
 using guidexos::developer_studio::ReplacePreviewFile;
 using guidexos::developer_studio::ReplacePreviewMatch;
@@ -911,6 +921,8 @@ static bool activateGoToFileTool(void* userData);
 static bool closeGoToFileTool(void* userData);
 static bool activateGoToLineTool(void* userData);
 static bool closeGoToLineTool(void* userData);
+static bool activateTaskListTool(void* userData);
+static bool closeTaskListTool(void* userData);
 static const DeveloperToolCommand kGoToFileToolCommand = {
     DeveloperToolId::GoToFile, "Go to File", "Ctrl+P",
     activateGoToFileTool, closeGoToFileTool
@@ -926,6 +938,10 @@ static const DeveloperToolCommand kFindInFilesToolCommand = {
 static const DeveloperToolCommand kReplaceInFilesToolCommand = {
     DeveloperToolId::ReplaceInFiles, "Replace in Files", "Ctrl+Shift+H",
     activateReplaceInFilesTool, closeReplaceInFilesTool
+};
+static const DeveloperToolCommand kTaskListToolCommand = {
+    DeveloperToolId::TaskList, "Task List", "",
+    activateTaskListTool, closeTaskListTool
 };
 static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
@@ -1206,6 +1222,14 @@ static char g_projectSearchProjectId[kMaxProjectIdBytes] = {};
 static char g_projectSearchStatus[128] = {};
 static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
+static ProjectTaskList g_projectTaskList = {};
+static bool g_projectTaskListPanelOpen = false;
+static uint32_t g_projectTaskListSelected = 0;
+static uint32_t g_projectTaskListScroll = 0;
+static uint64_t g_projectTaskListProjectGeneration = 0;
+static char g_projectTaskListProjectId[kMaxProjectIdBytes] = {};
+static char g_projectTaskListStatus[192] = {};
+static bool g_projectTaskListTerminalReported = false;
 enum class ReplacePreviewField { Find = 0, Replacement };
 static ReplacePreviewPlan g_replacePreviewPlan = {};
 static bool g_replacePreviewPanelOpen = false;
@@ -1389,6 +1413,13 @@ static bool startReplacePreview(gx_app_context* ctx);
 static void invalidateReplacePreview(gx_app_context* ctx, const char* reason);
 static bool handleReplacePreviewKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static void drawReplacePreviewPanel(gx_app_context* ctx);
+static bool activateTaskList(gx_app_context* ctx, const char* source);
+static bool closeTaskList(gx_app_context* ctx, const char* source);
+static bool startProjectTaskListScan(gx_app_context* ctx);
+static void pollProjectTaskList(gx_app_context* ctx);
+static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex);
+static bool handleTaskListKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static void drawTaskListPanel(gx_app_context* ctx);
 static bool activateGoToFile(gx_app_context* ctx, const char* source);
 static bool closeGoToFile(gx_app_context* ctx, const char* source);
 static bool activateGoToLine(gx_app_context* ctx, const char* source);
@@ -4766,6 +4797,10 @@ static void pollProjectSearch(gx_app_context* ctx) {
         pollProjectReplacePreview(ctx);
         return;
     }
+    if (g_projectTaskListPanelOpen) {
+        pollProjectTaskList(ctx);
+        return;
+    }
     if (g_projectSearchOperationId == 0) return;
     if (ProjectSearchIsActive(&g_projectSearch) &&
         (!g_controller.model.open || !g_controller.model.hasProject ||
@@ -4951,6 +4986,65 @@ static bool closeReplaceInFilesTool(void* userData) {
     return true;
 }
 
+static bool activateTaskListTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (!ctx) return false;
+    if (!DeveloperToolProjectIdentityMatches(g_projectTaskListProjectId,
+            g_projectTaskListProjectGeneration,
+            g_controller.model.hasProject ? g_controller.model.project.projectId : "",
+            g_controller.model.projectGeneration)) {
+        ProjectTaskListInit(&g_projectTaskList);
+        g_projectTaskListProjectGeneration = 0;
+        g_projectTaskListProjectId[0] = '\0';
+        g_projectTaskListStatus[0] = '\0';
+        g_projectTaskListSelected = 0;
+        g_projectTaskListScroll = 0;
+    }
+    if (g_findBarOpen) closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(ctx);
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_projectSearchPanelOpen = false;
+    g_replacePreviewPanelOpen = false;
+    g_projectTaskListPanelOpen = true;
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    return true;
+}
+
+static bool closeTaskListTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+        const bool wasCancelled = operation && operation->state == ProjectSearchState::Cancelled;
+        if (operation && operation->state != ProjectSearchState::Idle &&
+            !ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId)) return false;
+        g_projectSearchOperationId = 0;
+        g_projectSearchTerminalReported = false;
+        if (wasCancelled) {
+            ProjectTaskListSort(&g_projectTaskList);
+            copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                     "Scan cancelled; partial results retained.");
+        }
+    }
+    g_projectTaskListPanelOpen = false;
+    g_projectTaskListTerminalReported = false;
+    g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    return true;
+}
+
 static bool activateFindInFiles(gx_app_context* ctx, const char* source) {
     if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::FindInFiles, ctx)) {
         writeStudioOutput("Unable to open Find in Files");
@@ -5003,6 +5097,35 @@ static bool closeReplaceInFiles(gx_app_context* ctx, const char* source) {
     if (source) {
         copyText(g_textScratch, sizeof(g_textScratch),
                  "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_in_files_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool activateTaskList(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::TaskList, ctx)) {
+        writeStudioOutput("Unable to open Task List");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool closeTaskList(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::TaskList, ctx)) {
+        writeStudioOutput("Task List is still active");
+        return false;
+    }
+    if (source && (searchTextEqual(source, "escape") || searchTextEqual(source, "cancel")))
+        g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_close=PASS source=");
         appendText(g_textScratch, sizeof(g_textScratch), source);
         logMarker(ctx, g_textScratch);
     }
@@ -5522,6 +5645,161 @@ static bool startProjectSearch(gx_app_context* ctx) {
     projectSearchSetStatus("Searching...");
     writeStudioOutput("Find in Files started");
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_begin=PASS");
+    return true;
+}
+
+static bool startProjectTaskListScan(gx_app_context* ctx) {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Open a project before scanning its tasks.");
+        return false;
+    }
+    if (g_projectSearchOperationId != 0) {
+        if (ProjectSearchIsActive(&g_projectSearch)) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 1,
+                              ctx ? gx_get_ticks_ms(ctx) : 0);
+        }
+        const ProjectSearchOperation* previous = ProjectSearchOperationInfo(&g_projectSearch);
+        if (previous && previous->state != ProjectSearchState::Idle)
+            ProjectSearchRelease(&g_projectSearch, g_projectSearchOperationId);
+        g_projectSearchOperationId = 0;
+    }
+
+    ProjectTaskListInit(&g_projectTaskList);
+    g_projectTaskListSelected = 0;
+    g_projectTaskListScroll = 0;
+    g_projectTaskListTerminalReported = false;
+    g_projectSearchTerminalReported = false;
+
+    ProjectSearchRequest request = {};
+    copyText(request.projectId, sizeof(request.projectId), g_controller.model.project.projectId);
+    request.projectGeneration = g_controller.model.projectGeneration;
+    copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.rootPath);
+    ProjectSearchOptionsInit(&request.options);
+    copyText(request.options.query, sizeof(request.options.query), "x");
+    copyText(request.options.includePattern, sizeof(request.options.includePattern),
+             "*.c;*.h;*.cc;*.cpp;*.cxx;*.hh;*.hpp;*.hxx");
+    request.fileSystem = g_controller.fileSystem;
+    request.dirtyDocuments = g_projectSearchSnapshots;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.scanVisitor = ProjectTaskListVisitFile;
+    request.scanVisitorUserData = &g_projectTaskList;
+    ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
+    uint64_t operationId = 0;
+    const bool started = ProjectSearchStart(&g_projectSearch, &request,
+        ctx ? gx_get_ticks_ms(ctx) : 0, &operationId, &error);
+    g_projectSearchOperationId = operationId;
+    g_projectSearchProjectGeneration = request.projectGeneration;
+    copyText(g_projectSearchProjectId, sizeof(g_projectSearchProjectId), request.projectId);
+    g_projectTaskListProjectGeneration = request.projectGeneration;
+    copyText(g_projectTaskListProjectId, sizeof(g_projectTaskListProjectId), request.projectId);
+    if (!started) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Scan failed: ");
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), ProjectSearchErrorName(error));
+        return false;
+    }
+    copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Scanning project C/C++ files...");
+    return true;
+}
+
+static void pollProjectTaskList(gx_app_context* ctx) {
+    if (g_projectSearchOperationId == 0) return;
+    if (ProjectSearchIsActive(&g_projectSearch) &&
+        (!g_controller.model.open || !g_controller.model.hasProject ||
+         !DeveloperToolProjectIdentityMatches(g_projectTaskListProjectId,
+            g_projectTaskListProjectGeneration, g_controller.model.project.projectId,
+            g_controller.model.projectGeneration))) {
+        ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Project changed; cancelling scan.");
+    }
+    ProjectSearchPoll(&g_projectSearch, g_projectSearchOperationId, 16,
+                      ctx ? gx_get_ticks_ms(ctx) : 0);
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    if (!operation || ProjectSearchIsActive(&g_projectSearch) || g_projectTaskListTerminalReported) return;
+    g_projectTaskListTerminalReported = true;
+    ProjectTaskListSort(&g_projectTaskList);
+    if (operation->state == ProjectSearchState::Completed) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 operation->truncated || g_projectTaskList.truncated ?
+                    "Scan truncated at a resource limit: " : "Scan complete: ");
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "TODO ");
+        appendUnsigned(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), g_projectTaskList.todoCount);
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), ", FIXME ");
+        appendUnsigned(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), g_projectTaskList.fixmeCount);
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), ", ");
+        appendUnsigned(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), g_projectTaskList.count);
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), " tasks in ");
+        appendUnsigned(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), g_projectTaskList.filesScanned);
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), " files");
+        if (operation->truncated || g_projectTaskList.truncated)
+            appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), " (partial)");
+    } else if (operation->state == ProjectSearchState::Cancelled) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Scan cancelled; partial results retained.");
+    } else {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Scan failed: ");
+        appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                   ProjectSearchErrorName(operation->error));
+    }
+}
+
+static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
+    if (taskIndex >= g_projectTaskList.count || !g_controller.model.open ||
+        !g_controller.model.hasProject) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "No current task result is available.");
+        return false;
+    }
+    if (!DeveloperToolProjectIdentityMatches(g_projectTaskListProjectId,
+            g_projectTaskListProjectGeneration, g_controller.model.project.projectId,
+            g_controller.model.projectGeneration)) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Task result belongs to a stale project; scan again.");
+        return false;
+    }
+    const ProjectTask& task = g_projectTaskList.tasks[taskIndex];
+    if (!task.relativePath[0] || PathContainsTraversal(task.relativePath) ||
+        task.relativePath[0] == '/' || task.relativePath[0] == '\\' ||
+        task.relativePath[1] == ':') {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Selected task path is outside the project.");
+        return false;
+    }
+    uint32_t documentIndex = kMaxOpenDocuments;
+    OutputErrorCode navigationError = OutputErrorCode::None;
+    if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller,
+            g_controller.model.project.projectId, task.relativePath, task.line, 1,
+            &documentIndex, &navigationError)) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Unable to open selected task: ");
+        if (g_controller.lastError != ModelErrorCode::None)
+            appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                       ModelErrorName(g_controller.lastError));
+        else
+            appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                       OutputErrorName(navigationError));
+        return false;
+    }
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document || documentIndex >= kMaxOpenDocuments) {
+        copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                 "Task file opened without an active document.");
+        return false;
+    }
+    g_editorScrollLine = 0;
+    g_editorScrollColumn = 0;
+    keepCaretVisible(document);
+    g_editorFocused = true;
+    copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Opened ");
+    appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+               ProjectTaskAnnotationName(task.annotation));
+    appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), " at ");
+    appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), task.relativePath);
+    appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), ":");
+    appendUnsigned(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), task.line);
+    if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=PASS");
     return true;
 }
 
@@ -10796,6 +11074,71 @@ static void drawReplacePreviewPanel(gx_app_context* ctx) {
         drawText(ctx, 760, 190, "Scroll: mouse wheel");
 }
 
+static void drawTaskListPanel(gx_app_context* ctx) {
+    if (!g_projectTaskListPanelOpen) return;
+    drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 78, "Task List — Project TODO/FIXME Navigator");
+    drawPanel(ctx, { 760, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 780, 102, "Scan");
+    const bool scanning = ProjectSearchIsActive(&g_projectSearch);
+    drawPanel(ctx, { 840, 87, 72, 20 }, scanning ? 0xA96F2Au : 0x34496Au);
+    drawText(ctx, 851, 102, scanning ? "Cancel" : "Close");
+    copyText(g_textScratch, sizeof(g_textScratch), "TODO ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.todoCount);
+    appendText(g_textScratch, sizeof(g_textScratch), "     FIXME ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.fixmeCount);
+    appendText(g_textScratch, sizeof(g_textScratch), "     Total ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.count);
+    appendText(g_textScratch, sizeof(g_textScratch), "     Files scanned ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.filesScanned);
+    drawText(ctx, 24, 133, g_textScratch);
+    if (g_projectTaskListStatus[0] != '\0') {
+        drawText(ctx, 24, 158, g_projectTaskListStatus);
+    } else if (!g_controller.model.open || !g_controller.model.hasProject) {
+        drawText(ctx, 24, 158, "Open a project before scanning its source files.");
+    } else {
+        drawText(ctx, 24, 158,
+                 "Choose Scan / Refresh to find tasks. Enter or double-click opens a result; Esc cancels or closes.");
+    }
+    drawPanel(ctx, { 16, kSearchPanelResultsTop - 12, 928, 1 }, 0x405775u);
+    const uint32_t first = g_projectTaskListScroll;
+    const uint32_t last = first + static_cast<uint32_t>(kSearchPanelMaxRows);
+    for (uint32_t row = first; row < g_projectTaskList.count && row < last; ++row) {
+        const ProjectTask& task = g_projectTaskList.tasks[row];
+        const int y = kSearchPanelResultsTop + static_cast<int>((row - first) * kSearchPanelRowHeight);
+        if (row == g_projectTaskListSelected)
+            drawPanel(ctx, { 20, y - 12, 920, kSearchPanelRowHeight }, 0x34496Au);
+        drawText(ctx, 24, y, ProjectTaskAnnotationName(task.annotation));
+        const uint32_t pathLength = lengthOf(task.relativePath, sizeof(task.relativePath));
+        char visiblePath[64] = {};
+        if (pathLength > 48u) {
+            visiblePath[0] = '.';
+            visiblePath[1] = '.';
+            visiblePath[2] = '.';
+            for (uint32_t i = 0; i < 45u; ++i)
+                visiblePath[3u + i] = task.relativePath[pathLength - 45u + i];
+            visiblePath[48] = '\0';
+        } else {
+            copyText(visiblePath, sizeof(visiblePath), task.relativePath);
+        }
+        copyText(g_textScratch, sizeof(g_textScratch), visiblePath);
+        appendText(g_textScratch, sizeof(g_textScratch), ":");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), task.line);
+        drawText(ctx, 92, y, g_textScratch);
+        drawText(ctx, 470, y, task.description);
+    }
+    const ProjectSearchOperation* operation = ProjectSearchOperationInfo(&g_projectSearch);
+    if (g_projectTaskList.count == 0 && scanning)
+        drawText(ctx, 24, kSearchPanelResultsTop, "Scanning project C/C++ source files...");
+    else if (g_projectTaskList.count == 0 && operation &&
+             operation->state == ProjectSearchState::Completed && g_projectTaskListTerminalReported)
+        drawText(ctx, 24, kSearchPanelResultsTop, "No tasks found.");
+    else if (g_projectTaskList.count == 0 && (!g_controller.model.open || !g_controller.model.hasProject))
+        drawText(ctx, 24, kSearchPanelResultsTop, "No active project.");
+    if (g_projectTaskList.count > kSearchPanelMaxRows)
+        drawText(ctx, 760, 177, "Scroll: mouse wheel / Up / Down");
+}
+
 static void drawEditorRangeOverlay(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
                                    uint32_t lineEnd, uint64_t rangeStart, uint64_t rangeEnd,
                                    uint32_t color, uint32_t rowY) {
@@ -11271,6 +11614,15 @@ static void resetProjectSessionUi() {
     // A successful project/workspace transition starts a new user-facing
     // session. Keep the Developer Studio channel, but do not present an old
     // project's build/run records or terminal state as current.
+    DeveloperToolRegistryCloseActive(&g_developerTools, nullptr);
+    ProjectTaskListInit(&g_projectTaskList);
+    g_projectTaskListPanelOpen = false;
+    g_projectTaskListSelected = 0;
+    g_projectTaskListScroll = 0;
+    g_projectTaskListProjectGeneration = 0;
+    g_projectTaskListProjectId[0] = '\0';
+    g_projectTaskListStatus[0] = '\0';
+    g_projectTaskListTerminalReported = false;
     OutputServiceClearChannel(&g_outputService, OutputChannel::Build);
     OutputServiceClearChannel(&g_outputService, OutputChannel::Run);
     OutputServiceClearChannel(&g_outputService, OutputChannel::DeveloperStudio);
@@ -17863,6 +18215,7 @@ static void drawShell(gx_app_context* ctx) {
     drawFindBar(ctx);
     drawProjectSearchPanel(ctx);
     drawReplacePreviewPanel(ctx);
+    drawTaskListPanel(ctx);
     drawReferencesPanel(ctx);
     drawSymbolSearch(ctx);
     drawDefinitionPicker(ctx);
@@ -18498,6 +18851,57 @@ static bool handleReplacePreviewKey(gx_app_context* ctx, int keyCode, int action
     return false;
 }
 
+static void taskListEnsureSelectionVisible() {
+    if (g_projectTaskList.count == 0) {
+        g_projectTaskListSelected = 0;
+        g_projectTaskListScroll = 0;
+        return;
+    }
+    if (g_projectTaskListSelected >= g_projectTaskList.count)
+        g_projectTaskListSelected = g_projectTaskList.count - 1u;
+    if (g_projectTaskListSelected < g_projectTaskListScroll)
+        g_projectTaskListScroll = g_projectTaskListSelected;
+    if (g_projectTaskListSelected >= g_projectTaskListScroll +
+        static_cast<uint32_t>(kSearchPanelMaxRows))
+        g_projectTaskListScroll = g_projectTaskListSelected -
+            static_cast<uint32_t>(kSearchPanelMaxRows) + 1u;
+}
+
+static bool handleTaskListKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_projectTaskListPanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    const bool scanning = ProjectSearchIsActive(&g_projectSearch);
+    if (keyCode == 27) {
+        if (scanning) {
+            ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+            copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                     "Cancelling scan...");
+        } else {
+            closeTaskList(ctx, "escape");
+        }
+        return true;
+    }
+    if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
+        if (g_projectTaskList.count != 0) {
+            if (keyCode == GX_KEY_DOWN && g_projectTaskListSelected + 1u < g_projectTaskList.count)
+                ++g_projectTaskListSelected;
+            else if (keyCode == GX_KEY_UP && g_projectTaskListSelected > 0)
+                --g_projectTaskListSelected;
+            taskListEnsureSelectionVisible();
+        }
+        return true;
+    }
+    if (keyCode == 13) {
+        activateProjectTask(ctx, g_projectTaskListSelected);
+        return true;
+    }
+    if (!(modifiers & (GX_KEY_MOD_CTRL | GX_KEY_MOD_ALT)) &&
+        (keyCode == 82 || keyCode == 114)) {
+        startProjectTaskListScan(ctx);
+        return true;
+    }
+    return false;
+}
+
 static bool handleReferencePickerKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_referencePickerOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) {
@@ -18910,6 +19314,8 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (g_goToLinePanelOpen) return;
     if (g_replacePreviewPanelOpen && handleReplacePreviewKey(ctx, keyCode, action, modifiers)) return;
     if (g_replacePreviewPanelOpen) return;
+    if (g_projectTaskListPanelOpen && handleTaskListKey(ctx, keyCode, action, modifiers)) return;
+    if (g_projectTaskListPanelOpen) return;
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
     if (g_symbolSearchOpen) return;
     if (g_projectSearchPanelOpen && handleProjectSearchKey(ctx, keyCode, action, modifiers)) return;
@@ -19109,6 +19515,49 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         if (button == GX_MOUSE_BUTTON_LEFT && action == GX_MOUSE_ACTION_DOWN &&
             y >= 322 && y < 348 && x >= 290 && x < 734)
             g_goToLineInputCaret = lengthOf(g_goToLineInput, sizeof(g_goToLineInput));
+        drawShell(ctx);
+        return;
+    }
+    if (g_projectTaskListPanelOpen) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t maximum = g_projectTaskList.count >
+                static_cast<uint32_t>(kSearchPanelMaxRows) ?
+                g_projectTaskList.count - static_cast<uint32_t>(kSearchPanelMaxRows) : 0;
+            if (event.param4 > 0)
+                g_projectTaskListScroll = g_projectTaskListScroll > 3 ?
+                    g_projectTaskListScroll - 3 : 0;
+            else if (g_projectTaskListScroll + 3u < maximum)
+                g_projectTaskListScroll += 3u;
+            else
+                g_projectTaskListScroll = maximum;
+            taskListEnsureSelectionVisible();
+            drawShell(ctx);
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (y >= 87 && y < 108 && x >= 760 && x < 832) {
+                startProjectTaskListScan(ctx);
+            } else if (y >= 87 && y < 108 && x >= 840 && x < 912) {
+                if (ProjectSearchIsActive(&g_projectSearch)) {
+                    ProjectSearchCancel(&g_projectSearch, g_projectSearchOperationId);
+                    copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
+                             "Cancelling scan...");
+                } else {
+                    closeTaskList(ctx, "close");
+                }
+            } else if (y >= kSearchPanelResultsTop - 4 &&
+                       y < kSearchPanelTop + 580 && g_projectTaskList.count != 0) {
+                const uint32_t row = g_projectTaskListScroll +
+                    static_cast<uint32_t>((y - kSearchPanelResultsTop) / kSearchPanelRowHeight);
+                if (row < g_projectTaskList.count &&
+                    row < g_projectTaskListScroll + static_cast<uint32_t>(kSearchPanelMaxRows)) {
+                    g_projectTaskListSelected = row;
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                        activateProjectTask(ctx, row);
+                }
+            }
+        }
         drawShell(ctx);
         return;
     }
@@ -19819,6 +20268,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             activateFindInFiles(ctx, "tools_menu");
         else if (tool && tool->id == DeveloperToolId::ReplaceInFiles)
             activateReplaceInFiles(ctx, "tools_menu");
+        else if (tool && tool->id == DeveloperToolId::TaskList)
+            activateTaskList(ctx, "tools_menu");
         g_toolsMenuOpen = false;
         drawShell(ctx);
         return;
@@ -20311,11 +20762,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         DeveloperToolRegistryRegister(&g_developerTools, &kGoToFileToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kGoToLineToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand) &&
-        DeveloperToolRegistryRegister(&g_developerTools, &kReplaceInFilesToolCommand);
+        DeveloperToolRegistryRegister(&g_developerTools, &kReplaceInFilesToolCommand) &&
+        DeveloperToolRegistryRegister(&g_developerTools, &kTaskListToolCommand);
     if (!toolsRegistered)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=FAIL");
     else
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=4");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=5");
     g_projectSearchPanelOpen = false;
     ReplacePreviewPlanInit(&g_replacePreviewPlan);
     g_replacePreviewPanelOpen = false;
@@ -20338,6 +20790,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     g_projectSearchStatus[0] = '\0';
     g_lastProjectSearchQuery[0] = '\0';
     g_projectSearchTerminalReported = false;
+    ProjectTaskListInit(&g_projectTaskList);
+    g_projectTaskListPanelOpen = false;
+    g_projectTaskListSelected = 0;
+    g_projectTaskListScroll = 0;
+    g_projectTaskListProjectGeneration = 0;
+    g_projectTaskListProjectId[0] = '\0';
+    g_projectTaskListStatus[0] = '\0';
+    g_projectTaskListTerminalReported = false;
     g_goToFileResults = {};
     g_goToFilePanelOpen = false;
     g_goToFileSelected = 0;

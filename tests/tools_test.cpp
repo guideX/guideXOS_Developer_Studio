@@ -46,15 +46,21 @@ int main() {
         DeveloperToolId::ReplaceInFiles, "Replace in Files", "Ctrl+Shift+H",
         activateFindInFiles, closeFindInFiles
     };
+    const DeveloperToolCommand taskList = {
+        DeveloperToolId::TaskList, "Task List", "",
+        activateFindInFiles, closeFindInFiles
+    };
 
     assert(DeveloperToolRegistryRegister(&registry, &goToFile));
     assert(DeveloperToolRegistryRegister(&registry, &goToLine));
     assert(DeveloperToolRegistryRegister(&registry, &findInFiles));
     assert(DeveloperToolRegistryRegister(&registry, &replaceInFiles));
+    assert(DeveloperToolRegistryRegister(&registry, &taskList));
     assert(!DeveloperToolRegistryRegister(&registry, &findInFiles));
     assert(DeveloperToolRegistryAt(&registry, 0) != nullptr);
     assert(DeveloperToolRegistryAt(&registry, 3)->id == DeveloperToolId::ReplaceInFiles);
-    assert(DeveloperToolRegistryAt(&registry, 4) == nullptr);
+    assert(DeveloperToolRegistryAt(&registry, 4)->id == DeveloperToolId::TaskList);
+    assert(DeveloperToolRegistryAt(&registry, 5) == nullptr);
     assert(DeveloperToolRegistryAt(&registry, 0)->id == DeveloperToolId::GoToFile);
     assert(DeveloperToolRegistryAt(&registry, 1)->id == DeveloperToolId::GoToLine);
     assert(DeveloperToolRegistryAt(&registry, 2)->id == DeveloperToolId::FindInFiles);
