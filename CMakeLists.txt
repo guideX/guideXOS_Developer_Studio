@@ -340,6 +340,39 @@ else()
     message(FATAL_ERROR "GUIDEXOS_TARGET_ARCHITECTURE must be amd64 or arm64")
 endif()
 
+option(GUIDEXOS_ENABLE_TASK_LIST_HOSTED_UI_TEST
+    "Enable the real hosted Server UI interaction test for the Task List" OFF)
+set(GUIDEXOS_TASK_LIST_UI_SERVER_ROOT "" CACHE PATH
+    "Server checkout containing guideXOSServer.experimental.exe")
+set(GUIDEXOS_TASK_LIST_UI_APP_PACKAGE "" CACHE PATH
+    "Isolated AMD64 Developer Studio package directory for the hosted UI test")
+
+if(GUIDEXOS_ENABLE_TASK_LIST_HOSTED_UI_TEST)
+    if(NOT WIN32)
+        message(FATAL_ERROR "The hosted Task List UI test requires the Windows Server UI runtime")
+    endif()
+    if(NOT GUIDEXOS_TASK_LIST_UI_SERVER_ROOT OR NOT GUIDEXOS_TASK_LIST_UI_APP_PACKAGE)
+        message(FATAL_ERROR
+            "Set GUIDEXOS_TASK_LIST_UI_SERVER_ROOT and GUIDEXOS_TASK_LIST_UI_APP_PACKAGE to enable the hosted UI test")
+    endif()
+    find_program(GUIDEXOS_TASK_LIST_UI_POWERSHELL NAMES pwsh powershell)
+    if(NOT GUIDEXOS_TASK_LIST_UI_POWERSHELL)
+        message(FATAL_ERROR "PowerShell is required to run the hosted Task List UI test")
+    endif()
+    add_test(NAME developer_studio_task_list_hosted_ui_test
+        COMMAND "${GUIDEXOS_TASK_LIST_UI_POWERSHELL}"
+            -NoProfile
+            -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke-developer-studio-task-list.ps1"
+            -ServerRoot "${GUIDEXOS_TASK_LIST_UI_SERVER_ROOT}"
+            -AppPackageRoot "${GUIDEXOS_TASK_LIST_UI_APP_PACKAGE}"
+            -EvidenceRoot "${CMAKE_CURRENT_BINARY_DIR}/tools7-hosted-ui-evidence")
+    set_tests_properties(developer_studio_task_list_hosted_ui_test PROPERTIES
+        LABELS "hosted-ui;integration"
+        RUN_SERIAL TRUE
+        TIMEOUT 300)
+endif()
+
 if(GUIDEXOS_BUILD_NATIVE_ELF)
     if(NOT GUIDEXOS_SERVER_ROOT)
         message(FATAL_ERROR "GUIDEXOS_SERVER_ROOT is required for the Native ELF target")

@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <stdint.h>
 #include <guidexos/ui.h>
 
 #include "developer_studio_models.h"
@@ -1224,6 +1225,7 @@ static char g_lastProjectSearchQuery[kFindMaxQueryBytes + 1] = {};
 static bool g_projectSearchTerminalReported = false;
 static ProjectTaskList g_projectTaskList = {};
 static bool g_projectTaskListPanelOpen = false;
+static bool g_projectTaskListPanelVisibleReported = false;
 static uint32_t g_projectTaskListSelected = 0;
 static uint32_t g_projectTaskListScroll = 0;
 static uint64_t g_projectTaskListProjectGeneration = 0;
@@ -1239,6 +1241,7 @@ static uint32_t g_replacePreviewFieldCaret = 0;
 static uint32_t g_replacePreviewScroll = 0;
 static uint32_t g_replacePreviewValidationIndex = 0;
 static uint64_t g_replacePreviewNextValidationAt = 0;
+static bool g_replacePreviewSafetyReported = false;
 static bool g_replacePreviewScanSucceeded = false;
 static bool g_replacePreviewValidationPending = false;
 static char g_replacePreviewFind[kReplacePreviewMaxFindBytes + 1] = {};
@@ -4906,6 +4909,7 @@ static bool closeFindInFilesTool(void* userData) {
 static bool activateReplaceInFilesTool(void* userData) {
     gx_app_context* ctx = static_cast<gx_app_context*>(userData);
     if (!ctx) return false;
+    g_replacePreviewSafetyReported = false;
     if (!g_replacePreviewPanelOpen) {
         ReplacePreviewPlanClear(&g_replacePreviewPlan);
         g_replacePreviewStatus[0] = '\0';
@@ -4979,6 +4983,7 @@ static bool closeReplaceInFilesTool(void* userData) {
         g_projectSearchTerminalReported = false;
     }
     g_replacePreviewPanelOpen = false;
+    g_replacePreviewSafetyReported = false;
     g_replacePreviewValidationPending = false;
     g_replacePreviewScanSucceeded = false;
     g_replacePreviewScroll = 0;
@@ -5040,6 +5045,7 @@ static bool closeTaskListTool(void* userData) {
         }
     }
     g_projectTaskListPanelOpen = false;
+    g_projectTaskListPanelVisibleReported = false;
     g_projectTaskListTerminalReported = false;
     g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
     return true;
@@ -5652,6 +5658,7 @@ static bool startProjectTaskListScan(gx_app_context* ctx) {
     if (!g_controller.model.open || !g_controller.model.hasProject) {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                  "Open a project before scanning its tasks.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_scan=REJECTED reason=no_project");
         return false;
     }
     if (g_projectSearchOperationId != 0) {
@@ -5697,9 +5704,14 @@ static bool startProjectTaskListScan(gx_app_context* ctx) {
     if (!started) {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Scan failed: ");
         appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), ProjectSearchErrorName(error));
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_scan=FAILED reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), ProjectSearchErrorName(error));
+        logMarker(ctx, g_textScratch);
         return false;
     }
     copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Scanning project C/C++ files...");
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_scan=STARTED");
     return true;
 }
 
@@ -5735,13 +5747,34 @@ static void pollProjectTaskList(gx_app_context* ctx) {
         appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), " files");
         if (operation->truncated || g_projectTaskList.truncated)
             appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), " (partial)");
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_scan=COMPLETED todo=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.todoCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " fixme=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.fixmeCount);
+        appendText(g_textScratch, sizeof(g_textScratch), " tasks=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.count);
+        appendText(g_textScratch, sizeof(g_textScratch), " files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.filesScanned);
+        appendText(g_textScratch, sizeof(g_textScratch), " truncated=");
+        appendText(g_textScratch, sizeof(g_textScratch),
+                   operation->truncated || g_projectTaskList.truncated ? "true" : "false");
+        logMarker(ctx, g_textScratch);
     } else if (operation->state == ProjectSearchState::Cancelled) {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                  "Scan cancelled; partial results retained.");
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_scan=CANCELLED tasks=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_projectTaskList.count);
+        logMarker(ctx, g_textScratch);
     } else {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Scan failed: ");
         appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                    ProjectSearchErrorName(operation->error));
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_scan=FAILED reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), ProjectSearchErrorName(operation->error));
+        logMarker(ctx, g_textScratch);
     }
 }
 
@@ -5750,6 +5783,7 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
         !g_controller.model.hasProject) {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                  "No current task result is available.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=REJECTED reason=no_current_result");
         return false;
     }
     if (!DeveloperToolProjectIdentityMatches(g_projectTaskListProjectId,
@@ -5757,6 +5791,7 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
             g_controller.model.projectGeneration)) {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                  "Task result belongs to a stale project; scan again.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=REJECTED reason=stale_project");
         return false;
     }
     const ProjectTask& task = g_projectTaskList.tasks[taskIndex];
@@ -5765,6 +5800,7 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
         task.relativePath[1] == ':') {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                  "Selected task path is outside the project.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=REJECTED reason=unsafe_path");
         return false;
     }
     uint32_t documentIndex = kMaxOpenDocuments;
@@ -5780,12 +5816,19 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
         else
             appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                        OutputErrorName(navigationError));
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=FAILED path=");
+        appendText(g_textScratch, sizeof(g_textScratch), task.relativePath);
+        appendText(g_textScratch, sizeof(g_textScratch), " line=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), task.line);
+        logMarker(ctx, g_textScratch);
         return false;
     }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!document || documentIndex >= kMaxOpenDocuments) {
         copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                  "Task file opened without an active document.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=FAILED reason=no_active_document");
         return false;
     }
     g_editorScrollLine = 0;
@@ -5799,7 +5842,14 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
     appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), task.relativePath);
     appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), ":");
     appendUnsigned(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), task.line);
-    if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=PASS");
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=PASS path=");
+    appendText(g_textScratch, sizeof(g_textScratch), task.relativePath);
+    appendText(g_textScratch, sizeof(g_textScratch), " line=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), task.line);
+    appendText(g_textScratch, sizeof(g_textScratch), " caret=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), document->buffer.caret);
+    logMarker(ctx, g_textScratch);
     return true;
 }
 
@@ -10984,6 +11034,10 @@ static void drawProjectSearchPanel(gx_app_context* ctx) {
 
 static void drawReplacePreviewPanel(gx_app_context* ctx) {
     if (!g_replacePreviewPanelOpen) return;
+    if (!g_replacePreviewSafetyReported) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER replace_preview_apply=DISABLED reason=atomic_replace_and_durable_sync_unavailable");
+        g_replacePreviewSafetyReported = true;
+    }
     drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
     drawText(ctx, 24, 78, "Replace in Files — Preview Only");
     drawText(ctx, 24, 102, "Find:");
@@ -11076,6 +11130,10 @@ static void drawReplacePreviewPanel(gx_app_context* ctx) {
 
 static void drawTaskListPanel(gx_app_context* ctx) {
     if (!g_projectTaskListPanelOpen) return;
+    if (!g_projectTaskListPanelVisibleReported) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_panel_visible=PASS");
+        g_projectTaskListPanelVisibleReported = true;
+    }
     drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
     drawText(ctx, 24, 78, "Task List — Project TODO/FIXME Navigator");
     drawPanel(ctx, { 760, 87, 72, 20 }, 0x34496Au);
@@ -11617,6 +11675,7 @@ static void resetProjectSessionUi() {
     DeveloperToolRegistryCloseActive(&g_developerTools, nullptr);
     ProjectTaskListInit(&g_projectTaskList);
     g_projectTaskListPanelOpen = false;
+    g_projectTaskListPanelVisibleReported = false;
     g_projectTaskListSelected = 0;
     g_projectTaskListScroll = 0;
     g_projectTaskListProjectGeneration = 0;
@@ -19518,7 +19577,11 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         drawShell(ctx);
         return;
     }
-    if (g_projectTaskListPanelOpen) {
+    const bool taskListToolbarMenuClick = button == GX_MOUSE_BUTTON_LEFT &&
+        (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
+        (y < 48 || (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 &&
+                    y < 42 + static_cast<int>(g_developerTools.count * 24u)));
+    if (g_projectTaskListPanelOpen && !taskListToolbarMenuClick) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             const uint32_t maximum = g_projectTaskList.count >
                 static_cast<uint32_t>(kSearchPanelMaxRows) ?
@@ -20464,7 +20527,7 @@ static bool requestApplicationClose(gx_app_context* ctx, gx_handle window) {
 
 } // namespace
 
-extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
+static gx_result developerStudioMain(gx_app_context* ctx) {
     if (!ctx || !ctx->host) return GX_ERROR_INVALID_ARGUMENT;
     if (!g_phase28zRawEntryReported) {
         logMarker(ctx, "P28Z APP 00 gx_main_entry_raw");
@@ -21257,4 +21320,17 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (ctx->host->exit) return ctx->host->exit(ctx, GX_OK);
     return GX_OK;
     }
+}
+
+extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
+    // Hosted Native ELF execution enters on a Windows thread stack. Touch its
+    // guard pages one page at a time before the main lifecycle's larger local
+    // frame is allocated. The same bounded probe stays inside the guest's
+    // pre-mapped 512 KiB application stack.
+    volatile unsigned char stackProbeAnchor = 0;
+    const uintptr_t stackProbeBase = reinterpret_cast<uintptr_t>(&stackProbeAnchor);
+    for (uintptr_t offset = 4096; offset <= 128 * 1024; offset += 4096) {
+        *reinterpret_cast<volatile unsigned char*>(stackProbeBase - offset) = 0;
+    }
+    return developerStudioMain(ctx);
 }
