@@ -135,6 +135,15 @@ static void clearResultStorage(ProjectSearchService* service) {
     }
 }
 
+static void clearDirtyDocuments(ProjectSearchService* service) {
+    if (!service) return;
+    for (uint32_t i = 0; i < service->dirtyDocumentCount; ++i) {
+        ProjectSearchDocumentSnapshot& snapshot = service->dirtyDocuments[i];
+        clearBytes(&snapshot, sizeof(snapshot));
+    }
+    service->dirtyDocumentCount = 0;
+}
+
 static bool isDefaultExcludedDirectory(const char* name) {
     static const char* const names[] = {
         ".git", ".vs", ".idea", "out", "build", "bin", "obj", "dist", "node_modules",
@@ -574,11 +583,13 @@ static void finishIfReady(ProjectSearchService* service) {
     if (service->operation.truncated) {
         sortGroups(service);
         service->operation.state = ProjectSearchState::Completed;
+        clearDirtyDocuments(service);
         return;
     }
     if (!service->currentDirectoryActive && service->pendingCount == 0) {
         sortGroups(service);
         service->operation.state = ProjectSearchState::Completed;
+        clearDirtyDocuments(service);
     }
 }
 
@@ -630,6 +641,7 @@ static void enterCancelled(ProjectSearchService* service) {
     service->operation.cancellationRequested = true;
     service->currentDirectoryActive = false;
     service->pendingCount = 0;
+    clearDirtyDocuments(service);
 }
 
 } // namespace
@@ -722,14 +734,18 @@ bool ProjectSearchStart(ProjectSearchService* service, const ProjectSearchReques
     if (outError) *outError = ProjectSearchErrorCode::None;
     if (!service || !request) { if (outError) *outError = ProjectSearchErrorCode::Internal; return false; }
     const uint64_t nextId = service->operation.operationId == 0 ? 1 : service->operation.operationId + 1;
+    const bool snapshotsInService = request->dirtyDocuments == service->dirtyDocuments;
     ProjectSearchServiceInit(service);
     service->operation.operationId = nextId == 0 ? 1 : nextId;
     service->operation.projectId = hashProjectId(request->projectId);
     service->operation.projectGeneration = request->projectGeneration;
+    service->dirtyDocumentCount = request->dirtyDocumentCount > kMaxOpenDocuments ?
+        kMaxOpenDocuments : request->dirtyDocumentCount;
     ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
     if (!validateRequest(service, request, &error)) {
         service->operation.state = ProjectSearchState::Failed;
         setError(service, error);
+        clearDirtyDocuments(service);
         if (outError) *outError = error;
         if (outOperationId) *outOperationId = service->operation.operationId;
         return false;
@@ -739,29 +755,31 @@ bool ProjectSearchStart(ProjectSearchService* service, const ProjectSearchReques
     copyText(service->projectIdText, sizeof(service->projectIdText), request->projectId);
     service->operation.options = request->options;
     service->parsedOptions = request->options;
-    service->dirtyDocumentCount = request->dirtyDocumentCount > kMaxOpenDocuments ? kMaxOpenDocuments : request->dirtyDocumentCount;
     service->scanVisitor = request->scanVisitor;
     service->scanVisitorUserData = request->scanVisitorUserData;
     for (uint32_t i = 0; i < service->dirtyDocumentCount; ++i) {
         if (!request->dirtyDocuments) {
-            service->dirtyDocumentCount = 0;
+            clearDirtyDocuments(service);
             break;
         }
         const ProjectSearchDocumentSnapshot& source = request->dirtyDocuments[i];
         ProjectSearchDocumentSnapshot& destination = service->dirtyDocuments[i];
-        if (!copyText(destination.relativePath, sizeof(destination.relativePath), source.relativePath) ||
+        if ((!snapshotsInService &&
+             !copyText(destination.relativePath, sizeof(destination.relativePath), source.relativePath)) ||
             source.length > kProjectSearchMaxFileBytes ||
             !relativePathFor(service->rootPath, JoinWorkspacePath(service->rootPath, source.relativePath,
                                                                   service->scanBuffer, sizeof(service->scanBuffer)) ? service->scanBuffer : "",
                              destination.relativePath, sizeof(destination.relativePath))) {
-            service->dirtyDocumentCount = i;
+            clearDirtyDocuments(service);
             break;
         }
-        destination.length = source.length;
-        destination.documentId = source.documentId;
-        destination.documentGeneration = source.documentGeneration;
-        for (uint32_t j = 0; j < source.length; ++j) destination.data[j] = source.data[j];
-        destination.data[source.length] = '\0';
+        if (!snapshotsInService) {
+            destination.length = source.length;
+            destination.documentId = source.documentId;
+            destination.documentGeneration = source.documentGeneration;
+            for (uint32_t j = 0; j < source.length; ++j) destination.data[j] = source.data[j];
+            destination.data[source.length] = '\0';
+        }
     }
     service->startedAtMs = nowMs;
     service->operation.state = ProjectSearchState::Enumerating;
@@ -786,6 +804,7 @@ bool ProjectSearchPoll(ProjectSearchService* service, uint64_t operationId,
         service->operation.state = ProjectSearchState::Failed;
         service->operation.truncated = true;
         setNotice(service, "Search timed out.");
+        clearDirtyDocuments(service);
         return true;
     }
     if (workBudget == 0) workBudget = kProjectSearchMaxEntriesPerPoll;
@@ -796,7 +815,10 @@ bool ProjectSearchPoll(ProjectSearchService* service, uint64_t operationId,
         if (!service->currentDirectoryActive) {
             if (service->pendingCount == 0) break;
             if (!dequeueDirectory(service)) break;
-            if (service->operation.state == ProjectSearchState::Failed) return true;
+            if (service->operation.state == ProjectSearchState::Failed) {
+                clearDirtyDocuments(service);
+                return true;
+            }
         }
         if (service->currentEntryIndex >= service->currentEntryCount) {
             service->currentDirectoryActive = false;
@@ -850,6 +872,7 @@ bool ProjectSearchRelease(ProjectSearchService* service, uint64_t operationId) {
     service->operation.error = ProjectSearchErrorCode::Released;
     service->operation.state = ProjectSearchState::Idle;
     clearResultStorage(service);
+    clearDirtyDocuments(service);
     service->pendingCount = 0;
     service->currentDirectoryActive = false;
     return true;

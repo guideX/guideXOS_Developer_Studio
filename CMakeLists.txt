@@ -182,6 +182,23 @@ target_link_libraries(developer_studio_project_symbols_test PRIVATE developer_st
 set_target_properties(developer_studio_project_symbols_test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME developer_studio_project_symbols_test COMMAND developer_studio_project_symbols_test)
 
+# Exercise the tighter Native ELF capacities in both hosted configurations.
+# These translation units use the same compile-time bounds as the packaged app.
+add_executable(developer_studio_project_symbols_native_limits_test
+    tests/project_symbols_native_limits_test.cpp
+    src/developer_studio_cpp_lexer.cpp
+    src/developer_studio_document_outline.cpp
+    src/developer_studio_project_search.cpp
+    src/developer_studio_project_symbols.cpp
+)
+target_link_libraries(developer_studio_project_symbols_native_limits_test PRIVATE developer_studio_models)
+target_compile_definitions(developer_studio_project_symbols_native_limits_test PRIVATE
+    GXOS_DEVELOPER_STUDIO_BARE_METAL)
+set_target_properties(developer_studio_project_symbols_native_limits_test PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME developer_studio_project_symbols_native_limits_test
+    COMMAND developer_studio_project_symbols_native_limits_test)
+
 add_executable(developer_studio_symbol_test
     tests/symbol_test.cpp
 )

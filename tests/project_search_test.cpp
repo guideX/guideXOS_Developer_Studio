@@ -189,6 +189,41 @@ int main() {
     assert(dirtyGroup && dirtyGroup->sourceKind == ProjectSearchSourceKind::DirtyDocument);
     assert(dirtyGroup->documentId == 42 && dirtyGroup->documentGeneration == 9);
 
+    ProjectSearchOptionsInit(&request.options);
+    setText(request.options.query, sizeof(request.options.query), "SnapshotOnly");
+    ProjectSearchDocumentSnapshot& firstServiceSnapshot = service.dirtyDocuments[0];
+    setText(firstServiceSnapshot.relativePath, sizeof(firstServiceSnapshot.relativePath), "src/main.cpp");
+    setText(firstServiceSnapshot.data, sizeof(firstServiceSnapshot.data), "FirstSnapshotOnly\n");
+    firstServiceSnapshot.length = static_cast<uint32_t>(std::strlen(firstServiceSnapshot.data));
+    firstServiceSnapshot.documentId = 101;
+    firstServiceSnapshot.documentGeneration = 3;
+    firstServiceSnapshot.data[sizeof(firstServiceSnapshot.data) - 1u] = 'x';
+    ProjectSearchDocumentSnapshot& secondServiceSnapshot = service.dirtyDocuments[1];
+    setText(secondServiceSnapshot.relativePath, sizeof(secondServiceSnapshot.relativePath), "a.cpp");
+    setText(secondServiceSnapshot.data, sizeof(secondServiceSnapshot.data), "SecondSnapshotOnly\n");
+    secondServiceSnapshot.length = static_cast<uint32_t>(std::strlen(secondServiceSnapshot.data));
+    secondServiceSnapshot.documentId = 102;
+    secondServiceSnapshot.documentGeneration = 4;
+    request.dirtyDocuments = service.dirtyDocuments;
+    request.dirtyDocumentCount = 2;
+    assert(ProjectSearchStart(&service, &request, 0, &operationId, &error));
+    assert(service.dirtyDocumentCount == 2);
+    assert(std::strcmp(service.dirtyDocuments[0].data, "FirstSnapshotOnly\n") == 0);
+    assert(std::strcmp(service.dirtyDocuments[1].data, "SecondSnapshotOnly\n") == 0);
+    for (uint32_t i = 0; i < 1000 && ProjectSearchIsActive(&service); ++i)
+        assert(ProjectSearchPoll(&service, operationId, 16, i));
+    operation = ProjectSearchOperationInfo(&service);
+    assert(operation && operation->state == ProjectSearchState::Completed);
+    assert(operation->resultFileCount == 2 && operation->resultMatchCount == 2);
+    assert(service.dirtyDocumentCount == 0);
+    const ProjectSearchFileGroup* firstDirtyGroup = ProjectSearchResultGroupAt(&service, 0);
+    const ProjectSearchFileGroup* secondDirtyGroup = ProjectSearchResultGroupAt(&service, 1);
+    assert(firstDirtyGroup && secondDirtyGroup);
+    assert(firstDirtyGroup->sourceKind == ProjectSearchSourceKind::DirtyDocument);
+    assert(secondDirtyGroup->sourceKind == ProjectSearchSourceKind::DirtyDocument);
+    assert(firstDirtyGroup->documentId == 102 && secondDirtyGroup->documentId == 101);
+    assert(service.dirtyDocuments[0].data[sizeof(service.dirtyDocuments[0].data) - 1u] == '\0');
+
     assert(ProjectSearchCancel(&service, operationId) == false); // completed cancel is harmless and rejected
     assert(ProjectSearchRelease(&service, operationId));
     assert(!ProjectSearchPoll(&service, operationId, 16, 1));
@@ -200,11 +235,25 @@ int main() {
     const uint64_t oldOperation = operationId;
     assert(ProjectSearchStart(&service, &request, 0, &operationId, &error));
     assert(operationId != oldOperation);
+    ProjectSearchDocumentSnapshot& cancelledSnapshot = service.dirtyDocuments[0];
+    setText(cancelledSnapshot.relativePath, sizeof(cancelledSnapshot.relativePath), "src/main.cpp");
+    setText(cancelledSnapshot.data, sizeof(cancelledSnapshot.data), "CancelledSnapshot\n");
+    cancelledSnapshot.length = static_cast<uint32_t>(std::strlen(cancelledSnapshot.data));
+    cancelledSnapshot.documentId = 201;
+    cancelledSnapshot.documentGeneration = 5;
+    cancelledSnapshot.data[sizeof(cancelledSnapshot.data) - 1u] = 'x';
+    request.dirtyDocuments = service.dirtyDocuments;
+    request.dirtyDocumentCount = 1;
+    assert(ProjectSearchStart(&service, &request, 0, &operationId, &error));
     assert(!ProjectSearchPoll(&service, oldOperation, 16, 1));
     assert(ProjectSearchCancel(&service, operationId));
     assert(ProjectSearchPoll(&service, operationId, 16, 1));
     assert(ProjectSearchOperationInfo(&service)->state == ProjectSearchState::Cancelled);
     assert(ProjectSearchOperationInfo(&service)->error == ProjectSearchErrorCode::Cancelled);
+    assert(service.dirtyDocumentCount == 0);
+    assert(service.dirtyDocuments[0].relativePath[0] == '\0');
+    assert(service.dirtyDocuments[0].data[0] == '\0');
+    assert(service.dirtyDocuments[0].data[sizeof(service.dirtyDocuments[0].data) - 1u] == '\0');
     assert(ProjectSearchRelease(&service, operationId));
     assert(ProjectSearchQueryResultGroups(&service) == 0);
     assert(ProjectSearchOperationInfo(&service)->state == ProjectSearchState::Idle);

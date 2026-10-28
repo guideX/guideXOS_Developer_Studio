@@ -1253,7 +1253,6 @@ static char g_findTransientStatus[96] = {};
 static uint32_t g_findVisibleIndices[kFindVisibleOverlayCapacity] = {};
 static ProjectSearchService g_projectSearch = {};
 static ProjectSearchOptions g_projectSearchDraft = {};
-static ProjectSearchDocumentSnapshot g_projectSearchSnapshots[kMaxOpenDocuments] = {};
 static bool g_projectSearchPanelOpen = false;
 static bool g_projectSearchResultsFocused = false;
 static ProjectSearchField g_projectSearchField = ProjectSearchField::Query;
@@ -1517,7 +1516,7 @@ static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex);
 static bool handleGoToFileKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static bool handleGoToLineKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static void buildGoToFileInventory();
-static uint32_t captureDirtyProjectSearchDocuments();
+static uint32_t captureDirtyProjectSearchDocuments(ProjectSearchDocumentSnapshot* snapshots);
 static void stopReferenceSearch(gx_app_context* ctx);
 static void closeFindBar();
 static void closeSymbolSearch();
@@ -4038,8 +4037,9 @@ static bool startReferenceSearchWithTarget(gx_app_context* ctx, const ReferenceT
     copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.rootPath);
     request.scanOptions = options;
     request.fileSystem = g_controller.fileSystem;
-    request.dirtyDocuments = g_projectSearchSnapshots;
-    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.dirtyDocuments = g_referenceSearch.scanner.dirtyDocuments;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments(
+        g_referenceSearch.scanner.dirtyDocuments);
     request.symbolDatabase = &g_symbolDatabase;
     request.relationshipGraph = SymbolRelationshipGraphIsCurrent(
         g_relationshipService.completedGraph, g_controller.model.project.projectId,
@@ -4583,12 +4583,21 @@ static void projectSearchInitializeDraft(const Document* document) {
     g_projectSearchFieldCaret = lengthOf(g_projectSearchDraft.query, sizeof(g_projectSearchDraft.query));
 }
 
-static uint32_t captureDirtyProjectSearchDocuments() {
+static uint32_t captureDirtyProjectSearchDocuments(ProjectSearchDocumentSnapshot* snapshots) {
+    if (!snapshots) return 0;
+    for (uint32_t i = 0; i < kMaxOpenDocuments; ++i) {
+        ProjectSearchDocumentSnapshot& snapshot = snapshots[i];
+        snapshot.relativePath[0] = '\0';
+        snapshot.data[0] = '\0';
+        snapshot.length = 0;
+        snapshot.documentId = 0;
+        snapshot.documentGeneration = 0;
+    }
     uint32_t count = 0;
     for (uint32_t i = 0; i < kMaxOpenDocuments && count < kMaxOpenDocuments; ++i) {
         const Document& document = g_controller.model.documents[i];
         if (!document.used || !document.buffer.dirty) continue;
-        ProjectSearchDocumentSnapshot& snapshot = g_projectSearchSnapshots[count];
+        ProjectSearchDocumentSnapshot& snapshot = snapshots[count];
         if (!copyProjectRelativePath(g_controller.model, document.path, snapshot.relativePath,
                                      sizeof(snapshot.relativePath))) continue;
         if (document.buffer.length > kProjectSearchMaxFileBytes) continue;
@@ -4719,8 +4728,9 @@ static bool startReplacePreview(gx_app_context* ctx) {
     request.fileSystem.write = nullptr;
     request.fileSystem.createDirectory = nullptr;
     request.fileSystem.removePath = nullptr;
-    request.dirtyDocuments = g_projectSearchSnapshots;
-    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.dirtyDocuments = g_projectSearch.dirtyDocuments;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments(
+        g_projectSearch.dirtyDocuments);
     request.scanVisitor = ReplacePreviewPlanVisitFile;
     request.scanVisitorUserData = &g_replacePreviewPlan;
     ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
@@ -5492,8 +5502,9 @@ static bool startProjectSymbolsScan(gx_app_context* ctx, const char* reason) {
     request.fileSystem.write = nullptr;
     request.fileSystem.createDirectory = nullptr;
     request.fileSystem.removePath = nullptr;
-    request.dirtyDocuments = g_projectSearchSnapshots;
-    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.dirtyDocuments = g_projectSearch.dirtyDocuments;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments(
+        g_projectSearch.dirtyDocuments);
     request.scanVisitor = ProjectSymbolsVisitFile;
     request.scanVisitorUserData = &g_projectSymbols;
 
@@ -6277,8 +6288,9 @@ static bool startProjectSearch(gx_app_context* ctx) {
     copyText(request.rootPath, sizeof(request.rootPath), g_controller.model.rootPath);
     request.options = g_projectSearchDraft;
     request.fileSystem = g_controller.fileSystem;
-    request.dirtyDocuments = g_projectSearchSnapshots;
-    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.dirtyDocuments = g_projectSearch.dirtyDocuments;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments(
+        g_projectSearch.dirtyDocuments);
     ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
     uint64_t operationId = 0;
     if (!ProjectSearchStart(&g_projectSearch, &request, gx_get_ticks_ms(ctx), &operationId, &error)) {
@@ -6337,8 +6349,9 @@ static bool startProjectTaskListScan(gx_app_context* ctx) {
     copyText(request.options.includePattern, sizeof(request.options.includePattern),
              "*.c;*.h;*.cc;*.cpp;*.cxx;*.hh;*.hpp;*.hxx");
     request.fileSystem = g_controller.fileSystem;
-    request.dirtyDocuments = g_projectSearchSnapshots;
-    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments();
+    request.dirtyDocuments = g_projectSearch.dirtyDocuments;
+    request.dirtyDocumentCount = captureDirtyProjectSearchDocuments(
+        g_projectSearch.dirtyDocuments);
     request.scanVisitor = ProjectTaskListVisitFile;
     request.scanVisitorUserData = &g_projectTaskList;
     ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
