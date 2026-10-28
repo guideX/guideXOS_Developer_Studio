@@ -1,4 +1,5 @@
 #include "developer_studio_task_list.h"
+#include "developer_studio_cpp_lexer.h"
 
 namespace guidexos {
 namespace developer_studio {
@@ -33,27 +34,6 @@ static char lowerAscii(char value) {
 static bool isIdentifierByte(char value) {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
         (value >= '0' && value <= '9') || value == '_';
-}
-
-static bool isCppSourcePath(const char* path) {
-    if (!path || path[0] == '\0') return false;
-    const char* base = path;
-    for (const char* cursor = path; *cursor; ++cursor)
-        if (*cursor == '/' || *cursor == static_cast<char>(92)) base = cursor + 1;
-    const char* dot = nullptr;
-    for (const char* cursor = base; *cursor; ++cursor) if (*cursor == '.') dot = cursor;
-    if (!dot) return false;
-    static const char* const extensions[] = {
-        ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"
-    };
-    for (uint32_t extensionIndex = 0;
-         extensionIndex < sizeof(extensions) / sizeof(extensions[0]); ++extensionIndex) {
-        const char* extension = extensions[extensionIndex];
-        uint32_t i = 0;
-        while (extension[i] && dot[i] && lowerAscii(dot[i]) == extension[i]) ++i;
-        if (extension[i] == '\0' && dot[i] == '\0') return true;
-    }
-    return false;
 }
 
 static bool validRelativePath(const char* path) {
@@ -147,151 +127,27 @@ static bool processCommentSegment(ProjectTaskList* taskList, const char* path,
     return true;
 }
 
-static bool isRawDelimiterByte(unsigned char value) {
-    return value > 0x20u && value != '(' && value != ')' && value != '\\' && value != 0x7Fu;
-}
+static bool processComment(ProjectTaskList* taskList, const char* path, const char* data,
+                           uint32_t length, const CppLexToken& token) {
+    uint32_t contentStart = token.start + 2u;
+    uint32_t contentEnd = token.start + token.length;
+    const bool lineComment = contentStart <= length && data[token.start] == '/' &&
+        token.start + 1u < length && data[token.start + 1u] == '/';
+    if (!lineComment && contentEnd >= token.start + 4u &&
+        data[contentEnd - 2u] == '*' && data[contentEnd - 1u] == '/') contentEnd -= 2u;
 
-static bool skipRawString(const char* data, uint32_t length, uint32_t* cursor,
-                          uint32_t* line, uint32_t* lineStart) {
-    if (!data || !cursor || !line || !lineStart || *cursor + 1u >= length ||
-        data[*cursor] != 'R' || data[*cursor + 1u] != '"') return false;
-    const uint32_t delimiterStart = *cursor + 2u;
-    uint32_t open = delimiterStart;
-    while (open < length && data[open] != '(' && open - delimiterStart <= 16u &&
-           isRawDelimiterByte(static_cast<unsigned char>(data[open]))) ++open;
-    if (open >= length || data[open] != '(' || open - delimiterStart > 16u) return false;
-    const uint32_t delimiterLength = open - delimiterStart;
-    uint32_t i = open + 1u;
-    while (i < length) {
-        if (data[i] == ')' && delimiterLength + 1u < length - i) {
-            uint32_t j = 0;
-            while (j < delimiterLength && data[i + 1u + j] == data[delimiterStart + j]) ++j;
-            if (j == delimiterLength && data[i + 1u + delimiterLength] == '"') {
-                *cursor = i + delimiterLength + 2u;
-                return true;
-            }
-        }
-        if (data[i] == '\n') {
-            ++(*line);
-            *lineStart = i + 1u;
-        }
-        ++i;
-    }
-    *cursor = length;
-    return true;
-}
-
-static void skipQuotedLiteral(const char* data, uint32_t length, uint32_t* cursor,
-                              uint32_t* line, uint32_t* lineStart) {
-    const char quote = data[*cursor];
-    ++(*cursor);
-    while (*cursor < length) {
-        const char value = data[*cursor];
-        if (value == quote) {
-            ++(*cursor);
-            return;
-        }
-        if (value == '\n') return;
-        if (value == '\\') {
-            if (*cursor + 1u < length && data[*cursor + 1u] == '\n') {
-                ++(*line);
-                *lineStart = *cursor + 2u;
-                *cursor += 2u;
-            } else if (*cursor + 2u < length && data[*cursor + 1u] == '\r' &&
-                       data[*cursor + 2u] == '\n') {
-                ++(*line);
-                *lineStart = *cursor + 3u;
-                *cursor += 3u;
-            } else if (*cursor + 1u < length) {
-                *cursor += 2u;
-            } else {
-                ++(*cursor);
-            }
-        } else {
-            ++(*cursor);
-        }
-    }
-}
-
-static bool scanCppComments(ProjectTaskList* taskList, const char* path,
-                            const char* data, uint32_t length) {
-    uint32_t i = 0;
-    uint32_t line = 1;
-    uint32_t lineStart = 0;
-    while (i < length) {
-        if (data[i] == '\n') {
+    uint32_t segmentStart = contentStart;
+    uint32_t line = token.line;
+    for (uint32_t cursor = contentStart; cursor <= contentEnd; ++cursor) {
+        if (cursor < contentEnd && data[cursor] != '\n') continue;
+        uint32_t segmentEnd = cursor;
+        if (segmentEnd > segmentStart && data[segmentEnd - 1u] == '\r') --segmentEnd;
+        if (!processCommentSegment(taskList, path, data, length, segmentStart, segmentEnd, line))
+            return false;
+        if (cursor < contentEnd) {
             ++line;
-            lineStart = i + 1u;
-            ++i;
-            continue;
+            segmentStart = cursor + 1u;
         }
-        if (data[i] == 'R' && i + 1u < length && data[i + 1u] == '"' &&
-            skipRawString(data, length, &i, &line, &lineStart)) continue;
-        if (data[i] == '"' || data[i] == '\'') {
-            skipQuotedLiteral(data, length, &i, &line, &lineStart);
-            continue;
-        }
-        if (data[i] != '/' || i + 1u >= length) {
-            ++i;
-            continue;
-        }
-        if (data[i + 1u] == '/') {
-            uint32_t cursor = i + 2u;
-            uint32_t segmentStart = cursor;
-            while (cursor < length) {
-                while (cursor < length && data[cursor] != '\n') ++cursor;
-                uint32_t segmentEnd = cursor;
-                if (segmentEnd > segmentStart && data[segmentEnd - 1u] == '\r') --segmentEnd;
-                if (!processCommentSegment(taskList, path, data, length, segmentStart, segmentEnd, line))
-                    return false;
-                if (cursor >= length) {
-                    i = length;
-                    break;
-                }
-                const bool continued = segmentEnd > segmentStart && data[segmentEnd - 1u] == '\\';
-                if (!continued) {
-                    i = cursor;
-                    break;
-                }
-                ++line;
-                lineStart = cursor + 1u;
-                segmentStart = lineStart;
-                ++cursor;
-            }
-            continue;
-        }
-        if (data[i + 1u] == '*') {
-            uint32_t cursor = i + 2u;
-            uint32_t segmentStart = cursor;
-            bool closed = false;
-            while (cursor < length) {
-                if (data[cursor] == '*' && cursor + 1u < length && data[cursor + 1u] == '/') {
-                    uint32_t segmentEnd = cursor;
-                    if (!processCommentSegment(taskList, path, data, length, segmentStart, segmentEnd,
-                                               line)) return false;
-                    i = cursor + 2u;
-                    closed = true;
-                    break;
-                }
-                if (data[cursor] == '\n') {
-                    uint32_t segmentEnd = cursor;
-                    if (segmentEnd > segmentStart && data[segmentEnd - 1u] == '\r') --segmentEnd;
-                    if (!processCommentSegment(taskList, path, data, length, segmentStart, segmentEnd,
-                                               line)) return false;
-                    ++line;
-                    lineStart = cursor + 1u;
-                    segmentStart = lineStart;
-                }
-                ++cursor;
-            }
-            if (!closed) {
-                if (!processCommentSegment(taskList, path, data, length, segmentStart, length,
-                                           line)) return false;
-                i = length;
-            }
-            continue;
-        }
-        ++i;
     }
     return true;
 }
@@ -332,9 +188,20 @@ bool ProjectTaskListVisitFile(void* userData, const ProjectSearchScanFile* file)
         taskList->truncated = true;
         return false;
     }
-    if (!isCppSourcePath(file->relativePath)) return true;
+    if (!CppIsSourcePath(file->relativePath)) return true;
     if (taskList->filesScanned != 0xFFFFFFFFu) ++taskList->filesScanned;
-    return scanCppComments(taskList, file->relativePath, file->data, file->length);
+    CppLexer lexer = {};
+    CppLexerInit(&lexer, file->data, file->length);
+    CppLexToken token = {};
+    while (true) {
+        if (!CppLexerNext(&lexer, &token)) {
+            taskList->truncated = true;
+            return false;
+        }
+        if (token.kind == CppLexTokenKind::End) return true;
+        if (token.kind == CppLexTokenKind::Comment &&
+            !processComment(taskList, file->relativePath, file->data, file->length, token)) return false;
+    }
 }
 
 void ProjectTaskListSort(ProjectTaskList* taskList) {

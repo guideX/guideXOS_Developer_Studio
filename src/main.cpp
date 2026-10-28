@@ -9,6 +9,7 @@
 #include "developer_studio_output.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_project_search.h"
+#include "developer_studio_document_outline.h"
 #include "developer_studio_task_list.h"
 #include "developer_studio_replace_preview.h"
 #include "developer_studio_tools.h"
@@ -291,6 +292,18 @@ using guidexos::developer_studio::ProjectTaskListVisitFile;
 using guidexos::developer_studio::ProjectTaskAnnotationName;
 using guidexos::developer_studio::kProjectTaskListMaxTasks;
 using guidexos::developer_studio::kProjectTaskListMaxDescriptionBytes;
+using guidexos::developer_studio::DocumentOutline;
+using guidexos::developer_studio::DocumentOutlineCategory;
+using guidexos::developer_studio::DocumentOutlineError;
+using guidexos::developer_studio::DocumentOutlineSymbol;
+using guidexos::developer_studio::DocumentOutlineCanNavigate;
+using guidexos::developer_studio::DocumentOutlineCategoryName;
+using guidexos::developer_studio::DocumentOutlineErrorName;
+using guidexos::developer_studio::DocumentOutlineIdentityMatches;
+using guidexos::developer_studio::DocumentOutlineInit;
+using guidexos::developer_studio::DocumentOutlineScan;
+using guidexos::developer_studio::DocumentOutlineSetIdentity;
+using guidexos::developer_studio::kDocumentOutlineMaxSymbols;
 using guidexos::developer_studio::ReplacePreviewError;
 using guidexos::developer_studio::ReplacePreviewFile;
 using guidexos::developer_studio::ReplacePreviewMatch;
@@ -924,6 +937,8 @@ static bool activateGoToLineTool(void* userData);
 static bool closeGoToLineTool(void* userData);
 static bool activateTaskListTool(void* userData);
 static bool closeTaskListTool(void* userData);
+static bool activateDocumentOutlineTool(void* userData);
+static bool closeDocumentOutlineTool(void* userData);
 static const DeveloperToolCommand kGoToFileToolCommand = {
     DeveloperToolId::GoToFile, "Go to File", "Ctrl+P",
     activateGoToFileTool, closeGoToFileTool
@@ -943,6 +958,10 @@ static const DeveloperToolCommand kReplaceInFilesToolCommand = {
 static const DeveloperToolCommand kTaskListToolCommand = {
     DeveloperToolId::TaskList, "Task List", "",
     activateTaskListTool, closeTaskListTool
+};
+static const DeveloperToolCommand kDocumentOutlineToolCommand = {
+    DeveloperToolId::DocumentOutline, "Document Outline", "",
+    activateDocumentOutlineTool, closeDocumentOutlineTool
 };
 static bool g_debugPanelOpen = false;
 static uint32_t g_debugPanelTab = 0;
@@ -1232,6 +1251,12 @@ static uint64_t g_projectTaskListProjectGeneration = 0;
 static char g_projectTaskListProjectId[kMaxProjectIdBytes] = {};
 static char g_projectTaskListStatus[192] = {};
 static bool g_projectTaskListTerminalReported = false;
+static DocumentOutline g_documentOutline = {};
+static bool g_documentOutlinePanelOpen = false;
+static bool g_documentOutlinePanelVisibleReported = false;
+static uint32_t g_documentOutlineSelected = 0;
+static uint32_t g_documentOutlineScroll = 0;
+static char g_documentOutlineStatus[160] = {};
 enum class ReplacePreviewField { Find = 0, Replacement };
 static ReplacePreviewPlan g_replacePreviewPlan = {};
 static bool g_replacePreviewPanelOpen = false;
@@ -1423,6 +1448,12 @@ static void pollProjectTaskList(gx_app_context* ctx);
 static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex);
 static bool handleTaskListKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
 static void drawTaskListPanel(gx_app_context* ctx);
+static bool activateDocumentOutline(gx_app_context* ctx, const char* source);
+static bool closeDocumentOutline(gx_app_context* ctx, const char* source);
+static bool refreshDocumentOutline(gx_app_context* ctx, const char* reason);
+static bool activateDocumentOutlineSymbol(gx_app_context* ctx, uint32_t symbolIndex);
+static bool handleDocumentOutlineKey(gx_app_context* ctx, int keyCode, int action, int modifiers);
+static void drawDocumentOutlinePanel(gx_app_context* ctx);
 static bool activateGoToFile(gx_app_context* ctx, const char* source);
 static bool closeGoToFile(gx_app_context* ctx, const char* source);
 static bool activateGoToLine(gx_app_context* ctx, const char* source);
@@ -5051,6 +5082,38 @@ static bool closeTaskListTool(void* userData) {
     return true;
 }
 
+static bool activateDocumentOutlineTool(void* userData) {
+    gx_app_context* ctx = static_cast<gx_app_context*>(userData);
+    if (!ctx) return false;
+    if (g_findBarOpen) closeFindBar();
+    closeSymbolSearch();
+    closeDefinitionPicker();
+    stopReferenceSearch(ctx);
+    closeReferencePicker();
+    g_referencesPanelOpen = false;
+    g_referencesResultsFocused = false;
+    g_projectSearchPanelOpen = false;
+    g_replacePreviewPanelOpen = false;
+    g_projectTaskListPanelOpen = false;
+    g_documentOutlinePanelOpen = true;
+    g_documentOutlinePanelVisibleReported = false;
+    g_editorFocused = false;
+    g_outputFocused = false;
+    g_fileMenuOpen = false;
+    g_buildMenuOpen = false;
+    g_debugMenuOpen = false;
+    g_toolsMenuOpen = false;
+    refreshDocumentOutline(ctx, "activation");
+    return true;
+}
+
+static bool closeDocumentOutlineTool(void* userData) {
+    g_documentOutlinePanelOpen = false;
+    g_documentOutlinePanelVisibleReported = false;
+    g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    return true;
+}
+
 static bool activateFindInFiles(gx_app_context* ctx, const char* source) {
     if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::FindInFiles, ctx)) {
         writeStudioOutput("Unable to open Find in Files");
@@ -5135,6 +5198,113 @@ static bool closeTaskList(gx_app_context* ctx, const char* source) {
         appendText(g_textScratch, sizeof(g_textScratch), source);
         logMarker(ctx, g_textScratch);
     }
+    return true;
+}
+
+static bool activateDocumentOutline(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryActivate(&g_developerTools, DeveloperToolId::DocumentOutline, ctx)) {
+        writeStudioOutput("Unable to open Document Outline");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_open=FAIL");
+        return false;
+    }
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_open=PASS source=");
+    appendText(g_textScratch, sizeof(g_textScratch), source ? source : "tools");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool closeDocumentOutline(gx_app_context* ctx, const char* source) {
+    if (!DeveloperToolRegistryClose(&g_developerTools, DeveloperToolId::DocumentOutline, ctx)) {
+        writeStudioOutput("Document Outline is still active");
+        return false;
+    }
+    if (source && (searchTextEqual(source, "escape") || searchTextEqual(source, "close")))
+        g_editorFocused = WorkspaceControllerActiveDocument(&g_controller) != nullptr;
+    if (source) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_close=PASS source=");
+        appendText(g_textScratch, sizeof(g_textScratch), source);
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool refreshDocumentOutline(gx_app_context* ctx, const char* reason) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    g_documentOutlineSelected = 0;
+    g_documentOutlineScroll = 0;
+    if (!document) {
+        DocumentOutlineInit(&g_documentOutline);
+        g_documentOutlineStatus[0] = '\0';
+        copyText(g_documentOutlineStatus, sizeof(g_documentOutlineStatus),
+                 "Open a C/C++ document to show its symbols.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_scan=REJECTED reason=no_active_document");
+        return false;
+    }
+
+    const bool scanned = DocumentOutlineScan(document->path, document->buffer.data,
+                                               document->buffer.length, &g_documentOutline);
+    DocumentOutlineSetIdentity(&g_documentOutline, document->documentId,
+        g_controller.model.projectGeneration, document->buffer.generation, document->path);
+    if (!scanned) {
+        copyText(g_documentOutlineStatus, sizeof(g_documentOutlineStatus), "Outline unavailable: ");
+        appendText(g_documentOutlineStatus, sizeof(g_documentOutlineStatus),
+                   DocumentOutlineErrorName(g_documentOutline.error));
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_scan=REJECTED reason=");
+        appendText(g_textScratch, sizeof(g_textScratch), DocumentOutlineErrorName(g_documentOutline.error));
+        logMarker(ctx, g_textScratch);
+        return false;
+    }
+
+    copyText(g_documentOutlineStatus, sizeof(g_documentOutlineStatus), "Symbols from the active editor buffer.");
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_scan=COMPLETED total=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_documentOutline.totalCount);
+    appendText(g_textScratch, sizeof(g_textScratch), " shown=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_documentOutline.count);
+    appendText(g_textScratch, sizeof(g_textScratch), " truncated=");
+    appendText(g_textScratch, sizeof(g_textScratch), g_documentOutline.truncated ? "true" : "false");
+    appendText(g_textScratch, sizeof(g_textScratch), " source=");
+    appendText(g_textScratch, sizeof(g_textScratch), reason ? reason : "refresh");
+    logMarker(ctx, g_textScratch);
+    return true;
+}
+
+static bool activateDocumentOutlineSymbol(gx_app_context* ctx, uint32_t symbolIndex) {
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (!document) {
+        copyText(g_documentOutlineStatus, sizeof(g_documentOutlineStatus), "No active document to navigate.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_navigation=REJECTED reason=no_active_document");
+        return false;
+    }
+    const DocumentOutlineSymbol* symbol = nullptr;
+    if (!DocumentOutlineCanNavigate(&g_documentOutline, symbolIndex, document->documentId,
+            g_controller.model.projectGeneration, document->buffer.generation, document->path,
+            document->buffer.data, document->buffer.length, &symbol)) {
+        copyText(g_documentOutlineStatus, sizeof(g_documentOutlineStatus),
+                 "The outline changed; refreshing the active document.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_navigation=REJECTED reason=stale_or_invalid_target");
+        refreshDocumentOutline(ctx, "stale_navigation");
+        return false;
+    }
+    if (!SetCaretOffset(&document->buffer, symbol->offset)) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_navigation=REJECTED reason=invalid_offset");
+        return false;
+    }
+    g_editorScrollLine = 0;
+    g_editorScrollColumn = 0;
+    keepCaretVisible(document);
+    g_editorFocused = true;
+    copyText(g_textScratch, sizeof(g_textScratch),
+             "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_navigation=PASS name=");
+    appendText(g_textScratch, sizeof(g_textScratch), symbol->name);
+    appendText(g_textScratch, sizeof(g_textScratch), " line=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), symbol->line);
+    appendText(g_textScratch, sizeof(g_textScratch), " caret=");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), document->buffer.caret);
+    logMarker(ctx, g_textScratch);
     return true;
 }
 
@@ -11197,6 +11367,82 @@ static void drawTaskListPanel(gx_app_context* ctx) {
         drawText(ctx, 760, 177, "Scroll: mouse wheel / Up / Down");
 }
 
+static void documentOutlineEnsureSelectionVisible() {
+    if (g_documentOutline.count == 0) {
+        g_documentOutlineSelected = 0;
+        g_documentOutlineScroll = 0;
+        return;
+    }
+    if (g_documentOutlineSelected >= g_documentOutline.count)
+        g_documentOutlineSelected = g_documentOutline.count - 1u;
+    if (g_documentOutlineSelected < g_documentOutlineScroll)
+        g_documentOutlineScroll = g_documentOutlineSelected;
+    if (g_documentOutlineSelected >= g_documentOutlineScroll +
+        static_cast<uint32_t>(kSearchPanelMaxRows))
+        g_documentOutlineScroll = g_documentOutlineSelected -
+            static_cast<uint32_t>(kSearchPanelMaxRows) + 1u;
+}
+
+static void drawDocumentOutlinePanel(gx_app_context* ctx) {
+    if (!g_documentOutlinePanelOpen) return;
+    Document* document = WorkspaceControllerActiveDocument(&g_controller);
+    if (document) {
+        if (!DocumentOutlineIdentityMatches(&g_documentOutline, document->documentId,
+                g_controller.model.projectGeneration, document->buffer.generation, document->path))
+            refreshDocumentOutline(ctx, "active_document_changed");
+    } else if (g_documentOutline.documentId != 0) {
+        refreshDocumentOutline(ctx, "document_closed");
+    }
+
+    if (!g_documentOutlinePanelVisibleReported) {
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_panel_visible=PASS");
+        g_documentOutlinePanelVisibleReported = true;
+    }
+    drawPanel(ctx, { 8, kSearchPanelTop + 4, 944, 580 }, 0x263650u);
+    drawText(ctx, 24, 78, "Document Outline — active C/C++ buffer");
+    drawPanel(ctx, { 760, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 770, 102, "Rescan");
+    drawPanel(ctx, { 840, 87, 72, 20 }, 0x34496Au);
+    drawText(ctx, 851, 102, "Close");
+    if (document) {
+        copyText(g_textScratch, sizeof(g_textScratch), "Document: ");
+        appendText(g_textScratch, sizeof(g_textScratch), document->name);
+        drawText(ctx, 24, 122, g_textScratch);
+    }
+    copyText(g_textScratch, sizeof(g_textScratch), "Total symbols ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_documentOutline.totalCount);
+    appendText(g_textScratch, sizeof(g_textScratch), "     Shown ");
+    appendUnsigned(g_textScratch, sizeof(g_textScratch), g_documentOutline.count);
+    appendText(g_textScratch, sizeof(g_textScratch), "     Truncated ");
+    appendText(g_textScratch, sizeof(g_textScratch), g_documentOutline.truncated ? "yes" : "no");
+    drawText(ctx, 24, 146, g_textScratch);
+    if (g_documentOutlineStatus[0]) drawText(ctx, 24, 170, g_documentOutlineStatus);
+    drawPanel(ctx, { 16, kSearchPanelResultsTop - 12, 928, 1 }, 0x405775u);
+
+    const uint32_t first = g_documentOutlineScroll;
+    const uint32_t last = first + static_cast<uint32_t>(kSearchPanelMaxRows);
+    for (uint32_t row = first; row < g_documentOutline.count && row < last; ++row) {
+        const DocumentOutlineSymbol& symbol = g_documentOutline.symbols[row];
+        const int y = kSearchPanelResultsTop + static_cast<int>((row - first) * kSearchPanelRowHeight);
+        if (row == g_documentOutlineSelected)
+            drawPanel(ctx, { 20, y - 12, 920, kSearchPanelRowHeight }, 0x34496Au);
+        drawText(ctx, 24, y, symbol.name);
+        drawText(ctx, 220, y, DocumentOutlineCategoryName(symbol.category));
+        copyText(g_textScratch, sizeof(g_textScratch), "Line ");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), symbol.line);
+        drawText(ctx, 330, y, g_textScratch);
+        drawText(ctx, 430, y, symbol.signature);
+    }
+    if (g_documentOutline.count == 0) {
+        if (g_documentOutline.error == DocumentOutlineError::None && document)
+            drawText(ctx, 24, kSearchPanelResultsTop, "No recognizable symbols in this buffer.");
+        else if (!document)
+            drawText(ctx, 24, kSearchPanelResultsTop, "No active document.");
+    }
+    if (g_documentOutline.count > kSearchPanelMaxRows)
+        drawText(ctx, 760, 190, "Scroll: mouse wheel / Up / Down");
+}
+
 static void drawEditorRangeOverlay(gx_app_context* ctx, const TextBuffer& buffer, uint32_t lineStart,
                                    uint32_t lineEnd, uint64_t rangeStart, uint64_t rangeEnd,
                                    uint32_t color, uint32_t rowY) {
@@ -11682,6 +11928,12 @@ static void resetProjectSessionUi() {
     g_projectTaskListProjectId[0] = '\0';
     g_projectTaskListStatus[0] = '\0';
     g_projectTaskListTerminalReported = false;
+    DocumentOutlineInit(&g_documentOutline);
+    g_documentOutlinePanelOpen = false;
+    g_documentOutlinePanelVisibleReported = false;
+    g_documentOutlineSelected = 0;
+    g_documentOutlineScroll = 0;
+    g_documentOutlineStatus[0] = '\0';
     OutputServiceClearChannel(&g_outputService, OutputChannel::Build);
     OutputServiceClearChannel(&g_outputService, OutputChannel::Run);
     OutputServiceClearChannel(&g_outputService, OutputChannel::DeveloperStudio);
@@ -18275,6 +18527,7 @@ static void drawShell(gx_app_context* ctx) {
     drawProjectSearchPanel(ctx);
     drawReplacePreviewPanel(ctx);
     drawTaskListPanel(ctx);
+    drawDocumentOutlinePanel(ctx);
     drawReferencesPanel(ctx);
     drawSymbolSearch(ctx);
     drawDefinitionPicker(ctx);
@@ -18961,6 +19214,40 @@ static bool handleTaskListKey(gx_app_context* ctx, int keyCode, int action, int 
     return false;
 }
 
+static bool handleDocumentOutlineKey(gx_app_context* ctx, int keyCode, int action, int modifiers) {
+    if (!g_documentOutlinePanelOpen || action != GX_KEY_ACTION_DOWN) return false;
+    if (keyCode == 27) {
+        closeDocumentOutline(ctx, "escape");
+        return true;
+    }
+    if (keyCode == GX_KEY_UP || keyCode == GX_KEY_DOWN) {
+        if (g_documentOutline.count != 0) {
+            if (keyCode == GX_KEY_DOWN && g_documentOutlineSelected + 1u < g_documentOutline.count)
+                ++g_documentOutlineSelected;
+            else if (keyCode == GX_KEY_UP && g_documentOutlineSelected > 0)
+                --g_documentOutlineSelected;
+            documentOutlineEnsureSelectionVisible();
+        }
+        return true;
+    }
+    if (keyCode == 13) {
+        activateDocumentOutlineSymbol(ctx, g_documentOutlineSelected);
+        return true;
+    }
+    if (!(modifiers & (GX_KEY_MOD_CTRL | GX_KEY_MOD_ALT)) &&
+        (keyCode == 82 || keyCode == 114)) {
+        refreshDocumentOutline(ctx, "manual_rescan");
+        return true;
+    }
+    if ((modifiers & GX_KEY_MOD_CTRL) && !(modifiers & GX_KEY_MOD_ALT) &&
+        (keyCode == 80 || keyCode == 112)) {
+        closeDocumentOutline(ctx, "switch_document");
+        activateGoToFile(ctx, "keyboard_shortcut");
+        return true;
+    }
+    return false;
+}
+
 static bool handleReferencePickerKey(gx_app_context* ctx, int keyCode, int action) {
     if (!g_referencePickerOpen || action != GX_KEY_ACTION_DOWN) return false;
     if (keyCode == 27) {
@@ -19373,6 +19660,8 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     if (g_goToLinePanelOpen) return;
     if (g_replacePreviewPanelOpen && handleReplacePreviewKey(ctx, keyCode, action, modifiers)) return;
     if (g_replacePreviewPanelOpen) return;
+    if (g_documentOutlinePanelOpen && handleDocumentOutlineKey(ctx, keyCode, action, modifiers)) return;
+    if (g_documentOutlinePanelOpen) return;
     if (g_projectTaskListPanelOpen && handleTaskListKey(ctx, keyCode, action, modifiers)) return;
     if (g_projectTaskListPanelOpen) return;
     if (g_symbolSearchOpen && handleSymbolSearchKey(ctx, keyCode, action, modifiers)) return;
@@ -19581,6 +19870,43 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
         (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
         (y < 48 || (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 &&
                     y < 42 + static_cast<int>(g_developerTools.count * 24u)));
+    if (g_documentOutlinePanelOpen && !taskListToolbarMenuClick) {
+        if (action == GX_MOUSE_ACTION_WHEEL) {
+            const uint32_t maximum = g_documentOutline.count >
+                static_cast<uint32_t>(kSearchPanelMaxRows) ?
+                g_documentOutline.count - static_cast<uint32_t>(kSearchPanelMaxRows) : 0;
+            if (event.param4 > 0)
+                g_documentOutlineScroll = g_documentOutlineScroll > 3 ?
+                    g_documentOutlineScroll - 3 : 0;
+            else if (g_documentOutlineScroll + 3u < maximum)
+                g_documentOutlineScroll += 3u;
+            else
+                g_documentOutlineScroll = maximum;
+            documentOutlineEnsureSelectionVisible();
+            drawShell(ctx);
+            return;
+        }
+        if (button == GX_MOUSE_BUTTON_LEFT &&
+            (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK)) {
+            if (y >= 87 && y < 108 && x >= 760 && x < 832) {
+                refreshDocumentOutline(ctx, "manual_rescan");
+            } else if (y >= 87 && y < 108 && x >= 840 && x < 912) {
+                closeDocumentOutline(ctx, "close");
+            } else if (y >= kSearchPanelResultsTop - 4 && y < kSearchPanelTop + 580 &&
+                       g_documentOutline.count != 0) {
+                const uint32_t row = g_documentOutlineScroll +
+                    static_cast<uint32_t>((y - kSearchPanelResultsTop) / kSearchPanelRowHeight);
+                if (row < g_documentOutline.count &&
+                    row < g_documentOutlineScroll + static_cast<uint32_t>(kSearchPanelMaxRows)) {
+                    g_documentOutlineSelected = row;
+                    if (action == GX_MOUSE_ACTION_DOUBLE_CLICK)
+                        activateDocumentOutlineSymbol(ctx, row);
+                }
+            }
+        }
+        drawShell(ctx);
+        return;
+    }
     if (g_projectTaskListPanelOpen && !taskListToolbarMenuClick) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             const uint32_t maximum = g_projectTaskList.count >
@@ -20333,6 +20659,8 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
             activateReplaceInFiles(ctx, "tools_menu");
         else if (tool && tool->id == DeveloperToolId::TaskList)
             activateTaskList(ctx, "tools_menu");
+        else if (tool && tool->id == DeveloperToolId::DocumentOutline)
+            activateDocumentOutline(ctx, "tools_menu");
         g_toolsMenuOpen = false;
         drawShell(ctx);
         return;
@@ -20826,11 +21154,12 @@ static gx_result developerStudioMain(gx_app_context* ctx) {
         DeveloperToolRegistryRegister(&g_developerTools, &kGoToLineToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kFindInFilesToolCommand) &&
         DeveloperToolRegistryRegister(&g_developerTools, &kReplaceInFilesToolCommand) &&
-        DeveloperToolRegistryRegister(&g_developerTools, &kTaskListToolCommand);
+        DeveloperToolRegistryRegister(&g_developerTools, &kTaskListToolCommand) &&
+        DeveloperToolRegistryRegister(&g_developerTools, &kDocumentOutlineToolCommand);
     if (!toolsRegistered)
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=FAIL");
     else
-        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=5");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER developer_tool_registry=PASS count=6");
     g_projectSearchPanelOpen = false;
     ReplacePreviewPlanInit(&g_replacePreviewPlan);
     g_replacePreviewPanelOpen = false;
@@ -21266,6 +21595,7 @@ static gx_result developerStudioMain(gx_app_context* ctx) {
                     }
                     else if (gx_event_is_escape_down(&event) && !g_findBarOpen && !g_projectSearchPanelOpen &&
                              !g_replacePreviewPanelOpen &&
+                             !g_documentOutlinePanelOpen &&
                              !g_goToFilePanelOpen && !g_goToLinePanelOpen &&
                              !g_referencesPanelOpen && !g_referencePickerOpen && !g_symbolSearchOpen &&
                              !g_completionPopupOpen && !g_signaturePopupOpen && !g_typePopupOpen && !g_ownershipPanelOpen && !g_debugPanelOpen) {

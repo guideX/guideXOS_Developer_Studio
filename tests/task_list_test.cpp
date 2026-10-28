@@ -1,6 +1,7 @@
 #include "developer_studio_task_list.h"
 #include "developer_studio_workspace.h"
 #include "developer_studio_tools.h"
+#include "test_check.h"
 
 #include <cassert>
 #include <cstdio>
@@ -71,7 +72,7 @@ static bool writeFile(void* userData, const char*, const char*, uint32_t, uint32
 static void writeBytes(const fs::path& path, const std::string& content) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output.write(content.data(), static_cast<std::streamsize>(content.size()));
-    assert(output.good());
+    TEST_CHECK(output.good());
 }
 
 static void setText(char* output, uint32_t capacity, const char* value) {
@@ -117,10 +118,10 @@ static const ProjectSearchOperation* runScan(ProjectSearchService* service,
     request.scanVisitor = ProjectTaskListVisitFile;
     request.scanVisitorUserData = tasks;
     ProjectSearchErrorCode error = ProjectSearchErrorCode::None;
-    assert(ProjectSearchStart(service, &request, 0, outOperationId, &error));
+    TEST_CHECK(ProjectSearchStart(service, &request, 0, outOperationId, &error));
     for (uint32_t poll = 0; poll < 20000 && ProjectSearchIsActive(service); ++poll)
-        assert(ProjectSearchPoll(service, *outOperationId, 16, poll));
-    assert(!ProjectSearchIsActive(service));
+        TEST_CHECK(ProjectSearchPoll(service, *outOperationId, 16, poll));
+    TEST_CHECK(!ProjectSearchIsActive(service));
     ProjectTaskListSort(tasks);
     return ProjectSearchOperationInfo(service);
 }
@@ -138,53 +139,53 @@ int main() {
         "/* FIXME: first block line\n"
         " * TODO: second block line */\n"
         "auto raw = R\"tag(// TODO raw string\n/* FIXME raw string */)tag\";\n";
-    assert(scanOne(&tasks, "src/lexical.cpp", lexical));
-    assert(tasks.count == 4);
-    assert(tasks.todoCount == 3 && tasks.fixmeCount == 1);
-    assert(tasks.tasks[0].line == 3);
-    assert(tasks.tasks[1].line == 4);
-    assert(tasks.tasks[2].line == 5);
-    assert(tasks.tasks[3].line == 6);
-    assert(std::strcmp(tasks.tasks[1].description, "todo: lowercase") == 0);
-    assert(std::strcmp(ProjectTaskAnnotationName(ProjectTaskAnnotation::Todo), "TODO") == 0);
-    assert(std::strcmp(ProjectTaskAnnotationName(ProjectTaskAnnotation::Fixme), "FIXME") == 0);
+    TEST_CHECK(scanOne(&tasks, "src/lexical.cpp", lexical));
+    TEST_CHECK(tasks.count == 4);
+    TEST_CHECK(tasks.todoCount == 3 && tasks.fixmeCount == 1);
+    TEST_CHECK(tasks.tasks[0].line == 3);
+    TEST_CHECK(tasks.tasks[1].line == 4);
+    TEST_CHECK(tasks.tasks[2].line == 5);
+    TEST_CHECK(tasks.tasks[3].line == 6);
+    TEST_CHECK(std::strcmp(tasks.tasks[1].description, "todo: lowercase") == 0);
+    TEST_CHECK(std::strcmp(ProjectTaskAnnotationName(ProjectTaskAnnotation::Todo), "TODO") == 0);
+    TEST_CHECK(std::strcmp(ProjectTaskAnnotationName(ProjectTaskAnnotation::Fixme), "FIXME") == 0);
 
     ProjectTaskListInit(&tasks);
     const std::string endings = "// TODO first\r\n/* FIXME second\nTODO third */\r\n";
-    assert(scanOne(&tasks, "src/endings.c", endings));
-    assert(tasks.count == 3);
-    assert(tasks.tasks[0].line == 1 && tasks.tasks[1].line == 2 && tasks.tasks[2].line == 3);
+    TEST_CHECK(scanOne(&tasks, "src/endings.c", endings));
+    TEST_CHECK(tasks.count == 3);
+    TEST_CHECK(tasks.tasks[0].line == 1 && tasks.tasks[1].line == 2 && tasks.tasks[2].line == 3);
 
     ProjectTaskListInit(&tasks);
     std::string longDescription = "// TODO ";
     longDescription.append(400, 'L');
     longDescription += "\n";
-    assert(scanOne(&tasks, "src/long.cpp", longDescription));
-    assert(tasks.count == 1);
-    assert(std::strlen(tasks.tasks[0].description) <= kProjectTaskListMaxDescriptionBytes);
-    assert(tasks.tasks[0].description[std::strlen(tasks.tasks[0].description) - 1u] == '.');
+    TEST_CHECK(scanOne(&tasks, "src/long.cpp", longDescription));
+    TEST_CHECK(tasks.count == 1);
+    TEST_CHECK(std::strlen(tasks.tasks[0].description) <= kProjectTaskListMaxDescriptionBytes);
+    TEST_CHECK(tasks.tasks[0].description[std::strlen(tasks.tasks[0].description) - 1u] == '.');
 
     ProjectTaskListInit(&tasks);
-    assert(scanOne(&tasks, "src/no-tasks.cpp", "// ordinary comment\nint value = 1;\n"));
-    assert(tasks.count == 0 && tasks.todoCount == 0 && tasks.fixmeCount == 0);
-    assert(scanOne(&tasks, "src/ignored.txt", "// TODO in unsupported source type\n"));
-    assert(tasks.count == 0);
-    assert(!scanOne(&tasks, "../outside.cpp", "// TODO outside\n"));
-    assert(tasks.truncated);
+    TEST_CHECK(scanOne(&tasks, "src/no-tasks.cpp", "// ordinary comment\nint value = 1;\n"));
+    TEST_CHECK(tasks.count == 0 && tasks.todoCount == 0 && tasks.fixmeCount == 0);
+    TEST_CHECK(scanOne(&tasks, "src/ignored.txt", "// TODO in unsupported source type\n"));
+    TEST_CHECK(tasks.count == 0);
+    TEST_CHECK(!scanOne(&tasks, "../outside.cpp", "// TODO outside\n"));
+    TEST_CHECK(tasks.truncated);
 
     ProjectTaskListInit(&tasks);
-    assert(scanOne(&tasks, "z.cpp", "// TODO z\n"));
-    assert(scanOne(&tasks, "a.cpp", "// FIXME a\n// TODO a\n"));
+    TEST_CHECK(scanOne(&tasks, "z.cpp", "// TODO z\n"));
+    TEST_CHECK(scanOne(&tasks, "a.cpp", "// FIXME a\n// TODO a\n"));
     ProjectTaskListSort(&tasks);
-    assert(std::strcmp(tasks.tasks[0].relativePath, "a.cpp") == 0);
-    assert(tasks.tasks[0].line == 1 && tasks.tasks[0].annotation == ProjectTaskAnnotation::Fixme);
-    assert(tasks.tasks[1].line == 2 && tasks.tasks[1].annotation == ProjectTaskAnnotation::Todo);
+    TEST_CHECK(std::strcmp(tasks.tasks[0].relativePath, "a.cpp") == 0);
+    TEST_CHECK(tasks.tasks[0].line == 1 && tasks.tasks[0].annotation == ProjectTaskAnnotation::Fixme);
+    TEST_CHECK(tasks.tasks[1].line == 2 && tasks.tasks[1].annotation == ProjectTaskAnnotation::Todo);
 
     ProjectTaskListInit(&tasks);
     std::string tooMany;
     for (uint32_t i = 0; i <= kProjectTaskListMaxTasks; ++i) tooMany += "// TODO item\n";
-    assert(!scanOne(&tasks, "src/many.cpp", tooMany));
-    assert(tasks.count == kProjectTaskListMaxTasks && tasks.truncated);
+    TEST_CHECK(!scanOne(&tasks, "src/many.cpp", tooMany));
+    TEST_CHECK(tasks.count == kProjectTaskListMaxTasks && tasks.truncated);
 
     const fs::path root = fs::temp_directory_path() / "guidexos-project-task-list-test";
     std::error_code ec;
@@ -203,11 +204,11 @@ int main() {
     ProjectTaskListInit(&scanned);
     uint64_t operationId = 0;
     const ProjectSearchOperation* operation = runScan(&service, &scanned, request, &operationId);
-    assert(operation && operation->state == ProjectSearchState::Completed && !operation->truncated);
-    assert(scanned.count == 1 && scanned.todoCount == 1 && scanned.fixmeCount == 0);
-    assert(scanned.filesScanned == 2);
-    assert(operation->diagnostics.binaryFiles == 1);
-    assert(behavior.writeCalls == 0);
+    TEST_CHECK(operation && operation->state == ProjectSearchState::Completed && !operation->truncated);
+    TEST_CHECK(scanned.count == 1 && scanned.todoCount == 1 && scanned.fixmeCount == 0);
+    TEST_CHECK(scanned.filesScanned == 2);
+    TEST_CHECK(operation->diagnostics.binaryFiles == 1);
+    TEST_CHECK(behavior.writeCalls == 0);
 
     // Hitting the task capacity stops the shared traversal and marks its partial result.
     const fs::path overflowRoot = fs::temp_directory_path() / "guidexos-project-task-list-overflow";
@@ -219,16 +220,16 @@ int main() {
     request = makeRequest(overflowRoot, &behavior);
     ProjectTaskListInit(&scanned);
     operation = runScan(&service, &scanned, request, &operationId);
-    assert(operation && operation->state == ProjectSearchState::Completed && operation->truncated);
-    assert(scanned.count == kProjectTaskListMaxTasks && scanned.truncated);
+    TEST_CHECK(operation && operation->state == ProjectSearchState::Completed && operation->truncated);
+    TEST_CHECK(scanned.count == kProjectTaskListMaxTasks && scanned.truncated);
     request = makeRequest(root, &behavior);
 
     // Repeating a scan replaces the model with current project contents.
     ProjectTaskListInit(&scanned);
     writeBytes(root / "src" / "empty.cpp", "// FIXME: added after the first scan\n");
     operation = runScan(&service, &scanned, request, &operationId);
-    assert(operation && operation->state == ProjectSearchState::Completed);
-    assert(scanned.count == 2 && scanned.todoCount == 1 && scanned.fixmeCount == 1);
+    TEST_CHECK(operation && operation->state == ProjectSearchState::Completed);
+    TEST_CHECK(scanned.count == 2 && scanned.todoCount == 1 && scanned.fixmeCount == 1);
 
     // Empty and annotation-free projects complete with zero results.
     const fs::path emptyRoot = fs::temp_directory_path() / "guidexos-project-task-list-empty";
@@ -237,14 +238,14 @@ int main() {
     request = makeRequest(emptyRoot, &behavior);
     ProjectTaskListInit(&scanned);
     operation = runScan(&service, &scanned, request, &operationId);
-    assert(operation && operation->state == ProjectSearchState::Completed && scanned.count == 0);
+    TEST_CHECK(operation && operation->state == ProjectSearchState::Completed && scanned.count == 0);
 
     fs::create_directories(emptyRoot / "src", ec);
     writeBytes(emptyRoot / "src" / "ordinary.cpp", "int answer = 42;\n// not a task\n");
     ProjectTaskListInit(&scanned);
     request = makeRequest(emptyRoot, &behavior);
     operation = runScan(&service, &scanned, request, &operationId);
-    assert(operation && operation->state == ProjectSearchState::Completed && scanned.count == 0);
+    TEST_CHECK(operation && operation->state == ProjectSearchState::Completed && scanned.count == 0);
 
     // Cancellation produces a distinct partial result state and a later scan can complete.
     const fs::path cancelRoot = fs::temp_directory_path() / "guidexos-project-task-list-cancel";
@@ -260,16 +261,16 @@ int main() {
     request.scanVisitor = ProjectTaskListVisitFile;
     request.scanVisitorUserData = &scanned;
     ProjectSearchErrorCode searchError = ProjectSearchErrorCode::None;
-    assert(ProjectSearchStart(&service, &request, 0, &operationId, &searchError));
-    assert(ProjectSearchPoll(&service, operationId, 1, 1));
-    assert(ProjectSearchCancel(&service, operationId));
-    assert(ProjectSearchPoll(&service, operationId, 1, 2));
-    assert(ProjectSearchOperationInfo(&service)->state == ProjectSearchState::Cancelled);
+    TEST_CHECK(ProjectSearchStart(&service, &request, 0, &operationId, &searchError));
+    TEST_CHECK(ProjectSearchPoll(&service, operationId, 1, 1));
+    TEST_CHECK(ProjectSearchCancel(&service, operationId));
+    TEST_CHECK(ProjectSearchPoll(&service, operationId, 1, 2));
+    TEST_CHECK(ProjectSearchOperationInfo(&service)->state == ProjectSearchState::Cancelled);
     const uint64_t cancelledOperation = operationId;
     ProjectTaskListInit(&scanned);
     operation = runScan(&service, &scanned, request, &operationId);
-    assert(operationId != cancelledOperation);
-    assert(operation && operation->state == ProjectSearchState::Completed && scanned.count == 12);
+    TEST_CHECK(operationId != cancelledOperation);
+    TEST_CHECK(operation && operation->state == ProjectSearchState::Completed && scanned.count == 12);
 
     // Selection revalidates the current project and file before editor navigation.
     static WorkspaceController controller;
@@ -280,20 +281,20 @@ int main() {
     controller.model.projectGeneration = 7;
     setText(controller.model.rootPath, sizeof(controller.model.rootPath), root.generic_string().c_str());
     setText(controller.model.project.projectId, sizeof(controller.model.project.projectId), "com.example.task-list");
-    assert(DeveloperToolProjectIdentityMatches("com.example.task-list", 7,
+    TEST_CHECK(DeveloperToolProjectIdentityMatches("com.example.task-list", 7,
         controller.model.project.projectId, controller.model.projectGeneration));
-    assert(!DeveloperToolProjectIdentityMatches("com.example.task-list", 7,
+    TEST_CHECK(!DeveloperToolProjectIdentityMatches("com.example.task-list", 7,
         "com.example.other", controller.model.projectGeneration));
     uint32_t documentIndex = kMaxOpenDocuments;
     OutputErrorCode navigationError = OutputErrorCode::None;
-    assert(WorkspaceControllerOpenDocumentAtLocation(&controller, controller.model.project.projectId,
+    TEST_CHECK(WorkspaceControllerOpenDocumentAtLocation(&controller, controller.model.project.projectId,
         "src/main.cpp", 2, 1, &documentIndex, &navigationError));
     const Document* opened = WorkspaceControllerActiveDocumentConst(&controller);
-    assert(opened && opened->buffer.caret == std::strlen("int main() {\n"));
+    TEST_CHECK(opened && opened->buffer.caret == std::strlen("int main() {\n"));
     fs::remove(root / "src" / "main.cpp", ec);
-    assert(!WorkspaceControllerOpenDocumentAtLocation(&controller, controller.model.project.projectId,
+    TEST_CHECK(!WorkspaceControllerOpenDocumentAtLocation(&controller, controller.model.project.projectId,
         "src/main.cpp", 2, 1, &documentIndex, &navigationError));
-    assert(behavior.writeCalls == 0);
+    TEST_CHECK(behavior.writeCalls == 0);
 
     fs::remove_all(root, ec);
     fs::remove_all(overflowRoot, ec);

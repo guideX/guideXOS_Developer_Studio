@@ -7,7 +7,7 @@
 namespace guidexos {
 namespace developer_studio {
 
-static const uint32_t kDeveloperToolMaxCommands = 5u;
+static const uint32_t kDeveloperToolMaxCommands = 6u;
 static const uint32_t kDeveloperToolMaxFileQueryBytes = 128u;
 #if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
 static const uint32_t kDeveloperToolMaxIndexedFiles = 32u;
@@ -23,7 +23,8 @@ enum class DeveloperToolId : uint32_t {
     GoToFile = 2,
     GoToLine = 3,
     ReplaceInFiles = 4,
-    TaskList = 5
+    TaskList = 5,
+    DocumentOutline = 6
 };
 
 struct DeveloperToolFileSearchResult {
