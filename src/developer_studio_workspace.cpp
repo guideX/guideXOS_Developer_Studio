@@ -1175,7 +1175,8 @@ bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* contr
 
 bool WorkspaceControllerEnumerateProjectNavigationFiles(
     const WorkspaceController* controller, ProjectNavigationFile* files,
-    uint32_t capacity, ProjectNavigationInventory* inventory) {
+    uint32_t capacity, ProjectNavigationInventory* inventory,
+    bool includeSourceAndHeaderFiles) {
     if (inventory) *inventory = {};
     if (!controller || !files || !inventory || capacity == 0 ||
         capacity > kMaxProjectNavigationFiles || !controller->model.open ||
@@ -1283,7 +1284,7 @@ bool WorkspaceControllerEnumerateProjectNavigationFiles(
                 incrementNavigationCount(&inventory->unsupportedEntries);
                 continue;
             }
-            if (navigationSourceOrHeaderPath(entry.name)) continue;
+            if (!includeSourceAndHeaderFiles && navigationSourceOrHeaderPath(entry.name)) continue;
             if (!IsSupportedTextPath(entry.name)) {
                 incrementNavigationCount(&inventory->unsupportedFiles);
                 continue;

@@ -715,20 +715,40 @@ void NavigationHistoryPush(NavigationHistory* history, const NavigationLocation&
     history->forwardCount = 0;
 }
 
-bool NavigationHistoryBack(NavigationHistory* history, const NavigationLocation& current,
-                           NavigationLocation* destination) {
+bool NavigationHistoryPeekBack(const NavigationHistory* history, NavigationLocation* destination) {
     if (!history || history->backCount == 0 || !destination) return false;
-    pushStack(history->forward, history->forwardCount, current);
     *destination = history->back[history->backCount - 1];
+    return true;
+}
+
+bool NavigationHistoryPeekForward(const NavigationHistory* history, NavigationLocation* destination) {
+    if (!history || history->forwardCount == 0 || !destination) return false;
+    *destination = history->forward[history->forwardCount - 1];
+    return true;
+}
+
+bool NavigationHistoryDiscardBack(NavigationHistory* history) {
+    if (!history || history->backCount == 0) return false;
     --history->backCount;
     return true;
 }
 
-bool NavigationHistoryForward(NavigationHistory* history, const NavigationLocation& current,
-                              NavigationLocation* destination) {
-    if (!history || history->forwardCount == 0 || !destination) return false;
+bool NavigationHistoryDiscardForward(NavigationHistory* history) {
+    if (!history || history->forwardCount == 0) return false;
+    --history->forwardCount;
+    return true;
+}
+
+bool NavigationHistoryCommitBack(NavigationHistory* history, const NavigationLocation& current) {
+    if (!history || history->backCount == 0) return false;
+    pushStack(history->forward, history->forwardCount, current);
+    --history->backCount;
+    return true;
+}
+
+bool NavigationHistoryCommitForward(NavigationHistory* history, const NavigationLocation& current) {
+    if (!history || history->forwardCount == 0) return false;
     pushStack(history->back, history->backCount, current);
-    *destination = history->forward[history->forwardCount - 1];
     --history->forwardCount;
     return true;
 }

@@ -20,7 +20,13 @@ static const uint32_t kDefinitionMaxVisibleCandidates = 100u;
 #endif
 static const uint32_t kDefinitionMaxSignatureDisplayBytes = 256u;
 static const uint32_t kDefinitionMaxQualifiedDisplayBytes = 512u;
-static const uint32_t kNavigationHistoryCapacity = 256u;
+#if defined(GXOS_DEVELOPER_STUDIO_BARE_METAL)
+// Native ELF keeps a smaller history so the two fixed stacks stay inside the
+// hosted and guest memory budgets.
+static const uint32_t kNavigationHistoryCapacity = 16u;
+#else
+static const uint32_t kNavigationHistoryCapacity = 64u;
+#endif
 
 struct DefinitionIdentifier {
     bool valid;
@@ -127,10 +133,12 @@ struct NavigationHistory {
 void NavigationHistoryInit(NavigationHistory* history);
 bool NavigationLocationEqual(const NavigationLocation& left, const NavigationLocation& right);
 void NavigationHistoryPush(NavigationHistory* history, const NavigationLocation& location);
-bool NavigationHistoryBack(NavigationHistory* history, const NavigationLocation& current,
-                           NavigationLocation* destination);
-bool NavigationHistoryForward(NavigationHistory* history, const NavigationLocation& current,
-                              NavigationLocation* destination);
+bool NavigationHistoryPeekBack(const NavigationHistory* history, NavigationLocation* destination);
+bool NavigationHistoryPeekForward(const NavigationHistory* history, NavigationLocation* destination);
+bool NavigationHistoryDiscardBack(NavigationHistory* history);
+bool NavigationHistoryDiscardForward(NavigationHistory* history);
+bool NavigationHistoryCommitBack(NavigationHistory* history, const NavigationLocation& current);
+bool NavigationHistoryCommitForward(NavigationHistory* history, const NavigationLocation& current);
 void NavigationHistoryClear(NavigationHistory* history);
 
 } // namespace developer_studio

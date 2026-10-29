@@ -238,7 +238,8 @@ bool WorkspaceControllerEnumerateProjectSources(const WorkspaceController* contr
 // Project source metadata and never participates in Build or Run requests.
 bool WorkspaceControllerEnumerateProjectNavigationFiles(
     const WorkspaceController* controller, ProjectNavigationFile* files,
-    uint32_t capacity, ProjectNavigationInventory* inventory);
+    uint32_t capacity, ProjectNavigationInventory* inventory,
+    bool includeSourceAndHeaderFiles = false);
 bool WorkspaceControllerEnterSelected(WorkspaceController* controller);
 bool WorkspaceControllerGoUp(WorkspaceController* controller);
 bool WorkspaceControllerOpenDocument(WorkspaceController* controller, const char* path);

@@ -484,9 +484,15 @@ using guidexos::developer_studio::ResolveDefinition;
 using guidexos::developer_studio::DefinitionResolutionKindName;
 using guidexos::developer_studio::NavigationHistory;
 using guidexos::developer_studio::NavigationLocation;
+using guidexos::developer_studio::NavigationLocationEqual;
 using guidexos::developer_studio::NavigationHistoryInit;
-using guidexos::developer_studio::NavigationHistoryBack;
-using guidexos::developer_studio::NavigationHistoryForward;
+using guidexos::developer_studio::NavigationHistoryPeekBack;
+using guidexos::developer_studio::NavigationHistoryPeekForward;
+using guidexos::developer_studio::NavigationHistoryDiscardBack;
+using guidexos::developer_studio::NavigationHistoryDiscardForward;
+using guidexos::developer_studio::NavigationHistoryCommitBack;
+using guidexos::developer_studio::NavigationHistoryCommitForward;
+using guidexos::developer_studio::NavigationHistoryClear;
 using guidexos::developer_studio::NavigationHistoryPush;
 using guidexos::developer_studio::kDefinitionMaxCandidates;
 using guidexos::developer_studio::kDefinitionMaxVisibleCandidates;
@@ -1380,6 +1386,9 @@ static char g_symbolSearchQuery[kSymbolMaxQueryBytes + 1] = {};
 static uint32_t g_outlineSelected = 0;
 static uint32_t g_outlineScroll = 0;
 static NavigationHistory g_navigationHistory = {};
+static char g_navigationHistoryProjectId[kMaxProjectIdBytes] = {};
+static uint64_t g_navigationHistoryProjectGeneration = 0;
+static bool g_navigationHistoryProjectIdentityValid = false;
 static DefinitionCandidate g_definitionCandidates[kDefinitionMaxCandidates] = {};
 static DefinitionResolution g_definitionResolution = {};
 static DefinitionQuery g_definitionQuery = {};
@@ -3173,7 +3182,28 @@ static void definitionSetStatus(const char* text) {
     copyText(g_definitionStatus, sizeof(g_definitionStatus), text ? text : "");
 }
 
+static void synchronizeNavigationHistoryProject() {
+    if (!g_controller.model.open || !g_controller.model.hasProject) {
+        if (g_navigationHistoryProjectIdentityValid) NavigationHistoryClear(&g_navigationHistory);
+        g_navigationHistoryProjectId[0] = '\0';
+        g_navigationHistoryProjectGeneration = 0;
+        g_navigationHistoryProjectIdentityValid = false;
+        return;
+    }
+    const char* projectId = g_controller.model.project.projectId;
+    const uint64_t projectGeneration = g_controller.model.projectGeneration;
+    if (!g_navigationHistoryProjectIdentityValid ||
+        g_navigationHistoryProjectGeneration != projectGeneration ||
+        !searchTextEqual(g_navigationHistoryProjectId, projectId)) {
+        NavigationHistoryClear(&g_navigationHistory);
+        copyText(g_navigationHistoryProjectId, sizeof(g_navigationHistoryProjectId), projectId);
+        g_navigationHistoryProjectGeneration = projectGeneration;
+        g_navigationHistoryProjectIdentityValid = true;
+    }
+}
+
 static bool captureNavigationLocation(const Document& document, NavigationLocation* output) {
+    synchronizeNavigationHistoryProject();
     if (!output || !g_controller.model.hasProject) return false;
     *output = {};
     copyText(output->projectId, sizeof(output->projectId), g_controller.model.project.projectId);
@@ -3193,18 +3223,43 @@ static bool captureNavigationLocation(const Document& document, NavigationLocati
     return true;
 }
 
-static bool restoreNavigationLocation(gx_app_context* ctx, const NavigationLocation& location) {
+static void recordNavigationTransition(const NavigationLocation& origin, bool haveOrigin) {
+    if (!haveOrigin) return;
+    Document* destination = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation destinationLocation = {};
+    if (!destination || !captureNavigationLocation(*destination, &destinationLocation) ||
+        NavigationLocationEqual(origin, destinationLocation)) return;
+    NavigationHistoryPush(&g_navigationHistory, origin);
+}
+
+static bool restoreNavigationLocation(gx_app_context* ctx, const NavigationLocation& location,
+                                      const char* direction, bool* stale) {
+    if (stale) *stale = false;
+    synchronizeNavigationHistoryProject();
+    const char* command = direction && direction[0] ? direction : "back";
     if (!g_controller.model.open || !g_controller.model.hasProject ||
         !searchTextEqual(location.projectId, g_controller.model.project.projectId) ||
         location.projectGeneration != g_controller.model.projectGeneration) {
+        if (stale) *stale = true;
         definitionSetStatus("Navigation history belongs to a stale project.");
-        if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=FAIL reason=NAVIGATION_HISTORY_PROJECT_STALE");
+        if (ctx) {
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_");
+            appendText(g_textScratch, sizeof(g_textScratch), command);
+            appendText(g_textScratch, sizeof(g_textScratch), "=FAIL reason=NAVIGATION_HISTORY_PROJECT_STALE");
+            logMarker(ctx, g_textScratch);
+        }
         return false;
     }
     if (location.relativePath[0] == '\0' || PathContainsTraversal(location.relativePath) ||
         location.relativePath[0] == '/' || location.relativePath[0] == '\\' || location.relativePath[1] == ':') {
+        if (stale) *stale = true;
         definitionSetStatus("Navigation history path is invalid.");
-        if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=FAIL reason=NAVIGATION_HISTORY_PATH_INVALID");
+        if (ctx) {
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_");
+            appendText(g_textScratch, sizeof(g_textScratch), command);
+            appendText(g_textScratch, sizeof(g_textScratch), "=FAIL reason=NAVIGATION_HISTORY_PATH_INVALID");
+            logMarker(ctx, g_textScratch);
+        }
         return false;
     }
     uint32_t documentIndex = kMaxOpenDocuments;
@@ -3212,12 +3267,25 @@ static bool restoreNavigationLocation(gx_app_context* ctx, const NavigationLocat
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
                                                    location.relativePath, location.line, location.column,
                                                    &documentIndex, &error)) {
+        if (stale && (error == OutputErrorCode::DiagnosticFileNotFound ||
+                      error == OutputErrorCode::DiagnosticProjectMismatch ||
+                      error == OutputErrorCode::DiagnosticPathOutsideProject ||
+                      error == OutputErrorCode::NavigationNoProject)) *stale = true;
         definitionSetStatus("Navigation history location is unavailable.");
-        if (ctx) markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=FAIL", OutputErrorName(error));
+        if (ctx) {
+            copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_");
+            appendText(g_textScratch, sizeof(g_textScratch), command);
+            appendText(g_textScratch, sizeof(g_textScratch), "=FAIL reason=");
+            appendText(g_textScratch, sizeof(g_textScratch), OutputErrorName(error));
+            logMarker(ctx, g_textScratch);
+        }
         return false;
     }
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
-    if (!document) return false;
+    if (!document) {
+        if (stale) *stale = true;
+        return false;
+    }
     if (document->documentId == location.documentId && document->buffer.generation == location.documentGeneration) {
         uint32_t caret = location.caretByteOffset > document->buffer.length ? document->buffer.length : static_cast<uint32_t>(location.caretByteOffset);
         SetCaretOffset(&document->buffer, caret);
@@ -3230,7 +3298,54 @@ static bool restoreNavigationLocation(gx_app_context* ctx, const NavigationLocat
     g_outputFocused = false;
     keepCaretVisible(document);
     definitionSetStatus("");
-    if (ctx) logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=PASS");
+    if (ctx) {
+        copyText(g_textScratch, sizeof(g_textScratch), "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_");
+        appendText(g_textScratch, sizeof(g_textScratch), command);
+        appendText(g_textScratch, sizeof(g_textScratch), "=RESTORED");
+        logMarker(ctx, g_textScratch);
+    }
+    return true;
+}
+
+static bool navigateHistoryBack(gx_app_context* ctx) {
+    Document* current = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation currentLocation = {};
+    NavigationLocation destination = {};
+    if (!current || !captureNavigationLocation(*current, &currentLocation) ||
+        !NavigationHistoryPeekBack(&g_navigationHistory, &destination)) {
+        definitionSetStatus("Navigation history is empty.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=EMPTY");
+        return false;
+    }
+    bool stale = false;
+    if (!restoreNavigationLocation(ctx, destination, "back", &stale)) {
+        if (stale && NavigationHistoryDiscardBack(&g_navigationHistory))
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=STALE_DISCARDED");
+        return false;
+    }
+    if (!NavigationHistoryCommitBack(&g_navigationHistory, currentLocation)) return false;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=PASS");
+    return true;
+}
+
+static bool navigateHistoryForward(gx_app_context* ctx) {
+    Document* current = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation currentLocation = {};
+    NavigationLocation destination = {};
+    if (!current || !captureNavigationLocation(*current, &currentLocation) ||
+        !NavigationHistoryPeekForward(&g_navigationHistory, &destination)) {
+        definitionSetStatus("Forward navigation history is empty.");
+        logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=EMPTY");
+        return false;
+    }
+    bool stale = false;
+    if (!restoreNavigationLocation(ctx, destination, "forward", &stale)) {
+        if (stale && NavigationHistoryDiscardForward(&g_navigationHistory))
+            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=STALE_DISCARDED");
+        return false;
+    }
+    if (!NavigationHistoryCommitForward(&g_navigationHistory, currentLocation)) return false;
+    logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=PASS");
     return true;
 }
 
@@ -5409,6 +5524,8 @@ static bool activateDocumentOutlineSymbol(gx_app_context* ctx, uint32_t symbolIn
         refreshDocumentOutline(ctx, "stale_navigation");
         return false;
     }
+    NavigationLocation origin = {};
+    const bool haveOrigin = captureNavigationLocation(*document, &origin);
     if (!SetCaretOffset(&document->buffer, symbol->offset)) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_navigation=REJECTED reason=invalid_offset");
         return false;
@@ -5417,6 +5534,7 @@ static bool activateDocumentOutlineSymbol(gx_app_context* ctx, uint32_t symbolIn
     g_editorScrollColumn = 0;
     keepCaretVisible(document);
     g_editorFocused = true;
+    recordNavigationTransition(origin, haveOrigin);
     copyText(g_textScratch, sizeof(g_textScratch),
              "GUIDEXOS_DEVELOPER_STUDIO_MARKER document_outline_navigation=PASS name=");
     appendText(g_textScratch, sizeof(g_textScratch), symbol->name);
@@ -5709,6 +5827,10 @@ static bool activateProjectSymbol(gx_app_context* ctx, uint32_t resultIndex) {
         return false;
     }
 
+    Document* originDocument = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation origin = {};
+    const bool haveOrigin = originDocument && captureNavigationLocation(*originDocument, &origin);
+
     uint32_t previousActiveIndex = g_controller.model.activeDocument;
     uint64_t previousActiveId = 0;
     if (previousActiveIndex < kMaxOpenDocuments &&
@@ -5781,6 +5903,7 @@ static bool activateProjectSymbol(gx_app_context* ctx, uint32_t resultIndex) {
     g_editorScrollColumn = 0;
     keepCaretVisible(target);
     g_editorFocused = true;
+    recordNavigationTransition(origin, haveOrigin);
     copyText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), "Navigated to ");
     appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), candidate.name);
     appendText(g_projectSymbolsStatus, sizeof(g_projectSymbolsStatus), " in ");
@@ -5832,9 +5955,12 @@ static void buildGoToFileInventory() {
         !DeveloperToolProjectIdentityMatches(g_goToFileProjectId, g_goToFileProjectGeneration,
                                              g_controller.model.project.projectId,
                                              g_controller.model.projectGeneration)) return;
+    const bool sourceIndexAvailable =
+        g_symbolDatabase.projectGeneration == g_controller.model.projectGeneration;
     g_goToFileInventoryAvailable = WorkspaceControllerEnumerateProjectNavigationFiles(
         &g_controller, g_goToFileNavigationFiles,
-        guidexos::developer_studio::kMaxProjectNavigationFiles, &g_goToFileInventory);
+        guidexos::developer_studio::kMaxProjectNavigationFiles, &g_goToFileInventory,
+        !sourceIndexAvailable);
 }
 
 static void refreshGoToFileResults() {
@@ -6092,6 +6218,9 @@ static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=REJECTED");
         return false;
     }
+    Document* originDocument = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation origin = {};
+    const bool haveOrigin = originDocument && captureNavigationLocation(*originDocument, &origin);
     uint32_t documentIndex = kMaxOpenDocuments;
     OutputErrorCode navigationError = OutputErrorCode::None;
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_goToFileProjectId,
@@ -6119,6 +6248,7 @@ static bool activateGoToFileResult(gx_app_context* ctx, uint32_t resultIndex) {
     g_editorScrollColumn = 0;
     keepCaretVisible(document);
     g_editorFocused = true;
+    recordNavigationTransition(origin, haveOrigin);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_result=PASS");
     closeGoToFile(ctx, "open_result");
     return true;
@@ -6138,6 +6268,16 @@ static bool handleGoToFileKey(gx_app_context* ctx, int keyCode, int action, int 
         return true;
     }
     if (keyCode == 13) {
+        copyText(g_textScratch, sizeof(g_textScratch),
+                 "GUIDEXOS_DEVELOPER_STUDIO_MARKER go_to_file_search=READY matches=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch), g_goToFileResults.count);
+        appendText(g_textScratch, sizeof(g_textScratch), " source_docs=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                       g_goToFileSourceIndexAvailable ? SymbolDatabaseDocumentCount(&g_symbolDatabase) : 0);
+        appendText(g_textScratch, sizeof(g_textScratch), " inventory_files=");
+        appendUnsigned(g_textScratch, sizeof(g_textScratch),
+                       g_goToFileInventoryAvailable ? g_goToFileInventory.fileCount : 0);
+        logMarker(ctx, g_textScratch);
         if (g_goToFileResults.count == 0) {
             refreshGoToFileResults();
             return true;
@@ -6212,6 +6352,8 @@ static bool handleGoToLineKey(gx_app_context* ctx, int keyCode, int action, int 
             return true;
         }
         const uint32_t lineCount = TextBufferLineCount(&document->buffer);
+        NavigationLocation origin = {};
+        const bool haveOrigin = captureNavigationLocation(*document, &origin);
         if (line > lineCount ||
             !DeveloperToolPositionAtLine(document->buffer.data, document->buffer.length, line,
                                          &document->buffer.caret, &document->buffer.selectionAnchor,
@@ -6224,6 +6366,7 @@ static bool handleGoToLineKey(gx_app_context* ctx, int keyCode, int action, int 
         g_editorScrollColumn = 0;
         keepCaretVisible(document);
         g_editorFocused = true;
+        recordNavigationTransition(origin, haveOrigin);
         copyText(g_textScratch, sizeof(g_textScratch), "Moved to line ");
         appendUnsigned(g_textScratch, sizeof(g_textScratch), line);
         writeStudioOutput(g_textScratch);
@@ -6465,6 +6608,9 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER task_list_navigation=REJECTED reason=unsafe_path");
         return false;
     }
+    Document* originDocument = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation origin = {};
+    const bool haveOrigin = originDocument && captureNavigationLocation(*originDocument, &origin);
     uint32_t documentIndex = kMaxOpenDocuments;
     OutputErrorCode navigationError = OutputErrorCode::None;
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller,
@@ -6497,6 +6643,7 @@ static bool activateProjectTask(gx_app_context* ctx, uint32_t taskIndex) {
     g_editorScrollColumn = 0;
     keepCaretVisible(document);
     g_editorFocused = true;
+    recordNavigationTransition(origin, haveOrigin);
     copyText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus), "Opened ");
     appendText(g_projectTaskListStatus, sizeof(g_projectTaskListStatus),
                ProjectTaskAnnotationName(task.annotation));
@@ -12593,6 +12740,9 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
         markerFailure(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=FAIL", ProjectSearchErrorName(ProjectSearchErrorCode::PathOutsideProject));
         return false;
     }
+    Document* originDocument = WorkspaceControllerActiveDocument(&g_controller);
+    NavigationLocation origin = {};
+    const bool haveOrigin = originDocument && captureNavigationLocation(*originDocument, &origin);
     uint32_t documentIndex = kMaxOpenDocuments;
     OutputErrorCode navigationError = OutputErrorCode::None;
     if (!WorkspaceControllerOpenDocumentAtLocation(&g_controller, g_controller.model.project.projectId,
@@ -12606,6 +12756,7 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
     Document* document = WorkspaceControllerActiveDocument(&g_controller);
     if (!document) {
         projectSearchSetStatus("Search result opened without a document");
+        if (haveOrigin) restoreNavigationLocation(ctx, origin, "search_rollback", nullptr);
         return false;
     }
     const uint32_t queryLength = lengthOf(ProjectSearchQuery(&g_projectSearch), kFindMaxQueryBytes + 1u);
@@ -12619,6 +12770,7 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
         g_editorFocused = true;
         keepCaretVisible(document);
         closeFindInFiles(ctx, "result_activation");
+        recordNavigationTransition(origin, haveOrigin);
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=PASS");
         return true;
     }
@@ -12642,15 +12794,21 @@ static bool activateProjectSearchResult(gx_app_context* ctx, uint32_t groupIndex
         keepCaretVisible(document);
         closeFindInFiles(ctx, "result_activation");
         projectSearchSetStatus("Search result was stale; nearby match selected");
+        recordNavigationTransition(origin, haveOrigin);
         logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE");
         return true;
     }
     bool clamped = false;
-    WorkspaceControllerSetCaretPosition(&g_controller, documentIndex, match->line, match->column,
-                                        &clamped, &navigationError);
+    if (!WorkspaceControllerSetCaretPosition(&g_controller, documentIndex, match->line, match->column,
+                                             &clamped, &navigationError)) {
+        projectSearchSetStatus("Unable to position the editor at the selected search result");
+        if (haveOrigin) restoreNavigationLocation(ctx, origin, "search_rollback", nullptr);
+        return false;
+    }
     keepCaretVisible(document);
     closeFindInFiles(ctx, "result_activation");
     projectSearchSetStatus("Search result may be stale");
+    recordNavigationTransition(origin, haveOrigin);
     logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER project_search_result_activate=STALE");
     return true;
 }
@@ -19109,6 +19267,7 @@ static void drawModal(gx_app_context* ctx) {
 }
 
 static void drawShell(gx_app_context* ctx) {
+    synchronizeNavigationHistoryProject();
     // Native compositor drawing is retained between redraws. Clear the
     // previous frame before publishing the current bounded surface so
     // repeated input/render cycles do not grow the retained layer forever.
@@ -19168,7 +19327,7 @@ static void drawShell(gx_app_context* ctx) {
     }
     if (g_toolsMenuOpen) {
         const uint32_t toolCount = g_developerTools.count;
-        drawPanel(ctx, { 600, 42, 340, static_cast<int>(toolCount * 24u + 12u) }, 0x34496Au);
+        drawPanel(ctx, { 600, 42, 340, static_cast<int>((toolCount + 2u) * 24u + 12u) }, 0x34496Au);
         for (uint32_t i = 0; i < toolCount; ++i) {
             const DeveloperToolCommand* tool = DeveloperToolRegistryAt(&g_developerTools, i);
             if (!tool) continue;
@@ -19183,6 +19342,8 @@ static void drawShell(gx_app_context* ctx) {
         if (toolCount == 0) {
             drawText(ctx, 612, 64, "No tools registered");
         }
+        drawText(ctx, 612, 64 + static_cast<int>(toolCount * 24u), "Navigate Back (Alt+Left)");
+        drawText(ctx, 612, 64 + static_cast<int>((toolCount + 1u) * 24u), "Navigate Forward (Alt+Right)");
     }
     if (g_buildMenuOpen) {
         drawPanel(ctx, { 710, 42, 280, 92 }, 0x34496Au);
@@ -20494,30 +20655,11 @@ static void handleNormalKey(gx_app_context* ctx, int keyCode, int action, int mo
     }
     if (g_findBarOpen && handleFindKey(keyCode, action, modifiers)) return;
     if ((modifiers & GX_KEY_MOD_ALT) && keyCode == GX_KEY_LEFT) {
-        Document* current = WorkspaceControllerActiveDocument(&g_controller);
-        NavigationLocation currentLocation = {};
-        NavigationLocation destination = {};
-        if (!current || !captureNavigationLocation(*current, &currentLocation) ||
-            !NavigationHistoryBack(&g_navigationHistory, currentLocation, &destination)) {
-            definitionSetStatus("Navigation history is empty.");
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_back=EMPTY");
-        } else {
-            restoreNavigationLocation(ctx, destination);
-        }
+        navigateHistoryBack(ctx);
         return;
     }
     if ((modifiers & GX_KEY_MOD_ALT) && keyCode == GX_KEY_RIGHT) {
-        Document* current = WorkspaceControllerActiveDocument(&g_controller);
-        NavigationLocation currentLocation = {};
-        NavigationLocation destination = {};
-        if (!current || !captureNavigationLocation(*current, &currentLocation) ||
-            !NavigationHistoryForward(&g_navigationHistory, currentLocation, &destination)) {
-            definitionSetStatus("Forward navigation history is empty.");
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=EMPTY");
-        } else {
-            restoreNavigationLocation(ctx, destination);
-            logMarker(ctx, "GUIDEXOS_DEVELOPER_STUDIO_MARKER navigation_forward=PASS");
-        }
+        navigateHistoryForward(ctx);
         return;
     }
     if (keyCode == 123) {
@@ -20683,7 +20825,7 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     const bool taskListToolbarMenuClick = button == GX_MOUSE_BUTTON_LEFT &&
         (action == GX_MOUSE_ACTION_DOWN || action == GX_MOUSE_ACTION_DOUBLE_CLICK) &&
         (y < 48 || (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 &&
-                    y < 42 + static_cast<int>(g_developerTools.count * 24u)));
+                    y < 42 + static_cast<int>((g_developerTools.count + 2u) * 24u)));
     if (g_documentOutlinePanelOpen && !taskListToolbarMenuClick) {
         if (action == GX_MOUSE_ACTION_WHEEL) {
             const uint32_t maximum = g_documentOutline.count >
@@ -21521,10 +21663,16 @@ static void handleMouse(gx_app_context* ctx, const gx_event& event) {
     if (y < 48 && x >= 650 && x < 710) { g_debugMenuOpen = !g_debugMenuOpen; g_fileMenuOpen = false; g_buildMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
     if (y < 48 && x >= 710 && x < 790) { g_buildMenuOpen = !g_buildMenuOpen; g_fileMenuOpen = false; g_debugMenuOpen = false; g_toolsMenuOpen = false; drawShell(ctx); return; }
     if (g_toolsMenuOpen && x >= 600 && x < 940 && y >= 42 &&
-        y < 42 + static_cast<int>(g_developerTools.count * 24u)) {
+        y < 42 + static_cast<int>((g_developerTools.count + 2u) * 24u)) {
         const uint32_t row = static_cast<uint32_t>((y - 42) / 24);
-        const DeveloperToolCommand* tool = DeveloperToolRegistryAt(&g_developerTools, row);
-        if (tool && tool->id == DeveloperToolId::GoToFile)
+        const uint32_t toolCount = g_developerTools.count;
+        const DeveloperToolCommand* tool = row < toolCount ?
+            DeveloperToolRegistryAt(&g_developerTools, row) : nullptr;
+        if (row == toolCount)
+            navigateHistoryBack(ctx);
+        else if (row == toolCount + 1u)
+            navigateHistoryForward(ctx);
+        else if (tool && tool->id == DeveloperToolId::GoToFile)
             activateGoToFile(ctx, "tools_menu");
         else if (tool && tool->id == DeveloperToolId::GoToLine)
             activateGoToLine(ctx, "tools_menu");

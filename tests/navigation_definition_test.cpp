@@ -104,18 +104,38 @@ static void makeLocation(NavigationLocation& location, const char* path, uint64_
 static void testHistory() {
     static NavigationHistory history = {};
     NavigationHistoryInit(&history);
-    NavigationLocation first = {}, second = {}, current = {}, destination = {};
+    NavigationLocation first = {}, second = {}, third = {}, destination = {};
     makeLocation(first, "a.cpp", 1);
     makeLocation(second, "b.cpp", 2);
-    makeLocation(current, "c.cpp", 3);
+    makeLocation(third, "c.cpp", 3);
+
+    // A successful navigation records its origin; Back exposes the target
+    // without changing either stack until the editor confirms restoration.
     NavigationHistoryPush(&history, first);
     NavigationHistoryPush(&history, first);
     assert(history.backCount == 1);
     NavigationHistoryPush(&history, second);
-    assert(NavigationHistoryBack(&history, current, &destination));
+    assert(NavigationHistoryPeekBack(&history, &destination));
     assert(std::string(destination.relativePath) == "b.cpp");
-    assert(NavigationHistoryForward(&history, second, &destination));
+    const uint32_t backBeforeFailedRestore = history.backCount;
+    const uint32_t forwardBeforeFailedRestore = history.forwardCount;
+    // A failed restore does not commit, so retrying sees the same destination.
+    assert(history.backCount == backBeforeFailedRestore);
+    assert(history.forwardCount == forwardBeforeFailedRestore);
+    assert(NavigationHistoryPeekBack(&history, &destination));
+    assert(NavigationHistoryCommitBack(&history, third));
+    assert(history.backCount == 1 && history.forwardCount == 1);
+    assert(NavigationHistoryPeekBack(&history, &destination));
+    assert(std::string(destination.relativePath) == "a.cpp");
+    assert(NavigationHistoryCommitBack(&history, second));
+    assert(NavigationHistoryPeekForward(&history, &destination));
+    assert(std::string(destination.relativePath) == "b.cpp");
+    assert(NavigationHistoryCommitForward(&history, first));
+    assert(NavigationHistoryPeekForward(&history, &destination));
     assert(std::string(destination.relativePath) == "c.cpp");
+    assert(NavigationHistoryCommitForward(&history, second));
+
+    // A new navigation drops all remaining Forward history.
     NavigationHistoryPush(&history, first);
     assert(history.forwardCount == 0);
     for (uint32_t i = 0; i < kNavigationHistoryCapacity + 5; ++i) {
@@ -123,7 +143,29 @@ static void testHistory() {
         makeLocation(value, "a.cpp", i + 10);
         NavigationHistoryPush(&history, value);
     }
-    assert(history.backCount <= kNavigationHistoryCapacity);
+    assert(history.backCount == kNavigationHistoryCapacity);
+    assert(history.back[0].caretByteOffset == 10u + 5u);
+    assert(history.back[history.backCount - 1].caretByteOffset ==
+           10u + kNavigationHistoryCapacity + 4u);
+
+    NavigationLocation newest = history.back[history.backCount - 1];
+    NavigationHistoryPush(&history, newest);
+    assert(history.backCount == kNavigationHistoryCapacity);
+
+    NavigationLocation otherProject = first;
+    otherProject.projectGeneration += 1;
+    assert(!NavigationLocationEqual(first, otherProject));
+
+    // Stale and deleted entries can be invalidated without moving the current
+    // location onto the opposite stack.
+    NavigationHistoryClear(&history);
+    NavigationHistoryPush(&history, first);
+    assert(NavigationHistoryDiscardBack(&history));
+    assert(history.backCount == 0 && history.forwardCount == 0);
+    NavigationHistoryPush(&history, first);
+    assert(NavigationHistoryCommitBack(&history, second));
+    assert(NavigationHistoryDiscardForward(&history));
+    assert(history.backCount == 0 && history.forwardCount == 0);
 }
 
 int main() {

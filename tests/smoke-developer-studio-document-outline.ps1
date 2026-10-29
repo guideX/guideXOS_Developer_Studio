@@ -11,11 +11,11 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot)
 $AppPackageRoot = [IO.Path]::GetFullPath($AppPackageRoot)
-if (-not $EvidenceRoot) { $EvidenceRoot = Join-Path $RepoRoot "out\tools10-hosted-ui-evidence" }
+if (-not $EvidenceRoot) { $EvidenceRoot = Join-Path $RepoRoot "out\tools12-hosted-ui-evidence" }
 $EvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
 $ServerExecutable = Join-Path $ServerRoot "guideXOSServer.experimental.exe"
 $PackageElf = Join-Path $AppPackageRoot "bin\amd64\developerstudio.elf"
-$EvidenceFile = Join-Path $EvidenceRoot "project-symbols-hosted-ui.log"
+$EvidenceFile = Join-Path $EvidenceRoot "navigation-history-hosted-ui.log"
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Developer Studio hosted UI test failed: $Message" }
@@ -31,7 +31,7 @@ if (-not (Test-Path -LiteralPath $PackageElf -PathType Leaf)) {
 
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 $RunId = [Guid]::NewGuid().ToString("N")
-$RuntimeParentRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "guidexos-tools10-hosted-ui"))
+$RuntimeParentRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "g12"))
 $RuntimeRoot = Join-Path $RuntimeParentRoot ("r-" + $RunId)
 $RuntimeRootFull = [IO.Path]::GetFullPath($RuntimeRoot)
 $RuntimeParentPrefix = $RuntimeParentRoot.TrimEnd([IO.Path]::DirectorySeparatorChar,
@@ -158,7 +158,8 @@ function Send-TextAsKeys([string]$Text) {
     foreach ($character in $Text.ToCharArray()) {
         $keyCode = 0
         $modifiers = 0
-        if ($character -match "[A-Za-z]") { $keyCode = [int][char]([string]$character).ToUpperInvariant() }
+        if ($character -cmatch "[A-Z]") { $keyCode = [int][char]$character; $modifiers = 1 }
+        elseif ($character -cmatch "[a-z]") { $keyCode = [int][char]([string]$character).ToUpperInvariant() }
         elseif ($character -match "[0-9]") { $keyCode = [int][char]$character }
         elseif ($character -eq ' ') { $keyCode = 32 }
         elseif ($character -eq '_') { $keyCode = 189; $modifiers = 1 }
@@ -283,6 +284,39 @@ function Set-ProjectSymbolsNameFilter([string]$Value) {
     if ($Value) { Send-TextAsKeys $Value }
 }
 
+function Open-GoToFileResult([string]$Query, [string]$ExpectedDocument) {
+    $start = $script:CapturedLines.Count
+    Send-Key 80 2 # Ctrl+P opens Go to File.
+    Wait-Marker 'go_to_file_open=PASS source=keyboard_shortcut' $start
+    Send-Key 65 2
+    Send-Key 8 0
+    Send-TextAsKeys $Query
+    $navigateStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    Wait-Marker 'go_to_file_result=PASS' $navigateStart
+    $escapedName = [regex]::Escape($ExpectedDocument)
+    Read-Until { param($line, $all) $line -match ('draw_text .*text="Document: ' + $escapedName) } $navigateStart 20 | Out-Null
+    Write-Host "PASS: Go to File opened $ExpectedDocument through the hosted UI"
+}
+
+function Invoke-ToolsHistoryMenu([ValidateSet("Back", "Forward")][string]$Direction) {
+    Send-MouseClick 620 25
+    # The menu rows are fixed in the native UI; Back is drawn at y=232.
+    # The navigation marker below proves that this visible menu action ran.
+    Send-MouseClick 620 228
+}
+
+function Open-MainThroughExplorer([int]$AfterIndex = 0) {
+    Send-MouseClick 100 122
+    Send-Key 13 0
+    Read-Until { param($line, $all) $line -match 'text="\[TXT\] main\.cpp"' } $AfterIndex 20 | Out-Null
+    Send-MouseClick 100 104
+    $start = $script:CapturedLines.Count
+    Send-Key 13 0
+    Wait-Marker 'document_open=PASS' $start
+    Read-Until { param($line, $all) $line -match 'text="Document: main\.cpp' } $start 20 | Out-Null
+}
+
 $success = $false
 try {
     New-Item -ItemType Directory -Path $RuntimeParentRoot -Force | Out-Null
@@ -296,8 +330,17 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "sdk\samples") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "examples\apps") -Force | Out-Null
 
-    $script:FixtureRoot = Join-Path $RuntimeRoot "ProjectSymbolsFixture"
+    $script:FixtureRoot = Join-Path $RuntimeRoot "P"
     New-ProjectFixture $script:FixtureRoot "com.example.tools10-project-symbols" "TOOLS10 Project Symbols Fixture"
+    $historyProjectRoot = Join-Path $RuntimeRoot "H"
+    New-ProjectFixture $historyProjectRoot "com.example.tools12-navigation-history" "TOOLS12 Navigation History Fixture"
+    Write-FixtureText (Join-Path $historyProjectRoot "src\main.cpp") "int originMain() { return 0; }`n"
+    Write-FixtureText (Join-Path $historyProjectRoot "src\other.cpp") "int symbolTarget() { return 2; }`n"
+    Write-FixtureText (Join-Path $historyProjectRoot "src\stale.cpp") "int obsoleteTarget() { return 3; }`n"
+    Write-FixtureText (Join-Path $historyProjectRoot "src\history.cpp") "int searchNeedle = 4;`n"
+    $historyFixtureHashBefore = Get-FixtureHash $historyProjectRoot
+    $historyOtherPath = Join-Path $historyProjectRoot "src\other.cpp"
+    $historyOtherDiskText = [IO.File]::ReadAllText($historyOtherPath)
     $mainPath = Join-Path $script:FixtureRoot "src\main.cpp"
     $otherPath = Join-Path $script:FixtureRoot "src\other.cpp"
     $stalePath = Join-Path $script:FixtureRoot "src\stale.cpp"
@@ -341,18 +384,94 @@ try {
     Send-Key 27 0
     Wait-Marker 'document_outline_close=PASS source=escape' $closeStart
 
+    # Run the TOOLS12 cross-tool workflow in a dedicated disposable project.
+    Open-ProjectThroughUi $historyProjectRoot
+
+    $historySymbolsStart = Open-ProjectSymbolsFromToolsMenu
+    Wait-Marker 'project_symbols_scan=COMPLETED .*truncated=false' $historySymbolsStart 30
+    Set-ProjectSymbolsNameFilter "symbolTarget"
+    Send-Key 13 0 # Move focus from the name field to the result list.
+    $symbolNavigationStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    Wait-Marker 'project_symbols_navigation=PASS name=symbolTarget file=src/other\.cpp line=1 caret=' $symbolNavigationStart
+    Read-Until { param($line, $all) $line -match 'text="Document: other\.cpp' } $symbolNavigationStart 20 | Out-Null
+    Open-GoToFileResult "main.cpp" "main.cpp"
+
+    $searchOpenStart = $script:CapturedLines.Count
+    Send-Key 70 3 # Ctrl+Shift+F opens Find in Files.
+    Wait-Marker 'find_in_files_open=PASS source=keyboard_shortcut' $searchOpenStart
+    Send-MouseClick 150 97
+    Send-Key 65 2
+    Send-Key 8 0
+    Send-TextAsKeys "searchNeedle"
+    $searchRunStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    Wait-Marker 'project_search_begin=PASS' $searchRunStart
+    Wait-Marker 'project_search_complete=PASS' $searchRunStart 45
+    Send-Key 9 0
+    Send-Key 9 0
+    Send-Key 9 0
+    $searchNavigationStart = $script:CapturedLines.Count
+    Send-Key 13 0
+    Wait-Marker 'project_search_result_activate=PASS' $searchNavigationStart
+    Read-Until { param($line, $all) $line -match 'text="Document: history\.cpp' } $searchNavigationStart 20 | Out-Null
+    Write-Host "PASS: Go to File, Project Symbols, and Find in Files each produced cross-tool history"
+
+    $firstBackStart = $script:CapturedLines.Count
+    Send-Key 37 4 # Alt+Left.
+    Wait-Marker 'navigation_back=PASS' $firstBackStart
+    Read-Until { param($line, $all) $line -match 'text="Document: main\.cpp' } $firstBackStart 20 | Out-Null
+    $secondBackStart = $script:CapturedLines.Count
+    Send-Key 37 4 # Alt+Left again.
+    Wait-Marker 'navigation_back=PASS' $secondBackStart
+    Read-Until { param($line, $all) $line -match 'text="Document: other\.cpp' } $secondBackStart 20 | Out-Null
+    $thirdBackStart = $script:CapturedLines.Count
+    Send-Key 37 4 # Reach the original project-open location.
+    Wait-Marker 'navigation_back=PASS' $thirdBackStart
+    Read-Until { param($line, $all) $line -match 'text="Document: main\.cpp' } $thirdBackStart 20 | Out-Null
+    $repeatedBackStart = $script:CapturedLines.Count
+    Send-Key 37 4 # An empty Back activation must leave the state stable.
+    Wait-Marker 'navigation_back=EMPTY' $repeatedBackStart
+    $forwardStart = $script:CapturedLines.Count
+    Send-Key 39 4 # Alt+Right.
+    Wait-Marker 'navigation_forward=PASS' $forwardStart
+    Read-Until { param($line, $all) $line -match 'text="Document: other\.cpp' } $forwardStart 20 | Out-Null
+
+    # Typing itself does not create history. The visible Back menu command and
+    # keyboard Forward must keep this edit in the dirty in-memory document.
+    Send-Key 35 0
+    Send-Key 13 0
+    $dirtyEditStart = $script:CapturedLines.Count
+    Send-TextAsKeys "int dirtyNavigationCheck() {}"
+    Wait-Marker 'document_dirty=TRUE' $dirtyEditStart 10
+    Assert-True ([IO.File]::ReadAllText($historyOtherPath) -eq $historyOtherDiskText) "editing the history fixture changes only the in-memory buffer"
+    $menuBackStart = $script:CapturedLines.Count
+    Invoke-ToolsHistoryMenu "Back"
+    Wait-Marker 'navigation_back=PASS' $menuBackStart
+    Read-Until { param($line, $all) $line -match 'text="Document: main\.cpp' } $menuBackStart 20 | Out-Null
+    $dirtyForwardStart = $script:CapturedLines.Count
+    Send-Key 39 4 # Alt+Right restores the edited document location.
+    Wait-Marker 'navigation_forward=PASS' $dirtyForwardStart
+    Read-Until { param($line, $all) $line -match 'text="Document: other\.cpp' } $dirtyForwardStart 20 | Out-Null
+    Read-Until { param($line, $all) $line -match 'draw_text .*text="dirtyNavigationCheck"' } $dirtyForwardStart 20 | Out-Null
+    Assert-True ([IO.File]::ReadAllText($historyOtherPath) -eq $historyOtherDiskText) "Back and Forward preserve the unsaved source text without writing the fixture"
+
+    # Discard only the deliberate temporary edit, then switch to the established
+    # outline fixture and verify old-project history is no longer available.
+    Send-Key 87 2 # Ctrl+W.
+    Read-Until { param($line, $all) $line -match 'text="Unsaved changes"' } $dirtyForwardStart 20 | Out-Null
+    Send-Command "gui.key 68 down 0"
+    Start-Sleep -Milliseconds 20
+    Send-Command "gui.key 68 up 0"
+    Wait-Marker 'unsaved_close=DISCARD' $dirtyForwardStart
     Open-ProjectThroughUi $script:FixtureRoot
-    # Use the real Explorer path to open src/main.cpp so this acceptance check
-    # does not depend on Go to File's separately built source index.
-    Send-MouseClick 100 122
-    Send-Key 13 0
-    Read-Until { param($line, $all) $line -match 'text="\[TXT\] other\.cpp"' } 0 20 | Out-Null
-    Send-MouseClick 100 104
-    $mainOpenStart = $script:CapturedLines.Count
-    Send-Key 13 0
-    Wait-Marker 'document_open=PASS' $mainOpenStart
-    Read-Until { param($line, $all) $line -match 'text="Document: main\.cpp' } $mainOpenStart 20 | Out-Null
-    Write-Host "PASS: the real Explorer opened the fixture's main.cpp document"
+    $invalidatedBackStart = $script:CapturedLines.Count
+    Send-Key 37 4
+    Wait-Marker 'navigation_back=EMPTY' $invalidatedBackStart
+    Write-Host "PASS: switching projects clears the previous project's navigation history"
+    # Use the real Explorer for main.cpp so the outline acceptance retains its
+    # original setup after the project-switch check.
+    Open-MainThroughExplorer $script:CapturedLines.Count
 
     # Enter a line number through the real Go to Line panel and type a new
     # declaration into the editor buffer. The fixture file on disk is unchanged.
@@ -494,8 +613,9 @@ try {
     $script:Process.StandardInput.Close()
     if (-not $script:Process.WaitForExit(20000)) { throw "The hosted Server did not exit after the acceptance run." }
     Assert-True ($script:Process.ExitCode -eq 0) "the hosted Server exits cleanly after the UI acceptance run"
+    Assert-True ((Get-FixtureHash $historyProjectRoot) -eq $historyFixtureHashBefore) "Back/Forward and the other history tools leave the entire disposable project byte-for-byte unchanged"
     $success = $true
-    Write-Host "Developer Studio Document Outline and Project Symbols hosted UI integration PASS"
+    Write-Host "Developer Studio Navigation History, Document Outline, and Project Symbols hosted UI integration PASS"
 } finally {
     if ($script:Process -and -not $script:Process.HasExited) {
         try { $script:Process.Kill(); $script:Process.WaitForExit() } catch { }

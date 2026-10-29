@@ -424,7 +424,7 @@ if(GUIDEXOS_ENABLE_TASK_LIST_HOSTED_UI_TEST)
 endif()
 
 option(GUIDEXOS_ENABLE_DOCUMENT_OUTLINE_HOSTED_UI_TEST
-    "Enable the real hosted Server UI acceptance test for Document Outline and Project Symbols" OFF)
+    "Enable the real hosted Server UI acceptance test for Navigation History, Document Outline, and Project Symbols" OFF)
 set(GUIDEXOS_DOCUMENT_OUTLINE_UI_SERVER_ROOT "" CACHE PATH
     "Server checkout containing guideXOSServer.experimental.exe")
 set(GUIDEXOS_DOCUMENT_OUTLINE_UI_APP_PACKAGE "" CACHE PATH
@@ -449,7 +449,7 @@ if(GUIDEXOS_ENABLE_DOCUMENT_OUTLINE_HOSTED_UI_TEST)
             -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke-developer-studio-document-outline.ps1"
             -ServerRoot "${GUIDEXOS_DOCUMENT_OUTLINE_UI_SERVER_ROOT}"
             -AppPackageRoot "${GUIDEXOS_DOCUMENT_OUTLINE_UI_APP_PACKAGE}"
-            -EvidenceRoot "${CMAKE_CURRENT_BINARY_DIR}/tools10-hosted-ui-evidence")
+            -EvidenceRoot "${CMAKE_CURRENT_BINARY_DIR}/tools12-hosted-ui-evidence")
     set_tests_properties(developer_studio_project_symbols_hosted_ui_test PROPERTIES
         LABELS "hosted-ui;integration"
         RUN_SERIAL TRUE

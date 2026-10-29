@@ -266,6 +266,18 @@ static void testInventoryAndSafety() {
     TEST_CHECK(foundMarkdown && foundJson && foundYaml && foundToml && foundCMake && foundEnv);
     TEST_CHECK(!foundCpp);
 
+    // Go to File can opt into C/C++ paths when the target does not have the
+    // hosted symbol database (the Native ELF profile uses this fallback).
+    ProjectNavigationFile fallbackFiles[kMaxProjectNavigationFiles] = {};
+    ProjectNavigationInventory fallbackInventory = {};
+    TEST_CHECK(WorkspaceControllerEnumerateProjectNavigationFiles(
+        &controller, fallbackFiles, kMaxProjectNavigationFiles, &fallbackInventory, true));
+    bool foundCppFallback = false;
+    for (uint32_t i = 0; i < fallbackInventory.fileCount; ++i)
+        foundCppFallback = foundCppFallback ||
+            std::strstr(fallbackFiles[i].absolutePath, "/src/main.cpp") != nullptr;
+    TEST_CHECK(foundCppFallback);
+
     const char* searchPaths[kDeveloperToolMaxIndexedFiles] = {};
     for (uint32_t i = 0; i < inventory.fileCount; ++i) searchPaths[i] = files[i].absolutePath;
     DeveloperToolFileSearchResults results = {};
